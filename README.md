@@ -1,68 +1,95 @@
-# auto-approve
+# RemotePair
 
-macOS GUI 승인 다이얼로그(1Password 인증, 방화벽 수신연결, 확인창 등)를 자동으로 클릭하는
-네이티브 데몬. AppleScript + launchd + Accessibility(AX) 로 구현. 외부 런타임 의존성은
-`cliclick`(좌표 클릭 폴백) 하나뿐.
+원격(mosh/ssh)으로 attach하는 persistent tmux 세션 안의 **Claude Code가 macOS 빌트인 computer-use(스크린샷·클릭·타이핑)를 쓸 수 있게** 하는 시스템.
 
-## 구조: "한 번 빌드, 로직은 .claude 에서"
+헤드리스 24h Mac 서버에 `mosh`로 붙어 `tmux` 세션에서 `claude`를 돌리면서도 — 그 claude가 화면을 보고 마우스/키보드를 조작할 수 있다. 터미널 + 가벼운 원격 + 영속 + computer-use, 네 조건 동시 충족.
+
+---
+
+## 왜 어려운가 (macOS TCC 2-게이트)
+
+빌트인 computer-use는 claude 프로세스가 **두 권한**을 가져야 한다:
+- **SR (Screen Recording / 화면 기록)** — 스크린샷. **responsible-process 체인**으로 평가 (daemon 거쳐도 상속).
+- **AX (Accessibility / 손쉬운 사용)** — 클릭·타이핑(CGEvent 합성입력). **host .app의 activation policy + Aqua graphic-session**으로 평가.
+
+핵심 사실:
+- `claude-code` CLI는 버전경로 + 비-.app이라 **System Settings 권한 목록에 등록조차 안 됨** → 직접 grant 불가.
+- 따라서 **권한을 가진 .app(RemotePair)이 host가 되어**, claude를 자기 프로세스 서브트리에 두고 권한을 상속시켜야 한다.
+- **tmux 기본은 막힘**: `proc.c`의 `proc_fork_and_daemon()`이 `daemon(3)`으로 서버를 launchd로 reparent → claude가 host 서브트리에서 빠져나가 AX 실패. (SR은 responsible-pid가 sticky라 살지만 AX는 죽음.)
+- SIP enabled + non-MDM에서는 `sudo`/`tccutil`/PPPC로 TCC 부여 불가 → **System Settings 사용자 토글만**.
+
+폐기한 접근: `launchctl asuser`(audit session만, responsible=launchd라 부족), `reattach-to-user-namespace`(pasteboard만), `cliclick`(자체 TCC 필요한 틀린 프록시), osacompile **applet**(graphic-session 없어 AX 실패).
+
+## 해법 아키텍처
 
 ```
-Lang-Swift/auto-approve/            ← 빌드 도구 (Syncthing sync)
-  loader.applescript               ← .app 골격: 권한 보유 + engine 자동 로드   ★ 한 번만 빌드
-  build.sh                         ← loader → ~/Applications/AutoApprove.app
-  auto-approve-watchdog.sh         ← heartbeat 끊기면 kickstart
-  1pw-auto-approve.sh              ← 수동 도구(레거시)
-
-~/.claude/auto-approve/             ← 런타임 로직/규칙 (재빌드 0, 양 머신 sync)
-  engine.applescript               ← 스캔·클릭·좌표폴백 엔진 (loader 가 mtime 보고 자동 컴파일)
-  rules.txt                        ← 승인 규칙. 새 승인 = 여기 한 줄
-
-~/Applications/AutoApprove.app      ← 빌드 산출물. Accessibility 권한 보유체
+login → LaunchAgent(KeepAlive) → RemotePair.app  (메뉴바, AX+SR granted)
+   └─ script(pty) → tmux-aqua 서버 (/tmp/aqua-tmux.sock, _keeper 세션)   ← RemotePair 서브트리
+        └─ (launcher가 추가한 claude 세션) → computer-use ✅
+[원격]  mosh → tmux-aqua -S /tmp/aqua-tmux.sock attach   (client 무관 — claude는 서버 자식)
 ```
 
-**핵심 원리**: `.app`(loader)은 권한만 들고, 실제 로직은 `~/.claude/auto-approve/` 를
-**홈 기준으로 자동 감지**해 실행한다. `.app` 이 외부 스크립트를 자기 프로세스에서 실행하므로
-AX 권한이 그대로 상속된다. → `.app` 만 각 머신에 배포하면 그 머신의 `.claude` 를 읽는다.
+- **patched tmux (`tmux-aqua`)**: `daemon(1,0)` → `setsid()` + stdio redirect. reparent fork 제거 → 서버가 부모(RemotePair) 서브트리에 남는다.
+- **RemotePair.app (네이티브 Swift, 메뉴바)**: ① `posix_spawn`으로 tmux-aqua 서버를 자식으로 붙듦(host) ② 1s 타이머로 `engine.applescript`(승인 다이얼로그 클릭)를 NSAppleScript in-process 실행(approve) ③ NSStatusItem으로 graphic-session 확보.
+- claude는 **서버의 자식**이라, attach하는 client(mosh/ssh)가 무엇이든 RemotePair의 권한을 상속한다.
 
-- `load script` 는 `.scpt` 만 받으므로, loader 가 `engine.applescript` 의 mtime 을 보고
-  바뀌었을 때만 `osacompile`→`load script` 한다. **engine 텍스트만 고치면 자동 반영.**
-- 규칙은 `rules.txt` 순수 텍스트라 컴파일조차 불필요 — 저장 즉시 다음 tick 에 반영.
+## 구성 파일
 
-## 빌드 (머신당 한 번)
+| 파일 | 역할 |
+|---|---|
+| `AutoApproveNative/main.swift` | RemotePair 앱 소스 (approve + computer-use host) |
+| `build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
+| `build-native.sh` | RemotePair.app 빌드 (+ `--deploy`로 원격 설치) |
+| `approve/engine.applescript`, `approve/rules.txt` | 승인 다이얼로그 클릭 로직 (런타임은 `~/.claude/auto-approve/`) |
+| `launchd/` | watchdog, LaunchAgent plist |
 
+## 세팅 방법
+
+대상 머신(예: gh-mac-m1)에서. Apple Silicon + Homebrew(tmux 설치돼 libevent/ncurses/utf8proc 존재) 가정.
+
+### 1. patched tmux 빌드
 ```bash
-./build.sh
-# → ~/Applications/AutoApprove.app 생성
-# 1) 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용(Accessibility) 에 AutoApprove 허용
-# 2) LaunchAgent 등록:
-#    com.ghyeong.auto-approve            → AutoApprove.app/Contents/MacOS/applet  (KeepAlive)
-#    com.ghyeong.auto-approve-watchdog   → auto-approve-watchdog.sh               (StartInterval 30)
+./build-tmux-aqua.sh        # → ~/.local/bin/tmux-aqua  (tmux -V == 3.6)
 ```
+tmux는 clang으로 빌드되니 대상 머신에서 직접 실행 가능. (앱(Swift)은 Xcode 있는 머신에서 빌드 후 배포.)
 
-ad-hoc 서명(`codesign -s -`)이라 **재빌드하면 권한이 무효화될 수 있다.** 그래서 한 번만 빌드한다.
-로직/규칙은 빌드 없이 `~/.claude/auto-approve/` 에서 고친다.
-
-## 규칙 추가 (`~/.claude/auto-approve/rules.txt`)
-
-한 줄 = 한 규칙. 탭 구분:
-
+### 2. RemotePair.app 빌드 + 배포
+```bash
+# Swift 툴체인(Xcode) 있는 머신에서:
+./build-native.sh --deploy   # 빌드 → scp → ~/Applications/RemotePair.app + LaunchAgent (re)start
 ```
-proc<TAB>mode<TAB>label|label|...
+- LSUIElement 메뉴바 앱. `~/Applications/RemotePair.app`.
+- LaunchAgent `~/Library/LaunchAgents/com.ghyeong.remote-pair.plist` (RunAtLoad + KeepAlive)로 로그인 시 자동 기동.
+
+### 3. 권한 부여 (1회, 물리화면/VNC 필요 — 부트스트랩 역설)
+RemotePair 실행 후 claude가 computer-use를 처음 호출하면 권한 프롬프트가 뜬다. **System Settings → 개인정보 보호 및 보안**:
+- **손쉬운 사용(Accessibility)**: `RemotePair` ON  (안 보이면 `+` → `~/Applications/RemotePair.app`)
+- **화면 기록(Screen Recording)**: `RemotePair` ON
+- 토글 후 RemotePair 재시작(LaunchAgent kickstart)으로 grant 픽업.
+
+> ad-hoc 서명이면 재빌드마다 cdhash가 바뀌어 재토글 필요:
+> ```bash
+> tccutil reset Accessibility com.ghyeong.remote-pair; tccutil reset ScreenCapture com.ghyeong.remote-pair
+> # 재시작 후 다시 토글
+> ```
+> 안정 self-signed cert로 서명하면 재빌드에도 grant 유지 (TODO).
+
+### 4. 런처 연결 (이 저장소 밖, `~/.claude/bin/claude-iterm-launch`)
+원격/로컬 모두 세션을 `tmux-aqua -S /tmp/aqua-tmux.sock new-session`으로 RemotePair-hosted 서버에 추가하고, `tmux-aqua ... attach`로 붙는다. host 서버가 없으면 `open -a RemotePair`로 기동 보장.
+
+## 사용
+```bash
+# (M4) CLAUDE.command → 원격 선택 → mosh attach. 또는 수동:
+ssh gh-mac-m1 '~/.local/bin/tmux-aqua -S /tmp/aqua-tmux.sock new-session -d -s myproj -c ~/proj "claude"'
+mosh gh-mac-m1 -- ~/.local/bin/tmux-aqua -S /tmp/aqua-tmux.sock attach -t myproj
+# claude 안에서: "스크린샷 찍어줘" / "(x,y) 클릭해줘"  → 동작
 ```
+매 세션 유일 상호작용 = claude 자체 "Allow for this session" 프롬프트(빌트인, Enter 1회).
 
-- `proc`  : 대상 프로세스명 (`osascript -e 'tell app "System Events" to get name of every process'` 로 확인)
-- `mode`  : `ax`(논리 클릭, 일반 다이얼로그) | `coord`(좌표 클릭, 방화벽 등 AX 가 막힌 보안창)
-- `label` : 버튼 텍스트 후보들을 `|` 로 나열 (한/영)
-- `#` 으로 시작하면 주석
+## 트러블슈팅
+- **claude update 후 'computer use not granted'** (#50735): claude 안에서 `/mcp disable computer-use && /mcp enable computer-use`로 현재 버전 helper 번들 재추출. (RemotePair grant와 별개 — claude.app helper 무결성.)
+- **approve 클릭이 -1712(AppleEvent timed out)**: engine을 매 tick 메인스레드 실행 시 가능 → 백그라운드 실행 또는 비전 fallback(screencapture + claude 좌표)로 개선 예정.
+- **재부팅 후**: LaunchAgent가 RemotePair → tmux-aqua 서버 자동 기동. `tmux-aqua -S /tmp/aqua-tmux.sock ls`로 `_keeper` 확인.
 
-예:
-```
-1Password	ax	Authorize|Allow|승인|허용|확인
-mosh-server	coord	Allow|허용
-Google Chrome	ax	Allow|승인|확인
-```
-
-## 로그
-
-- `~/.claude/logs/auto-approve.log`        — 클릭/차단 이벤트
-- `~/.claude/logs/auto-approve.heartbeat`  — 매 tick touch (watchdog 가 감시)
+## 주의
+개인 도구. ad-hoc/self-signed 서명. macOS 26(Tahoe)/Apple Silicon 개발·검증.
