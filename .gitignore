@@ -1,4 +1,8 @@
 .DS_Store
 build/
-AutoApproveNative/AutoApprove
+RemotePairNative/RemotePair
 *.o
+# 서명 키/인증서는 절대 커밋 금지 (백업은 ~/Library/Application Support/RemotePair/)
+*.p12
+*.pem
+*.key

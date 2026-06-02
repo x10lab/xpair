@@ -37,9 +37,10 @@ login → LaunchAgent(KeepAlive) → RemotePair.app  (메뉴바, AX+SR granted)
 
 | 파일 | 역할 |
 |---|---|
-| `AutoApproveNative/main.swift` | RemotePair 앱 소스 (approve + computer-use host) |
+| `RemotePairNative/main.swift` | RemotePair 앱 소스 (approve + computer-use host) |
 | `build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
-| `build-native.sh` | RemotePair.app 빌드 (+ `--deploy`로 원격 설치) |
+| `make-signing-cert.sh` | 안정 self-signed 코드서명 cert 생성 (재빌드에도 grant 유지) |
+| `build-native.sh` | RemotePair.app 빌드·cert 서명 (+ `--deploy`로 원격 마이그레이션 설치) |
 | `approve/engine.applescript`, `approve/rules.txt` | 승인 다이얼로그 클릭 로직 (런타임은 `~/.claude/auto-approve/`) |
 | `launchd/` | watchdog, LaunchAgent plist |
 
@@ -53,13 +54,22 @@ login → LaunchAgent(KeepAlive) → RemotePair.app  (메뉴바, AX+SR granted)
 ```
 tmux는 clang으로 빌드되니 대상 머신에서 직접 실행 가능. (앱(Swift)은 Xcode 있는 머신에서 빌드 후 배포.)
 
-### 2. RemotePair.app 빌드 + 배포
+### 2. 안정 코드서명 cert (1회, 빌드 머신에서)
+```bash
+./make-signing-cert.sh        # login keychain 에 "RemotePair Local Signing" 생성 (idempotent)
+```
+ad-hoc 서명은 재빌드마다 cdhash 가 바뀌어 grant 가 무효화된다. 안정 cert 로 서명하면 TCC grant 가
+**designated requirement (`identifier "com.ghyeong.remote-pair" and certificate leaf = H"…"`)** 에 묶여
+같은 cert·bundle id 면 재빌드에도 유지된다. (Apple Developer 계정/공증 불필요 — 본인 기기 전용. p12 백업은 `~/Library/Application Support/RemotePair/signing.p12`, 다른 빌드 머신에서 import 하면 동일 정체성.)
+
+### 3. RemotePair.app 빌드 + 배포
 ```bash
 # Swift 툴체인(Xcode) 있는 머신에서:
-./build-native.sh --deploy   # 빌드 → scp → ~/Applications/RemotePair.app + LaunchAgent (re)start
+./build-native.sh --deploy   # cert 서명 빌드 → scp → ~/Applications/RemotePair.app + LaunchAgent + watchdog (re)start
 ```
-- LSUIElement 메뉴바 앱. `~/Applications/RemotePair.app`.
-- LaunchAgent `~/Library/LaunchAgents/com.ghyeong.remote-pair.plist` (RunAtLoad + KeepAlive)로 로그인 시 자동 기동.
+- LSUIElement 메뉴바 앱. `~/Applications/RemotePair.app`. cert 로 서명(없으면 ad-hoc 폴백).
+- LaunchAgent `com.ghyeong.remote-pair`(RunAtLoad+KeepAlive) + `com.ghyeong.remote-pair-watchdog`(heartbeat 정지 시 재기동).
+- 배포는 M4 cert 서명을 보존(원격 재서명 안 함) + quarantine 제거. 구 `com.ghyeong.auto-approve` 자동 정리.
 
 ### 3. 권한 부여 (1회, 물리화면/VNC 필요 — 부트스트랩 역설)
 RemotePair 실행 후 claude가 computer-use를 처음 호출하면 권한 프롬프트가 뜬다. **System Settings → 개인정보 보호 및 보안**:

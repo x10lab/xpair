@@ -1,4 +1,4 @@
-// AutoApprove (native) — 단일 정식 네이티브 앱 = approve(승인 다이얼로그 클릭) + tmux computer-use host
+// RemotePair (native) — 단일 정식 네이티브 앱 = approve(승인 다이얼로그 클릭) + tmux computer-use host
 //
 // applet(osacompile AppleScript) 대체. 네이티브라서:
 //  - tmux 서버를 자식으로 붙들 수 있음(posix_spawn, non-blocking) → host의 responsible-process가 이 앱
@@ -15,9 +15,11 @@ import Darwin
 let HOME = NSHomeDirectory()
 let TMUX = "\(HOME)/.local/bin/tmux-aqua"            // daemon→setsid 패치된 tmux
 let SOCKET = "/tmp/aqua-tmux.sock"                    // host tmux 서버 소켓 (launcher가 attach)
-let ENGINE = "\(HOME)/.claude/auto-approve/engine.applescript"  // 기존 approve 로직 재사용
-let LOGP = "\(HOME)/.claude/logs/auto-approve-native.log"
-let HEARTBEAT = "\(HOME)/.claude/logs/auto-approve.heartbeat"   // watchdog 호환
+let ENGINE = "\(HOME)/.claude/auto-approve/engine.applescript"  // approve 엔진 config (rules.txt와 함께 git-sync, 경로 유지)
+let LOGP = "\(HOME)/.claude/logs/remote-pair.log"
+let HEARTBEAT = "\(HOME)/.claude/logs/remote-pair.heartbeat"    // watchdog가 읽음 (remote-pair-watchdog.sh)
+let TRIGGER = "/tmp/remote-pair.approve-request"               // claude(/approve 스킬)가 touch → on-demand 클릭 요청
+let APPROVE_WINDOW: TimeInterval = 10                          // 요청 1회당 active 스캔 창(초) — 다이얼로그 늦게 떠도 잡게
 
 func log(_ s: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
@@ -60,7 +62,9 @@ final class HostManager {
     }
 }
 
-// ── APPROVE: 기존 engine.applescript tick()을 이 앱 프로세스에서 실행 ─────────
+// ── APPROVE: engine.applescript tick()을 이 앱(granted 신원)에서 실행 — on-demand 만 호출됨 ──
+// claude 가 osascript 로 직접 클릭하면 Automation→System Events 신원이 claude/osascript 라 막힘.
+// 그래서 클릭은 항상 RemotePair(AX+Automation granted)가 한다. claude 는 /approve 스킬로 "요청"만.
 final class ApproveManager {
     func tick() {
         guard let src = try? String(contentsOfFile: ENGINE, encoding: .utf8) else { return }
@@ -72,8 +76,6 @@ final class ApproveManager {
         if let err = err, let n = err[NSAppleScript.errorNumber] as? Int, n != 0 {
             log("APPROVE: \(err[NSAppleScript.errorMessage] ?? "err") (\(n))")
         }
-        // watchdog 호환 heartbeat
-        try? "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8)
     }
 }
 
@@ -83,26 +85,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let approve = ApproveManager()
     var statusItem: NSStatusItem!
     var hostTimer: Timer?
-    var approveTimer: Timer?
+    var tickTimer: Timer?
+    var approveActiveUntil = Date.distantPast   // on-demand: 요청 받으면 now+WINDOW 까지만 스캔
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "⌗⌘"
         let menu = NSMenu()
-        menu.addItem(withTitle: "AutoApprove — approve + computer-use host", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "RemotePair — approve(on-demand) + computer-use host", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Approve now (\(Int(APPROVE_WINDOW))s)", action: #selector(approveNow), keyEquivalent: "")
         menu.addItem(withTitle: "Restart tmux host", action: #selector(restartHost), keyEquivalent: "")
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
-        log("launched (native)")
+        log("launched (native, approve=on-demand)")
 
         host.ensureServer()
-        // host keepalive
         hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.host.ensureServer() }
-        // approve loop (기존 1s 주기)
-        approveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.approve.tick() }
+        // 항상 도는 가벼운 루프: heartbeat(매초) + 트리거 파일 stat. 무거운 AX 스캔은 요청받은 window 동안만.
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
     }
 
+    // 평소: heartbeat + 트리거 확인(둘 다 가벼움 → -1712 없음). 요청 받은 동안에만 approve.tick()(AX 스캔).
+    @objc func poll() {
+        try? "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8)           // watchdog용, 항상
+        if FileManager.default.fileExists(atPath: TRIGGER) {                            // claude /approve 가 touch
+            try? FileManager.default.removeItem(atPath: TRIGGER)
+            approveActiveUntil = Date().addingTimeInterval(APPROVE_WINDOW)
+            log("APPROVE: requested → active \(Int(APPROVE_WINDOW))s")
+        }
+        if Date() < approveActiveUntil { approve.tick() }                              // active 창에서만 클릭 시도
+    }
+
+    @objc func approveNow() { approveActiveUntil = Date().addingTimeInterval(APPROVE_WINDOW); log("APPROVE: menu → active") }
     @objc func restartHost() { host.ensureServer() }
 }
 
