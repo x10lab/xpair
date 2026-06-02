@@ -1,0 +1,39 @@
+# ~/.claude sync 화이트리스트 템플릿 (RemotePair install 이 신규 머신에 적용).
+# 동기화되는 것 = 에이전트 정체성: settings.json / CLAUDE.md / skills(심링크 대상) / bin / auto-approve.
+# 아래는 *제외* — 기기종속 런타임·인증·캐시·세션기록. sync 하면 깨지거나 로그아웃·충돌 유발.
+
+# ── 기기종속 / 런타임 ──
+/skills
+/plugins/
+/settings.local.json
+/sessions/
+/shell-snapshots/
+/file-history/
+/backups/
+/tasks/
+/cache/
+/telemetry/
+/debug/
+/paste-cache/
+/projects/
+/history.jsonl
+/.session-stats.json
+/mcp-needs-auth-cache.json
+/stats-cache.json
+/.omc/
+
+# ── 인증 / 기기 로컬 상태 ──
+/.credentials.json
+/.last-update-result.json
+/todos/
+/ide/
+/session-env/
+/.claude/
+
+# ── RemotePair 네임스페이스 (manifest·config·backup — 기기별) ──
+/remote-pair/
+
+# ── OS / 락 쓰레기 ──
+.DS_Store
+.update.lock
+.last-cleanup
