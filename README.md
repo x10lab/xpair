@@ -38,11 +38,12 @@ login → LaunchAgent(KeepAlive) → RemotePair.app  (메뉴바, AX+SR granted)
 | 파일 | 역할 |
 |---|---|
 | `RemotePairNative/main.swift` | RemotePair 앱 소스 (approve + computer-use host) |
-| `build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
-| `make-signing-cert.sh` | 안정 self-signed 코드서명 cert 생성 (재빌드에도 grant 유지) |
-| `build-native.sh` | RemotePair.app 빌드·cert 서명 (+ `--deploy`로 원격 마이그레이션 설치) |
-| `approve/engine.applescript`, `approve/rules.txt` | 승인 다이얼로그 클릭 로직 (런타임은 `~/.claude/auto-approve/`) |
-| `launchd/` | watchdog, LaunchAgent plist |
+| `scripts/build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
+| `scripts/make-signing-cert.sh` | 안정 self-signed 코드서명 cert 생성 (재빌드에도 grant 유지) |
+| `scripts/build-native.sh` | RemotePair.app 빌드·cert 서명 (+ `--deploy`로 원격 마이그레이션 설치) |
+| `install/` | 가역적 설치/원복(`install.sh`/`uninstall.sh`) + 설정 단일출처(`config.sh`) + glue 원본(`glue/`) + sync 셋업 |
+| `skills/approve/SKILL.md` | on-demand 승인 스킬 (claude 가 요청 → RemotePair 가 클릭) |
+| `legacy/` | 구 osacompile 접근(보관용, 미사용) |
 
 ## 세팅 방법
 
@@ -50,13 +51,13 @@ login → LaunchAgent(KeepAlive) → RemotePair.app  (메뉴바, AX+SR granted)
 
 ### 1. patched tmux 빌드
 ```bash
-./build-tmux-aqua.sh        # → ~/.local/bin/tmux-aqua  (tmux -V == 3.6)
+./scripts/build-tmux-aqua.sh        # → ~/.local/bin/tmux-aqua  (tmux -V == 3.6)
 ```
 tmux는 clang으로 빌드되니 대상 머신에서 직접 실행 가능. (앱(Swift)은 Xcode 있는 머신에서 빌드 후 배포.)
 
 ### 2. 안정 코드서명 cert (1회, 빌드 머신에서)
 ```bash
-./make-signing-cert.sh        # login keychain 에 "RemotePair Local Signing" 생성 (idempotent)
+./scripts/make-signing-cert.sh        # login keychain 에 "RemotePair Local Signing" 생성 (idempotent)
 ```
 ad-hoc 서명은 재빌드마다 cdhash 가 바뀌어 grant 가 무효화된다. 안정 cert 로 서명하면 TCC grant 가
 **designated requirement (`identifier "com.ghyeong.remote-pair" and certificate leaf = H"…"`)** 에 묶여
@@ -65,7 +66,7 @@ ad-hoc 서명은 재빌드마다 cdhash 가 바뀌어 grant 가 무효화된다.
 ### 3. RemotePair.app 빌드 + 배포
 ```bash
 # Swift 툴체인(Xcode) 있는 머신에서:
-./build-native.sh --deploy   # cert 서명 빌드 → scp → ~/Applications/RemotePair.app + LaunchAgent + watchdog (re)start
+./scripts/build-native.sh --deploy   # cert 서명 빌드 → scp → ~/Applications/RemotePair.app + LaunchAgent + watchdog (re)start
 ```
 - LSUIElement 메뉴바 앱. `~/Applications/RemotePair.app`. cert 로 서명(없으면 ad-hoc 폴백).
 - LaunchAgent `com.ghyeong.remote-pair`(RunAtLoad+KeepAlive) + `com.ghyeong.remote-pair-watchdog`(heartbeat 정지 시 재기동).

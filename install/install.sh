@@ -63,12 +63,12 @@ install_file "$GLUE_DIR/auto-approve/rules.txt"          "$CLAUDE_DIR/auto-appro
 [ -f "$GLUE_DIR/bin/hangul-romanize" ] && install_file "$GLUE_DIR/bin/hangul-romanize" "$CLAUDE_DIR/bin/hangul-romanize" 755
 install_file "$GLUE_DIR/bin/claude-iterm-launch" "$CLAUDE_DIR/bin/claude-iterm-launch" 755
 
-# 스킬 원본 → ~/.claude/skills (있는 모든 SKILL.md 트리 복사). 에이전트 정체성으로 sync.
-if [ -d "$GLUE_DIR/skills" ]; then
+# 스킬 원본(repo 루트 skills/ = 정본) → ~/.claude/skills. 에이전트 정체성으로 sync.
+if [ -d "$REPO_ROOT/skills" ]; then
   while IFS= read -r src; do
-    rel="${src#"$GLUE_DIR/skills/"}"
+    rel="${src#"$REPO_ROOT/skills/"}"
     install_file "$src" "$CLAUDE_DIR/skills/$rel"
-  done < <(find "$GLUE_DIR/skills" -type f)
+  done < <(find "$REPO_ROOT/skills" -type f)
 fi
 
 # watchdog (config 주도, 식별자는 install 시점 값으로 박힘 — 생성 파일이라 uninstall 이 삭제)
@@ -103,7 +103,7 @@ if [ "$DO_NATIVE" = 1 ]; then
       cp -R "$REPO_ROOT/build/${APP_NAME}.app" "$APP_PATH"
       xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
     else
-      warn "빌드 산출물 없음: $REPO_ROOT/build/${APP_NAME}.app — 먼저 ./build-native.sh 실행. (앱 배치 건너뜀)"
+      warn "빌드 산출물 없음: $REPO_ROOT/build/${APP_NAME}.app — 먼저 scripts/build-native.sh 실행. (앱 배치 건너뜀)"
       DO_NATIVE=0
     fi
   fi

@@ -14,7 +14,7 @@
 #
 # 사용: ./build-native.sh [--deploy]   (--deploy 면 M1 으로 마이그레이션 설치)
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # repo 루트 (scripts/ 의 부모) — RemotePairNative/·build/ 가 여기 기준
 
 SRC=RemotePairNative/main.swift
 OUT=RemotePairNative/RemotePair
