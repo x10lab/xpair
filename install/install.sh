@@ -63,6 +63,10 @@ install_file "$GLUE_DIR/auto-approve/rules.txt"          "$CLAUDE_DIR/auto-appro
 [ -f "$GLUE_DIR/bin/hangul-romanize" ] && install_file "$GLUE_DIR/bin/hangul-romanize" "$CLAUDE_DIR/bin/hangul-romanize" 755
 install_file "$GLUE_DIR/bin/claude-iterm-launch" "$CLAUDE_DIR/bin/claude-iterm-launch" 755
 
+# 엄브렐러 CLI → PATH(~/.local/bin). 스킬이 'remote-pair approve' 로 호출.
+install_file "$GLUE_DIR/bin/remote-pair" "$LOCAL_BIN/remote-pair" 755
+case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN 가 PATH 에 없음 — 셸 rc 에 추가 권장 (remote-pair 호출용)" ;; esac
+
 # 스킬 원본(repo 루트 skills/ = 정본) → ~/.claude/skills. 에이전트 정체성으로 sync.
 if [ -d "$REPO_ROOT/skills" ]; then
   while IFS= read -r src; do

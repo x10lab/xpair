@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# remote-pair — RemotePair 단일 진입점 CLI.
+#
+#   remote-pair approve [--label PATTERN] [--timeout S]   승인 다이얼로그 클릭 요청 (결과 회수)
+#   remote-pair status                                    host 서버·앱·heartbeat 상태
+#   remote-pair host                                      tmux-aqua host 서버 기동 보장
+#   remote-pair help
+#
+# 경로·식별자는 ~/.claude/remote-pair/config.env(install.sh 가 확정) 단일 출처에서 읽는다.
+# 신호 메커니즘은 트리거 파일(앱이 1s 폴링) — CLI 는 그 위의 깔끔한 표면일 뿐.
+set -euo pipefail
+
+# ── config 로드 (없으면 기본값) ──
+RP_CONFIG="${RP_CONFIG:-$HOME/.claude/remote-pair/config.env}"
+# shellcheck disable=SC1090
+[ -f "$RP_CONFIG" ] && { set -a; . "$RP_CONFIG"; set +a; }
+APP_NAME="${APP_NAME:-RemotePair}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.remote-pair}"
+LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
+AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
+APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
+LOG_FILE="${LOG_FILE:-$HOME/.claude/logs/remote-pair.log}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-$HOME/.claude/logs/remote-pair.heartbeat}"
+TMUXB="$LOCAL_BIN/tmux-aqua"
+
+tm() { "$TMUXB" -S "$AQUA_SOCK" "$@"; }
+host_up() { [ -x "$TMUXB" ] && tm has-session >/dev/null 2>&1; }
+app_pid() { pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null | head -1 || true; }
+
+cmd_host() {
+  if host_up; then echo "host 서버 OK ($AQUA_SOCK)"; return 0; fi
+  echo "host 서버 미기동 → $APP_NAME 기동..."
+  open -a "$APP_NAME" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$BUNDLE_PREFIX" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do host_up && { echo "host 서버 OK"; return 0; }; sleep 0.5; done
+  echo "host 서버 기동 실패 — System Settings 권한/앱 설치 확인" >&2; return 13
+}
+
+cmd_status() {
+  local p; p="$(app_pid)"
+  printf '%-14s %s\n' "app"       "${p:+running (pid $p)}${p:-NOT running}"
+  printf '%-14s %s\n' "host 서버"  "$(host_up && echo "up ($AQUA_SOCK)" || echo down)"
+  if [ -f "$HEARTBEAT_FILE" ]; then
+    local age=$(( $(date +%s) - $(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0) ))
+    printf '%-14s %s\n' "heartbeat" "${age}s ago $([ "$age" -le 90 ] && echo "(fresh)" || echo "(STALE — watchdog 가 재기동)")"
+  else
+    printf '%-14s %s\n' "heartbeat" "없음 (앱 미기동?)"
+  fi
+  printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
+  return 0
+}
+
+cmd_approve() {
+  local label="" timeout=12
+  while [ $# -gt 0 ]; do case "$1" in
+    --label) label="${2:-}"; shift 2 ;;
+    --timeout) timeout="${2:-12}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; return 2 ;;
+  esac; done
+
+  [ -n "$(app_pid)" ] || echo "⚠ $APP_NAME 미기동 — 'remote-pair host' 로 먼저 기동 권장" >&2
+
+  # 결과 회수: 트리거 직전 로그 길이 기록 → 이후 새 라인만 관찰
+  local base=0; [ -f "$LOG_FILE" ] && base=$(wc -l < "$LOG_FILE")
+  # label 은 트리거 옆 payload 로 남긴다(앱이 소비하면 타깃 스캔, 아니면 무시 — forward-compat)
+  [ -n "$label" ] && printf '%s\n' "$label" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
+  : > "$APPROVE_TRIGGER" 2>/dev/null || { echo "트리거 쓰기 실패: $APPROVE_TRIGGER" >&2; return 1; }
+  echo "approve 요청 → $APP_NAME (최대 ${timeout}s 관찰)"
+
+  local end=$(( $(date +%s) + timeout ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if [ -f "$LOG_FILE" ]; then
+      local now; now=$(wc -l < "$LOG_FILE")
+      if [ "$now" -gt "$base" ]; then
+        local new; new=$(tail -n "$(( now - base ))" "$LOG_FILE")
+        if printf '%s\n' "$new" | grep -qiE 'router:.*(click|key)|clicked|coord'; then
+          printf '%s\n' "$new" | grep -iE 'router:.*(click|key)|clicked|coord' | sed 's/^/  /'
+          echo "✓ 클릭됨"; return 0
+        fi
+        base="$now"
+      fi
+    fi
+    sleep 0.5
+  done
+  echo "⏱ ${timeout}s 내 클릭 로그 없음 — 다이얼로그가 늦게 떴거나 rules.txt 미등록일 수 있음 ($LOG_FILE 확인)" >&2
+  return 1
+}
+
+case "${1:-help}" in
+  approve) shift; cmd_approve "$@" ;;
+  status)  cmd_status ;;
+  host)    cmd_host ;;
+  help|-h|--help) sed -n '3,9p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,9p' "$0"; exit 2 ;;
+esac

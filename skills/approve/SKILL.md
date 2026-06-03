@@ -8,8 +8,9 @@ description: macOS 승인/권한 다이얼로그(1Password SSH 승인·잠금, C
 작업이 macOS 승인/권한 다이얼로그에 막혔을 때, **요청 한 줄**만 하면 된다:
 
 ```bash
-~/.claude/bin/approve     # = touch /tmp/remote-pair.approve-request (래퍼). PATH에 있으면 그냥 `approve`
+remote-pair approve     # 트리거 + 클릭 결과 회수 (exit 0=눌림, 1=타임아웃). PATH(~/.local/bin) 필요.
 ```
+폴백(같은 동작): `~/.claude/bin/approve` 또는 `touch /tmp/remote-pair.approve-request`.
 
 그게 전부다. 이후는 **RemotePair**(메뉴바 앱, 화면기록+손쉬운사용 granted)가 알아서 한다:
 - 화면을 보고(OCR) **어떤 승인창**이 떴는지 감지

@@ -39,9 +39,14 @@ LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 
+# ── approve IPC (앱 Swift 상수와 동일해야 함 — remote-pair CLI·스킬이 이 값을 읽음) ──
+APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
+LOG_FILE="${LOG_FILE:-$CLAUDE_DIR/logs/remote-pair.log}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-$CLAUDE_DIR/logs/remote-pair.heartbeat}"
+
 # ── 저장소 루트 (이 스크립트 기준) ──
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLUE_DIR="$REPO_ROOT/install/glue"
 
 # config.env 로 영속할 키 목록 (install 이 확정값을 write_config 로 기록)
-RP_PERSIST_KEYS=(REMOTE_HOST RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN LOCAL_BIN AQUA_SOCK)
+RP_PERSIST_KEYS=(REMOTE_HOST RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN LOCAL_BIN AQUA_SOCK APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE)
