@@ -43,6 +43,12 @@ if [ -z "${REMOTE_HOST:-}" ] && [ -t 0 ]; then
 fi
 [ -n "${REMOTE_HOST:-}" ] && say "원격 host = $REMOTE_HOST" || say "로컬 전용 모드 (REMOTE_HOST 미설정)"
 
+# ── 기존 설치 감지 시 먼저 원복 (재설치 멱등성: clean → install) ──
+if [ -f "$MANIFEST" ]; then
+  say "기존 설치 감지 → 원복 후 재설치"
+  manifest_revert >/dev/null 2>&1 || true
+fi
+
 # ── manifest 시작 ──
 manifest_init
 write_config
