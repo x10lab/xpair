@@ -30,8 +30,7 @@
 /session-env/
 /.claude/
 
-# ── RemotePair 네임스페이스 (manifest·config·backup — 기기별) ──
-/remote-pair/
+# (RemotePair 자기 config 은 ~/.config/remote-pair 로 이전 — .claude 밖이라 여기서 제외 불필요)
 
 # ── OS / 락 쓰레기 ──
 .DS_Store

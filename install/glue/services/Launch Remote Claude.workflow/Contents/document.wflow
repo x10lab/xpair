@@ -59,17 +59,17 @@
 				<key>ActionParameters</key>
 				<dict>
 					<key>COMMAND_STRING</key>
-					<string># RemotePair — 선택한 폴더로 원격 claude 세션을 Terminal 에서 실행.
-# Quick Action 은 터미널이 없으므로 Terminal.app 을 열어 런처를 돌린다.
-LAUNCHER="$HOME/.claude/bin/claude-iterm-launch"
+					<string># RemotePair — 선택한 폴더로 'remote-pair launch' 를 Terminal 에서 실행.
+# Quick Action 은 터미널이 없으므로 Terminal.app 을 열어 돌린다. launch 가 등록 루트 체크/프롬프트.
+RP="$HOME/.local/bin/remote-pair"
 for d in "$@"; do
-  /usr/bin/osascript - "$LAUNCHER" "$d" &lt;&lt;'APPLESCRIPT'
+  /usr/bin/osascript - "$RP" "$d" &lt;&lt;'APPLESCRIPT'
 on run argv
-  set launcher to item 1 of argv
+  set rp to item 1 of argv
   set target to item 2 of argv
   tell application "Terminal"
     activate
-    do script "exec " &amp; quoted form of launcher &amp; " " &amp; quoted form of target
+    do script "exec " &amp; quoted form of rp &amp; " launch " &amp; quoted form of target
   end tell
 end run
 APPLESCRIPT

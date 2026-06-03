@@ -34,18 +34,27 @@ while [ $# -gt 0 ]; do case "$1" in
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; done
 case "$ROLE" in host|client|both) : ;; *) echo "잘못된 --role: $ROLE (host|client|both)" >&2; exit 2 ;; esac
+# role 별 manifest — 다른 role 설치를 침범하지 않음 (별도 기기면 각자 하나, 한 머신엔 --role both 권장)
+MANIFEST="$RP_DIR/.manifest-$ROLE"
 
 say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
 is_host()   { [ "$ROLE" = host ] || [ "$ROLE" = both ]; }
 is_client() { [ "$ROLE" = client ] || [ "$ROLE" = both ]; }
 
+# role env 파일 기록 (자기 파일만 — 다른 role config 침범 안 함). 키는 위치인자(bash 3.2 호환).
+_write_env() {
+  local f="$1"; shift
+  [ -e "$f" ] || record FILE "$f"
+  { echo "# RemotePair config ($(basename "$f")) — install.sh 생성. 손수 고쳐도 됨."
+    local k; for k in "$@"; do printf '%s=%q\n' "$k" "${!k}"; done
+  } > "$f"
+}
 write_config() {
   mk_dir "$RP_DIR"
-  [ -e "$CONFIG_ENV" ] || record FILE "$CONFIG_ENV"
-  { echo "# RemotePair 설치 확정 설정 — install.sh 생성. 손수 고쳐도 됨."
-    for k in "${RP_PERSIST_KEYS[@]}"; do printf '%s=%q\n' "$k" "${!k}"; done
-  } > "$CONFIG_ENV"
+  _write_env "$COMMON_ENV" "${COMMON_KEYS[@]}"      # 공통(LOCAL_BIN·AQUA_SOCK)
+  if is_host;   then _write_env "$HOST_ENV"   "${HOST_KEYS[@]}"; fi
+  if is_client; then _write_env "$CLIENT_ENV" "${CLIENT_KEYS[@]}"; fi
 }
 
 # ── 0. 입력 ──
@@ -97,6 +106,11 @@ W
       mk_dir "$(dirname "$APP_PATH")"; record TREE "$APP_PATH"
       cp -R "$REPO_ROOT/build/${APP_NAME}.app" "$APP_PATH"
       xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+      # 번들 내 tmux-aqua 를 PATH 에 노출 — 원격 attach / 'remote-pair ls' 가 ~/.local/bin/tmux-aqua 로 호출
+      if [ -x "$APP_PATH/Contents/Helpers/tmux-aqua" ]; then
+        mk_dir "$LOCAL_BIN"; record FILE "$LOCAL_BIN/tmux-aqua"
+        ln -sf "$APP_PATH/Contents/Helpers/tmux-aqua" "$LOCAL_BIN/tmux-aqua"
+      fi
       app_plist="$LAUNCH_AGENTS/${APP_LABEL}.plist"; wd_plist="$LAUNCH_AGENTS/${WATCHDOG_LABEL}.plist"
       write_file "$app_plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>

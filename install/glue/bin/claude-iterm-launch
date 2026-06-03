@@ -12,9 +12,11 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # ── RemotePair 설정 (단일 출처). install.sh 가 ~/.claude/remote-pair/config.env 에 확정. ──
 #   하드코딩 대신 여기서 REMOTE_HOST / APP_NAME / BUNDLE_PREFIX / LOCAL_BIN / AQUA_SOCK / MOSH_SERVER 를 얻는다.
-RP_CONFIG="${RP_CONFIG:-$HOME/.claude/remote-pair/config.env}"
-# shellcheck disable=SC1090
-[ -f "$RP_CONFIG" ] && { set -a; . "$RP_CONFIG"; set +a; }
+RP_DIR="${RP_DIR:-$HOME/.config/remote-pair}"
+for _f in common host client; do
+  # shellcheck disable=SC1090
+  [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
+done
 REMOTE_HOST="${REMOTE_HOST:-}"          # 미설정이면 로컬 전용
 APP_NAME="${APP_NAME:-RemotePair}"
 BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.remote-pair}"

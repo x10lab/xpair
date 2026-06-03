@@ -1,53 +1,53 @@
 #!/bin/bash
-# config.sh — 모든 튜너블의 단일 출처(single source of truth). source 전용.
+# config.sh — 튜너블의 단일 출처. source 전용.
 #
-# 우선순위:  환경변수  >  $RP_DIR/config.env(설치 시 확정)  >  파생 기본값
-#   → 개인 호스트명·계정을 코드에 박지 않는다. 설치가 값을 확정해 config.env 로 영속하고,
-#     런처·watchdog·build-native 모두 이 파일을 source 해 같은 값을 쓴다(중복 0).
+# config 은 role 별로 파일이 분리된다 (client/host 가 서로 덮어쓰지 않도록):
+#   ~/.config/remote-pair/common.env   LOCAL_BIN, AQUA_SOCK            (양쪽 공통 — 값이 일치해야 함)
+#   ~/.config/remote-pair/host.env     BUNDLE_PREFIX, APP_NAME, …       (host 전용 — 앱/approve 정체성)
+#   ~/.config/remote-pair/client.env   REMOTE_HOST, SYNC_ROOTS, …       (client 전용 — attach 대상·등록 루트)
+# 각 role install 은 자기 파일만 쓴다 → 다른 role 설정을 침범하지 않음.
+#
+# 우선순위: 환경변수 > role env 파일 > 파생 기본값. 개인값(호스트명·동기화 경로)은 박지 않는다.
 
-# ── 경로 (다른 값에 의존 안 함 — 먼저 확정) ──
-CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
-RP_DIR="${RP_DIR:-$CLAUDE_DIR/remote-pair}"            # 네임스페이스: manifest·config·backup (gitignore 됨)
-CONFIG_ENV="$RP_DIR/config.env"
+# ── 경로 ──
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"               # 에이전트 정체성(skill·rules·logs). host, sync 대상.
+RP_DIR="${RP_DIR:-$HOME/.config/remote-pair}"           # RemotePair 자기 config·manifest. 기기별, sync 안 함.
+COMMON_ENV="$RP_DIR/common.env"; HOST_ENV="$RP_DIR/host.env"; CLIENT_ENV="$RP_DIR/client.env"
+MANIFEST="$RP_DIR/.install-manifest"; BACKUP_DIR="$RP_DIR/backups"
 
-# 설치가 확정한 값 로드(있으면). 환경변수가 이미 있으면 그게 우선이라 덮지 않음.
-if [ -f "$CONFIG_ENV" ]; then
+# role 파일 로드 (있는 것만)
+for _f in "$COMMON_ENV" "$HOST_ENV" "$CLIENT_ENV"; do
   # shellcheck disable=SC1090
-  set -a; . "$CONFIG_ENV"; set +a
-fi
+  [ -f "$_f" ] && { set -a; . "$_f"; set +a; }
+done
 
-# ── 식별자 (개인값 없이 조직 기준) ──
-RP_ORG="${RP_ORG:-com.x10lab}"                                 # 조직 reverse-DNS 접두
-BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair}"        # 앱 + watchdog LaunchAgent label 접두
-APP_NAME="${APP_NAME:-RemotePair}"                             # ~/Applications/<APP_NAME>.app
-SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"                 # 안정 self-signed cert CN
-
-# 파생 라벨/경로 (식별자에서 한 번만 유도)
-APP_LABEL="$BUNDLE_PREFIX"
-WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
-APP_PATH="$HOME/Applications/${APP_NAME}.app"
-APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"
-
-# ── 원격 호스트 (기본값 없음 — 설치가 prompt 해 config.env 에 기록) ──
-#   비어 있으면 로컬 전용 모드. 단일 머신 사용자는 그대로 둬도 됨.
-REMOTE_HOST="${REMOTE_HOST:-}"
-
-# ── 디렉토리/소켓 ──
-MANIFEST="$RP_DIR/.install-manifest"
-BACKUP_DIR="$RP_DIR/backups"
-LAUNCH_AGENTS="${LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
-SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"     # client Service(.workflow) 설치 위치
-LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
-AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
-
-# ── approve IPC (앱 Swift 상수와 동일해야 함 — remote-pair CLI·스킬이 이 값을 읽음) ──
+# ── host 정체성 (개인값 없이 조직 기준) ──
+RP_ORG="${RP_ORG:-com.x10lab}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair}"
+APP_NAME="${APP_NAME:-RemotePair}"
+SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"
+APP_LABEL="$BUNDLE_PREFIX"; WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
+APP_PATH="$HOME/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
 LOG_FILE="${LOG_FILE:-$CLAUDE_DIR/logs/remote-pair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$CLAUDE_DIR/logs/remote-pair.heartbeat}"
 
-# ── 저장소 루트 (이 스크립트 기준) ──
+# ── client 설정 (개인 경로 기본값 없음) ──
+REMOTE_HOST="${REMOTE_HOST:-}"          # 빈 값 = 로컬 전용
+SYNC_ROOTS="${SYNC_ROOTS:-}"            # 두 기기에 같은 경로로 존재(동기화)하는 루트들(:구분). 기본 없음 — 첫 실행 시 등록.
+LAUNCHER="${LAUNCHER:-$CLAUDE_DIR/bin/claude-iterm-launch}"
+
+# ── 공통 ──
+LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
+AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
+LAUNCH_AGENTS="${LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"
+
+# ── 저장소 루트 ──
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLUE_DIR="$REPO_ROOT/install/glue"
 
-# config.env 로 영속할 키 목록 (install 이 확정값을 write_config 로 기록)
-RP_PERSIST_KEYS=(REMOTE_HOST RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN LOCAL_BIN AQUA_SOCK APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE)
+# role 별 영속 키 그룹 (install 이 자기 파일에만 기록)
+COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)
+HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE)
+CLIENT_KEYS=(REMOTE_HOST SYNC_ROOTS LAUNCHER)
