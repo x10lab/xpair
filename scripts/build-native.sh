@@ -53,7 +53,21 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 P
-codesign -s "$SIGN_ID" --force "$APP"
+
+echo "=== embed helpers → Contents/Helpers (단일 .app 통합) ==="
+HELP="$APP/Contents/Helpers"; mkdir -p "$HELP"
+cp scripts/remote-pair-approve-router.sh "$HELP/remote-pair-approve-router.sh"; chmod +x "$HELP/remote-pair-approve-router.sh"
+cp scripts/ocr-find "$HELP/ocr-find"; chmod +x "$HELP/ocr-find"
+if [ -x "$HOME/.local/bin/tmux-aqua" ]; then
+  cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
+  echo "  embedded: tmux-aqua + remote-pair-approve-router.sh + ocr-find"
+else
+  echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./scripts/build-tmux-aqua.sh 먼저 실행 권장 (런타임 외부경로 폴백)"
+  echo "  embedded: remote-pair-approve-router.sh + ocr-find"
+fi
+
+# --deep: 중첩 실행파일(tmux-aqua·ocr-find)까지 서명 (안 하면 verify --strict 실패)
+codesign -s "$SIGN_ID" --force --deep "$APP"
 echo "built + signed: $APP"
 codesign -dv "$APP" 2>&1 | grep -iE 'Authority|^Identifier|TeamId' || true
 codesign --verify --strict "$APP" && echo "verify OK ✓"

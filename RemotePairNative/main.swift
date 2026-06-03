@@ -13,9 +13,16 @@ import Darwin
 
 // ── 설정 ──────────────────────────────────────────────────────────────────
 let HOME = NSHomeDirectory()
-let TMUX = "\(HOME)/.local/bin/tmux-aqua"            // daemon→setsid 패치된 tmux
+// 단일 .app 통합: host 헬퍼(tmux-aqua·router·ocr-find)는 번들 Contents/Helpers 안에 동봉된다.
+// 번들에 있으면 그걸 쓰고, 없으면 레거시 외부 경로로 폴백(개발/구버전 호환).
+let HELPERS = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path
+func helper(_ name: String, _ fallback: String) -> String {
+    let bundled = "\(HELPERS)/\(name)"
+    return FileManager.default.fileExists(atPath: bundled) ? bundled : fallback
+}
+let TMUX = helper("tmux-aqua", "\(HOME)/.local/bin/tmux-aqua")            // daemon→setsid 패치된 tmux
 let SOCKET = "/tmp/aqua-tmux.sock"                    // host tmux 서버 소켓 (launcher가 attach)
-let ROUTER = "\(HOME)/.claude/bin/remote-pair-approve-router.sh"  // 승인창 감지→라우팅(OCR클릭/키) 라우터
+let ROUTER = helper("remote-pair-approve-router.sh", "\(HOME)/.claude/bin/remote-pair-approve-router.sh")  // 승인창 감지→라우팅 라우터
 let LOGP = "\(HOME)/.claude/logs/remote-pair.log"
 let HEARTBEAT = "\(HOME)/.claude/logs/remote-pair.heartbeat"    // watchdog가 읽음 (remote-pair-watchdog.sh)
 let TRIGGER = "/tmp/remote-pair.approve-request"               // claude(/approve 스킬)가 touch → on-demand 승인 요청
@@ -86,7 +93,8 @@ final class ApproveManager {
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [ROUTER]
         p.environment = ["HOME": HOME,
-                         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                         // 번들 Helpers 를 PATH 앞에 — 라우터가 동봉된 ocr-find 를 찾도록
+                         "PATH": "\(HELPERS):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
                          "LANG": "en_US.UTF-8"]
         p.terminationHandler = { [weak self] _ in self?.running = false }
         do { try p.run(); log("APPROVE: router spawned") }      // async — 메인스레드 안 막음
