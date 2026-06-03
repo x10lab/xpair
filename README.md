@@ -43,11 +43,35 @@ login → LaunchAgent(KeepAlive) → RemotePair.app  (메뉴바, AX+SR granted)
 | `scripts/build-native.sh` | RemotePair.app 빌드·cert 서명 (+ `--deploy`로 원격 마이그레이션 설치) |
 | `install/` | 가역적 설치/원복(`install.sh`/`uninstall.sh`) + 설정 단일출처(`config.sh`) + glue 원본(`glue/`) + sync 셋업 |
 | `skills/approve/SKILL.md` | on-demand 승인 스킬 (claude 가 요청 → RemotePair 가 클릭) |
-| `legacy/` | 구 osacompile 접근(보관용, 미사용) |
+| `bootstrap.sh` | `curl … \| bash` 원샷 설치 (role 별 prereq→clone→빌드→install→권한안내) |
 
-## 세팅 방법
+## 설치 (사용자)
 
-대상 머신(예: gh-mac-m1)에서. Apple Silicon + Homebrew(tmux 설치돼 libevent/ncurses/utf8proc 존재) 가정.
+역할로 나뉜다. **client 는 빌드·Xcode·권한 불필요** (Service+런처만).
+
+```bash
+# host (claude 가 computer-use 로 도는 머신 — 빌드+권한 1회)
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap.sh | ROLE=host bash
+
+# client (앉아서 띄우는 노트북 — 빌드 없음)
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap.sh | ROLE=client bash
+
+# both (한 머신에서 전부, 기본값)
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap.sh | bash
+```
+
+| role | 설치물 | 빌드 | 권한 토글 |
+|---|---|---|---|
+| **host** | `RemotePair.app`(tmux-aqua·router·ocr-find 임베드) + LaunchAgent + approve(skill/rules) | 필요 | 필요(1회) |
+| **client** | Service "Launch Remote Claude" + 런처 + `remote-pair` CLI | 불필요 | 불필요 |
+
+- 동기화(`~/.claude`)는 **기본 off**. `SYNC_URL=git@github.com:me/claude.git … bash` 또는 `install.sh --with-sync` 로 opt-in.
+- 되돌리기: `~/.local/share/remote-pair/install/uninstall.sh` (manifest 기반 정확한 원복).
+- 사용: Finder 폴더 우클릭 → 빠른 동작 → **Launch Remote Claude**.
+
+## 빌드 (메인테이너 — Releases 용)
+
+대상 머신(예: gh-mac-m1)에서. Apple Silicon + Homebrew(tmux 정적 빌드 의존성) 가정.
 
 ### 1. patched tmux 빌드
 ```bash

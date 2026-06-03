@@ -1,33 +1,45 @@
 #!/bin/bash
-# install.sh — RemotePair glue + 네이티브 배치 설치 (가역적).
+# install.sh — RemotePair 설치 (역할 기반, 가역적).
 #
-#   glue:    런처·auto-approve(engine/rules)·CLAUDE.command·watchdog → ~/.claude
-#   native:  RemotePair.app + LaunchAgent(앱/watchdog) bootstrap (로컬)
-#   sync:    ~/.claude 를 git 백본으로, 입력받은 GitHub URL 을 origin 으로 (인증 폴백 안내)
-#   gitignore: 에이전트 정체성만 sync 하도록 화이트리스트 적용
+# 역할(--role):
+#   host    claude 가 computer-use 로 도는 머신. RemotePair.app + LaunchAgent + approve(skill/rules) + watchdog.
+#   client  앉아서 띄우는 머신. Service "Launch Remote Claude" + 런처 + mosh. (앱·권한·빌드 없음)
+#   both    한 머신에서 둘 다 (기본값).
 #
-# 모든 동작은 manifest 에 기록 → uninstall.sh 가 정확히 역으로 되돌린다.
-# 하드코딩 없음: 식별자·호스트는 config.sh(단일 출처) + 설치 시 prompt → config.env 영속.
+# sync 는 기본 OFF (opt-in). --with-sync 또는 SYNC_URL 환경변수가 있을 때만 ~/.claude git 백본 설정.
 #
-# 사용:  ./install.sh                  (대화형: REMOTE_HOST·GitHub URL prompt)
-#        REMOTE_HOST=my-mac SYNC_URL=git@github.com:me/claude.git ./install.sh   (비대화)
-#        ./install.sh --no-native      (glue+sync 만, 앱 배치 건너뜀)
-#        ./install.sh --no-sync        (git 백본 설정 건너뜀)
+# 모든 동작은 manifest 기록 → uninstall.sh 가 정확히 역으로 되돌린다.
+# 식별자·호스트는 config.sh(단일 출처) + prompt → config.env 영속. 하드코딩 없음.
+#
+# 사용:
+#   ./install.sh                      # role=both, sync off (대화형으로 REMOTE_HOST prompt)
+#   ./install.sh --role client        # 노트북: Service+런처만 (빌드/권한 불필요)
+#   ./install.sh --role host          # 서버: 앱+approve (빌드된 build/RemotePair.app 필요)
+#   ./install.sh --with-sync          # + ~/.claude git 백본 (SYNC_URL prompt)
+#   REMOTE_HOST=my-mac ./install.sh --role client      # 비대화
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/config.sh"
 . "$HERE/lib.sh"
 
-DO_NATIVE=1; DO_SYNC=1
-for a in "$@"; do case "$a" in
-  --no-native) DO_NATIVE=0 ;; --no-sync) DO_SYNC=0 ;;
-  -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+ROLE=both; DO_NATIVE=1; DO_SYNC=0
+[ -n "${SYNC_URL:-}" ] && DO_SYNC=1     # URL 주어지면 sync 자동 on
+while [ $# -gt 0 ]; do case "$1" in
+  --role) ROLE="${2:-both}"; shift 2 ;;
+  --role=*) ROLE="${1#*=}"; shift ;;
+  --with-sync) DO_SYNC=1; shift ;;
+  --no-sync) DO_SYNC=0; shift ;;
+  --no-native) DO_NATIVE=0; shift ;;
+  -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+  *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; done
+case "$ROLE" in host|client|both) : ;; *) echo "잘못된 --role: $ROLE (host|client|both)" >&2; exit 2 ;; esac
 
 say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
+is_host()   { [ "$ROLE" = host ] || [ "$ROLE" = both ]; }
+is_client() { [ "$ROLE" = client ] || [ "$ROLE" = both ]; }
 
-# ── config.env 영속 (확정값 기록) ──
 write_config() {
   mk_dir "$RP_DIR"
   [ -e "$CONFIG_ENV" ] || record FILE "$CONFIG_ENV"
@@ -36,93 +48,57 @@ write_config() {
   } > "$CONFIG_ENV"
 }
 
-# ── 0. 입력 수집 ──
-say "RemotePair 설치 (bundle=$BUNDLE_PREFIX)"
-if [ -z "${REMOTE_HOST:-}" ] && [ -t 0 ]; then
+# ── 0. 입력 ──
+say "RemotePair 설치 — role=$ROLE, sync=$([ "$DO_SYNC" = 1 ] && echo on || echo off) (bundle=$BUNDLE_PREFIX)"
+# client 는 REMOTE_HOST 가 핵심(어디로 attach). host-only 면 불필요.
+if is_client && [ -z "${REMOTE_HOST:-}" ] && [ -t 0 ]; then
   read -r -p "원격 host (mosh/ssh 대상, 단일 머신이면 빈칸 Enter): " REMOTE_HOST || true
 fi
-[ -n "${REMOTE_HOST:-}" ] && say "원격 host = $REMOTE_HOST" || say "로컬 전용 모드 (REMOTE_HOST 미설정)"
+[ -n "${REMOTE_HOST:-}" ] && say "원격 host = $REMOTE_HOST" || say "REMOTE_HOST 미설정 (로컬 전용)"
 
-# ── 기존 설치 감지 시 먼저 원복 (재설치 멱등성: clean → install) ──
-if [ -f "$MANIFEST" ]; then
-  say "기존 설치 감지 → 원복 후 재설치"
-  manifest_revert >/dev/null 2>&1 || true
-fi
-
-# ── manifest 시작 ──
+# ── 기존 설치 원복 (재설치 멱등) ──
+if [ -f "$MANIFEST" ]; then say "기존 설치 감지 → 원복 후 재설치"; manifest_revert >/dev/null 2>&1 || true; fi
 manifest_init
 write_config
-record NOTE "installed at $(date '+%F %T') on $(hostname -s)"
+record NOTE "installed role=$ROLE at $(date '+%F %T') on $(hostname -s)"
 
-# ── 1. gitignore 화이트리스트 ──
-say "gitignore 화이트리스트 적용 → $CLAUDE_DIR/.gitignore"
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  case "$line" in \#*) continue ;; esac
-  add_gitignore "$line"
-done < "$HERE/claude.gitignore"
-
-# ── 2. glue 설치 ──
-say "glue 설치"
-install_file "$GLUE_DIR/auto-approve/engine.applescript" "$CLAUDE_DIR/auto-approve/engine.applescript"
-install_file "$GLUE_DIR/auto-approve/rules.txt"          "$CLAUDE_DIR/auto-approve/rules.txt"
-[ -f "$GLUE_DIR/bin/hangul-romanize" ] && install_file "$GLUE_DIR/bin/hangul-romanize" "$CLAUDE_DIR/bin/hangul-romanize" 755
-install_file "$GLUE_DIR/bin/claude-iterm-launch" "$CLAUDE_DIR/bin/claude-iterm-launch" 755
-
-# 엄브렐러 CLI → PATH(~/.local/bin). 스킬이 'remote-pair approve' 로 호출.
+# ── 공통: 엄브렐러 CLI → PATH ──
+say "remote-pair CLI → $LOCAL_BIN"
 install_file "$GLUE_DIR/bin/remote-pair" "$LOCAL_BIN/remote-pair" 755
-case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN 가 PATH 에 없음 — 셸 rc 에 추가 권장 (remote-pair 호출용)" ;; esac
+case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN 가 PATH 에 없음 — 셸 rc 에 추가 권장" ;; esac
+mk_dir "$CLAUDE_DIR/logs"
 
-# 스킬 원본(repo 루트 skills/ = 정본) → ~/.claude/skills. 에이전트 정체성으로 sync.
-if [ -d "$REPO_ROOT/skills" ]; then
-  while IFS= read -r src; do
-    rel="${src#"$REPO_ROOT/skills/"}"
-    install_file "$src" "$CLAUDE_DIR/skills/$rel"
-  done < <(find "$REPO_ROOT/skills" -type f)
-fi
-
-# watchdog (config 주도, 식별자는 install 시점 값으로 박힘 — 생성 파일이라 uninstall 이 삭제)
-write_file "$CLAUDE_DIR/bin/remote-pair-watchdog.sh" 755 <<W
+# ── HOST: 앱 + approve(skill/rules) + watchdog + LaunchAgent ──
+if is_host; then
+  say "[host] approve 정책 (rules + skill)"
+  install_file "$GLUE_DIR/auto-approve/rules.txt" "$CLAUDE_DIR/auto-approve/rules.txt"
+  if [ -d "$REPO_ROOT/skills" ]; then
+    while IFS= read -r src; do
+      rel="${src#"$REPO_ROOT/skills/"}"; install_file "$src" "$CLAUDE_DIR/skills/$rel"
+    done < <(find "$REPO_ROOT/skills" -type f)
+  fi
+  # watchdog
+  write_file "$CLAUDE_DIR/bin/remote-pair-watchdog.sh" 755 <<W
 #!/bin/bash
 # remote-pair-watchdog.sh — RemotePair.app heartbeat 정지 시 재기동. (install.sh 생성)
 set -u
-HB="\$HOME/.claude/logs/remote-pair.heartbeat"
-LOG="\$HOME/.claude/logs/remote-pair.log"
-STALE=90
-LABEL="gui/\$(id -u)/${APP_LABEL}"
-now=\$(date +%s)
+HB="\$HOME/.claude/logs/remote-pair.heartbeat"; LOG="\$HOME/.claude/logs/remote-pair.log"
+STALE=90; LABEL="gui/\$(id -u)/${APP_LABEL}"; now=\$(date +%s)
 if [ -f "\$HB" ]; then
   age=\$(( now - \$(stat -f %m "\$HB" 2>/dev/null || echo 0) ))
-  if [ "\$age" -gt "\$STALE" ]; then
-    launchctl kickstart -k "\$LABEL" >/dev/null 2>&1
-    printf '%s watchdog: stale %ss -> kickstart\n' "\$(date '+%F %T')" "\$age" >> "\$LOG"
-  fi
-else
-  launchctl kickstart -k "\$LABEL" >/dev/null 2>&1
-fi
+  [ "\$age" -gt "\$STALE" ] && { launchctl kickstart -k "\$LABEL" >/dev/null 2>&1; printf '%s watchdog: stale %ss\n' "\$(date '+%F %T')" "\$age" >> "\$LOG"; }
+else launchctl kickstart -k "\$LABEL" >/dev/null 2>&1; fi
 W
 
-mk_dir "$CLAUDE_DIR/logs"
-
-# ── 3. 네이티브 배치 (로컬: 앱 + LaunchAgent bootstrap) ──
-if [ "$DO_NATIVE" = 1 ]; then
-  if [ ! -d "$APP_PATH" ]; then
+  if [ "$DO_NATIVE" = 1 ]; then
     if [ -d "$REPO_ROOT/build/${APP_NAME}.app" ]; then
-      say "앱 설치 → $APP_PATH"
-      mk_dir "$(dirname "$APP_PATH")"; record FILE "$APP_PATH"
+      say "[host] 앱 설치 → $APP_PATH"
+      [ -e "$APP_PATH" ] && rm -rf "$APP_PATH"   # 재설치: manifest 원복이 이미 처리, 잔존 시 대비
+      mk_dir "$(dirname "$APP_PATH")"; record TREE "$APP_PATH"
       cp -R "$REPO_ROOT/build/${APP_NAME}.app" "$APP_PATH"
       xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
-    else
-      warn "빌드 산출물 없음: $REPO_ROOT/build/${APP_NAME}.app — 먼저 scripts/build-native.sh 실행. (앱 배치 건너뜀)"
-      DO_NATIVE=0
-    fi
-  fi
-fi
-if [ "$DO_NATIVE" = 1 ]; then
-  say "LaunchAgent bootstrap"
-  app_plist="$LAUNCH_AGENTS/${APP_LABEL}.plist"
-  wd_plist="$LAUNCH_AGENTS/${WATCHDOG_LABEL}.plist"
-  write_file "$app_plist" <<P
+      app_plist="$LAUNCH_AGENTS/${APP_LABEL}.plist"; wd_plist="$LAUNCH_AGENTS/${WATCHDOG_LABEL}.plist"
+      write_file "$app_plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -134,7 +110,7 @@ if [ "$DO_NATIVE" = 1 ]; then
   <key>StandardErrorPath</key><string>${CLAUDE_DIR}/logs/remote-pair.err.log</string>
 </dict></plist>
 P
-  write_file "$wd_plist" <<P
+      write_file "$wd_plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -144,16 +120,47 @@ P
   <key>StandardErrorPath</key><string>${CLAUDE_DIR}/logs/remote-pair-watchdog.err.log</string>
 </dict></plist>
 P
-  U=$(id -u)
-  launchctl bootstrap "gui/$U" "$app_plist" 2>/dev/null || launchctl kickstart -k "gui/$U/${APP_LABEL}" 2>/dev/null || true
-  record LAUNCHCTL "$APP_LABEL" "$app_plist"
-  launchctl bootstrap "gui/$U" "$wd_plist" 2>/dev/null || true
-  record LAUNCHCTL "$WATCHDOG_LABEL" "$wd_plist"
-  warn "1회 권한 부여 필요: System Settings → 개인정보 보호 및 보안 → 손쉬운 사용 / 화면 기록 → $APP_NAME ON"
+      U=$(id -u)
+      launchctl bootstrap "gui/$U" "$app_plist" 2>/dev/null || launchctl kickstart -k "gui/$U/${APP_LABEL}" 2>/dev/null || true
+      record LAUNCHCTL "$APP_LABEL" "$app_plist"
+      launchctl bootstrap "gui/$U" "$wd_plist" 2>/dev/null || true
+      record LAUNCHCTL "$WATCHDOG_LABEL" "$wd_plist"
+      warn "1회 권한 부여: System Settings → 개인정보 보호 및 보안 → 손쉬운 사용 / 화면 기록 → $APP_NAME ON"
+    else
+      warn "빌드 산출물 없음: $REPO_ROOT/build/${APP_NAME}.app — scripts/build-native.sh 먼저 실행 (앱 설치 건너뜀)"
+    fi
+  fi
 fi
 
-# ── 4. git sync 백본 ──
-if [ "$DO_SYNC" = 1 ]; then "$HERE/sync-setup.sh"; fi
+# ── CLIENT: 런처 + Service "Launch Remote Claude" ──
+if is_client; then
+  say "[client] 런처 + Service"
+  [ -f "$GLUE_DIR/bin/hangul-romanize" ] && install_file "$GLUE_DIR/bin/hangul-romanize" "$CLAUDE_DIR/bin/hangul-romanize" 755
+  install_file "$GLUE_DIR/bin/claude-iterm-launch" "$CLAUDE_DIR/bin/claude-iterm-launch" 755
+  svc_src="$GLUE_DIR/services/Launch Remote Claude.workflow"
+  svc_dst="$SERVICES_DIR/Launch Remote Claude.workflow"
+  if [ -d "$svc_src" ]; then
+    [ -e "$svc_dst" ] && rm -rf "$svc_dst"
+    mk_dir "$SERVICES_DIR"; record TREE "$svc_dst"
+    cp -R "$svc_src" "$svc_dst"
+    [ "$SERVICES_DIR" = "$HOME/Library/Services" ] && /System/Library/CoreServices/pbs -flush 2>/dev/null || true
+    say "  Service 등록 — Finder 폴더 우클릭 → 빠른 동작 → Launch Remote Claude"
+  else
+    warn "Service 템플릿 없음: $svc_src (Service 건너뜀)"
+  fi
+fi
+
+# ── SYNC (opt-in): ~/.claude git 백본 + gitignore 화이트리스트 ──
+if [ "$DO_SYNC" = 1 ]; then
+  say "[sync] gitignore 화이트리스트 + git 백본"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue; case "$line" in \#*) continue ;; esac
+    add_gitignore "$line"
+  done < "$HERE/claude.gitignore"
+  "$HERE/sync-setup.sh"
+else
+  say "sync off — ~/.claude 동기화 안 함 (--with-sync 로 켤 수 있음)"
+fi
 
 say "완료. 되돌리려면:  $HERE/uninstall.sh"
 record NOTE "install finished"

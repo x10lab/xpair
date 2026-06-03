@@ -4,6 +4,7 @@
 #
 # manifest 한 줄 = 한 동작 (TAB 구분):
 #   FILE       <path>                  → install 이 새로 만든 파일. uninstall 이 삭제.
+#   TREE       <path>                  → install 이 만든 디렉토리 번들(.app/.workflow). uninstall 이 rm -rf.
 #   BACKUP     <path> <backup>         → 덮어쓴 기존 파일. uninstall 이 backup→path 복원.
 #   MKDIR      <path>                  → install 이 만든 디렉토리. uninstall 이 비었으면 삭제.
 #   GITIGNORE  <line>                  → ~/.claude/.gitignore 에 추가한 줄. uninstall 이 제거.
@@ -69,6 +70,7 @@ manifest_revert() {
   tail -r "$MANIFEST" | while IFS=$'\t' read -r action a b; do
     case "$action" in
       FILE)      [ -e "$a" ] && rm -f "$a" && echo "  rm   $a" ;;
+      TREE)      [ -e "$a" ] && rm -rf "$a" && echo "  rm -rf $a" ;;
       BACKUP)    [ -e "$b" ] && cp -p "$b" "$a" && rm -f "$b" && echo "  restore $a" ;;
       MKDIR)     rmdir "$a" 2>/dev/null && echo "  rmdir $a" || true ;;
       GITIGNORE) local gi="$CLAUDE_DIR/.gitignore"

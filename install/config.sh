@@ -35,7 +35,8 @@ REMOTE_HOST="${REMOTE_HOST:-}"
 # ── 디렉토리/소켓 ──
 MANIFEST="$RP_DIR/.install-manifest"
 BACKUP_DIR="$RP_DIR/backups"
-LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+LAUNCH_AGENTS="${LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"     # client Service(.workflow) 설치 위치
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 
