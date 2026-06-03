@@ -33,6 +33,7 @@ fi
 
 echo "=== compile (Swift) ==="
 xcrun swiftc -O "$SRC" -o "$OUT"
+xcrun swiftc -O scripts/ocr-find.swift -o scripts/ocr-find   # approve 라우터가 쓰는 Vision OCR 좌표 툴
 
 echo "=== bundle ==="
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS"
@@ -66,6 +67,7 @@ if [ "${1:-}" = "--deploy" ]; then
   # 서명된 앱 + /approve 스킬 전송 (M1 에서 재서명 금지 — M4 cert 서명을 그대로 보존)
   scp -q -r "$APP" "${REMOTE}:/tmp/RemotePair-deploy.app"
   scp -q -r skills "${REMOTE}:/tmp/RemotePair-skills"
+  scp -q scripts/ocr-find scripts/remote-pair-approve-router.sh "${REMOTE}:/tmp/"  # approve 라우터 + OCR 툴
 
   ssh "$REMOTE" 'set -e
     U=$(id -u)
@@ -95,6 +97,11 @@ if [ "${1:-}" = "--deploy" ]; then
     mkdir -p ~/.claude/skills
     rm -rf ~/.claude/skills/approve
     cp -R /tmp/RemotePair-skills/approve ~/.claude/skills/approve
+    # approve 라우터 + OCR 툴 설치 (~/.claude/bin). rules.txt 는 기존 것 보존(없으면 example 복사).
+    mkdir -p ~/.claude/bin
+    install -m 755 /tmp/ocr-find ~/.claude/bin/ocr-find
+    install -m 755 /tmp/remote-pair-approve-router.sh ~/.claude/bin/remote-pair-approve-router.sh
+    rm -f /tmp/ocr-find /tmp/remote-pair-approve-router.sh
     rm -rf /tmp/RemotePair-skills
     echo "  skill 설치: ~/.claude/skills/approve"
 

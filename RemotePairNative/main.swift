@@ -15,11 +15,10 @@ import Darwin
 let HOME = NSHomeDirectory()
 let TMUX = "\(HOME)/.local/bin/tmux-aqua"            // daemon→setsid 패치된 tmux
 let SOCKET = "/tmp/aqua-tmux.sock"                    // host tmux 서버 소켓 (launcher가 attach)
-let ENGINE = "\(HOME)/.claude/auto-approve/engine.applescript"  // approve 엔진 config (rules.txt와 함께 git-sync, 경로 유지)
+let ROUTER = "\(HOME)/.claude/bin/remote-pair-approve-router.sh"  // 승인창 감지→라우팅(OCR클릭/키) 라우터
 let LOGP = "\(HOME)/.claude/logs/remote-pair.log"
 let HEARTBEAT = "\(HOME)/.claude/logs/remote-pair.heartbeat"    // watchdog가 읽음 (remote-pair-watchdog.sh)
-let TRIGGER = "/tmp/remote-pair.approve-request"               // claude(/approve 스킬)가 touch → on-demand 클릭 요청
-let APPROVE_WINDOW: TimeInterval = 10                          // 요청 1회당 active 스캔 창(초) — 다이얼로그 늦게 떠도 잡게
+let TRIGGER = "/tmp/remote-pair.approve-request"               // claude(/approve 스킬)가 touch → on-demand 승인 요청
 
 func log(_ s: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
@@ -36,7 +35,20 @@ final class HostManager {
         spawn()
     }
 
+    // 이전 RemotePair 인스턴스의 고아 tmux-aqua 서버(+그 안 claude 세션)를 reap.
+    // spawn() 시점에만 호출 = 내 서버가 아직 없을 때라, tmux-aqua 전부 죽여도 안전(전부 고아).
+    private func reapStrays() {
+        for pat in ["tmux-aqua -S \(SOCKET)", "/usr/bin/script -q /dev/null \(TMUX)"] {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            p.arguments = ["-f", pat]
+            try? p.run(); p.waitUntilExit()
+        }
+        usleep(250_000)   // 종료 반영 대기
+    }
+
     private func spawn() {
+        reapStrays()                       // 켜질 때마다 고아 서버/세션 정리 → 재시작해도 항상 깨끗한 grant
         unlink(SOCKET)
         // script(1)로 pty 확보 → tmux-aqua new-session(attached, _keeper) → 서버가 이 앱 서브트리에 남음.
         // patched tmux(setsid+stdio redirect, no reparent)라 server PPID가 client→app 체인 유지.
@@ -62,20 +74,23 @@ final class HostManager {
     }
 }
 
-// ── APPROVE: engine.applescript tick()을 이 앱(granted 신원)에서 실행 — on-demand 만 호출됨 ──
-// claude 가 osascript 로 직접 클릭하면 Automation→System Events 신원이 claude/osascript 라 막힘.
-// 그래서 클릭은 항상 RemotePair(AX+Automation granted)가 한다. claude 는 /approve 스킬로 "요청"만.
+// ── APPROVE: 라우터 스크립트를 이 앱(granted 신원)의 자식으로 띄운다 — on-demand ──
+// 클릭/키는 항상 RemotePair(AX+SR+PostEvent granted)의 서브트리에서 일어나야 함(상속).
+// 라우터가 화면을 보고(OCR) 어떤 승인창인지 감지→라우팅(OCR클릭 or 키전송). claude 는 "요청"만.
 final class ApproveManager {
-    func tick() {
-        guard let src = try? String(contentsOfFile: ENGINE, encoding: .utf8) else { return }
-        // 스크립트 본문 + 최상위에서 tick() 호출 (NSAppleScript는 in-process 실행 → AX가 이 앱 신원)
-        let full = src + "\n\ntick()\n"
-        guard let script = NSAppleScript(source: full) else { return }
-        var err: NSDictionary?
-        script.executeAndReturnError(&err)
-        if let err = err, let n = err[NSAppleScript.errorNumber] as? Int, n != 0 {
-            log("APPROVE: \(err[NSAppleScript.errorMessage] ?? "err") (\(n))")
-        }
+    private var running = false
+    func run() {
+        if running { return }                          // 라우터가 내부 재시도하므로 중복 스폰 방지
+        running = true
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [ROUTER]
+        p.environment = ["HOME": HOME,
+                         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                         "LANG": "en_US.UTF-8"]
+        p.terminationHandler = { [weak self] _ in self?.running = false }
+        do { try p.run(); log("APPROVE: router spawned") }      // async — 메인스레드 안 막음
+        catch { log("APPROVE: router spawn 실패 \(error)"); running = false }
     }
 }
 
@@ -86,38 +101,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var hostTimer: Timer?
     var tickTimer: Timer?
-    var approveActiveUntil = Date.distantPast   // on-demand: 요청 받으면 now+WINDOW 까지만 스캔
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "⌗⌘"
         let menu = NSMenu()
-        menu.addItem(withTitle: "RemotePair — approve(on-demand) + computer-use host", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "RemotePair — approve(router) + computer-use host", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Approve now (\(Int(APPROVE_WINDOW))s)", action: #selector(approveNow), keyEquivalent: "")
+        menu.addItem(withTitle: "Approve now", action: #selector(approveNow), keyEquivalent: "")
         menu.addItem(withTitle: "Restart tmux host", action: #selector(restartHost), keyEquivalent: "")
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
-        log("launched (native, approve=on-demand)")
+        log("launched (native, approve=router)")
 
         host.ensureServer()
         hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.host.ensureServer() }
-        // 항상 도는 가벼운 루프: heartbeat(매초) + 트리거 파일 stat. 무거운 AX 스캔은 요청받은 window 동안만.
+        // 항상 도는 가벼운 루프: heartbeat(매초) + 트리거 파일 stat. 무거운 작업(캡처/OCR)은 라우터(자식)가.
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
     }
 
-    // 평소: heartbeat + 트리거 확인(둘 다 가벼움 → -1712 없음). 요청 받은 동안에만 approve.tick()(AX 스캔).
+    // 평소: heartbeat + 트리거 확인(둘 다 가벼움). 트리거 오면 라우터를 1회 스폰(라우터가 내부 재시도).
     @objc func poll() {
         try? "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8)           // watchdog용, 항상
         if FileManager.default.fileExists(atPath: TRIGGER) {                            // claude /approve 가 touch
             try? FileManager.default.removeItem(atPath: TRIGGER)
-            approveActiveUntil = Date().addingTimeInterval(APPROVE_WINDOW)
-            log("APPROVE: requested → active \(Int(APPROVE_WINDOW))s")
+            log("APPROVE: trigger → router")
+            approve.run()
         }
-        if Date() < approveActiveUntil { approve.tick() }                              // active 창에서만 클릭 시도
     }
 
-    @objc func approveNow() { approveActiveUntil = Date().addingTimeInterval(APPROVE_WINDOW); log("APPROVE: menu → active") }
+    @objc func approveNow() { approve.run() }
     @objc func restartHost() { host.ensureServer() }
 }
 

@@ -8,3 +8,4 @@ RemotePairNative/RemotePair
 *.p12
 *.pem
 *.key
+scripts/ocr-find
