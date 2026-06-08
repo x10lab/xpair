@@ -24,7 +24,7 @@ jobs:
   release:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve version
         id: ver
@@ -43,15 +43,22 @@ jobs:
       - name: Build patched tmux-aqua
         run: ./scripts/build-tmux-aqua.sh
 
-      - name: Import signing certificate
+      # One step: import cert → build+sign → verify cert → publish.
+      # MUST be a single shell: `security list-keychains -s` and the unlock are session-scoped,
+      # so the keychain has to be set up and consumed by build-host's codesign in the same process.
+      - name: Build, sign, verify, and publish
         env:
           P12_B64: ${{ secrets.SIGNING_P12_BASE64 }}
           P12_PW: ${{ secrets.SIGNING_P12_PASSWORD }}
+          RP_VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -e
           if [ -z "$P12_B64" ]; then
             echo "::error::SIGNING_P12_BASE64 secret is missing — cannot sign with the stable cert." >&2
             exit 1
           fi
+          # Import the stable signing cert into a temp keychain, usable by codesign in THIS shell.
           KEYCHAIN="$RUNNER_TEMP/rp-signing.keychain-db"
           KCPW="$(uuidgen)"
           security create-keychain -p "$KCPW" "$KEYCHAIN"
@@ -60,20 +67,20 @@ jobs:
           printf '%s' "$P12_B64" | base64 --decode > "$RUNNER_TEMP/signing.p12"
           security import "$RUNNER_TEMP/signing.p12" -P "$P12_PW" -k "$KEYCHAIN" -T /usr/bin/codesign -A
           rm -f "$RUNNER_TEMP/signing.p12"
-          # Let codesign use the private key without an interactive prompt.
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN" >/dev/null
-          # Prepend our keychain to the user search list so `security find-identity` / codesign see it.
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
-          echo "Signing identities:"; security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "Signing identities:"; security find-identity -v -p codesigning | grep "RemotePair Local Signing"
 
-      - name: Build, sign, and publish release
-        env:
-          RP_VERSION: ${{ steps.ver.outputs.version }}
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build-host.sh --release
+          # Build + sign + verify (build-host finds the cert by CN in the search list above).
+          ./scripts/build-host.sh
 
-      - name: Verify published asset is signed with the stable cert
-        run: |
-          codesign -dvv "build/RemotePairHost.app" 2>&1 | grep -i "Authority=RemotePair Local Signing" \
-            || { echo "::error::released app is NOT signed with the stable cert"; exit 1; }
-          codesign --verify --strict "build/RemotePairHost.app" && echo "verify OK ✓"
+          # Gate: the asset MUST be signed with the stable cert (not ad-hoc) before we publish.
+          codesign -dvv build/RemotePairHost.app 2>&1 | grep -q "Authority=RemotePair Local Signing" \
+            || { echo "::error::app was signed ad-hoc, not with the stable cert — refusing to publish"; exit 1; }
+          codesign --verify --strict build/RemotePairHost.app
+          echo "signed with stable cert ✓"
+
+          # Publish.
+          ZIP="build/RemotePairHost-${RP_VERSION}.zip"
+          ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent RemotePairHost.app "RemotePairHost-${RP_VERSION}.zip" )
+          gh release create "v${RP_VERSION}" "$ZIP" --title "v${RP_VERSION}" --generate-notes
