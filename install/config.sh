@@ -1,53 +1,69 @@
 #!/bin/bash
-# config.sh — 튜너블의 단일 출처. source 전용.
+# config.sh — Single source of tunables. Source-only (do not execute directly).
 #
-# config 은 role 별로 파일이 분리된다 (client/host 가 서로 덮어쓰지 않도록):
-#   ~/.config/remote-pair/common.env   LOCAL_BIN, AQUA_SOCK            (양쪽 공통 — 값이 일치해야 함)
-#   ~/.config/remote-pair/host.env     BUNDLE_PREFIX, APP_NAME, …       (host 전용 — 앱/approve 정체성)
-#   ~/.config/remote-pair/client.env   REMOTE_HOST, SYNC_ROOTS, …       (client 전용 — attach 대상·등록 루트)
-# 각 role install 은 자기 파일만 쓴다 → 다른 role 설정을 침범하지 않음.
+# All RemotePair runtime state lives under ~/.remote-pair (self-contained namespace).
+# ~/.claude holds only what the Claude harness needs (approve skill, etc.) — RemotePair
+# behavior does not depend on whether ~/.claude is synced.
 #
-# 우선순위: 환경변수 > role env 파일 > 파생 기본값. 개인값(호스트명·동기화 경로)은 박지 않는다.
+# Config is split by role so client and host files never overwrite each other:
+#   ~/.remote-pair/common.env   LOCAL_BIN, AQUA_SOCK            (shared — values must match on both sides)
+#   ~/.remote-pair/host.env     BUNDLE_PREFIX, APP_NAME, …       (host-only — app/approve/update identity)
+#   ~/.remote-pair/client.env   REMOTE_HOST, FOLDER_MAPS, …      (client-only — attach target, path mappings)
+# Each role install writes only its own file → no cross-role contamination.
+#
+# Priority: environment variable > role env file > derived default.
+# Personal values (hostname, sync paths) are not hard-coded here.
 
-# ── 경로 ──
-CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"               # 에이전트 정체성(skill·rules·logs). host, sync 대상.
-RP_DIR="${RP_DIR:-$HOME/.config/remote-pair}"           # RemotePair 자기 config·manifest. 기기별, sync 안 함.
+# ── Paths (namespace) ──
+RP_DIR="${RP_DIR:-$HOME/.remote-pair}"                  # RemotePair config/state/logs/rules/manifest. Per-machine, not synced.
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"               # Claude harness (skills). RemotePair only installs here; does not depend on it.
 COMMON_ENV="$RP_DIR/common.env"; HOST_ENV="$RP_DIR/host.env"; CLIENT_ENV="$RP_DIR/client.env"
 MANIFEST="$RP_DIR/.install-manifest"; BACKUP_DIR="$RP_DIR/backups"
+LOG_DIR="$RP_DIR/logs"
 
-# role 파일 로드 (있는 것만)
+# Load role files (only those that exist)
 for _f in "$COMMON_ENV" "$HOST_ENV" "$CLIENT_ENV"; do
   # shellcheck disable=SC1090
   [ -f "$_f" ] && { set -a; . "$_f"; set +a; }
 done
 
-# ── host 정체성 (개인값 없이 조직 기준) ──
+# ── Host identity (org-level defaults, no personal values) ──
 RP_ORG="${RP_ORG:-com.x10lab}"
-BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair}"
-APP_NAME="${APP_NAME:-RemotePair}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair-host}"
+APP_NAME="${APP_NAME:-RemotePairHost}"
 SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"
+GH_REPO="${GH_REPO:-ghyeongl/remote-pair}"             # Updater (GitHub Releases) target owner/repo
 APP_LABEL="$BUNDLE_PREFIX"; WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
 APP_PATH="$HOME/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
-LOG_FILE="${LOG_FILE:-$CLAUDE_DIR/logs/remote-pair.log}"
-HEARTBEAT_FILE="${HEARTBEAT_FILE:-$CLAUDE_DIR/logs/remote-pair.heartbeat}"
+LOG_FILE="${LOG_FILE:-$LOG_DIR/remote-pair.log}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-$LOG_DIR/remote-pair.heartbeat}"
+RULES_FILE="${RULES_FILE:-$RP_DIR/rules.txt}"           # approve router rules (formerly ~/.claude/auto-approve/rules.txt)
 
-# ── client 설정 (개인 경로 기본값 없음) ──
-REMOTE_HOST="${REMOTE_HOST:-}"          # 빈 값 = 로컬 전용
-SYNC_ROOTS="${SYNC_ROOTS:-}"            # 두 기기에 같은 경로로 존재(동기화)하는 루트들(:구분). 기본 없음 — 첫 실행 시 등록.
-LAUNCHER="${LAUNCHER:-$CLAUDE_DIR/bin/claude-iterm-launch}"
+# ── Client config (no personal path defaults) ──
+REMOTE_HOST="${REMOTE_HOST:-}"          # Empty = local-only mode
+# Folder mappings for directories whose content is the same on both machines
+# but may live at different absolute paths (synced via Google Drive / Syncthing / etc.).
+#   Format: "clientPath::hostPath;clientPath2::hostPath2"  (identical path → use clientPath==hostPath)
+#   No default — registered on first launch. (generalises legacy SYNC_ROOTS)
+FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"
+LAUNCHER="${LAUNCHER:-$RP_DIR/bin/remote-pair-launch}"
 
-# ── 공통 ──
+# Terminal app used by the Quick Action / open-gui subcommand.
+# Derived default: iterm2 if iTerm.app is installed, otherwise terminal.
+TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 || echo terminal )}"
+
+# ── Common ──
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 LAUNCH_AGENTS="${LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
 SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"
 
-# ── 저장소 루트 ──
+# ── Repository root ──
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLUE_DIR="$REPO_ROOT/install/glue"
 
-# role 별 영속 키 그룹 (install 이 자기 파일에만 기록)
+# Per-role persistence key groups (install writes only to its own file)
 COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)
-HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE)
-CLIENT_KEYS=(REMOTE_HOST SYNC_ROOTS LAUNCHER)
+HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN GH_REPO APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE RULES_FILE)
+CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP)

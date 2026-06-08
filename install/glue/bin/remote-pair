@@ -1,154 +1,486 @@
 #!/usr/bin/env bash
-# remote-pair — RemotePair 단일 진입점 CLI.
+# remote-pair — RemotePair single entry-point CLI (client side).
 #
-#   remote-pair launch <dir>   폴더로 (원격/로컬) claude 세션 실행. 등록 루트 밖이면 등록 여부 확인.
-#   remote-pair ls             host(또는 로컬) tmux-aqua 세션 + 등록된 동기화 루트 목록
-#   remote-pair roots          등록된 동기화 루트 보기 / `roots add <dir>` / `roots rm <dir>`
-#   remote-pair approve [--label P] [--timeout S]   승인 다이얼로그 클릭 요청 (결과 회수)
-#   remote-pair status         host 서버·앱·heartbeat 상태
-#   remote-pair host           tmux-aqua host 서버 기동 보장
+#   remote-pair launch [<dir>] [--local|--remote] [--fresh] [--yes]
+#                              Launch/attach a claude session (remote host/local) for a folder. Prompts to register if unmapped.
+#   remote-pair ls             List host (or local) tmux-aqua sessions + registered folder mappings
+#   remote-pair map [list|add <clientDir> [hostDir]|rm <clientDir>]
+#                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
+#   remote-pair config [list|get <key>|set <key> <value>|maps]
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal).
+#   remote-pair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
+#   remote-pair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
+#   remote-pair doctor         Check SSH key connection, host app, tmux + guidance
+#   remote-pair approve [--for "<what>"] [--timeout S]   Request a click on an approval dialog (collects result)
+#                              --for hints which approval (e.g. "1Password", "Claude for Chrome") for priority routing
+#   remote-pair status         Host server, app, heartbeat status
+#   remote-pair host           Ensure the tmux-aqua host server is up (when the app is local)
 #   remote-pair help
 #
-# config: ~/.config/remote-pair/config.env (install.sh 가 확정, RemotePair 자기 설정 — .claude 밖).
+# config: ~/.remote-pair/{common,host,client}.env (finalized by install.sh — outside .claude, self-contained).
 set -euo pipefail
 
-# role 별 config 파일(common/host/client)을 순서대로 source — 서로 침범 안 함
-RP_DIR="${RP_DIR:-$HOME/.config/remote-pair}"
+RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
 CLIENT_ENV="$RP_DIR/client.env"
 for _f in common host client; do
   # shellcheck disable=SC1090
   [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
 done
-APP_NAME="${APP_NAME:-RemotePair}"
-BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.remote-pair}"
+APP_NAME="${APP_NAME:-RemotePairHost}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.remote-pair-host}"
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
-LOG_FILE="${LOG_FILE:-$HOME/.claude/logs/remote-pair.log}"
-HEARTBEAT_FILE="${HEARTBEAT_FILE:-$HOME/.claude/logs/remote-pair.heartbeat}"
+LOG_FILE="${LOG_FILE:-$RP_DIR/logs/remote-pair.log}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-$RP_DIR/logs/remote-pair.heartbeat}"
 REMOTE_HOST="${REMOTE_HOST:-}"
-SYNC_ROOTS="${SYNC_ROOTS:-}"        # 등록된 동기화 루트(:구분). 기본 없음 — 첫 launch 시 등록.
-LAUNCHER="${LAUNCHER:-$HOME/.claude/bin/claude-iterm-launch}"
+FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"     # client::host mappings (legacy SYNC_ROOTS compatible)
+LAUNCHER="${LAUNCHER:-$RP_DIR/bin/remote-pair-launch}"
+# Terminal app for open-gui/onboard. Default iterm2 if iTerm installed, else terminal.
+TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 || echo terminal )}"
 TMUXB="$LOCAL_BIN/tmux-aqua"
+RP_YES="${RP_YES:-0}"
+
+# Absolute path to this CLI (for relaunch via terminal apps). Prefer LOCAL_BIN, fall back to $0.
+SELF_CLI="$LOCAL_BIN/remote-pair"
+[ -x "$SELF_CLI" ] || SELF_CLI="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
+
+ITERM_PATH="/Applications/iTerm.app"
+TERMINAL_PATH="/System/Applications/Utilities/Terminal.app"
+
+c()    { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
+ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 
 tm() { "$TMUXB" -S "$AQUA_SOCK" "$@"; }
 host_up() { [ -x "$TMUXB" ] && tm has-session >/dev/null 2>&1; }
 app_pid() { pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null | head -1 || true; }
 
-# client.env 의 KEY upsert (등록 루트 영속용 — client 설정이므로 client.env 에)
+# Is there a tty for interactive prompts?
+have_tty() { [ -t 0 ] || [ -e /dev/tty ]; }
+
+# Upsert KEY in client.env (persists mappings/config)
 rp_set() {
   local k="$1" v="$2" f="$CLIENT_ENV"
   mkdir -p "$(dirname "$f")"; touch "$f"
   { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
-is_registered() { # $1=absdir → 0 if under any SYNC_ROOTS
-  local d="$1" r IFS=:
-  for r in $SYNC_ROOTS; do [ -n "$r" ] || continue; case "$d" in "$r"|"$r"/*) return 0 ;; esac; done
-  return 1
-}
+# ── mappings ──
+map_client_of() { printf '%s' "${1%%::*}"; }
+map_host_of()   { local p="$1" h="${1#*::}"; [ "$h" = "$p" ] && h="$p"; printf '%s' "$h"; }
 
-cmd_roots() {
+resolve_host() { # $1=clientDir → echo hostDir (longest-prefix; same path if unmapped)
+  local d="$1" best_c="" best_h="" c h pair IFS=';'
+  for pair in $FOLDER_MAPS; do
+    [ -n "$pair" ] || continue
+    c="$(map_client_of "$pair")"; h="$(map_host_of "$pair")"
+    case "$d" in "$c"|"$c"/*) [ "${#c}" -gt "${#best_c}" ] && { best_c="$c"; best_h="$h"; } ;; esac
+  done
+  [ -n "$best_c" ] && printf '%s%s' "$best_h" "${d#"$best_c"}" || printf '%s' "$d"
+}
+is_mapped() { local d="$1" c pair IFS=';'; for pair in $FOLDER_MAPS; do [ -n "$pair" ] || continue; c="$(map_client_of "$pair")"; case "$d" in "$c"|"$c"/*) return 0 ;; esac; done; return 1; }
+
+cmd_map() {
   case "${1:-list}" in
-    list|"") printf '등록된 동기화 루트:\n'; local r IFS=:; for r in $SYNC_ROOTS; do [ -n "$r" ] && echo "  $r"; done ;;
-    add)  local d; d="$(cd "${2:?경로 필요}" 2>/dev/null && pwd)" || { echo "경로 없음: ${2:-}" >&2; return 1; }
-          is_registered "$d" && { echo "이미 등록됨(또는 루트 하위): $d"; return 0; }
-          SYNC_ROOTS="${SYNC_ROOTS:+$SYNC_ROOTS:}$d"; rp_set SYNC_ROOTS "$SYNC_ROOTS"; echo "등록: $d" ;;
-    rm)   local d="${2:?경로 필요}" out="" r IFS=:
-          for r in $SYNC_ROOTS; do [ "$r" = "$d" ] || out="${out:+$out:}$r"; done
-          SYNC_ROOTS="$out"; rp_set SYNC_ROOTS "$SYNC_ROOTS"; echo "제거: $d" ;;
-    *) echo "roots [list|add <dir>|rm <dir>]" >&2; return 2 ;;
+    list|"") printf 'Folder mappings (client → host):\n'
+             local pair IFS=';'; for pair in $FOLDER_MAPS; do [ -n "$pair" ] && printf '  %s  →  %s\n' "$(map_client_of "$pair")" "$(map_host_of "$pair")"; done
+             [ -z "$FOLDER_MAPS" ] && echo "  (none)" ;;
+    add) local cd hd
+         cd="$(cd "${2:?clientDir required}" 2>/dev/null && pwd)" || { echo "client path not found: ${2:-}" >&2; return 1; }
+         hd="${3:-$cd}"
+         is_mapped "$cd" && { echo "already mapped (or under a mapped root): $cd"; return 0; }
+         local entry="$cd::$hd"
+         FOLDER_MAPS="${FOLDER_MAPS:+$FOLDER_MAPS;}$entry"; rp_set FOLDER_MAPS "$FOLDER_MAPS"
+         ok "mapping added: $cd  →  $hd" ;;
+    rm)  local d="${2:?clientDir required}" out="" pair IFS=';'
+         for pair in $FOLDER_MAPS; do [ "$(map_client_of "$pair")" = "$d" ] || out="${out:+$out;}$pair"; done
+         FOLDER_MAPS="$out"; rp_set FOLDER_MAPS "$FOLDER_MAPS"; ok "mapping removed: $d" ;;
+    *) echo "map [list|add <clientDir> [hostDir]|rm <clientDir>]" >&2; return 2 ;;
   esac
 }
 
 cmd_ls() {
-  cmd_roots list; echo
+  cmd_map list; echo
   if [ -n "$REMOTE_HOST" ]; then
-    echo "[$REMOTE_HOST] tmux-aqua 세션:"
+    echo "[$REMOTE_HOST] tmux-aqua sessions:"
     ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S '$AQUA_SOCK' list-sessions 2>/dev/null" \
-      | sed 's/^/  /' || echo "  (없음 또는 연결 불가)"
+      | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none or unreachable)"
   else
-    echo "[local] tmux-aqua 세션:"; tm list-sessions 2>/dev/null | sed 's/^/  /' || echo "  (없음)"
+    echo "[local] tmux-aqua sessions:"; tm list-sessions 2>/dev/null | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none)"
   fi
+}
+
+# Shared interactive mapping registration (Option A UX).
+# Used by onboard Step 3 and the lazy [m] branch.
+#   $1 = optional seed client dir. If given, fixes the client folder.
+#        Otherwise input/auto-detect (default candidate: ~/Spaces if it exists, else $PWD).
+# Non-interactive (no tty or RP_YES): auto-register with identity host path.
+map_register_interactive() {
+  local seed="${1:-}" client_dir="" host_dir="" ans=""
+  # Resolve client folder
+  if [ -n "$seed" ]; then
+    client_dir="$(cd "$seed" 2>/dev/null && pwd)" || { warn "client path not found: $seed"; return 1; }
+  else
+    local cand="$PWD"; [ -d "$HOME/Spaces" ] && cand="$HOME/Spaces"
+    if [ "$RP_YES" = 1 ] || ! have_tty; then
+      client_dir="$cand"
+    else
+      { printf 'Client folder to map [%s]: ' "$cand" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+      client_dir="$(cd "${ans:-$cand}" 2>/dev/null && pwd)" || { warn "client path not found: ${ans:-$cand}"; return 1; }
+    fi
+  fi
+
+  # Non-interactive: auto identity register.
+  if [ "$RP_YES" = 1 ] || ! have_tty; then
+    cmd_map add "$client_dir" "$client_dir"
+    return $?
+  fi
+
+  if [ -z "$REMOTE_HOST" ]; then
+    warn "REMOTE_HOST is not set — mapping host paths has no effect. Set a host first ('remote-pair config set host ...')."
+  fi
+
+  # Host path input: default = identity (client path), validated by ssh '[ -d ]'.
+  while :; do
+    { printf 'Host path that has this content [%s]: ' "$client_dir" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    host_dir="${ans:-$client_dir}"
+    if [ -z "$REMOTE_HOST" ]; then
+      break   # cannot probe without a host; accept as-is
+    fi
+    if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d '$host_dir' ]" 2>/dev/null; then
+      ok "exists on $REMOTE_HOST: $host_dir"
+      break
+    fi
+    warn "not found on $REMOTE_HOST: $host_dir"
+    { printf '  [r] re-enter path  [c] create it on host  [N] cancel: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    case "$ans" in
+      c|C) ssh "$REMOTE_HOST" "mkdir -p '$host_dir'" 2>/dev/null && { ok "created on $REMOTE_HOST: $host_dir"; break; } || { warn "mkdir failed on $REMOTE_HOST"; } ;;
+      r|R) : ;;
+      *)   echo "cancelled."; return 1 ;;
+    esac
+  done
+
+  # This folder only, or a parent sync root?
+  { printf 'Map this folder only, or a parent sync root? [t]his / [p]arent root: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  if [ "$ans" = p ] || [ "$ans" = P ]; then
+    local croot hroot
+    { printf '  Parent client root [%s]: ' "$(dirname "$client_dir")" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    croot="$(cd "${ans:-$(dirname "$client_dir")}" 2>/dev/null && pwd)" || croot="$(dirname "$client_dir")"
+    { printf '  Parent host root [%s]: ' "$(dirname "$host_dir")" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    hroot="${ans:-$(dirname "$host_dir")}"
+    cmd_map add "$croot" "$hroot" && echo "  All subfolders under $croot are now covered."
+  else
+    cmd_map add "$client_dir" "$host_dir"
+  fi
+}
+
+cmd_config() {
+  case "${1:-list}" in
+    list|"")
+      c "RemotePair client config"
+      printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(local-only)}"
+      printf '%-12s %s\n' "terminal" "$TERMINAL_APP"
+      printf '%-12s %s\n' "mappings" "$([ -n "$FOLDER_MAPS" ] && printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c . || echo 0)"
+      ;;
+    get)
+      case "${2:-}" in
+        host)     printf '%s\n' "$REMOTE_HOST" ;;
+        terminal) printf '%s\n' "$TERMINAL_APP" ;;
+        *) echo "config get <host|terminal>" >&2; return 2 ;;
+      esac
+      ;;
+    set)
+      local key="${2:-}" val="${3:-}"
+      case "$key" in
+        host)
+          rp_set REMOTE_HOST "$val"; REMOTE_HOST="$val"
+          if [ -n "$val" ]; then
+            ok "host set: $val"
+            printf '  Checking SSH ... '
+            if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then echo "OK (key auth)"
+            else echo "FAILED"; warn "SSH key auth failed — run 'remote-pair doctor' for guidance."; fi
+          else
+            ok "host cleared (local-only mode)"
+          fi
+          ;;
+        terminal)
+          case "$val" in
+            iterm2|terminal) rp_set TERMINAL_APP "$val"; TERMINAL_APP="$val"; ok "terminal set: $val" ;;
+            *) echo "config set terminal <iterm2|terminal>" >&2; return 2 ;;
+          esac
+          ;;
+        *) echo "config set <host|terminal> <value>" >&2; return 2 ;;
+      esac
+      ;;
+    maps) cmd_map list ;;
+    *) echo "config [list|get <key>|set <key> <value>|maps]" >&2; return 2 ;;
+  esac
+}
+
+# Open the configured terminal app in a NEW window running 'launch <dir>'.
+cmd_open_gui() {
+  local dir="${1:?dir required}"
+  dir="$(cd "$dir" 2>/dev/null && pwd)" || { echo "folder not found: $1" >&2; return 1; }
+
+  # Pick the app, falling back to the other if the configured one isn't installed.
+  local app="$TERMINAL_APP"
+  if [ "$app" = iterm2 ] && [ ! -d "$ITERM_PATH" ]; then
+    warn "iTerm2 not installed — falling back to Terminal.app"; app=terminal
+  elif [ "$app" = terminal ] && [ ! -e "$TERMINAL_PATH" ] && [ -d "$ITERM_PATH" ]; then
+    warn "Terminal.app not found — falling back to iTerm2"; app=iterm2
+  fi
+
+  # Command string to run in the new window. Quote dir safely.
+  local cmd
+  cmd="exec $(printf '%q' "$SELF_CLI") launch $(printf '%q' "$dir")"
+
+  if [ "$app" = iterm2 ]; then
+    # AppleScript string escaping: backslash and double-quote.
+    local esc="${cmd//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    osascript <<OSA
+tell application "iTerm"
+  activate
+  if (count of windows) is 0 then
+    set targetWindow to (create window with default profile)
+  else
+    tell current window to set newTab to (create tab with default profile)
+    set targetWindow to current window
+  end if
+  tell current session of targetWindow to write text "$esc"
+end tell
+OSA
+  else
+    local esc="${cmd//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    osascript <<OSA
+tell application "Terminal"
+  activate
+  do script "$esc"
+end tell
+OSA
+  fi
+}
+
+# Fancy, re-runnable, pure-bash onboarding (bash 3.2, no new deps).
+cmd_onboard() {
+  local interactive=1
+  { [ "$RP_YES" = 1 ] || ! have_tty; } && interactive=0
+
+  # Header box
+  local title="RemotePair client onboarding"
+  local line; line="$(printf '%*s' $(( ${#title} + 2 )) '' | tr ' ' '─')"
+  printf '\033[1;36m┌%s┐\033[0m\n' "$line"
+  printf '\033[1;36m│ %s │\033[0m\n' "$title"
+  printf '\033[1;36m└%s┘\033[0m\n' "$line"
+  echo
+
+  if [ "$interactive" = 0 ]; then
+    echo "Non-interactive mode — applying detected defaults."
+    printf '  host:     %s\n' "${REMOTE_HOST:-(local-only)}"
+    printf '  terminal: %s\n' "$TERMINAL_APP"
+    rp_set TERMINAL_APP "$TERMINAL_APP"
+    echo
+    cmd_doctor || true
+    return 0
+  fi
+
+  local ans=""
+
+  # Step 1: REMOTE_HOST
+  c "Step 1/4 — Remote host"
+  printf '  Current: %s\n' "${REMOTE_HOST:-(local-only)}"
+  { printf '  SSH host (blank = local-only): ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  if [ -n "$ans" ]; then
+    cmd_config set host "$ans"
+  else
+    echo "  Keeping: ${REMOTE_HOST:-(local-only)}"
+  fi
+  echo
+
+  # Step 2: Terminal app
+  c "Step 2/4 — Terminal app"
+  local has_iterm="no" has_term="no"
+  [ -d "$ITERM_PATH" ] && has_iterm="yes"
+  [ -e "$TERMINAL_PATH" ] && has_term="yes"
+  printf '  iTerm2 installed: %s   Terminal.app: %s\n' "$has_iterm" "$has_term"
+  { printf '  Choose terminal app [iterm2/terminal] (default %s): ' "$TERMINAL_APP" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  case "${ans:-$TERMINAL_APP}" in
+    iterm2|terminal) cmd_config set terminal "${ans:-$TERMINAL_APP}" ;;
+    *) warn "unknown value '$ans' — keeping $TERMINAL_APP" ;;
+  esac
+  echo
+
+  # Step 3: Folder mapping
+  c "Step 3/4 — Folder mapping"
+  cmd_map list
+  { printf '  Register a folder mapping now? [Y/n]: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  case "${ans:-y}" in [nN]*) echo "  Skipped." ;; *) map_register_interactive || true ;; esac
+  echo
+
+  # Step 4: doctor
+  c "Step 4/4 — Verify"
+  cmd_doctor || true
+  echo
+  ok "Onboarding complete. Edit later with 'remote-pair config' / 'remote-pair map'."
 }
 
 cmd_launch() {
-  local dir="${1:-$PWD}"
-  dir="$(cd "$dir" 2>/dev/null && pwd)" || { echo "폴더 없음: ${1:-}" >&2; return 1; }
-  if ! is_registered "$dir"; then
-    printf '\033[1;33m⚠ 등록된 동기화 루트 밖의 폴더입니다:\033[0m\n  %s\n' "$dir" >&2
-    printf '  (등록 루트: %s)\n' "$SYNC_ROOTS" >&2
-    printf '  → host(%s)에 같은 경로가 없으면 원격 세션이 엉뚱한 위치를 잡을 수 있습니다.\n' "${REMOTE_HOST:-로컬}" >&2
-    local ans=""
-    { printf '  이 폴더를 동기화 루트로 등록할까요? [y]등록 / [o]등록없이 1회 실행 / [N]취소: ' > /dev/tty; read -r ans < /dev/tty; } 2>/dev/null || true
-    case "$ans" in
-      y|Y) cmd_roots add "$dir" ;;
-      o|O) echo "  1회 실행(등록 안 함)" >&2 ;;
-      *) echo "취소됨." >&2; return 1 ;;
-    esac
+  local pass=() dir=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --local|--remote|--fresh|--yes|-y) pass+=("$1"); [ "$1" = "--yes" ] || [ "$1" = "-y" ] && RP_YES=1; shift ;;
+    *) dir="$1"; shift ;;
+  esac; done
+  dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
+  if ! is_mapped "$dir" && [ -n "$REMOTE_HOST" ] && [ "$RP_YES" != 1 ]; then
+    # Active host probe: only when the host is reachable. Resolve the candidate host
+    # path and check whether it actually exists on the host.
+    if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" true 2>/dev/null; then
+      local hostdir; hostdir="$(resolve_host "$dir")"
+      if ssh -n -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d '$hostdir' ]" 2>/dev/null; then
+        # Exists on host → offer to register.
+        c "This folder is outside any registered mapping:"
+        printf '  client: %s\n' "$dir"
+        printf '  host:   %s\n' "$hostdir"
+        ok "exists on $REMOTE_HOST"
+        local ans=""
+        { printf '  Register this mapping for next time? [Y/n]: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+        case "${ans:-y}" in [nN]*) : ;; *) cmd_map add "$dir" "$hostdir" ;; esac
+      else
+        # Missing on host → no "launch once anyway" (tmux would silently fall back to $HOME).
+        c "This folder is outside any registered mapping:"
+        printf '  client: %s\n' "$dir"
+        printf '  host:   %s\n' "$hostdir"
+        warn "not found on $REMOTE_HOST — usually this folder should also exist on the host via sync."
+        local ans=""
+        { printf '  [m] map to the host path that actually has this content
+  [c] create an empty dir on host (new project only — content will not be synced here)
+  [N] cancel
+  choose: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+        case "$ans" in
+          m|M) map_register_interactive "$dir" || return 1 ;;
+          c|C) ssh "$REMOTE_HOST" "mkdir -p '$hostdir'" 2>/dev/null && ok "created on $REMOTE_HOST: $hostdir" || { echo "mkdir failed on $REMOTE_HOST" >&2; return 1; } ;;
+          *)   echo "cancelled." >&2; return 1 ;;
+        esac
+      fi
+      echo "  Edit later with 'remote-pair config' / 'remote-pair map'."
+    fi
+    # ssh-probe failure: just proceed — defer to the launcher's own dir-check.
   fi
-  [ -x "$LAUNCHER" ] || { echo "런처 없음: $LAUNCHER (client 설치 필요)" >&2; return 1; }
-  exec "$LAUNCHER" "$dir"
+  [ -x "$LAUNCHER" ] || { echo "launcher missing: $LAUNCHER (client install required)" >&2; return 1; }
+  # bash 3.2 + set -u: an empty array "${pass[@]}" is "unbound" → guard with ${arr[@]+...}
+  RP_YES="$RP_YES" exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
 }
 
 cmd_host() {
-  if host_up; then echo "host 서버 OK ($AQUA_SOCK)"; return 0; fi
-  echo "host 서버 미기동 → $APP_NAME 기동..."
+  if host_up; then ok "host server OK ($AQUA_SOCK)"; return 0; fi
+  c "host server not running → starting $APP_NAME ..."
   open -a "$APP_NAME" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$BUNDLE_PREFIX" 2>/dev/null || true
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do host_up && { echo "host 서버 OK"; return 0; }; sleep 0.5; done
-  echo "host 서버 기동 실패 — System Settings 권한/앱 설치 확인" >&2; return 13
+  for _ in $(seq 1 12); do host_up && { ok "host server OK"; return 0; }; sleep 0.5; done
+  warn "host server failed to start — check System Settings permissions / app install"; return 13
 }
 
 cmd_status() {
   local p; p="$(app_pid)"
-  printf '%-14s %s\n' "app"       "${p:+running (pid $p)}${p:-NOT running}"
-  printf '%-14s %s\n' "host 서버"  "$(host_up && echo "up ($AQUA_SOCK)" || echo down)"
+  printf '%-14s %s\n' "app"        "${p:+running (pid $p)}${p:-NOT running}"
+  printf '%-14s %s\n' "host server" "$(host_up && echo "up ($AQUA_SOCK)" || echo down)"
   if [ -f "$HEARTBEAT_FILE" ]; then
     local age=$(( $(date +%s) - $(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0) ))
     printf '%-14s %s\n' "heartbeat" "${age}s ago $([ "$age" -le 90 ] && echo "(fresh)" || echo "(STALE)")"
-  else printf '%-14s %s\n' "heartbeat" "없음 (앱 미기동?)"; fi
-  printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(로컬 전용)}"
+  else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
+  printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(local-only)}"
   printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
   return 0
 }
 
+cmd_doctor() {
+  local fail=0
+  c "RemotePair doctor"
+  # local
+  printf '%-22s %s\n' "launcher" "$([ -x "$LAUNCHER" ] && echo "OK ($LAUNCHER)" || { echo "missing — install.sh --role client"; fail=1; })"
+  printf '%-22s %s\n' "mosh (local)" "$(command -v mosh >/dev/null && echo OK || echo "missing (ssh fallback)")"
+  printf '%-22s %s\n' "folder mappings" "$([ -n "$FOLDER_MAPS" ] && echo "$(printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c .) entries" || echo "none (registered on first launch)")"
+  if [ -z "$REMOTE_HOST" ]; then
+    warn "REMOTE_HOST not set — local-only mode (skipping remote checks)"; return "$fail"
+  fi
+  # SSH key connection
+  printf '%-22s ' "SSH ($REMOTE_HOST)"
+  if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" true 2>/dev/null; then
+    echo "OK (key auth passed)"
+  else
+    echo "FAILED"; fail=1
+    warn "SSH key auth failed. Fix with one of:"
+    cat >&2 <<EOF
+   1) No key? Create one:   ssh-keygen -t ed25519
+   2) Register the public key on the host:   ssh-copy-id $REMOTE_HOST
+   3) Check the Host alias (IdentityFile/User/HostName) in ~/.ssh/config
+   4) Using an SSH agent (e.g. 1Password): approve/unlock it (remote-pair approve can auto-click)
+   Verify:   ssh -o BatchMode=yes $REMOTE_HOST true && echo OK
+EOF
+    return "$fail"
+  fi
+  # host-side config
+  local rb='$HOME/.local/bin/tmux-aqua'
+  printf '%-22s %s\n' "host tmux-aqua" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -x $rb ]" 2>/dev/null && echo OK || { echo "missing — run install.sh --role host on the host"; fail=1; })"
+  printf '%-22s %s\n' "host app" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -d ~/Applications/$APP_NAME.app ]" 2>/dev/null && echo "OK ($APP_NAME.app)" || { echo "missing"; fail=1; })"
+  printf '%-22s %s\n' "host server" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "$rb -S '$AQUA_SOCK' has-session" 2>/dev/null && echo "up" || echo "down (check app launch/permissions)")"
+  [ "$fail" = 0 ] && ok "all good — remote-pair launch ready" || warn "check the items above"
+  return "$fail"
+}
+
 cmd_approve() {
-  local label="" timeout=12
+  local forhint="" timeout=22     # longer than the router's adaptive polling (~18s default)
   while [ $# -gt 0 ]; do case "$1" in
-    --label) label="${2:-}"; shift 2 ;;
-    --timeout) timeout="${2:-12}"; shift 2 ;;
+    --for|--label|--expect) forhint="${2:-}"; shift 2 ;;   # hint which approval (rule id or free text)
+    --timeout) timeout="${2:-22}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; return 2 ;;
   esac; done
-  [ -n "$(app_pid)" ] || echo "⚠ $APP_NAME 미기동 — 'remote-pair host' 로 먼저 기동 권장" >&2
-  local base=0; [ -f "$LOG_FILE" ] && base=$(wc -l < "$LOG_FILE")
-  [ -n "$label" ] && printf '%s\n' "$label" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
-  : > "$APPROVE_TRIGGER" 2>/dev/null || { echo "트리거 쓰기 실패: $APPROVE_TRIGGER" >&2; return 1; }
-  echo "approve 요청 → $APP_NAME (최대 ${timeout}s 관찰)"
+  [ -n "$(app_pid)" ] || warn "$APP_NAME not running — start it first with 'remote-pair host'"
+  # base0 = log length just before triggering (so we show only this request's router log to the agent)
+  local base0=0; [ -f "$LOG_FILE" ] && base0=$(wc -l < "$LOG_FILE")
+  local base="$base0"
+  # Pass the hint: the router reads the .label file to prioritize the matching rule + use it as a haiku prior, then consumes it.
+  if [ -n "$forhint" ]; then printf '%s\n' "$forhint" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
+  else rm -f "$APPROVE_TRIGGER.label" 2>/dev/null || true; fi
+  : > "$APPROVE_TRIGGER" 2>/dev/null || { echo "failed to write trigger: $APPROVE_TRIGGER" >&2; return 1; }
+  echo "approve request → $APP_NAME${forhint:+ (expect: $forhint)} (observing up to ${timeout}s)"
+  # Print only this request's router log lines (so the agent can read the result and decide next steps).
+  _router_trail() { [ -f "$LOG_FILE" ] || return 0; local tot; tot=$(wc -l < "$LOG_FILE"); [ "$tot" -gt "$base0" ] && tail -n "$(( tot - base0 ))" "$LOG_FILE" | grep 'router:'; }
   local end=$(( $(date +%s) + timeout ))
   while [ "$(date +%s)" -lt "$end" ]; do
     if [ -f "$LOG_FILE" ]; then
       local now; now=$(wc -l < "$LOG_FILE")
       if [ "$now" -gt "$base" ]; then
         local new; new=$(tail -n "$(( now - base ))" "$LOG_FILE")
-        if printf '%s\n' "$new" | grep -qiE 'router:.*(click|key)|clicked|coord'; then
-          printf '%s\n' "$new" | grep -iE 'router:.*(click|key)|clicked|coord' | sed 's/^/  /'
-          echo "✓ 클릭됨"; return 0
+        if printf '%s\n' "$new" | grep -qiE 'router:.*success'; then
+          _router_trail | sed 's/^/  /'
+          echo "✓ handled (window-close verified)"; return 0
         fi
         base="$now"
       fi
     fi
     sleep 0.5
   done
-  echo "⏱ ${timeout}s 내 클릭 로그 없음 ($LOG_FILE 확인)" >&2; return 1
+  # Timeout/failure: show this request's router log so the agent can read the cause and decide.
+  echo "✗ not handled within ${timeout}s — router log:" >&2
+  local trail; trail="$(_router_trail)"
+  if [ -n "$trail" ]; then printf '%s\n' "$trail" | sed 's/^/  /' >&2
+  else echo "  (no router log — check app/permissions/trigger. full: $LOG_FILE)" >&2; fi
+  echo "  → If the window appears late: re-trigger non-blocking, then immediately retry the blocked call. For an unknown window, add a rule to $RP_DIR/rules.txt." >&2
+  return 1
 }
 
 case "${1:-help}" in
   launch)  shift; cmd_launch "$@" ;;
   ls)      cmd_ls ;;
-  roots)   shift; cmd_roots "$@" ;;
+  map)     shift; cmd_map "$@" ;;
+  roots)   shift; cmd_map "$@" ;;     # legacy alias
+  config)  shift; cmd_config "$@" ;;
+  onboard) cmd_onboard ;;
+  open-gui) shift; cmd_open_gui "$@" ;;
+  doctor)  cmd_doctor ;;
   approve) shift; cmd_approve "$@" ;;
   status)  cmd_status ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,12p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,12p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,16p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,16p' "$0"; exit 2 ;;
 esac

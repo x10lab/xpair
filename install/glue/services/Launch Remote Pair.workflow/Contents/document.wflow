@@ -59,20 +59,11 @@
 				<key>ActionParameters</key>
 				<dict>
 					<key>COMMAND_STRING</key>
-					<string># RemotePair — 선택한 폴더로 'remote-pair launch' 를 Terminal 에서 실행.
-# Quick Action 은 터미널이 없으므로 Terminal.app 을 열어 돌린다. launch 가 등록 루트 체크/프롬프트.
+					<string># RemotePair — open the selected folder via the config-driven terminal dispatcher.
+# open-gui reads TERMINAL_APP from ~/.remote-pair/client.env and opens iTerm2 or Terminal accordingly.
 RP="$HOME/.local/bin/remote-pair"
 for d in "$@"; do
-  /usr/bin/osascript - "$RP" "$d" &lt;&lt;'APPLESCRIPT'
-on run argv
-  set rp to item 1 of argv
-  set target to item 2 of argv
-  tell application "Terminal"
-    activate
-    do script "exec " &amp; quoted form of rp &amp; " launch " &amp; quoted form of target
-  end tell
-end run
-APPLESCRIPT
+  "$RP" open-gui "$d"
 done</string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>

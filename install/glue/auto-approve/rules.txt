@@ -1,9 +1,0 @@
-# auto-approve 규칙 — 한 줄 = 한 규칙.   형식:  proc <TAB> mode <TAB> label|label|...
-# mode: ax (논리 클릭, 일반 다이얼로그) | coord (좌표 클릭, 방화벽 등 보안창)
-# "#" 시작 줄은 주석. 수정 즉시 반영 — 컴파일/재빌드 불필요.
-1Password	ax	Authorize|Authorize Once|Authorize once|Always Allow|Allow|Approve|Confirm|Unlock|승인|허용|확인|한 번 승인
-1Password Extension Helper	ax	Authorize|Authorize Once|Authorize once|Always Allow|Allow|Approve|Confirm|Unlock|승인|허용|확인|한 번 승인
-1Password 8	ax	Authorize|Authorize Once|Authorize once|Always Allow|Allow|Approve|Confirm|Unlock|승인|허용|확인|한 번 승인
-1Password 7	ax	Authorize|Authorize Once|Authorize once|Always Allow|Allow|Approve|Confirm|Unlock|승인|허용|확인|한 번 승인
-# mosh-server	coord	Allow|허용
-# Google Chrome	ax	Allow|승인|확인

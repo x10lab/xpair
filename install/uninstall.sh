@@ -5,7 +5,7 @@
 #   ※ ~/.claude/.git 자체와 사용자 데이터(skills/settings/memory)는 건드리지 않는다 — 데이터 보호.
 #
 # 사용:  ./uninstall.sh           (설치된 모든 role manifest 를 역순 원복)
-#        ./uninstall.sh --purge   (위 + ~/.config/remote-pair 네임스페이스까지 삭제)
+#        ./uninstall.sh --purge   (위 + ~/.remote-pair 네임스페이스까지 삭제)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/config.sh"
