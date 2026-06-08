@@ -58,25 +58,26 @@ RemotePair 의 모든 런타임 상태·설정은 `~/.remote-pair` 아래 산다
 
 | 파일 | 역할 |
 |---|---|
-| `RemotePairHost/*.swift` | 호스트 앱 (Config/HostManager/ApproveManager/Sessions/Permissions/SettingsWindow/Updater/AppDelegate/main) |
-| `scripts/build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
-| `scripts/make-signing-cert.sh` | 안정 self-signed 코드서명 cert (재빌드·업데이트에도 grant 유지) |
-| `scripts/build-host.sh` | RemotePairHost.app 빌드·서명 (+`--deploy` 원격 설치 / `--release` GitHub Releases) |
-| `install/` | 가역적 설치/원복(`install.sh`/`uninstall.sh`) + 설정 단일출처(`config.sh`) + glue 원본(`glue/`) |
-| `install/glue/bin/remote-pair` | 클라이언트 CLI (launch/ls/map/doctor/approve/status/host) |
-| `install/glue/bin/remote-pair-launch` | 런처 (경로매핑·세션공유·비인터랙티브) |
-| `install/glue/services/Launch Remote Pair.workflow` | Finder Service |
-| `skills/approve/SKILL.md` | on-demand 승인 스킬 (claude 가 요청 → RemotePairHost 가 클릭) |
-| `bootstrap.sh` | `curl … \| bash` 원샷 설치 (role 별) |
+| `host/RemotePairHost/*.swift` | 호스트 앱 (Config/HostManager/ApproveManager/Sessions/Permissions/SettingsWindow/Updater/AppDelegate/main) |
+| `host/build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
+| `host/make-signing-cert.sh` | 안정 self-signed 코드서명 cert (재빌드·업데이트에도 grant 유지) |
+| `host/build-host.sh` | RemotePairHost.app 빌드·서명 (+`--deploy` 원격 설치 / `--release` GitHub Releases) |
+| `host/rules.txt` · `host/remote-pair-approve-router.sh` · `host/ocr-find.swift` | approve 룰 템플릿 + 라우터 + OCR (앱 번들에 임베드) |
+| `host/skills/approve/SKILL.md` | on-demand 승인 스킬 (claude 가 요청 → RemotePairHost 가 클릭) |
+| `client/remote-pair` | 클라이언트 CLI (launch/ls/map/doctor/approve/status/host) |
+| `client/remote-pair-launch` | 런처 (경로매핑·세션공유·비인터랙티브) |
+| `client/Launch Remote Pair.workflow` | Finder Service |
+| `shared/` | 가역적 설치/원복(`install.sh`/`uninstall.sh`) + 설정 단일출처(`config.sh`) + 부트스트랩(`bootstrap.sh`) |
+| `shared/bootstrap.sh` | `curl … \| bash` 원샷 설치 (role 별) |
 
 ## 설치 (사용자)
 
 ```bash
 # host (claude 가 computer-use 로 도는 머신 — 빌드+권한 1회)
-curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap.sh | ROLE=host bash
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=host bash
 
 # client (앉아서 띄우는 노트북 — 빌드 없음)
-curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap.sh | ROLE=client bash
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=client bash
 ```
 
 | role | 설치물 | 빌드 | 권한 토글 |
@@ -84,7 +85,7 @@ curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap
 | **host** | `RemotePairHost.app`(tmux-aqua·router·ocr-find 임베드) + LaunchAgent + watchdog + approve(skill/rules) | 필요 | 필요(1회) |
 | **client** | Service "Launch Remote Pair" + 런처 + `remote-pair` CLI | 불필요 | 불필요 |
 
-- 되돌리기: `~/.local/share/remote-pair/install/uninstall.sh` (manifest 기반 정확한 원복). `--purge` 로 `~/.remote-pair` 까지.
+- 되돌리기: `~/.local/share/remote-pair/shared/uninstall.sh` (manifest 기반 정확한 원복). `--purge` 로 `~/.remote-pair` 까지.
 - client 설치는 끝에 `remote-pair doctor` 로 **SSH 키 연결**을 점검·안내한다.
 
 ## 사용
@@ -122,10 +123,10 @@ remote-pair status     # 앱·서버·heartbeat
 Apple Silicon + Xcode(또는 CLT) + Homebrew(tmux 정적 빌드 의존성).
 
 ```bash
-./scripts/build-tmux-aqua.sh        # patched tmux → ~/.local/bin/tmux-aqua  (tmux -V == 3.6)
-./scripts/make-signing-cert.sh      # 안정 cert "RemotePair Local Signing" (1회, idempotent)
-./scripts/build-host.sh             # → build/RemotePairHost.app (서명·검증)
-./scripts/build-host.sh --deploy [host]   # 위 + rsync → 원격 → install.sh --role host
+./host/build-tmux-aqua.sh        # patched tmux → ~/.local/bin/tmux-aqua  (tmux -V == 3.6)
+./host/make-signing-cert.sh      # 안정 cert "RemotePair Local Signing" (1회, idempotent)
+./host/build-host.sh             # → build/RemotePairHost.app (서명·검증)
+./host/build-host.sh --deploy [host]   # 위 + rsync → 원격 → install.sh --role host
 ```
 
 - **안정 cert** 가 핵심: ad-hoc 서명은 재빌드마다 cdhash 가 바뀌어 grant 무효화. 안정 cert 로 서명하면 TCC grant 가 designated requirement 에 묶여 **재빌드·업데이트에도 유지**. (Apple Developer/공증 불필요 — 본인 기기 전용. p12 백업: `~/Library/Application Support/RemotePair/signing.p12`.)
@@ -139,7 +140,7 @@ RemotePairHost 실행 후 claude 가 computer-use 를 처음 호출하면 프롬
 
 ### 릴리스 (GitHub Releases)
 ```bash
-RP_VERSION=4.1.0 ./scripts/build-host.sh --release   # 서명앱 zip → gh release create v4.1.0
+RP_VERSION=4.1.0 ./host/build-host.sh --release   # 서명앱 zip → gh release create v4.1.0
 ```
 - 릴리스 자산은 반드시 **동일 안정 cert** 로 서명돼야 업데이트 후에도 grant 가 유지된다(앱 Updater 가 leaf CN 검증; 불일치 시 경고).
 - 앱 메뉴 **Check for Updates…** → 다운로드 → `codesign --verify` → 스왑 → 재기동.

@@ -41,7 +41,7 @@ jobs:
         run: brew install libevent ncurses utf8proc
 
       - name: Build patched tmux-aqua
-        run: ./scripts/build-tmux-aqua.sh
+        run: ./host/build-tmux-aqua.sh
 
       # One step: import cert → build+sign → verify cert → publish.
       # MUST be a single shell: `security list-keychains -s` and the unlock are session-scoped,
@@ -76,7 +76,7 @@ jobs:
           echo "Signing identities:"; security find-identity -v -p codesigning | grep "RemotePair Local Signing" || true
 
           # Build + sign + verify (build-host finds the cert by CN in the search list above).
-          ./scripts/build-host.sh
+          ./host/build-host.sh
 
           # Gate: the asset MUST be signed with the stable cert (not ad-hoc) before we publish.
           codesign -dvv build/RemotePairHost.app 2>&1 | grep -q "Authority=RemotePair Local Signing" \

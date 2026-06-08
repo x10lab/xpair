@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # bootstrap.sh — RemotePair 원샷 설치.  처음 쓰는 사람용.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | bash
 #
 # 하는 일(순서대로, 멱등):
 #   1) prereq 점검 (Apple Silicon macOS / Xcode swiftc / Homebrew+tmux 의존성 / git)
 #   2) repo clone 또는 update  → $REMOTE_PAIR_SRC (기본 ~/.local/share/remote-pair)
-#   3) 안정 코드서명 cert 생성 (scripts/make-signing-cert.sh)
-#   4) patched tmux 빌드      (scripts/build-tmux-aqua.sh → ~/.local/bin/tmux-aqua)
-#   5) RemotePairHost.app 빌드 (scripts/build-host.sh)
-#   6) glue+native 설치 + sync (install/install.sh — manifest 가역)
+#   3) 안정 코드서명 cert 생성 (host/make-signing-cert.sh)
+#   4) patched tmux 빌드      (host/build-tmux-aqua.sh → ~/.local/bin/tmux-aqua)
+#   5) RemotePairHost.app 빌드 (host/build-host.sh)
+#   6) glue+native 설치 + sync (shared/install.sh — manifest 가역)
 #   7) ⚠ 수동 1회: 손쉬운사용/화면기록 권한 토글 안내 (macOS 가 자동화 불가)
 #
 # 비대화 환경변수(파이프 설치 시 권장):
@@ -59,9 +59,9 @@ ok "소스 준비: $SRC ($(git rev-parse --short HEAD))"
 
 # ── 3~5. 빌드 (host/both 만; client 는 생략) ──
 if needs_build; then
-  c "안정 코드서명 cert (idempotent)"; ./scripts/make-signing-cert.sh || warn "cert 생성 실패 — ad-hoc 폴백(재빌드 시 재토글 필요)"
-  c "patched tmux 빌드 (static, self-contained)"; ./scripts/build-tmux-aqua.sh || die "tmux 빌드 실패"
-  c "RemotePairHost.app 빌드 (tmux-aqua 임베드)";  ./scripts/build-host.sh      || die "앱 빌드 실패"
+  c "안정 코드서명 cert (idempotent)"; ./host/make-signing-cert.sh || warn "cert 생성 실패 — ad-hoc 폴백(재빌드 시 재토글 필요)"
+  c "patched tmux 빌드 (static, self-contained)"; ./host/build-tmux-aqua.sh || die "tmux 빌드 실패"
+  c "RemotePairHost.app 빌드 (tmux-aqua 임베드)";  ./host/build-host.sh      || die "앱 빌드 실패"
 else
   c "role=$ROLE — 빌드 생략 (client 는 Service+런처만)"
 fi
@@ -75,7 +75,7 @@ export REMOTE_HOST SYNC_URL="${SYNC_URL:-}"
 INSTALL_ARGS=(--role "$ROLE")
 [ -n "$SYNC_URL" ] && INSTALL_ARGS+=(--with-sync)
 c "설치 (install.sh --role $ROLE$([ -n "$SYNC_URL" ] && echo ' --with-sync'))"
-./install/install.sh "${INSTALL_ARGS[@]}"
+./shared/install.sh "${INSTALL_ARGS[@]}"
 
 # ── 7. 수동 권한 단계 안내 (host/both 에서 앱을 깐 경우만; macOS 자동화 불가) ──
 echo
