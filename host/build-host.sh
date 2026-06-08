@@ -81,8 +81,22 @@ else
   echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./host/build-tmux-aqua.sh 먼저 실행 권장(런타임 외부경로 폴백)"
 fi
 
-echo "=== embed app icon + menu-bar template → Contents/Resources ==="
+echo "=== embed skills + rules → Contents/Resources (self-install payload) ==="
 RES="$APP/Contents/Resources"; mkdir -p "$RES"
+if [ -d host/skills ]; then
+  rm -rf "$RES/skills"; mkdir -p "$RES/skills"
+  cp -R host/skills/. "$RES/skills/"
+  echo "  embedded: skills/ ($(find "$RES/skills" -name SKILL.md | wc -l | tr -d ' ') skill(s)) → Resources/skills"
+else
+  echo "  ⚠ host/skills 없음 — 앱 self-install 시 스킬 미동봉"
+fi
+if [ -f host/rules.txt ]; then
+  cp host/rules.txt "$RES/rules.txt"; echo "  embedded: rules.txt → Resources/rules.txt"
+else
+  echo "  ⚠ host/rules.txt 없음 — 앱 self-install 시 룰 미동봉"
+fi
+
+echo "=== embed app icon + menu-bar template → Contents/Resources ==="
 if [ -f assets/icon/AppIcon-1024.png ]; then
   ISET="build/AppIcon.iconset"; rm -rf "$ISET"; mkdir -p "$ISET"
   _gen() { sips -z "$2" "$2" assets/icon/AppIcon-1024.png --out "$ISET/$1" >/dev/null; }

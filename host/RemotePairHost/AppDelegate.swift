@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
+        Installer.ensureInstalled()     // 다운로드된 .app 첫 실행 자기설치 (이미 설치돼 있으면 no-op)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Menu-bar icon: monochrome template (auto-adapts to light/dark menu bar).
         // Loaded by name from Resources (menubar.png + menubar@2x.png). Falls back to text glyph.
@@ -83,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         menu.addItem(withTitle: "Restart tmux host", action: #selector(restartHost), keyEquivalent: "")
+        menu.addItem(withTitle: "Repair install", action: #selector(repairInstall), keyEquivalent: "")
         menu.addItem(.separator())
 
         menu.addItem(withTitle: "Approve now", action: #selector(approveNow), keyEquivalent: "")
@@ -155,6 +157,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         host.forceRestart()
     }
     @objc func checkUpdates() { Updater.checkForUpdates(interactive: true) }
+
+    @objc func repairInstall() {
+        Installer.install(force: false)   // 누락 조각 재적용 (안전: 기존 파일/실행 중 인스턴스 보존)
+        rebuildMenu()
+    }
 
     @objc func openSettings() {
         if settings == nil { settings = SettingsWindowController() }

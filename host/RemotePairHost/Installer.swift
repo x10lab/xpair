@@ -1,0 +1,198 @@
+// Installer.swift — 다운로드된 .app 첫 실행 시 자기설치(self-install).
+//
+// GitHub Releases 에서 받은 .app 이 shared/install.sh 없이도 동작하는 host 가 되도록,
+// 매 실행마다 ensureInstalled() 가 불린다. 이미 설치돼 있으면 즉시 no-op(파일/launchctl 손대지 않음).
+// install(force:) 가 shared/install.sh 의 is_host 섹션과 동일한 상태를 만든다(라벨·plist·경로 동일).
+//
+// SSOT 주의: 라벨/plist 모양/경로는 shared/config.sh + shared/install.sh 와 글자 단위로 일치해야 한다.
+
+import Cocoa
+
+enum Installer {
+    // shared/config.sh 와 일치하는 식별자 (이 앱 번들 기준 파생)
+    static let RP_ORG = "com.x10lab"
+    static let APP_LABEL = BUNDLE_ID                       // = BUNDLE_PREFIX (Info.plist CFBundleIdentifier)
+    static let WATCHDOG_LABEL = "\(BUNDLE_ID)-watchdog"
+    static let LAUNCH_AGENTS = "\(HOME)/Library/LaunchAgents"
+    static let LOCAL_BIN = "\(HOME)/.local/bin"
+    static let CLAUDE_SKILLS = "\(HOME)/.claude/skills"
+    static let COMMON_ENV = "\(RP_DIR)/common.env"
+    static let HOST_ENV = "\(RP_DIR)/host.env"
+    static let WATCHDOG_SH = "\(RP_DIR)/bin/remote-pair-watchdog.sh"
+    static let APP_EXEC = Bundle.main.executablePath ?? "\(HOME)/Applications/\(APP_NAME).app/Contents/MacOS/\(APP_NAME)"
+    static let RES = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").path
+
+    private static var fm: FileManager { FileManager.default }
+    private static var appPlist: String { "\(LAUNCH_AGENTS)/\(APP_LABEL).plist" }
+    private static var wdPlist: String { "\(LAUNCH_AGENTS)/\(WATCHDOG_LABEL).plist" }
+
+    /// 매 실행마다 호출. 이미 설치돼 있으면 진짜 no-op(파일 재기록 X, launchctl 재부트스트랩 X →
+    /// 돌고 있는 tmux 서버를 매 실행마다 죽이는 일을 막는다). "설치됨" = LaunchAgent plist + host.env 둘 다 존재.
+    static func ensureInstalled() {
+        if fm.fileExists(atPath: appPlist) && fm.fileExists(atPath: HOST_ENV) { return }
+        log("INSTALL: not fully installed (plist=\(fm.fileExists(atPath: appPlist)) host.env=\(fm.fileExists(atPath: HOST_ENV))) → installing")
+        install(force: false)
+    }
+
+    /// host 설치 단계 — shared/install.sh 의 is_host 섹션을 미러링.
+    static func install(force: Bool) {
+        log("INSTALL: begin (force=\(force))")
+        ensureDir(RP_DIR)
+        ensureDir(LOG_DIR)
+        ensureDir("\(RP_DIR)/bin")
+
+        // 1. env 파일 (host.env: HOST_KEYS 기본값, common.env: COMMON_KEYS)
+        writeEnv(COMMON_ENV, [
+            ("LOCAL_BIN", LOCAL_BIN),
+            ("AQUA_SOCK", SOCKET),
+        ], onlyIfAbsent: false)                            // common 은 항상 동일 → 갱신 무해
+        writeEnv(HOST_ENV, [
+            ("RP_ORG", RP_ORG),
+            ("BUNDLE_PREFIX", BUNDLE_ID),
+            ("APP_NAME", APP_NAME),
+            ("SIGN_CN", "RemotePair Local Signing"),
+            ("GH_REPO", GH_REPO),
+            ("APPROVE_TRIGGER", TRIGGER),
+            ("LOG_FILE", LOGP),
+            ("HEARTBEAT_FILE", HEARTBEAT),
+            ("RULES_FILE", RULES_FILE),
+        ], onlyIfAbsent: !force)
+
+        // 2. rules.txt ← 번들 Resources/rules.txt
+        let bundledRules = "\(RES)/rules.txt"
+        if fm.fileExists(atPath: bundledRules) {
+            if force || !fm.fileExists(atPath: RULES_FILE) {
+                try? fm.removeItem(atPath: RULES_FILE)
+                try? fm.copyItem(atPath: bundledRules, toPath: RULES_FILE)
+                log("INSTALL: rules.txt → \(RULES_FILE)")
+            }
+        } else { log("INSTALL: bundled rules.txt 없음 (\(bundledRules))") }
+
+        // 3. skills ← 번들 Resources/skills/* → ~/.claude/skills (앱이 소유, 덮어쓰기 OK)
+        let bundledSkills = "\(RES)/skills"
+        if let names = try? fm.contentsOfDirectory(atPath: bundledSkills) {
+            ensureDir(CLAUDE_SKILLS)
+            for name in names where !name.hasPrefix(".") {
+                let src = "\(bundledSkills)/\(name)", dst = "\(CLAUDE_SKILLS)/\(name)"
+                try? fm.removeItem(atPath: dst)
+                do { try fm.copyItem(atPath: src, toPath: dst); log("INSTALL: skill \(name) → \(dst)") }
+                catch { log("INSTALL: skill \(name) copy 실패: \(error)") }
+            }
+        } else { log("INSTALL: bundled skills 없음 (\(bundledSkills))") }
+
+        // 4. tmux-aqua 심볼릭링크 → 번들 Helpers/tmux-aqua (잘못/오래된 링크면 교체)
+        let tmuxSrc = "\(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path)/tmux-aqua"
+        let tmuxLink = "\(LOCAL_BIN)/tmux-aqua"
+        if fm.fileExists(atPath: tmuxSrc) {
+            ensureDir(LOCAL_BIN)
+            let cur = try? fm.destinationOfSymbolicLink(atPath: tmuxLink)
+            if cur != tmuxSrc {
+                try? fm.removeItem(atPath: tmuxLink)
+                do { try fm.createSymbolicLink(atPath: tmuxLink, withDestinationPath: tmuxSrc); log("INSTALL: tmux-aqua link → \(tmuxSrc)") }
+                catch { log("INSTALL: tmux-aqua link 실패: \(error)") }
+            }
+        } else { log("INSTALL: bundled tmux-aqua 없음 (\(tmuxSrc))") }
+
+        // 5. watchdog 스크립트 + LaunchAgent plist (앱 + watchdog) — install.sh 와 동일 모양
+        writeWatchdogScript()
+        writeFile(appPlist, appPlistXML())
+        writeFile(wdPlist, watchdogPlistXML())
+        bootstrap(label: APP_LABEL, plist: appPlist)
+        bootstrap(label: WATCHDOG_LABEL, plist: wdPlist)
+
+        log("INSTALL: done (force=\(force))")
+    }
+
+    // ── helpers ──
+
+    private static func ensureDir(_ p: String) {
+        try? fm.createDirectory(atPath: p, withIntermediateDirectories: true)
+    }
+
+    private static func writeFile(_ path: String, _ contents: String, mode: Int? = nil) {
+        ensureDir((path as NSString).deletingLastPathComponent)
+        try? contents.write(toFile: path, atomically: true, encoding: .utf8)
+        if let mode = mode { try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: path) }
+    }
+
+    /// _write_env 미러: 헤더 + `KEY=<shell-quoted value>` (bash printf %q 와 일치).
+    private static func writeEnv(_ path: String, _ pairs: [(String, String)], onlyIfAbsent: Bool) {
+        if onlyIfAbsent && fm.fileExists(atPath: path) { return }
+        let base = (path as NSString).lastPathComponent
+        var s = "# RemotePair config (\(base)) — written by RemotePairHost self-install. Safe to edit manually.\n"
+        for (k, v) in pairs { s += "\(k)=\(shellQuote(v))\n" }
+        writeFile(path, s)
+        log("INSTALL: env \(path)")
+    }
+
+    /// bash `printf %q` 호환 인용: 안전한 문자만이면 그대로, 아니면 특수문자를 백슬래시로 이스케이프.
+    private static func shellQuote(_ s: String) -> String {
+        if s.isEmpty { return "''" }
+        let safe = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:=@%+,")
+        if s.unicodeScalars.allSatisfy({ safe.contains($0) }) { return s }
+        var out = ""
+        for ch in s {
+            if ch == "\\" || ch == "'" || ch == "\"" || ch == " " || ch == "$" || ch == "`" {
+                out.append("\\")
+            }
+            out.append(ch)
+        }
+        return out
+    }
+
+    private static func writeWatchdogScript() {
+        // install.sh 의 here-doc 와 동일한 런타임 동작(HB stale 시 kickstart).
+        let label = "gui/$(id -u)/\(APP_LABEL)"
+        let s = """
+        #!/bin/bash
+        # remote-pair-watchdog.sh — Restart \(APP_NAME) when heartbeat goes stale. (generated by RemotePairHost self-install)
+        set -u
+        HB="\(HEARTBEAT)"; LOG="\(LOGP)"
+        STALE=90; LABEL="\(label)"; now=$(date +%s)
+        if [ -f "$HB" ]; then
+          age=$(( now - $(stat -f %m "$HB" 2>/dev/null || echo 0) ))
+          [ "$age" -gt "$STALE" ] && { launchctl kickstart -k "$LABEL" >/dev/null 2>&1; printf '%s watchdog: stale %ss\\n' "$(date '+%F %T')" "$age" >> "$LOG"; }
+        else launchctl kickstart -k "$LABEL" >/dev/null 2>&1; fi
+        """
+        writeFile(WATCHDOG_SH, s + "\n", mode: 0o755)
+    }
+
+    private static func appPlistXML() -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>Label</key><string>\(APP_LABEL)</string>
+          <key>ProgramArguments</key><array><string>\(APP_EXEC)</string></array>
+          <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+          <key>ProcessType</key><string>Interactive</string>
+          <key>StandardOutPath</key><string>\(LOG_DIR)/remote-pair.out.log</string>
+          <key>StandardErrorPath</key><string>\(LOG_DIR)/remote-pair.err.log</string>
+        </dict></plist>
+
+        """
+    }
+
+    private static func watchdogPlistXML() -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>Label</key><string>\(WATCHDOG_LABEL)</string>
+          <key>ProgramArguments</key><array><string>/bin/bash</string><string>\(WATCHDOG_SH)</string></array>
+          <key>RunAtLoad</key><true/><key>StartInterval</key><integer>30</integer>
+          <key>StandardErrorPath</key><string>\(LOG_DIR)/remote-pair-watchdog.err.log</string>
+        </dict></plist>
+
+        """
+    }
+
+    /// launchctl bootstrap gui/<uid> — best-effort. 이미 로드돼 있으면 무시(이미 실행 중인 인스턴스를 안 죽임).
+    private static func bootstrap(label: String, plist: String) {
+        let uid = getuid()
+        let r = runCapture("/bin/launchctl", ["bootstrap", "gui/\(uid)", plist])
+        if r.status != 0 { log("INSTALL: bootstrap \(label) rc=\(r.status) (이미 로드됐을 수 있음 — 무시)") }
+        else { log("INSTALL: bootstrap \(label) ok") }
+    }
+}
