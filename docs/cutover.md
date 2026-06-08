@@ -49,7 +49,7 @@ login → LaunchAgent(KeepAlive) → RemotePairHost.app (메뉴바, AX+SR grante
    `~/.claude` 에는 **스킬만** 설치 → **`~/.claude` 동기화에 의존 안 함**(없어도 동작). git-sync 는 선택적 개인 편의.
 3. **클라이언트**: `remote-pair` CLI(`launch/ls/map/doctor/approve/status/host`) +
    런처 `remote-pair-launch`. **경로 매핑**(client↔host 절대경로 다름 대응; 외부 sync=Google Drive/Syncthing),
-   **세션 공유**(host경로 기준 결정론적 세션명 → 여러 client 가 같은 세션 multi-attach), **비인터랙티브**(`RP_YES`/`--yes`).
+   **1:1 연결**(host경로 기준 결정론적 세션명 + `_N` 번호; detached→`attach -d` take-over, attached→`_N` fresh — multi-attach 세션공유는 폐기, 레퍼런스 claude-iterm-launch 와 동일), **비인터랙티브**(`RP_YES`/`--yes`).
 4. **approve 개선** (§5).
 5. **스킬**: `approve`(막힌 승인창 통과 요청), `host-gui-access`(RemotePair 하위면 GUI+computer-use 가능 판별).
 6. **정리**: `CLAUDE.command`(gh-mac-m4 하드락) 삭제, Service "Launch Remote Pair", `build-native.sh`→`build-host.sh`,
