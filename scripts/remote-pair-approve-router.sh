@@ -38,6 +38,8 @@ VISION="${RP_VISION:-auto}"                    # auto(룰 미스 시) | on | off
 VISION_MODEL="${RP_VISION_MODEL:-claude-haiku-4-5}"
 VISION_TIMEOUT="${RP_VISION_TIMEOUT:-12}"      # 비전 호출 1회 상한(헤드리스 claude 가 느리거나 막혀도 OCR 폴링 회복)
 VISION_EVERY="${RP_VISION_EVERY:-2}"           # N 사이클마다 1회만 비전 호출(지연/비용 제한)
+VISION_MAX_FAILS="${RP_VISION_MAX_FAILS:-2}"   # 연속 claude 실패 N회 → 그 실행 동안 비전 자동 비활성
+VISION_FAILS=0; LAST_VISION_RC=0
 GENERIC_LABELS="Allow|Authorize|Authorize Once|Always Allow|Approve|Confirm|Continue|OK|허용|승인|확인|한 번 승인"
 
 log(){ printf '%s router: %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
@@ -112,11 +114,14 @@ Reply with EXACTLY ONE token, nothing else:
 - the matching ID (verbatim) if the visible approval dialog is one of the known ones
 - UNKNOWN if an approval dialog is visible but matches none of them
 - NONE if no approval dialog is visible"
-  local out; out="$(mktemp)"
-  ( "$CLAUDE" -p --model "$VISION_MODEL" --allowedTools Read "$prompt" >"$out" 2>/dev/null ) & local pp=$!
+  local out err; out="$(mktemp)"; err="$(mktemp)"
+  # 프롬프트는 positional 로 '먼저' — --allowed-tools 는 variadic 이라 뒤에 두면 prompt 를 삼킨다.
+  ( "$CLAUDE" -p "$prompt" --model "$VISION_MODEL" --allowed-tools Read >"$out" 2>"$err" ) & local pp=$!
   ( sleep "$VISION_TIMEOUT"; kill -9 "$pp" 2>/dev/null ) & local kk=$!
-  wait "$pp" 2>/dev/null; kill "$kk" 2>/dev/null
-  local tok; tok="$(tr -s '[:space:]' '\n' < "$out" | grep -v '^$' | tail -1)"; rm -f "$out"
+  wait "$pp" 2>/dev/null; local rc=$?; kill "$kk" 2>/dev/null
+  LAST_VISION_RC=$rc                            # 0=정상(NONE 포함), ≠0=에러/타임아웃(137)
+  [ "$rc" -ne 0 ] && log "vision claude rc=$rc: $(tr '\n' ' ' <"$err" 2>/dev/null | tail -c 160)"
+  local tok; tok="$(tr -s '[:space:]' '\n' < "$out" | grep -v '^$' | tail -1)"; rm -f "$out" "$err"
   [ -n "$tok" ] && echo "$tok" || echo NONE
 }
 
@@ -145,6 +150,14 @@ while :; do
   # 2) 룰 미스 → haiku 분류 폴백 (사이클 게이트로 빈도 제한)
   if [ "$handled" = 0 ] && [ "$VISION" != off ] && [ $(( cycle % VISION_EVERY )) -eq 0 ]; then
     vid="$(vision_classify)"
+    if [ "$LAST_VISION_RC" -ne 0 ]; then
+      VISION_FAILS=$((VISION_FAILS+1))
+      if [ "$VISION_FAILS" -ge "$VISION_MAX_FAILS" ]; then
+        VISION=off; log "vision 연속 실패 ${VISION_FAILS}회 → 이 실행 동안 비활성(OCR 룰만)"
+      fi
+    else
+      VISION_FAILS=0                              # 정상 응답이면 카운터 리셋
+    fi
     log "vision → $vid"
     case "$vid" in
       NONE|none|"") : ;;

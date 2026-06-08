@@ -176,26 +176,36 @@ cmd_approve() {
     *) echo "unknown arg: $1" >&2; return 2 ;;
   esac; done
   [ -n "$(app_pid)" ] || warn "$APP_NAME 미기동 — 'remote-pair host' 로 먼저 기동 권장"
-  local base=0; [ -f "$LOG_FILE" ] && base=$(wc -l < "$LOG_FILE")
+  # base0 = 트리거 직전 로그 길이 (이번 요청의 라우터 로그만 추려 에이전트에게 보여주기 위함)
+  local base0=0; [ -f "$LOG_FILE" ] && base0=$(wc -l < "$LOG_FILE")
+  local base="$base0"
   [ -n "$label" ] && printf '%s\n' "$label" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
   : > "$APPROVE_TRIGGER" 2>/dev/null || { echo "트리거 쓰기 실패: $APPROVE_TRIGGER" >&2; return 1; }
   echo "approve 요청 → $APP_NAME (최대 ${timeout}s 관찰)"
+  # 이번 요청에 해당하는 라우터 로그 줄만 출력 (에이전트가 결과를 읽고 다음 행동을 정하도록)
+  _router_trail() { [ -f "$LOG_FILE" ] || return 0; local tot; tot=$(wc -l < "$LOG_FILE"); [ "$tot" -gt "$base0" ] && tail -n "$(( tot - base0 ))" "$LOG_FILE" | grep 'router:'; }
   local end=$(( $(date +%s) + timeout ))
   while [ "$(date +%s)" -lt "$end" ]; do
     if [ -f "$LOG_FILE" ]; then
       local now; now=$(wc -l < "$LOG_FILE")
       if [ "$now" -gt "$base" ]; then
         local new; new=$(tail -n "$(( now - base ))" "$LOG_FILE")
-        if printf '%s\n' "$new" | grep -qiE 'router:.*(success|click|key)|clicked|coord'; then
-          printf '%s\n' "$new" | grep -iE 'router:.*(success|click|key)|clicked|coord' | sed 's/^/  /'
-          echo "✓ 처리됨"; return 0
+        if printf '%s\n' "$new" | grep -qiE 'router:.*success'; then
+          _router_trail | sed 's/^/  /'
+          echo "✓ 처리됨 (창 닫힘 검증)"; return 0
         fi
         base="$now"
       fi
     fi
     sleep 0.5
   done
-  echo "⏱ ${timeout}s 내 클릭 로그 없음 ($LOG_FILE 확인)" >&2; return 1
+  # 타임아웃/실패: 이번 요청의 라우터 로그를 그대로 보여줘 에이전트가 원인을 읽고 판단하게 한다.
+  echo "✗ ${timeout}s 내 처리 실패 — 라우터 로그:" >&2
+  local trail; trail="$(_router_trail)"
+  if [ -n "$trail" ]; then printf '%s\n' "$trail" | sed 's/^/  /' >&2
+  else echo "  (라우터 로그 없음 — 앱/권한/트리거 확인. 전체: $LOG_FILE)" >&2; fi
+  echo "  → 창이 늦게 뜨는 경우: 논블로킹으로 다시 트리거 후 막힌 호출을 즉시 재시도. 미지의 창이면 $RP_DIR/rules.txt 에 규칙 추가." >&2
+  return 1
 }
 
 case "${1:-help}" in
