@@ -14,6 +14,10 @@ final class HostManager {
         spawn()
     }
 
+    /// 강제 재시작 — 기존 서버(+그 안 세션)를 reap 하고 새 _keeper 를 띄운다.
+    /// 세션을 끊으므로 호출 전 사용자 확인 권장(AppDelegate.restartHost 참고).
+    func forceRestart() { childPid = 0; spawn() }   // spawn() 이 reapStrays() 선행
+
     // 이전 인스턴스의 고아 tmux-aqua 서버(+그 안 세션)를 reap. spawn() 시점에만 호출 = 전부 고아라 안전.
     private func reapStrays() {
         for pat in ["tmux-aqua -S \(SOCKET)", "/usr/bin/script -q /dev/null \(TMUX)"] {
