@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax (bash -n)
+        run: |
+          set -e
+          fail=0
+          for f in bootstrap.sh \
+                   install/install.sh install/uninstall.sh install/config.sh install/lib.sh install/sync-setup.sh \
+                   install/glue/bin/remote-pair install/glue/bin/remote-pair-launch \
+                   scripts/build-host.sh scripts/build-tmux-aqua.sh scripts/make-signing-cert.sh \
+                   scripts/remote-pair-approve-router.sh; do
+            [ -f "$f" ] || continue
+            if bash -n "$f"; then echo "ok  $f"; else echo "FAIL $f"; fail=1; fi
+          done
+          exit $fail
+
+      - name: Test suite (mock harness, 0 real ssh/tmux)
+        run: cd tests && bash run.sh
+
+      - name: Swift compile-check (RemotePairHost, no signing)
+        run: |
+          xcrun swiftc -O RemotePairHost/*.swift -o "$RUNNER_TEMP/rphost-compilecheck" \
+            || xcrun swiftc -O -sdk "$(xcrun --show-sdk-path)" -target arm64-apple-macos13.0 \
+                 RemotePairHost/*.swift -o "$RUNNER_TEMP/rphost-compilecheck"
+          echo "RemotePairHost compiles ✓"
