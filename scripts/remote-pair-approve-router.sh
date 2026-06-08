@@ -44,6 +44,20 @@ GENERIC_LABELS="Allow|Authorize|Authorize Once|Always Allow|Approve|Confirm|Cont
 
 log(){ printf '%s router: %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
 [ -n "$OCR" ] || { log "ocr-find 없음 — 중단"; exit 1; }
+
+# 힌트: 에이전트가 "어떤 승인인지"(룰 id 또는 자유문구) 미리 알려주면 해당 룰을 우선 시도 +
+#   haiku 분류 prior 로 사용. 없어도 됨. (CLI 가 .label 파일로 전달, 또는 RP_FOR 환경변수)
+HINT_FILE="${RP_HINT_FILE:-/tmp/remote-pair.approve-request.label}"
+HINT="${RP_FOR:-}"
+[ -z "$HINT" ] && [ -f "$HINT_FILE" ] && HINT="$(head -1 "$HINT_FILE" 2>/dev/null)"
+rm -f "$HINT_FILE" 2>/dev/null || true
+HINT_ID=""
+if [ -n "$HINT" ]; then
+  log "hint: $HINT"
+  HINT_ID="$(awk -F'\t' -v h="$(printf '%s' "$HINT" | tr '[:upper:]' '[:lower:]')" '
+    $0!~/^[[:space:]]*#/ && NF>=3 { lid=tolower($1); if (index(lid,h)>0 || index(h,lid)>0) { print $1; exit } }' "$RULES")"
+  [ -n "$HINT_ID" ] && log "hint → rule '$HINT_ID' 우선 시도"
+fi
 [ "$VISION" != off ] && [ -z "$CLAUDE" ] && { log "claude CLI 없음 → 비전 비활성(OCR 룰만)"; VISION=off; }
 
 capture(){ [ -n "${RP_SHOT:-}" ] && return 0; $SCAP -x "$SHOT" 2>/tmp/rp-scap.err || { log "screencapture 실패: $(tr '\n' ' ' </tmp/rp-scap.err 2>/dev/null)"; return 1; }; }
@@ -106,9 +120,11 @@ act_and_verify(){
 vision_classify(){
   [ "$VISION" = off ] && { echo NONE; return; }
   local ids; ids="$(awk -F'\t' '$0!~/^[[:space:]]*#/ && NF>=3 {printf "  %s\t%s\n",$1,$2}' "$RULES")"
+  local hintline=""; [ -n "$HINT" ] && hintline="The caller expects roughly a \"$HINT\" approval dialog — use this as a hint, but verify against the screenshot.
+"
   local prompt="A screenshot of a macOS screen is saved at this file path: $SHOT
 Read that image file. Determine whether a permission / approval / authorization DIALOG that a user must approve is currently visible.
-Known approval dialogs (ID<tab>marker):
+${hintline}Known approval dialogs (ID<tab>marker):
 $ids
 Reply with EXACTLY ONE token, nothing else:
 - the matching ID (verbatim) if the visible approval dialog is one of the known ones
@@ -137,8 +153,20 @@ while :; do
   cycle=$((cycle+1))
   capture || { sleep "$INTERVAL"; [ "$(date +%s)" -ge "$deadline" ] && break || continue; }
 
-  # 1) OCR 룰 우선
+  # 0) 힌트 룰 우선 시도 (에이전트가 어떤 승인인지 알려준 경우)
   handled=0
+  if [ -n "$HINT_ID" ]; then
+    hra="$(rule_by_id "$HINT_ID")"
+    if [ -n "$hra" ]; then
+      hmarker="${hra%%$'\t'*}"; haction="${hra#*$'\t'}"
+      if "$OCR" "$SHOT" --has "$hmarker" 2>/dev/null; then
+        if act_and_verify "$HINT_ID" "$hmarker" "$haction"; then exit 0; fi
+        handled=1
+      fi
+    fi
+  fi
+
+  # 1) OCR 룰 (전체)
   while IFS=$'\t' read -r id marker action; do
     case "$id" in ''|\#*) continue;; esac
     { [ -z "${marker:-}" ] || [ -z "${action:-}" ]; } && continue

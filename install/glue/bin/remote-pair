@@ -7,7 +7,8 @@
 #   remote-pair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              두 기기에서 같은 내용인 폴더 매핑(외부 sync 전제). hostDir 생략=동일경로.
 #   remote-pair doctor         SSH 키 연결·host 앱·tmux 점검 + 안내
-#   remote-pair approve [--label P] [--timeout S]   승인 다이얼로그 클릭 요청 (결과 회수)
+#   remote-pair approve [--for "<무엇>"] [--timeout S]   승인 다이얼로그 클릭 요청 (결과 회수)
+#                              --for 로 어떤 승인인지 힌트(예: "1Password", "Claude for Chrome") → 우선 라우팅
 #   remote-pair status         host 서버·앱·heartbeat 상태
 #   remote-pair host           tmux-aqua host 서버 기동 보장 (로컬에 앱 있을 때)
 #   remote-pair help
@@ -169,19 +170,21 @@ EOF
 }
 
 cmd_approve() {
-  local label="" timeout=22     # 라우터 적응형 폴링(기본 ~18s)보다 길게
+  local forhint="" timeout=22     # 라우터 적응형 폴링(기본 ~18s)보다 길게
   while [ $# -gt 0 ]; do case "$1" in
-    --label) label="${2:-}"; shift 2 ;;
-    --timeout) timeout="${2:-12}"; shift 2 ;;
+    --for|--label|--expect) forhint="${2:-}"; shift 2 ;;   # 어떤 승인인지 힌트(룰 id 또는 자유문구)
+    --timeout) timeout="${2:-22}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; return 2 ;;
   esac; done
   [ -n "$(app_pid)" ] || warn "$APP_NAME 미기동 — 'remote-pair host' 로 먼저 기동 권장"
   # base0 = 트리거 직전 로그 길이 (이번 요청의 라우터 로그만 추려 에이전트에게 보여주기 위함)
   local base0=0; [ -f "$LOG_FILE" ] && base0=$(wc -l < "$LOG_FILE")
   local base="$base0"
-  [ -n "$label" ] && printf '%s\n' "$label" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
+  # 힌트 전달: 라우터가 .label 파일을 읽어 해당 룰 우선 + haiku prior 로 사용 후 소비
+  if [ -n "$forhint" ]; then printf '%s\n' "$forhint" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
+  else rm -f "$APPROVE_TRIGGER.label" 2>/dev/null || true; fi
   : > "$APPROVE_TRIGGER" 2>/dev/null || { echo "트리거 쓰기 실패: $APPROVE_TRIGGER" >&2; return 1; }
-  echo "approve 요청 → $APP_NAME (최대 ${timeout}s 관찰)"
+  echo "approve 요청 → $APP_NAME${forhint:+ (expect: $forhint)} (최대 ${timeout}s 관찰)"
   # 이번 요청에 해당하는 라우터 로그 줄만 출력 (에이전트가 결과를 읽고 다음 행동을 정하도록)
   _router_trail() { [ -f "$LOG_FILE" ] || return 0; local tot; tot=$(wc -l < "$LOG_FILE"); [ "$tot" -gt "$base0" ] && tail -n "$(( tot - base0 ))" "$LOG_FILE" | grep 'router:'; }
   local end=$(( $(date +%s) + timeout ))

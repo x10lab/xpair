@@ -8,9 +8,13 @@ description: macOS 승인/권한 다이얼로그(1Password SSH 승인·잠금, C
 작업이 macOS 승인/권한 다이얼로그에 막혔을 때, **요청 한 줄**만 하면 된다:
 
 ```bash
-remote-pair approve     # 트리거 + 클릭 결과 회수 (exit 0=눌림, 1=타임아웃). PATH(~/.local/bin) 필요.
+remote-pair approve                       # 트리거 + 결과 회수 (exit 0=처리됨, 1=실패). PATH(~/.local/bin) 필요.
+remote-pair approve --for "1Password"     # 어떤 승인인지 알면 힌트로 넘겨라(권장) → 그 룰 우선 + haiku prior
+remote-pair approve --for "Claude for Chrome"
 ```
-폴백(같은 동작): `~/.remote-pair/bin/approve` 또는 `touch /tmp/remote-pair.approve-request`.
+**무엇이 막혔는지 알면 `--for "<무엇>"` 로 넘겨라** — 라우터가 그 룰을 먼저 시도하고, 룰에 없으면 haiku 분류의
+힌트로도 쓴다(없어도 동작). 값은 룰 id(예: `1Password`, `Claude for Chrome`) 또는 자유 문구.
+폴백(힌트 없는 동작): `~/.remote-pair/bin/approve` 또는 `touch /tmp/remote-pair.approve-request`.
 
 그게 전부다. 이후는 **RemotePair**(메뉴바 앱, 화면기록+손쉬운사용 granted)가 알아서 한다:
 - 화면을 보고(OCR) **어떤 승인창**이 떴는지 감지
