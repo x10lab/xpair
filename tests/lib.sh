@@ -9,9 +9,11 @@
 # mock 은 호출 argv 를 $MOCKLOG 에 "이름|arg1|arg2|..." 한 줄로 기록. 동작은 env 로 제어.
 # bash 3.2 호환만 사용 (연관배열/`${x^^}` 등 금지).
 
-# 검증 대상/레퍼런스 경로
-LAUNCHER_SRC="${LAUNCHER_SRC:-/Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair/install/glue/bin/remote-pair-launch}"
-REFERENCE_SRC="${REFERENCE_SRC:-$HOME_REAL/.claude/bin/claude-iterm-launch}"
+# 검증 대상/레퍼런스 경로 — repo 루트 기준 상대(어느 머신/CI 체크아웃 경로든 동작; 절대경로 하드코딩 금지)
+_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(cd "$_LIB_DIR/.." && pwd)"
+LAUNCHER_SRC="${LAUNCHER_SRC:-$_REPO_ROOT/install/glue/bin/remote-pair-launch}"
+REFERENCE_SRC="${REFERENCE_SRC:-${HOME_REAL:-$HOME}/.claude/bin/claude-iterm-launch}"
 
 # 집계 카운터
 T_PASS=0; T_FAIL=0; T_NAME=""
