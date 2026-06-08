@@ -69,7 +69,11 @@ jobs:
           rm -f "$RUNNER_TEMP/signing.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
-          echo "Signing identities:"; security find-identity -v -p codesigning | grep "RemotePair Local Signing"
+          # Trust the self-signed cert for codeSigning so `find-identity -v` lists it as VALID
+          # (build-host.sh gates on `find-identity -v -p codesigning`; without trust it falls back to ad-hoc).
+          security find-certificate -c "RemotePair Local Signing" -p "$KEYCHAIN" > "$RUNNER_TEMP/rpcert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign "$RUNNER_TEMP/rpcert.pem"
+          echo "Signing identities:"; security find-identity -v -p codesigning | grep "RemotePair Local Signing" || true
 
           # Build + sign + verify (build-host finds the cert by CN in the search list above).
           ./scripts/build-host.sh
