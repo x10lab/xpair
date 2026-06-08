@@ -1,6 +1,6 @@
 .DS_Store
 build/
-RemotePairHost/RemotePairHost
+host/RemotePairHost/RemotePairHost
 *.o
 # OMC 런타임 상태 (기기 로컬)
 .omc/
@@ -8,7 +8,7 @@ RemotePairHost/RemotePairHost
 *.p12
 *.pem
 *.key
-scripts/ocr-find
+host/ocr-find
 
 # generated at build from AppIcon-1024.png
 assets/icon/AppIcon.icns

@@ -71,19 +71,19 @@ record NOTE "installed role=$ROLE at $(date '+%F %T') on $(hostname -s)"
 
 # ── Common: umbrella CLI → PATH + log directory ──
 say "remote-pair CLI → $LOCAL_BIN"
-install_file "$GLUE_DIR/bin/remote-pair" "$LOCAL_BIN/remote-pair" 755
+install_file "$CLIENT_DIR/remote-pair" "$LOCAL_BIN/remote-pair" 755
 case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN is not in PATH — add it to your shell rc" ;; esac
 mk_dir "$LOG_DIR"
 
 # ── HOST: app + approve (skill/rules) + watchdog + LaunchAgent ──
 if is_host; then
   say "[host] approve rules → $RULES_FILE"
-  install_file "$GLUE_DIR/rules.txt" "$RULES_FILE"
-  if [ -d "$REPO_ROOT/skills" ]; then
+  install_file "$HOST_DIR/rules.txt" "$RULES_FILE"
+  if [ -d "$HOST_DIR/skills" ]; then
     say "[host] approve skill → $CLAUDE_DIR/skills (Claude harness location)"
     while IFS= read -r src; do
-      rel="${src#"$REPO_ROOT/skills/"}"; install_file "$src" "$CLAUDE_DIR/skills/$rel"
-    done < <(find "$REPO_ROOT/skills" -type f)
+      rel="${src#"$HOST_DIR/skills/"}"; install_file "$src" "$CLAUDE_DIR/skills/$rel"
+    done < <(find "$HOST_DIR/skills" -type f)
   fi
   # Remove legacy label names — idempotent, best-effort
   U=$(id -u)
@@ -147,7 +147,7 @@ P
       record LAUNCHCTL "$WATCHDOG_LABEL" "$wd_plist"
       warn "One-time permission grant required: System Settings → Privacy & Security → Accessibility / Screen Recording → turn $APP_NAME ON"
     else
-      warn "No build artifact: $REPO_ROOT/build/${APP_NAME}.app — run scripts/build-host.sh first (skipping app install)"
+      warn "No build artifact: $REPO_ROOT/build/${APP_NAME}.app — run host/build-host.sh first (skipping app install)"
     fi
   fi
 fi
@@ -156,9 +156,9 @@ fi
 if is_client; then
   say "[client] launcher + Service"
   install -d "$RP_DIR/bin" 2>/dev/null || mkdir -p "$RP_DIR/bin"
-  [ -f "$GLUE_DIR/bin/hangul-romanize" ] && install_file "$GLUE_DIR/bin/hangul-romanize" "$RP_DIR/bin/hangul-romanize" 755
-  install_file "$GLUE_DIR/bin/remote-pair-launch" "$LAUNCHER" 755
-  svc_src="$GLUE_DIR/services/Launch Remote Pair.workflow"
+  [ -f "$CLIENT_DIR/hangul-romanize" ] && install_file "$CLIENT_DIR/hangul-romanize" "$RP_DIR/bin/hangul-romanize" 755
+  install_file "$CLIENT_DIR/remote-pair-launch" "$LAUNCHER" 755
+  svc_src="$CLIENT_DIR/Launch Remote Pair.workflow"
   svc_dst="$SERVICES_DIR/Launch Remote Pair.workflow"
   if [ -d "$svc_src" ]; then
     [ -e "$svc_dst" ] && rm -rf "$svc_dst"

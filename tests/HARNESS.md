@@ -1,6 +1,6 @@
 # 테스트 하네스 계약 (tests/lib.sh)
 
-대상 런처: `install/glue/bin/remote-pair-launch` (신규). 레퍼런스: `~/.claude/bin/claude-iterm-launch`.
+대상 런처: `client/remote-pair-launch` (신규). 레퍼런스: `~/.claude/bin/claude-iterm-launch`.
 실 m1/네트워크/GUI 안 건드림 — 임시 HOME 의 `.local/bin` 에 mock 을 깔면 런처의 PATH-prepend 때문에 mock 이 실 바이너리를 이긴다. bash 3.2 호환만.
 
 ## 테스트 파일 형식

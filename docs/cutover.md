@@ -40,7 +40,7 @@ login → LaunchAgent(KeepAlive) → RemotePairHost.app (메뉴바, AX+SR grante
 ---
 
 ## 2. 이번 리팩터가 바꾼 것 (전부)
-1. **앱 분리/확장**: `RemotePairNative/main.swift`(단일 150줄) → `RemotePairHost/*.swift` 8파일
+1. **앱 분리/확장**: `RemotePairNative/main.swift`(단일 150줄) → `host/RemotePairHost/*.swift` 8파일
    (Config / HostManager(tmux child) / ApproveManager(router child) / Sessions(조회·detach·kill) /
    Permissions(AX·SR 상태+설정창) / SettingsWindow / Updater(GitHub Releases) / AppDelegate / main).
    메뉴바: 동적 세션목록 → 세션 클릭 시 **Detach all / Kill 모달**, Grant Permissions, Settings, Check
@@ -69,7 +69,7 @@ login → LaunchAgent(KeepAlive) → RemotePairHost.app (메뉴바, AX+SR grante
 ### cert 사연 (중요)
 - 구 앱은 self-signed **"RemotePair Local Signing"** 으로 서명돼 있으나 **private key/identity 가
   m1·m4 어디에도 없음**(`security find-identity -v -p codesigning` = 0, p12 백업 없음).
-- self-signed 라 **복구 대신 재생성**: `scripts/make-signing-cert.sh`(idempotent, Apple 계정 불필요).
+- self-signed 라 **복구 대신 재생성**: `host/make-signing-cert.sh`(idempotent, Apple 계정 불필요).
 - bundle id 가 바뀌어 **재grant 1회는 불가피**. 단 재생성 cert 로 서명하면 그 이후 재빌드/업데이트엔
   grant 유지(앱 Updater 가 leaf CN 검증; 불일치 시 경고).
 
@@ -85,7 +85,7 @@ login → LaunchAgent(KeepAlive) → RemotePairHost.app (메뉴바, AX+SR grante
 ---
 
 ## 5. approve 서브시스템 (현재 설계)
-파일: `scripts/remote-pair-approve-router.sh`(앱 번들 `Contents/Helpers/` 에 임베드), CLI `remote-pair approve`, 스킬 `skills/approve`.
+파일: `host/remote-pair-approve-router.sh`(앱 번들 `Contents/Helpers/` 에 임베드), CLI `remote-pair approve`, 스킬 `host/skills/approve`.
 - **적응형 폴링**(`RP_WAIT_SECS` 기본 ~18s): 트리거 후 창이 늦게 떠도 잡음.
 - **검증 루프**: 클릭/키 후 재캡처로 "마커 사라졌나" 확인·재시도 → `exit 0`(성공)/`1`(실패).
 - **하이브리드 탐지**: OCR 룰(마커) 우선 → 미스 시 **haiku 가 "어떤 알려진 창인가"만 분류**(좌표는 못 줌 —
@@ -121,15 +121,15 @@ m4 는 m1 물리 GUI 불가. GUI 는 **RemotePair 하위 tmux 의 claude compute
 ssh gh-mac-m1 '
   cd ~/Spaces/Work/Devs/Lang-Swift/remote-pair &&
   git checkout refactor/host-client-split &&
-  ./scripts/make-signing-cert.sh &&     # 안정 cert (idempotent)
-  ./scripts/build-tmux-aqua.sh &&       # tmux-aqua (이미 있으면 빠름)
-  ./scripts/build-host.sh               # → build/RemotePairHost.app, 끝에 verify OK ✓
+  ./host/make-signing-cert.sh &&     # 안정 cert (idempotent)
+  ./host/build-tmux-aqua.sh &&       # tmux-aqua (이미 있으면 빠름)
+  ./host/build-host.sh               # → build/RemotePairHost.app, 끝에 verify OK ✓
 '
 
 # 2) 새 앱 재grant (§8 — 새 앱이 서명된 뒤, 컷오버 전에)
 
 # 3) 컷오버 — 구 앱 + m1 의 모든 RemotePair 세션 종료됨
-ssh gh-mac-m1 'cd ~/Spaces/Work/Devs/Lang-Swift/remote-pair && ./install/install.sh --role host'
+ssh gh-mac-m1 'cd ~/Spaces/Work/Devs/Lang-Swift/remote-pair && ./shared/install.sh --role host'
 
 # 4) 기동 확인
 ssh gh-mac-m1 'launchctl list | grep remote-pair-host; ~/.local/bin/tmux-aqua -S /tmp/aqua-tmux.sock ls'
@@ -168,10 +168,10 @@ fdb117d feat(approve): --for 힌트로 어떤 승인인지 전달
 for Updates) → 같은 폴더 두 번 `launch`(세션공유, attached 2) → `approve --for "1Password"` → computer-use 스크린샷/클릭.
 
 ## 11. 롤백
-`ssh gh-mac-m1 '~/.local/share/remote-pair/install/uninstall.sh'` (manifest 역순; `--purge` 로 `~/.remote-pair`
+`ssh gh-mac-m1 '~/.local/share/remote-pair/shared/uninstall.sh'` (manifest 역순; `--purge` 로 `~/.remote-pair`
 까지). `~/.claude` 사용자데이터 보존. 구 앱 복귀는 `main` 브랜치 구 빌드 재생성 필요(구 cert key 없어 재grant).
 
 ## 12. 참고
-- SSOT: `install/config.sh`. 가역 엔진: `install/lib.sh`(manifest).
+- SSOT: `shared/config.sh`. 가역 엔진: `shared/lib.sh`(manifest).
 - 원래 플랜: `~/.claude/plans/bubbly-purring-bubble.md` (m4 에선 `/plans/` 는 sync 되지만 `/projects/`
   (메모)는 gitignore 라 안 됨 → 컨텍스트는 이 문서가 단일 출처).

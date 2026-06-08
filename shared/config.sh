@@ -59,9 +59,10 @@ AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 LAUNCH_AGENTS="${LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
 SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"
 
-# ── Repository root ──
+# ── Repository root + role dirs (host/ client/ shared/ layout) ──
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GLUE_DIR="$REPO_ROOT/install/glue"
+CLIENT_DIR="$REPO_ROOT/client"   # laptop-side artifacts: remote-pair CLI, launcher, Service, hangul-romanize
+HOST_DIR="$REPO_ROOT/host"       # computer-use machine: app sources, build scripts, approve rules, skills
 
 # Per-role persistence key groups (install writes only to its own file)
 COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)

@@ -11,10 +11,10 @@
 #   ./build-host.sh --release       # 위 + 서명앱 zip → gh release create v<버전>
 set -euo pipefail
 cd "$(dirname "$0")/.."                       # repo 루트
-. install/config.sh                           # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
+. shared/config.sh                            # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
 
 VERSION="${RP_VERSION:-0.4.1}"                 # 버전 단일 출처(Info.plist 로 박힘). 릴리스 태그 = v$VERSION. (pre-1.0, 패치 +0.0.1)
-SRC_DIR=RemotePairHost
+SRC_DIR=host/RemotePairHost
 APP="build/${APP_NAME}.app"
 EXEC="$APP_NAME"
 DEPLOY_HOST="${REMOTE_HOST:-gh-mac-m1}"
@@ -23,7 +23,7 @@ DEPLOY_HOST="${REMOTE_HOST:-gh-mac-m1}"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_CN"; then
   SIGN_ID="$SIGN_CN"; echo "서명: 안정 cert '$SIGN_CN' (재빌드/업데이트에도 grant 유지)"
 else
-  SIGN_ID="-"; echo "⚠ 서명: ad-hoc (cert '$SIGN_CN' 없음 → 재빌드마다 재토글). ./scripts/make-signing-cert.sh 권장"
+  SIGN_ID="-"; echo "⚠ 서명: ad-hoc (cert '$SIGN_CN' 없음 → 재빌드마다 재토글). ./host/make-signing-cert.sh 권장"
 fi
 
 # ── SDK 선택 (CLT+신SDK 조합이 깨질 때 14.x 폴백) ──
@@ -45,8 +45,8 @@ compile() { # $1=out
 echo "=== compile (Swift, multi-file) ==="
 mkdir -p build
 compile "build/$EXEC"
-xcrun swiftc -O scripts/ocr-find.swift -o scripts/ocr-find 2>/dev/null \
-  || xcrun swiftc -O -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk -target arm64-apple-macos13.0 scripts/ocr-find.swift -o scripts/ocr-find
+xcrun swiftc -O host/ocr-find.swift -o host/ocr-find 2>/dev/null \
+  || xcrun swiftc -O -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk -target arm64-apple-macos13.0 host/ocr-find.swift -o host/ocr-find
 
 echo "=== bundle ==="
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS"
@@ -72,13 +72,13 @@ P
 
 echo "=== embed helpers → Contents/Helpers ==="
 HELP="$APP/Contents/Helpers"; mkdir -p "$HELP"
-cp scripts/remote-pair-approve-router.sh "$HELP/"; chmod +x "$HELP/remote-pair-approve-router.sh"
-cp scripts/ocr-find "$HELP/"; chmod +x "$HELP/ocr-find"
+cp host/remote-pair-approve-router.sh "$HELP/"; chmod +x "$HELP/remote-pair-approve-router.sh"
+cp host/ocr-find "$HELP/"; chmod +x "$HELP/ocr-find"
 if [ -x "$HOME/.local/bin/tmux-aqua" ]; then
   cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
   echo "  embedded: tmux-aqua + remote-pair-approve-router.sh + ocr-find"
 else
-  echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./scripts/build-tmux-aqua.sh 먼저 실행 권장(런타임 외부경로 폴백)"
+  echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./host/build-tmux-aqua.sh 먼저 실행 권장(런타임 외부경로 폴백)"
 fi
 
 echo "=== embed app icon + menu-bar template → Contents/Resources ==="
@@ -114,7 +114,7 @@ if [ "${1:-}" = "--deploy" ]; then
   echo "=== deploy → $HOST (rsync repo + install.sh --role host) ==="
   ssh "$HOST" 'mkdir -p ~/.local/share/remote-pair'
   rsync -az --delete --exclude '.git' --exclude '.omc' ./ "$HOST:~/.local/share/remote-pair/"
-  ssh "$HOST" 'cd ~/.local/share/remote-pair && ./install/install.sh --role host'
+  ssh "$HOST" 'cd ~/.local/share/remote-pair && ./shared/install.sh --role host'
   echo ""
   echo "※ 새 bundle id($BUNDLE_PREFIX)면 1회 재grant: System Settings → 손쉬운 사용 / 화면 기록 → $APP_NAME ON"
 fi
