@@ -139,7 +139,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func grantPermissions() { Permissions.requestAndOpen() }
     @objc func approveNow() { approve.run() }
-    @objc func restartHost() { host.ensureServer() }
+    @objc func restartHost() {
+        // 진짜 재시작(서버+세션 reap 후 재기동) — 활성 세션 있으면 끊김 경고 후 진행.
+        let n = Sessions.serverUp() ? Sessions.list().count : 0
+        if n > 0 {
+            let a = NSAlert()
+            a.messageText = "Restart tmux host?"
+            a.informativeText = "⚠ \(n) active session(s) will be disconnected. "
+                + "Conversation transcripts are preserved — re-launch the same folder to resume."
+            a.addButton(withTitle: "Restart")
+            a.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
+        host.forceRestart()
+    }
     @objc func checkUpdates() { Updater.checkForUpdates(interactive: true) }
 
     @objc func openSettings() {

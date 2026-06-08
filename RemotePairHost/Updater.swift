@@ -90,7 +90,13 @@ enum Updater {
     private static func promptAndApply(_ rel: Release) {
         let a = NSAlert()
         a.messageText = "업데이트 가능: \(rel.tag)"
+        let activeCount = Sessions.list().count
+        let sessWarn = activeCount > 0
+            ? "⚠ 활성 세션 \(activeCount)개 — 적용을 위한 재기동 시 모두 끊깁니다. "
+              + "(대화 transcript 는 보존되어 같은 폴더 재launch 로 이어갈 수 있음.)\n\n"
+            : ""
         a.informativeText = "현재 \(APP_VERSION) → \(rel.tag). 지금 다운로드하고 적용할까요?\n\n"
+            + sessWarn
             + (rel.notes.isEmpty ? "" : String(rel.notes.prefix(400)))
         a.addButton(withTitle: "다운로드 후 적용")
         a.addButton(withTitle: "나중에")
