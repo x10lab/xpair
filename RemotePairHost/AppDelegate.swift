@@ -18,7 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "⌗⌘"
+        // Menu-bar icon: monochrome template (auto-adapts to light/dark menu bar).
+        // Loaded by name from Resources (menubar.png + menubar@2x.png). Falls back to text glyph.
+        if let img = NSImage(named: NSImage.Name("menubar")) {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            statusItem.button?.image = img
+        } else {
+            statusItem.button?.title = "⌗⌘"
+        }
 
         menu = NSMenu()
         menu.delegate = self           // menuNeedsUpdate 로 매번 재구성

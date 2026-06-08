@@ -65,6 +65,8 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>RPGitHubRepo</key><string>${GH_REPO}</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleIconName</key><string>AppIcon</string>
 </dict></plist>
 P
 
@@ -78,6 +80,27 @@ if [ -x "$HOME/.local/bin/tmux-aqua" ]; then
 else
   echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./scripts/build-tmux-aqua.sh 먼저 실행 권장(런타임 외부경로 폴백)"
 fi
+
+echo "=== embed app icon + menu-bar template → Contents/Resources ==="
+RES="$APP/Contents/Resources"; mkdir -p "$RES"
+if [ -f assets/icon/AppIcon-1024.png ]; then
+  ISET="build/AppIcon.iconset"; rm -rf "$ISET"; mkdir -p "$ISET"
+  _gen() { sips -z "$2" "$2" assets/icon/AppIcon-1024.png --out "$ISET/$1" >/dev/null; }
+  _gen icon_16x16.png 16;    _gen icon_16x16@2x.png 32
+  _gen icon_32x32.png 32;    _gen icon_32x32@2x.png 64
+  _gen icon_128x128.png 128; _gen icon_128x128@2x.png 256
+  _gen icon_256x256.png 256; _gen icon_256x256@2x.png 512
+  _gen icon_512x512.png 512; _gen icon_512x512@2x.png 1024
+  iconutil -c icns "$ISET" -o "$RES/AppIcon.icns" && echo "  app icon → Resources/AppIcon.icns (from assets/icon/AppIcon-1024.png)"
+elif [ -f assets/icon/AppIcon.icns ]; then
+  cp assets/icon/AppIcon.icns "$RES/AppIcon.icns"; echo "  app icon → Resources/AppIcon.icns (prebuilt)"
+else
+  echo "  ⚠ no app icon (assets/icon/AppIcon-1024.png or .icns) — bundle ships without one"
+fi
+for f in menubar.png menubar@2x.png; do
+  [ -f "assets/icon/$f" ] && cp "assets/icon/$f" "$RES/$f"
+done
+[ -f "$RES/menubar.png" ] && echo "  menu-bar template → Resources/menubar.png (+@2x)"
 
 codesign -s "$SIGN_ID" --force --deep "$APP"
 echo "built + signed: $APP (v$VERSION, $BUNDLE_PREFIX)"

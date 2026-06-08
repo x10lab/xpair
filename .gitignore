@@ -9,3 +9,7 @@ RemotePairHost/RemotePairHost
 *.pem
 *.key
 scripts/ocr-find
+
+# generated at build from AppIcon-1024.png
+assets/icon/AppIcon.icns
+assets/icon/*.iconset/
