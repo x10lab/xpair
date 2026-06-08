@@ -169,7 +169,7 @@ EOF
 }
 
 cmd_approve() {
-  local label="" timeout=12
+  local label="" timeout=22     # 라우터 적응형 폴링(기본 ~18s)보다 길게
   while [ $# -gt 0 ]; do case "$1" in
     --label) label="${2:-}"; shift 2 ;;
     --timeout) timeout="${2:-12}"; shift 2 ;;
@@ -186,9 +186,9 @@ cmd_approve() {
       local now; now=$(wc -l < "$LOG_FILE")
       if [ "$now" -gt "$base" ]; then
         local new; new=$(tail -n "$(( now - base ))" "$LOG_FILE")
-        if printf '%s\n' "$new" | grep -qiE 'router:.*(click|key)|clicked|coord'; then
-          printf '%s\n' "$new" | grep -iE 'router:.*(click|key)|clicked|coord' | sed 's/^/  /'
-          echo "✓ 클릭됨"; return 0
+        if printf '%s\n' "$new" | grep -qiE 'router:.*(success|click|key)|clicked|coord'; then
+          printf '%s\n' "$new" | grep -iE 'router:.*(success|click|key)|clicked|coord' | sed 's/^/  /'
+          echo "✓ 처리됨"; return 0
         fi
         base="$now"
       fi
