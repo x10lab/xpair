@@ -10,8 +10,14 @@
 set -u
 export PATH="/usr/sbin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"   # screencapture=/usr/sbin (RemotePair 직접스폰 PATH엔 없음)
 SCAP=/usr/sbin/screencapture
-BIN="$HOME/.claude/bin"; OCR="$BIN/ocr-find"; CLICK=/opt/homebrew/bin/cliclick
-RULES="$HOME/.claude/auto-approve/rules.txt"; LOG="$HOME/.claude/logs/remote-pair.log"
+RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+# ocr-find 는 번들 Helpers(앱이 PATH 앞에 붙임) → ~/.remote-pair/bin → 레거시 ~/.claude/bin 순으로 해석.
+OCR="$(command -v ocr-find 2>/dev/null || true)"
+[ -n "$OCR" ] || for _c in "$RP_DIR/bin/ocr-find" "$HOME/.claude/bin/ocr-find"; do [ -x "$_c" ] && { OCR="$_c"; break; }; done
+CLICK=/opt/homebrew/bin/cliclick
+# 룰: 신규 네임스페이스 우선, 없으면 레거시 위치 폴백.
+RULES="${RULES_FILE:-$RP_DIR/rules.txt}"; [ -f "$RULES" ] || RULES="$HOME/.claude/auto-approve/rules.txt"
+LOG="${LOG_FILE:-$RP_DIR/logs/remote-pair.log}"; mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 SHOT="${RP_SHOT:-/tmp/rp-router.png}"     # RP_SHOT 지정 시 캡처 대신 그 이미지 사용(테스트)
 DRY="${RP_DRY:-0}"                        # RP_DRY=1 이면 실제 클릭/키 안 하고 의도만 출력(테스트)
 TRIES="${1:-6}"; [ -n "${RP_SHOT:-}" ] && TRIES=1

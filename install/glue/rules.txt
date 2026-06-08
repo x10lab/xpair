@@ -1,0 +1,10 @@
+# RemotePair approve rules v2 — 런타임 위치: ~/.remote-pair/rules.txt
+# 한 줄 = 한 승인창.  id <TAB> marker <TAB> action      ("#" 시작은 주석, 수정 즉시 반영)
+#   marker = 그 창에만 나오는 고유 OCR 텍스트(부분일치, 대소문자 무관)
+#   action = ocr:<라벨|라벨..>  (그 버튼 텍스트를 OCR 로 찾아 클릭)
+#          | key:<콤보>         (키 전송 — cmd+return, return, esc …)
+1Password	Access Requested	ocr:Authorize|Authorize Once|Always Allow|Allow|Approve|Confirm|승인|한 번 승인|허용|확인
+Claude for Chrome	New permissions required	key:cmd+return
+# 예) 새 창 추가:
+# MyApp	Grant access?	ocr:Allow|허용
+# Some Dialog	Confirm action	key:return

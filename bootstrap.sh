@@ -8,7 +8,7 @@
 #   2) repo clone 또는 update  → $REMOTE_PAIR_SRC (기본 ~/.local/share/remote-pair)
 #   3) 안정 코드서명 cert 생성 (scripts/make-signing-cert.sh)
 #   4) patched tmux 빌드      (scripts/build-tmux-aqua.sh → ~/.local/bin/tmux-aqua)
-#   5) RemotePair.app 빌드    (scripts/build-native.sh)
+#   5) RemotePairHost.app 빌드 (scripts/build-host.sh)
 #   6) glue+native 설치 + sync (install/install.sh — manifest 가역)
 #   7) ⚠ 수동 1회: 손쉬운사용/화면기록 권한 토글 안내 (macOS 가 자동화 불가)
 #
@@ -61,7 +61,7 @@ ok "소스 준비: $SRC ($(git rev-parse --short HEAD))"
 if needs_build; then
   c "안정 코드서명 cert (idempotent)"; ./scripts/make-signing-cert.sh || warn "cert 생성 실패 — ad-hoc 폴백(재빌드 시 재토글 필요)"
   c "patched tmux 빌드 (static, self-contained)"; ./scripts/build-tmux-aqua.sh || die "tmux 빌드 실패"
-  c "RemotePair.app 빌드 (tmux-aqua 임베드)";      ./scripts/build-native.sh    || die "앱 빌드 실패"
+  c "RemotePairHost.app 빌드 (tmux-aqua 임베드)";  ./scripts/build-host.sh      || die "앱 빌드 실패"
 else
   c "role=$ROLE — 빌드 생략 (client 는 Service+런처만)"
 fi
@@ -83,15 +83,15 @@ ok "설치 완료."
 if [ "$ROLE" != client ]; then
   warn "마지막 1회 수동 단계 — macOS 가 자동화 못 하는 부분 (SIP+non-MDM):"
   cat <<EOF
-   System Settings → 개인정보 보호 및 보안 에서 RemotePair 를 켜라:
-     • 손쉬운 사용 (Accessibility)  : RemotePair ON
-     • 화면 기록 (Screen Recording) : RemotePair ON
-   (목록에 없으면 + 로  ~/Applications/RemotePair.app  추가)
-   토글 후:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.remote-pair}
+   System Settings → 개인정보 보호 및 보안 에서 RemotePairHost 를 켜라:
+     • 손쉬운 사용 (Accessibility)  : RemotePairHost ON
+     • 화면 기록 (Screen Recording) : RemotePairHost ON
+   (목록에 없으면 + 로  ~/Applications/RemotePairHost.app  추가)
+   토글 후:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.remote-pair-host}
 EOF
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
   echo
   ok "이후: 'remote-pair status' / 'remote-pair host'."
 else
-  ok "client 설치 완료 — Finder 폴더 우클릭 → 빠른 동작 → Launch Remote Claude."
+  ok "client 설치 완료 — Finder 폴더 우클릭 → 빠른 동작 → Launch Remote Pair. ('remote-pair doctor' 로 SSH 점검)"
 fi
