@@ -1,0 +1,79 @@
+name: Release
+
+# Build + sign RemotePairHost.app with the stable self-signed cert and publish a GitHub Release.
+# Trigger: push a tag like `v0.4.0`  (or run manually with a version input).
+#
+# Requires two repo secrets (the stable signing identity — grant persistence depends on it):
+#   SIGNING_P12_BASE64    base64 of ~/Library/Application Support/RemotePair/signing.p12
+#   SIGNING_P12_PASSWORD  the p12 password (default "rp" per make-signing-cert.sh)
+# Without them the signed app would use a different designated requirement and break AX/SR grants.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without leading v (e.g. 0.4.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$v"
+
+      - name: Install build deps (tmux-aqua)
+        run: brew install libevent ncurses utf8proc
+
+      - name: Build patched tmux-aqua
+        run: ./scripts/build-tmux-aqua.sh
+
+      - name: Import signing certificate
+        env:
+          P12_B64: ${{ secrets.SIGNING_P12_BASE64 }}
+          P12_PW: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12_B64" ]; then
+            echo "::error::SIGNING_P12_BASE64 secret is missing — cannot sign with the stable cert." >&2
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/rp-signing.keychain-db"
+          KCPW="$(uuidgen)"
+          security create-keychain -p "$KCPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KCPW" "$KEYCHAIN"
+          printf '%s' "$P12_B64" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -P "$P12_PW" -k "$KEYCHAIN" -T /usr/bin/codesign -A
+          rm -f "$RUNNER_TEMP/signing.p12"
+          # Let codesign use the private key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN" >/dev/null
+          # Prepend our keychain to the user search list so `security find-identity` / codesign see it.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          echo "Signing identities:"; security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Build, sign, and publish release
+        env:
+          RP_VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build-host.sh --release
+
+      - name: Verify published asset is signed with the stable cert
+        run: |
+          codesign -dvv "build/RemotePairHost.app" 2>&1 | grep -i "Authority=RemotePair Local Signing" \
+            || { echo "::error::released app is NOT signed with the stable cert"; exit 1; }
+          codesign --verify --strict "build/RemotePairHost.app" && echo "verify OK ✓"
