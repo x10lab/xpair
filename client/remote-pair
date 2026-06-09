@@ -14,6 +14,7 @@
 #   remote-pair approve [--for "<what>"] [--timeout S]   Request a click on an approval dialog (collects result)
 #                              --for hints which approval (e.g. "1Password", "Claude for Chrome") for priority routing
 #   remote-pair status         Host server, app, heartbeat status
+#   remote-pair logs [--host] [-f] [-n N]   Tail logs (local launcher/app; --host = host logs over ssh; -f = follow)
 #   remote-pair host           Ensure the tmux-aqua host server is up (when the app is local)
 #   remote-pair help
 #
@@ -469,6 +470,28 @@ cmd_approve() {
   return 1
 }
 
+# remote-pair logs [--host] [-f] [-n N]
+#   default: tail local launcher + app logs.  --host: tail the host's logs over ssh (correlate by session name).  -f: follow.
+cmd_logs() {
+  local host=0 follow=0 n=200
+  while [ $# -gt 0 ]; do case "$1" in
+    --host)      host=1; shift ;;
+    -f|--follow) follow=1; shift ;;
+    -n)          n="${2:-200}"; shift 2 ;;
+    *)           shift ;;
+  esac; done
+  if [ "$host" = 1 ]; then
+    [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — 'remote-pair config set host <ssh-host>'" >&2; return 1; }
+    local rl='$HOME/.remote-pair/logs'
+    if [ "$follow" = 1 ]; then exec ssh -t "$REMOTE_HOST" "tail -n $n -F $rl/remote-pair.log $rl/remote-pair.err.log 2>/dev/null"
+    else ssh "$REMOTE_HOST" "tail -n $n $rl/remote-pair.log $rl/remote-pair.err.log 2>/dev/null || echo '(no host logs at ~/.remote-pair/logs)'"; fi
+    return
+  fi
+  local files="$RP_DIR/logs/claude-launch.err.log $RP_DIR/logs/remote-pair.log"
+  if [ "$follow" = 1 ]; then exec tail -n "$n" -F $files 2>/dev/null
+  else tail -n "$n" $files 2>/dev/null || echo "(no local logs at $RP_DIR/logs)"; fi
+}
+
 case "${1:-help}" in
   launch)  shift; cmd_launch "$@" ;;
   ls)      cmd_ls ;;
@@ -480,7 +503,8 @@ case "${1:-help}" in
   doctor)  cmd_doctor ;;
   approve) shift; cmd_approve "$@" ;;
   status)  cmd_status ;;
+  logs)    shift; cmd_logs "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,16p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,16p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,19p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,19p' "$0"; exit 2 ;;
 esac

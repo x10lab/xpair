@@ -26,12 +26,15 @@ CLAUDE="$(command -v claude 2>/dev/null || true)"
 
 RULES="${RULES_FILE:-$RP_DIR/rules.txt}"; [ -f "$RULES" ] || RULES="$HOME/.claude/auto-approve/rules.txt"
 LOG="${LOG_FILE:-$RP_DIR/logs/remote-pair.log}"; mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+# size-cap rotation (5MB → .1) at startup — shared remote-pair.log, append-only writers tolerate it
+{ _sz="$(stat -f %z "$LOG" 2>/dev/null || echo 0)"; [ "$_sz" -gt 5000000 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null; } || true
 SHOT="${RP_SHOT:-/tmp/rp-router.png}"          # RP_SHOT 지정 시 그 이미지 사용(테스트, 단발)
 DRY="${RP_DRY:-0}"                             # RP_DRY=1 = 실제 클릭/키 안 함(의도만)
 
 # 적응형 폴링/검증 튜너블
 WAIT_SECS="${RP_WAIT_SECS:-${1:-18}}"          # 승인창 출현을 기다리는 총 윈도우(초)
 INTERVAL="${RP_INTERVAL:-1.2}"                 # 폴링 간격
+PERSIST_MAX="${RP_PERSIST_MAX:-300}"           # persist 룰(반복 다이얼로그)이 deadline 을 밀 때의 절대 상한(초) — 무한 생존 방지
 VERIFY_RETRY="${RP_VERIFY_RETRY:-3}"           # 클릭 후 "닫혔나" 확인 재시도
 # 비전(haiku) — 구독 claude CLI 재사용, best-effort
 VISION="${RP_VISION:-auto}"                    # auto(룰 미스 시) | on | off
@@ -147,11 +150,14 @@ rule_by_id(){
 }
 
 # ── 메인: 적응형 폴링 ──
-deadline=$(( $(date +%s) + WAIT_SECS ))
+start_ts=$(date +%s)
+deadline=$(( start_ts + WAIT_SECS ))           # persist 처리 때마다 슬라이딩(아래)
+hard_deadline=$(( start_ts + PERSIST_MAX ))    # persist 슬라이딩의 절대 상한
+persist_n=0
 cycle=0
 while :; do
   cycle=$((cycle+1))
-  capture || { sleep "$INTERVAL"; [ "$(date +%s)" -ge "$deadline" ] && break || continue; }
+  capture || { sleep "$INTERVAL"; _n=$(date +%s); { [ "$_n" -ge "$deadline" ] || [ "$_n" -ge "$hard_deadline" ]; } && break || continue; }
 
   # 0) 힌트 룰 우선 시도 (에이전트가 어떤 승인인지 알려준 경우)
   handled=0
@@ -166,12 +172,20 @@ while :; do
     fi
   fi
 
-  # 1) OCR 룰 (전체)
-  while IFS=$'\t' read -r id marker action; do
+  # 1) OCR 룰 (전체). 4번째 필드 opt=persist → 처리 후 종료하지 않고 deadline 슬라이딩(반복 다이얼로그).
+  while IFS=$'\t' read -r id marker action opt; do
     case "$id" in ''|\#*) continue;; esac
     { [ -z "${marker:-}" ] || [ -z "${action:-}" ]; } && continue
     "$OCR" "$SHOT" --has "$marker" 2>/dev/null || continue
-    if act_and_verify "$id" "$marker" "$action"; then exit 0; fi
+    if act_and_verify "$id" "$marker" "$action"; then
+      # persist 룰(예: site-level 꺼진 Claude for Chrome): exit 0 하지 않고 deadline 을 밀어 한 트리거로 반복 승인.
+      if [ "${opt%$'\r'}" = persist ]; then
+        persist_n=$((persist_n+1)); deadline=$(( $(date +%s) + WAIT_SECS ))
+        log "[$id] persist #$persist_n 처리 — 계속 감시(deadline +${WAIT_SECS}s, hard-max ${PERSIST_MAX}s)"
+        handled=1; continue
+      fi
+      exit 0
+    fi
     handled=1   # 시도는 했음(검증 실패) → 다음 사이클 재시도
   done < "$RULES"
 
@@ -202,7 +216,7 @@ while :; do
   fi
 
   [ -n "${RP_SHOT:-}" ] && break               # 테스트(단발)
-  [ "$(date +%s)" -ge "$deadline" ] && break
+  _n=$(date +%s); { [ "$_n" -ge "$deadline" ] || [ "$_n" -ge "$hard_deadline" ]; } && break
   sleep "$INTERVAL"
 done
 

@@ -3,8 +3,9 @@
 #   marker = 그 창에만 나오는 고유 OCR 텍스트(부분일치, 대소문자 무관)
 #   action = ocr:<라벨|라벨..>  (그 버튼 텍스트를 OCR 로 찾아 클릭)
 #          | key:<콤보>         (키 전송 — cmd+return, return, esc …)
+#   opt(4번째 필드, 선택) = persist → 처리 후 라우터를 끝내지 않고 계속 감시(site-level 꺼져 반복적으로 뜨는 창용)
 1Password	Access Requested	ocr:Authorize|Authorize Once|Always Allow|Allow|Approve|Confirm|승인|한 번 승인|허용|확인
-Claude for Chrome	New permissions required	key:cmd+return
+Claude for Chrome	New permissions required	key:cmd+return	persist
 # 예) 새 창 추가:
 # MyApp	Grant access?	ocr:Allow|허용
 # Some Dialog	Confirm action	key:return

@@ -84,7 +84,10 @@ jobs:
           codesign --verify --strict build/RemotePairHost.app
           echo "signed with stable cert ✓"
 
-          # Publish.
+          # Publish. Ship both a versioned asset and a stable-named copy so the GUI install
+          # link (releases/latest/download/RemotePairHost.zip) is always valid regardless of version.
           ZIP="build/RemotePairHost-${RP_VERSION}.zip"
+          STABLE="build/RemotePairHost.zip"
           ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent RemotePairHost.app "RemotePairHost-${RP_VERSION}.zip" )
-          gh release create "v${RP_VERSION}" "$ZIP" --title "v${RP_VERSION}" --generate-notes
+          cp "$ZIP" "$STABLE"
+          gh release create "v${RP_VERSION}" "$ZIP" "$STABLE" --title "v${RP_VERSION}" --generate-notes
