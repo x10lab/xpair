@@ -26,17 +26,30 @@ enum Installer {
     private static var appPlist: String { "\(LAUNCH_AGENTS)/\(APP_LABEL).plist" }
     private static var wdPlist: String { "\(LAUNCH_AGENTS)/\(WATCHDOG_LABEL).plist" }
 
-    /// 매 실행마다 호출. 이미 설치돼 있으면 진짜 no-op(파일 재기록 X, launchctl 재부트스트랩 X →
-    /// 돌고 있는 tmux 서버를 매 실행마다 죽이는 일을 막는다). "설치됨" = LaunchAgent plist + host.env 둘 다 존재.
+    private static var versionFile: String { "\(RP_DIR)/.version" }
+
+    /// 매 실행마다 호출. "설치됨 + 버전 동일" 이면 진짜 no-op(돌고 있는 tmux 서버를 안 건드림).
+    /// 설치됐지만 버전이 올라갔으면 리소스(skills/rules/tmux-aqua)만 갱신한다 — 앱만 새 버전으로
+    /// 바뀌고 ~/.remote-pair·~/.claude 리소스가 옛날로 남는 문제(앱 교체/인앱 업데이트 공통)를 막는다.
+    /// grant·LaunchAgent·host.env(사용자 설정)는 건드리지 않는다.
     static func ensureInstalled() {
-        if fm.fileExists(atPath: appPlist) && fm.fileExists(atPath: HOST_ENV) { return }
-        log("INSTALL: not fully installed (plist=\(fm.fileExists(atPath: appPlist)) host.env=\(fm.fileExists(atPath: HOST_ENV))) → installing")
-        install(force: false)
+        let installed = fm.fileExists(atPath: appPlist) && fm.fileExists(atPath: HOST_ENV)
+        let stamped = (try? String(contentsOfFile: versionFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if installed && stamped == APP_VERSION { return }                 // 설치됨 + 최신 → no-op
+        if installed {
+            log("INSTALL: version \(stamped.isEmpty ? "(none)" : stamped) → \(APP_VERSION) — refreshing resources (grant/config preserved)")
+            install(force: false, refreshResources: true)                 // 버전 올라감 → 리소스만 갱신
+        } else {
+            log("INSTALL: not fully installed (plist=\(fm.fileExists(atPath: appPlist)) host.env=\(fm.fileExists(atPath: HOST_ENV))) → installing")
+            install(force: false)
+        }
     }
 
     /// host 설치 단계 — shared/install.sh 의 is_host 섹션을 미러링.
-    static func install(force: Bool) {
-        log("INSTALL: begin (force=\(force))")
+    /// refreshResources=true 면 force 가 아니어도 rules.txt 를 새 번들로 갱신(버전 업 시 리소스 따라오게).
+    static func install(force: Bool, refreshResources: Bool = false) {
+        log("INSTALL: begin (force=\(force) refreshResources=\(refreshResources))")
         ensureDir(RP_DIR)
         ensureDir(LOG_DIR)
         ensureDir("\(RP_DIR)/bin")
@@ -61,10 +74,16 @@ enum Installer {
         // 2. rules.txt ← 번들 Resources/rules.txt
         let bundledRules = "\(RES)/rules.txt"
         if fm.fileExists(atPath: bundledRules) {
-            if force || !fm.fileExists(atPath: RULES_FILE) {
+            if force || refreshResources || !fm.fileExists(atPath: RULES_FILE) {
+                var backedUp = false
+                if fm.fileExists(atPath: RULES_FILE) {   // 사용자 커스텀 보존: 덮기 전 .bak 백업
+                    let bak = RULES_FILE + ".bak"
+                    try? fm.removeItem(atPath: bak)
+                    if (try? fm.copyItem(atPath: RULES_FILE, toPath: bak)) != nil { backedUp = true }
+                }
                 try? fm.removeItem(atPath: RULES_FILE)
                 try? fm.copyItem(atPath: bundledRules, toPath: RULES_FILE)
-                log("INSTALL: rules.txt → \(RULES_FILE)")
+                log("INSTALL: rules.txt → \(RULES_FILE)\(backedUp ? " (이전 룰 .bak 백업)" : "")")
             }
         } else { log("INSTALL: bundled rules.txt 없음 (\(bundledRules))") }
 
@@ -100,7 +119,8 @@ enum Installer {
         bootstrap(label: APP_LABEL, plist: appPlist)
         bootstrap(label: WATCHDOG_LABEL, plist: wdPlist)
 
-        log("INSTALL: done (force=\(force))")
+        try? APP_VERSION.write(toFile: versionFile, atomically: true, encoding: .utf8)   // 버전 스탬프 → 다음 실행 no-op 판단
+        log("INSTALL: done (force=\(force) → version \(APP_VERSION))")
     }
 
     // ── helpers ──

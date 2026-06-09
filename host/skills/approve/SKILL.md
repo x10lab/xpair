@@ -18,7 +18,7 @@ remote-pair approve --for "Claude for Chrome"
 
 그게 전부다. 이후는 **RemotePair**(메뉴바 앱, 화면기록+손쉬운사용 granted)가 알아서 한다:
 - 화면을 보고(OCR) **어떤 승인창**이 떴는지 감지
-- 그 창에 맞는 **액션으로 라우팅** — 1Password→`Authorize` 클릭, Claude-for-Chrome→`Cmd+Return`, 일반창→해당 버튼/키
+- 그 창에 맞는 **액션으로 라우팅** — 1Password→`Authorize` 클릭, Claude-for-Chrome→`Return`(엔터), 일반창→해당 버튼/키
 - 트리거 직후 다이얼로그가 늦게 떠도 몇 초간 재시도
 
 ## 순서가 중요: 트리거 먼저, 창은 그 다음
