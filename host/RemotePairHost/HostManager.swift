@@ -20,6 +20,11 @@ final class HostManager {
 
     // 이전 인스턴스의 고아 tmux-aqua 서버(+그 안 세션)를 reap. spawn() 시점에만 호출 = 전부 고아라 안전.
     private func reapStrays() {
+        // Traceability: record which sessions this reap is about to kill ("why did my sessions die on restart?").
+        // The session name is the cross-machine correlation id, so log it before pkill removes the evidence.
+        let (out, _) = runCapture(TMUX, ["-S", SOCKET, "ls", "-F", "#S"])
+        let names = out.split(separator: "\n").map(String.init).filter { !$0.isEmpty && $0 != "_keeper" }
+        if !names.isEmpty { log("HOST: reaping \(names.count) session(s): \(names.joined(separator: ", "))") }
         for pat in ["tmux-aqua -S \(SOCKET)", "/usr/bin/script -q /dev/null \(TMUX)"] {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")

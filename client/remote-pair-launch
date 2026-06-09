@@ -48,6 +48,9 @@ esac; done
 # On success the process is replaced by exec (tmux/mosh), so the EXIT trap only fires on failure.
 LAUNCH_LOG="$RP_DIR/logs/claude-launch.err.log"
 mkdir -p "$RP_DIR/logs"
+# size-cap rotation (5MB → .1) — unbounded otherwise on a long-lived client
+_rotate_log() { local f="$1" max="${2:-5000000}" sz; sz="$(stat -f %z "$f" 2>/dev/null || echo 0)"; [ "$sz" -gt "$max" ] && mv -f "$f" "$f.1" 2>/dev/null || true; }
+_rotate_log "$LAUNCH_LOG"
 printf '\n===== %s launch %s (%s) =====\n' "$(date '+%F %T')" "${DIR_ARG:-$PWD}" "$(hostname -s)" >> "$LAUNCH_LOG"
 exec 2> >(while IFS= read -r l; do printf '%s %s\n' "$(date '+%T')" "$l" >> "$LAUNCH_LOG"; printf '%s\n' "$l" >&2; done)
 on_exit() {
@@ -138,19 +141,28 @@ trap 'kill -- -$$ 2>/dev/null' EXIT
 RC="${CLAUDE_WARP_RC:-$(hostname -s)_$(basename "$PWD")}"
 RC="${RC//[.:]/_}"
 export CLAUDE_WARP_RC="$RC"
-# Per-machine independent continue: read the last session id for this project on this machine
-# from .git/last-session/<sha16(cwd)>.
-# (Using --resume rather than --continue to avoid accidentally picking up a transcript from
-# a different machine's session.)
-RESUME_SID=""
-if [ "${CL_CONTINUE:-0}" = 1 ]; then
-  _LSD="$HOME/.claude/.git/last-session"
-  _K="$(printf '%s' "$PWD" | shasum -a 256 | cut -c1-16)"
-  [ -f "$_LSD/$_K" ] && RESUME_SID="$(cat "$_LSD/$_K" 2>/dev/null | head -1)"
-fi
+# Continue the existing conversation for this project. Priority:
+#   1) --resume <sid> if a per-machine last-session id exists (.git/last-session/<sha16(cwd)>, written by the Stop hook)
+#   2) --continue (most recent conversation in THIS cwd) — covers a missing last-session id (key mismatch) or a
+#      stale/unresumable one, so we continue instead of silently starting a blank conversation
+#   3) brand-new conversation only if there is genuinely nothing to continue
+# RemotePair runs claude on the single host machine, so --continue won't pull another machine's transcript.
+_LSD="$HOME/.claude/.git/last-session"
+_K="$(printf '%s' "$PWD" | shasum -a 256 | cut -c1-16)"
+_rplog="$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "$(dirname "$_rplog")" 2>/dev/null
 while :; do
+  # Re-read inside the loop so a crash-respawn picks up the latest session id (not one captured once before the loop).
+  RESUME_SID=""
+  [ "${CL_CONTINUE:-0}" = 1 ] && [ -f "$_LSD/$_K" ] && RESUME_SID="$(cat "$_LSD/$_K" 2>/dev/null | head -1)"
   if [ -n "$RESUME_SID" ]; then
-    claude --resume "$RESUME_SID" --remote-control "$RC" || claude --remote-control "$RC"
+    if ! claude --resume "$RESUME_SID" --remote-control "$RC"; then
+      printf '%s SESSION: --resume %s failed → --continue fallback (rc=%s)\n' "$(date '+%FT%T%z')" "$RESUME_SID" "$RC" >> "$_rplog" 2>/dev/null || true
+      claude --continue --remote-control "$RC" || claude --remote-control "$RC"
+    fi
+  elif [ "${CL_CONTINUE:-0}" = 1 ]; then
+    # No last-session id for this cwd → continue the most recent conversation here instead of starting blank.
+    printf '%s SESSION: no last-session id (key=%s) → --continue\n' "$(date '+%FT%T%z')" "$_K" >> "$_rplog" 2>/dev/null || true
+    claude --continue --remote-control "$RC" || claude --remote-control "$RC"
   else
     claude --remote-control "$RC"
   fi
@@ -248,6 +260,9 @@ launch_local() {
       { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
       tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T"
     fi   # RemotePairHost subtree → computer-use
+    # host-side session-lifecycle log (local==host here; correlation id = session name)
+    _rotate_log "$RP_DIR/logs/remote-pair.log"
+    printf '%s SESSION: %s %s (client=%s local)\n' "$(date '+%FT%T%z')" "$([ "$NEED_CREATE" = 1 ] && echo created || echo attached)" "$SESS" "$LOCAL_HOST" >> "$RP_DIR/logs/remote-pair.log" 2>/dev/null || true
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
@@ -433,6 +448,10 @@ if [ "\$NEED_CREATE" = 1 ]; then
   { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
   tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c '${HOST_DIR}' "bash \$T"
 fi
+# host-side session-lifecycle log (correlation id = session name; records which client attached)
+RPLOG="\$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "\$(dirname "\$RPLOG")"
+sz=\$(stat -f %z "\$RPLOG" 2>/dev/null || echo 0); [ "\$sz" -gt 5000000 ] && mv -f "\$RPLOG" "\$RPLOG.1" 2>/dev/null || true
+printf '%s SESSION: %s %s (client=%s)\n' "\$(date '+%FT%T%z')" "\$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached)" "\$SESSION" "${LOCAL_HOST}" >> "\$RPLOG"
 printf '__SESSION__:%s\n' "\$SESSION"
 EOF
 )

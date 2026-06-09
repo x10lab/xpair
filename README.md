@@ -56,20 +56,31 @@ Each feature exists to solve a concrete problem.
 
 ## Installation
 
-```bash
-# Host — the always-on Mac where claude runs with computer-use
-curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=host bash
+### Host — the always-on Mac (pick one)
 
-# Client — the laptop you sit at (no build, no Xcode)
+**Option A — Download the app (GUI, no build).** Easiest. The app self-installs on first launch (LaunchAgent, `~/.remote-pair`, embedded tmux-aqua + approve skill — no `install.sh` needed).
+
+1. Download the signed app: **[latest release → `RemotePairHost.zip`](https://github.com/ghyeongl/remote-pair/releases/latest/download/RemotePairHost.zip)**
+2. Unzip into `~/Applications` and open it once:
+   ```bash
+   cd ~/Applications && ditto -x -k ~/Downloads/RemotePairHost.zip . && open RemotePairHost.app
+   ```
+   It's self-signed (not notarized), so the **first** open is Gatekeeper-blocked — approve it once: **System Settings → Privacy & Security → "RemotePairHost.app was blocked" → Open Anyway** (or, headless: `xattr -dr com.apple.quarantine ~/Applications/RemotePairHost.app`). Downloading via `curl`/`gh` instead of a browser skips this entirely.
+
+**Option B — CLI bootstrap (build from source).** For those who'd rather compile than trust a binary. Needs Xcode CLT + Homebrew.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=host bash
+```
+
+Either way, finish with the [one-time permission grant](#one-time-permission-grant-host--needs-a-physical-screen-or-vnc) below.
+
+### Client — the laptop you sit at (no build, no Xcode)
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=client bash
 ```
 
-| Role | What gets installed | Build | Permission toggles |
-|---|---|---|---|
-| **host** | `RemotePairHost.app` (embeds tmux-aqua, approve router, OCR finder) + LaunchAgent + watchdog + approve skill | Yes | Yes — once, in System Settings |
-| **client** | Finder Quick Action + launcher + `remote-pair` CLI | No | No |
-
-After a client install, `remote-pair onboard` runs automatically to set the host address, terminal app, and folder mappings.
+Installs the Finder Quick Action + `remote-pair` CLI, then auto-runs `remote-pair onboard` (host address, terminal app, folder mappings). No permissions, no build.
 
 ### One-time permission grant (host) — needs a physical screen or VNC
 
@@ -149,10 +160,10 @@ remote-pair config set terminal iterm2     # or: terminal
 ./host/make-signing-cert.sh            # stable self-signed cert "RemotePair Local Signing" (idempotent)
 ./host/build-host.sh                   # → build/RemotePairHost.app (signed + verified)
 ./host/build-host.sh --deploy [host]   # build + rsync + install on host
-RP_VERSION=0.4.3 ./host/build-host.sh --release   # sign, zip, create gh release v0.4.3
+RP_VERSION=0.4.4 ./host/build-host.sh --release   # sign, zip, create gh release v0.4.4
 ```
 
-Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.3** (pre-1.0).
+Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.4** (pre-1.0).
 
 Repo layout: `host/` (app, build scripts, approve router, skills), `client/` (CLI, launcher, Finder service), `shared/` (install lib, config SSOT, bootstrap).
 

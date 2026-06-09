@@ -34,8 +34,22 @@ func ensureDirs() {
     try? FileManager.default.createDirectory(atPath: LOG_DIR, withIntermediateDirectories: true)
 }
 
+let LOG_MAX_BYTES = 5_000_000        // rotate remote-pair.log past 5MB, keep one .1 backup (24/7 host → unbounded growth otherwise)
+
+/// Size-cap rotation: if `path` exceeds `maxBytes`, move it to `path.1` (overwriting the prior backup).
+/// Append-only callers tolerate the race; worst case is one lost line at the rotation instant.
+func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
+    let fm = FileManager.default
+    guard let attrs = try? fm.attributesOfItem(atPath: path),
+          let size = (attrs[.size] as? NSNumber)?.intValue, size > maxBytes else { return }
+    let backup = path + ".1"
+    try? fm.removeItem(atPath: backup)
+    try? fm.moveItem(atPath: path, toPath: backup)
+}
+
 func log(_ s: String) {
     ensureDirs()
+    rotateIfNeeded(LOGP, LOG_MAX_BYTES)
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
     if let fh = FileHandle(forWritingAtPath: LOGP) { fh.seekToEndOfFile(); fh.write(line.data(using: .utf8)!); try? fh.close() }
     else { try? line.write(toFile: LOGP, atomically: false, encoding: .utf8) }
