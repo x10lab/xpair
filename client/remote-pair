@@ -15,6 +15,7 @@
 #                              --for: which dialog (alias-tolerant)  ·  --type: how to approve — agent decides (key:<combo>|ocr:<label>)
 #   remote-pair status         Host server, app, heartbeat status
 #   remote-pair logs [--host] [-f] [-n N]   Tail logs (local launcher/app; --host = host logs over ssh; -f = follow)
+#   remote-pair self-update    Update client (launcher/CLI/romanize) to latest from GitHub (keep in sync with host)
 #   remote-pair host           Ensure the tmux-aqua host server is up (when the app is local)
 #   remote-pair help
 #
@@ -495,6 +496,23 @@ cmd_logs() {
   else tail -n "$n" $files 2>/dev/null || echo "(no local logs at $RP_DIR/logs)"; fi
 }
 
+# 클라이언트(launcher/CLI/romanize)를 GitHub 최신으로 자가 갱신 — 호스트 앱과 버전 어긋남(예: --type 미인식) 방지.
+cmd_self_update() {
+  local repo="${GH_REPO:-ghyeongl/remote-pair}" ref="${1:-main}"
+  local base="https://raw.githubusercontent.com/$repo/$ref/client"
+  c "self-update ← $repo@$ref"
+  local tmp; tmp="$(mktemp -d)" || { warn "mktemp 실패"; return 1; }
+  local got=0 f
+  for f in remote-pair remote-pair-launch hangul-romanize; do
+    curl -fsSL "$base/$f" -o "$tmp/$f" 2>/dev/null && [ -s "$tmp/$f" ] && got=$((got+1))
+  done
+  [ "$got" -ge 2 ] || { warn "다운로드 실패(got=$got) — 네트워크/repo 확인"; rm -rf "$tmp"; return 1; }
+  [ -s "$tmp/remote-pair" ]        && { chmod +x "$tmp/remote-pair";        mv "$tmp/remote-pair" "$SELF_CLI" && ok "CLI → $SELF_CLI"; }
+  [ -s "$tmp/remote-pair-launch" ] && { chmod +x "$tmp/remote-pair-launch"; mkdir -p "$(dirname "$LAUNCHER")"; mv "$tmp/remote-pair-launch" "$LAUNCHER" && ok "launcher → $LAUNCHER"; }
+  [ -s "$tmp/hangul-romanize" ]    && { chmod +x "$tmp/hangul-romanize";    mkdir -p "$RP_DIR/bin"; mv "$tmp/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; }
+  rm -rf "$tmp"; ok "self-update 완료 — 다음 실행부터 적용"
+}
+
 case "${1:-help}" in
   launch)  shift; cmd_launch "$@" ;;
   ls)      cmd_ls ;;
@@ -507,7 +525,8 @@ case "${1:-help}" in
   approve) shift; cmd_approve "$@" ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "$@" ;;
+  self-update|update) shift; cmd_self_update "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,19p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,19p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,20p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,20p' "$0"; exit 2 ;;
 esac
