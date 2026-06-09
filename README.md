@@ -73,16 +73,21 @@ After a client install, `remote-pair onboard` runs automatically to set the host
 
 ### One-time permission grant (host) — needs a physical screen or VNC
 
-This is the one manual step, and it can only be done at the host's screen (TCC cannot be granted over SSH on SIP-enabled, non-MDM Macs).
+This is the one manual step, and it can only be done at the host's screen (TCC cannot be granted over SSH on SIP-enabled, non-MDM Macs). Open **System Settings → Privacy & Security** and turn `RemotePairHost` ON for three grants (if it isn't listed in a pane, click `+` and add `~/Applications/RemotePairHost.app`):
 
-1. Run `RemotePairHost` and trigger any computer-use call from `claude`.
-2. When the prompt appears, open **System Settings → Privacy & Security**:
-   - **Accessibility** → toggle `RemotePairHost` ON (if not listed, click `+` and add `~/Applications/RemotePairHost.app`).
-   - **Screen Recording** → toggle `RemotePairHost` ON.
-3. Restart the host so the grant takes effect:
-   ```bash
-   launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host   # or: menu bar → Restart tmux host
-   ```
+| Grant | Why | Needed? |
+|---|---|---|
+| **Accessibility** | Synthetic input (click/type) for computer-use | **Required** |
+| **Screen Recording** | Screenshots for computer-use | **Required** |
+| **Full Disk Access** | Silences macOS folder prompts that a *headless* host can't answer remotely (an unanswered prompt stalls the session). Trade-off: every session can then silently read the whole disk (Mail/Messages/browser included) — fine for a personal box, your call. | **Recommended** for an always-on host |
+
+The in-app **Grant Permissions…** menu item opens all three panes and shows live ✓/✗ status for each. After toggling, pick up the grants with:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host   # or: menu bar → Restart tmux host
+```
+
+> Prefer not to grant Full Disk Access? Keep your project folders under a **non-protected root** (e.g. `~/Spaces`, not `~/Desktop`/`~/Documents`/`~/Downloads`) — then sessions never hit a protected folder and never prompt, without opening the whole disk.
 
 ### Reversible uninstall
 
@@ -142,10 +147,10 @@ remote-pair config set terminal iterm2     # or: terminal
 ./host/make-signing-cert.sh            # stable self-signed cert "RemotePair Local Signing" (idempotent)
 ./host/build-host.sh                   # → build/RemotePairHost.app (signed + verified)
 ./host/build-host.sh --deploy [host]   # build + rsync + install on host
-RP_VERSION=0.4.2 ./host/build-host.sh --release   # sign, zip, create gh release v0.4.2
+RP_VERSION=0.4.3 ./host/build-host.sh --release   # sign, zip, create gh release v0.4.3
 ```
 
-Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.2** (pre-1.0).
+Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.3** (pre-1.0).
 
 Repo layout: `host/` (app, build scripts, approve router, skills), `client/` (CLI, launcher, Finder service), `shared/` (install lib, config SSOT, bootstrap).
 

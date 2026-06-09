@@ -145,7 +145,7 @@ P
       record LAUNCHCTL "$APP_LABEL" "$app_plist"
       launchctl bootstrap "gui/$U" "$wd_plist" 2>/dev/null || true
       record LAUNCHCTL "$WATCHDOG_LABEL" "$wd_plist"
-      warn "One-time permission grant required: System Settings → Privacy & Security → Accessibility / Screen Recording → turn $APP_NAME ON"
+      warn "One-time permission grant: System Settings → Privacy & Security → turn $APP_NAME ON for Accessibility + Screen Recording (required), and Full Disk Access (recommended for a headless host — silences unanswerable folder prompts). Then 'Restart tmux host'."
     else
       warn "No build artifact: $REPO_ROOT/build/${APP_NAME}.app — run host/build-host.sh first (skipping app install)"
     fi
