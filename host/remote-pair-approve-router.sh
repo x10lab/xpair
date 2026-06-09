@@ -157,14 +157,20 @@ while :; do
 
   # 0) 힌트 룰 우선 시도 (에이전트가 어떤 승인인지 알려준 경우)
   handled=0
+  # 설계철학: 에이전트가 --for 로 "이 승인이 떴다"고 명시하면 그 판단을 신뢰한다 →
+  # OCR 매칭 없이도 룰 action(예: key:return)을 바로 실행. vision/OCR 은 힌트가 없을 때의 fallback 일 뿐.
+  # key:<combo> 는 OCR 0% 의존(키만 전송)이라, 화면을 못 읽어도 동작한다. act_and_verify 가 '창 닫힘'으로
+  # 결과를 검증하므로, 안 닫히면(엉뚱하면) 에이전트에게 실패로 보고되어 에이전트가 다시 판단한다.
   if [ -n "$HINT_ID" ]; then
     hra="$(rule_by_id "$HINT_ID")"
     if [ -n "$hra" ]; then
       hmarker="${hra%%$'\t'*}"; haction="${hra#*$'\t'}"
-      if "$OCR" "$SHOT" --has "$hmarker" 2>/dev/null; then
-        if act_and_verify "$HINT_ID" "$hmarker" "$haction"; then exit 0; fi
-        handled=1
-      fi
+      if act_and_verify "$HINT_ID" "$hmarker" "$haction"; then exit 0; fi   # OCR 가드 없음 — 에이전트 판단 신뢰
+      handled=1
+    else
+      # 힌트는 왔는데 rules.txt 에 매칭 룰이 없음 → 범용 승인 버튼(GENERIC_LABELS) 직접 시도(역시 vision 없이)
+      if act_and_verify "hint:$HINT_ID" "" "ocr:$GENERIC_LABELS"; then exit 0; fi
+      handled=1
     fi
   fi
 
