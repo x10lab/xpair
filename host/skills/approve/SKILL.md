@@ -9,11 +9,16 @@ description: macOS 승인/권한 다이얼로그(1Password SSH 승인·잠금, C
 
 ```bash
 remote-pair approve                       # 트리거 + 결과 회수 (exit 0=처리됨, 1=실패). PATH(~/.local/bin) 필요.
-remote-pair approve --for "1Password"     # 어떤 승인인지 알면 힌트로 넘겨라(권장) → 그 룰 우선 + haiku prior
-remote-pair approve --for "Claude for Chrome"
+remote-pair approve --for "1Password"     # 어떤 승인창인지 힌트(권장). 별칭 관대(예: Chrome/Google Chrome → Claude for Chrome)
+remote-pair approve --for "Claude for Chrome" --type "key:cmd+return|return"   # ★ 어떻게 승인할지 직접 지정
 ```
-**무엇이 막혔는지 알면 `--for "<무엇>"` 로 넘겨라** — 라우터가 그 룰을 먼저 시도하고, 룰에 없으면 haiku 분류의
-힌트로도 쓴다(없어도 동작). 값은 룰 id(예: `1Password`, `Claude for Chrome`) 또는 자유 문구.
+**`--type` 으로 "어떻게 승인할지"를 직접 정해라(권장).** 화면을 보고(이미 computer-use 로 보고 있다) 그 창을
+어떻게 통과시킬지 판단해서 넘기면, 라우터가 **그대로** 실행한다(룰 고정에 안 갇힘, 단시간 다회 재시도까지 알아서):
+- `--type "key:cmd+return|return"` → 키 전송(여러 후보 순차). 엔터/맥커맨드+엔터 등.
+- `--type "key:return"` → 단일 키.
+- `--type "ocr:Allow this action"` → 그 버튼 텍스트를 찾아 클릭(키가 안 먹히는 창에서).
+
+`--for "<무엇>"` 는 보조 힌트다(생략 가능). `--type` 이 있으면 그게 우선, 없으면 `--for` 룰의 기본 방식으로 폴백.
 폴백(힌트 없는 동작): `~/.remote-pair/bin/approve` 또는 `touch /tmp/remote-pair.approve-request`.
 
 그게 전부다. 이후는 **RemotePair**(메뉴바 앱, 화면기록+손쉬운사용 granted)가 알아서 한다:

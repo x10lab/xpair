@@ -50,11 +50,21 @@ log(){ printf '%s router: %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
 # 힌트: 에이전트가 "어떤 승인인지"(룰 id 또는 자유문구) 미리 알려주면 해당 룰을 우선 시도 +
 #   haiku 분류 prior 로 사용. 없어도 됨. (CLI 가 .label 파일로 전달, 또는 RP_FOR 환경변수)
 HINT_FILE="${RP_HINT_FILE:-/tmp/remote-pair.approve-request.label}"
+TYPE_FILE="${RP_TYPE_FILE:-/tmp/remote-pair.approve-request.type}"
 HINT="${RP_FOR:-}"
 [ -z "$HINT" ] && [ -f "$HINT_FILE" ] && HINT="$(head -1 "$HINT_FILE" 2>/dev/null)"
-rm -f "$HINT_FILE" 2>/dev/null || true
+# --type: 에이전트가 "어떻게 승인할지"(key:<combo> | ocr:<라벨>)를 직접 지정 → 힌트 경로에서 룰 action override
+HINT_TYPE="${RP_TYPE:-}"
+[ -z "$HINT_TYPE" ] && [ -f "$TYPE_FILE" ] && HINT_TYPE="$(head -1 "$TYPE_FILE" 2>/dev/null)"
+rm -f "$HINT_FILE" "$TYPE_FILE" 2>/dev/null || true
+[ -n "$HINT_TYPE" ] && log "type(에이전트 지정): $HINT_TYPE"
 HINT_ID=""
 if [ -n "$HINT" ]; then
+  # 별칭 관대: 브라우저명/변형을 룰 id 로 정규화 (예: Google Chrome/Chrome → Claude for Chrome)
+  case "$(printf '%s' "$HINT" | tr '[:upper:]' '[:lower:]')" in
+    *chrome*) HINT="Claude for Chrome" ;;
+    *1password*|*"1 password"*) HINT="1Password" ;;
+  esac
   log "hint: $HINT"
   HINT_ID="$(awk -F'\t' -v h="$(printf '%s' "$HINT" | tr '[:upper:]' '[:lower:]')" '
     $0!~/^[[:space:]]*#/ && NF>=3 { lid=tolower($1); if (index(lid,h)>0 || index(h,lid)>0) { print $1; exit } }' "$RULES")"
@@ -122,17 +132,21 @@ act_and_verify(){
   local id="$1" marker="$2" action="$3" i
   case "$action" in
     key:*\|*)
-      local combo
+      # 각 후보 키를 짧은 간격으로 다회 연타(매번 닫힘 확인 → 닫히면 즉시 멈춰 부작용 방지).
+      # 팝업 출현 타이밍과 트리거가 어긋나도 단시간 다회로 명중 확률을 높인다.
+      local combo t tries="${RP_KEY_TRIES:-5}" gap="${RP_KEY_GAP:-0.3}"
       IFS='|' read -ra _KC <<< "${action#key:}"
       for combo in "${_KC[@]}"; do
         [ -z "$combo" ] && continue
-        if [ "$DRY" = 1 ]; then echo "WOULD key '$combo' [$id]"; return 0; fi
-        sendkey "$combo" >/dev/null 2>&1; log "[$id] key $combo"
-        sleep 0.8
-        if dialog_gone "$marker"; then log "success [$id] (key=$combo, 창 닫힘)"; return 0; fi
-        log "[$id] key=$combo 후 미확인 → 다음 후보 키"
+        if [ "$DRY" = 1 ]; then echo "WOULD key '$combo' x$tries [$id]"; return 0; fi
+        for t in $(seq 1 "$tries"); do
+          sendkey "$combo" >/dev/null 2>&1
+          sleep "$gap"
+          if dialog_gone "$marker"; then log "success [$id] (key=$combo #$t, 창 닫힘)"; return 0; fi
+        done
+        log "[$id] key=$combo ${tries}회 후 미확인 → 다음 후보 키"
       done
-      log "[$id] 모든 후보 키 시도했으나 닫힘 미확인"; return 1 ;;
+      log "[$id] 모든 후보 키 ${tries}회씩 시도했으나 닫힘 미확인"; return 1 ;;
     *)
       do_action "$id" "$action" || return 1
       [ "$DRY" = 1 ] && return 0
@@ -190,17 +204,14 @@ while :; do
   # OCR 매칭 없이도 룰 action(예: key:return)을 바로 실행. vision/OCR 은 힌트가 없을 때의 fallback 일 뿐.
   # key:<combo> 는 OCR 0% 의존(키만 전송)이라, 화면을 못 읽어도 동작한다. act_and_verify 가 '창 닫힘'으로
   # 결과를 검증하므로, 안 닫히면(엉뚱하면) 에이전트에게 실패로 보고되어 에이전트가 다시 판단한다.
-  if [ -n "$HINT_ID" ]; then
+  if [ -n "$HINT_ID" ] || [ -n "$HINT_TYPE" ]; then
     hra="$(rule_by_id "$HINT_ID")"
-    if [ -n "$hra" ]; then
-      hmarker="${hra%%$'\t'*}"; haction="${hra#*$'\t'}"
-      if act_and_verify "$HINT_ID" "$hmarker" "$haction"; then exit 0; fi   # OCR 가드 없음 — 에이전트 판단 신뢰
-      handled=1
-    else
-      # 힌트는 왔는데 rules.txt 에 매칭 룰이 없음 → 범용 승인 버튼(GENERIC_LABELS) 직접 시도(역시 vision 없이)
-      if act_and_verify "hint:$HINT_ID" "" "ocr:$GENERIC_LABELS"; then exit 0; fi
-      handled=1
-    fi
+    hmarker=""; haction=""
+    [ -n "$hra" ] && { hmarker="${hra%%$'\t'*}"; haction="${hra#*$'\t'}"; }
+    [ -n "$HINT_TYPE" ] && haction="$HINT_TYPE"          # --type: 에이전트가 방식 직접 지정 → 룰 action override
+    [ -z "$haction" ] && haction="ocr:$GENERIC_LABELS"   # for/type 둘 다 모호 → 범용 승인 버튼
+    if act_and_verify "${HINT_ID:-agent-type}" "$hmarker" "$haction"; then exit 0; fi
+    handled=1
   fi
 
   # 1) OCR 룰 (전체)
