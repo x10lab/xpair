@@ -64,14 +64,26 @@ fi
 
 capture(){ [ -n "${RP_SHOT:-}" ] && return 0; $SCAP -x "$SHOT" 2>/tmp/rp-scap.err || { log "screencapture 실패: $(tr '\n' ' ' </tmp/rp-scap.err 2>/dev/null)"; return 1; }; }
 
-# "cmd+return" → cliclick kd:cmd kp:return ku:cmd  /  "return" → kp:return
+# 키 전송은 osascript(System Events)로 — cliclick(CGEvent 합성 키)은 Chrome 확장 등 웹 UI 팝업에
+# 안 먹히는 반면(실측 확인), System Events key code 는 먹힌다. 좌표 클릭(OCR 오매칭 위험) 회피.
+# "cmd+return" → key code 36 using {command down}  /  "return" → key code 36
 sendkey(){
-  local combo="$1" key mods kd="" ku="" m; key="${combo##*+}"; mods=""
-  [ "$combo" != "$key" ] && mods="${combo%+*}"
+  local combo="$1" key mods="" m kc parts="" M
+  key="${combo##*+}"; [ "$combo" != "$key" ] && mods="${combo%+*}"
+  case "$key" in
+    return|enter) kc=36 ;; esc|escape) kc=53 ;; space) kc=49 ;; tab) kc=48 ;; *) kc="" ;;
+  esac
   IFS='+' read -ra M <<< "$mods"
-  for m in "${M[@]}"; do [ -n "$m" ] && { kd="$kd kd:$m"; ku="ku:$m $ku"; }; done
-  # shellcheck disable=SC2086
-  $CLICK $kd kp:"$key" $ku
+  for m in "${M[@]}"; do case "$m" in
+    cmd|command) parts="$parts command down," ;; shift) parts="$parts shift down," ;;
+    ctrl|control) parts="$parts control down," ;; alt|option) parts="$parts option down," ;;
+  esac; done
+  local mod=""; [ -n "$parts" ] && mod=" using {${parts%,}}"
+  if [ -n "$kc" ]; then
+    osascript -e "tell application \"System Events\" to key code $kc$mod"
+  else
+    osascript -e "tell application \"System Events\" to keystroke \"$key\"$mod"
+  fi
 }
 
 # 한 action 실행 (성공적으로 "뭔가 했으면" 0). $1=id $2=action
