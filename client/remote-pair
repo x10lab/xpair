@@ -383,7 +383,8 @@ cmd_host() {
 
 cmd_status() {
   local p; p="$(app_pid)"
-  printf '%-14s %s\n' "app"        "${p:+running (pid $p)}${p:-NOT running}"
+  if [ -n "$p" ]; then printf '%-14s %s\n' "app" "running (pid $p)"
+  else                 printf '%-14s %s\n' "app" "NOT running"; fi
   printf '%-14s %s\n' "host server" "$(host_up && echo "up ($AQUA_SOCK)" || echo down)"
   if [ -f "$HEARTBEAT_FILE" ]; then
     local age=$(( $(date +%s) - $(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0) ))
@@ -437,7 +438,11 @@ cmd_approve() {
     --timeout) timeout="${2:-22}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; return 2 ;;
   esac; done
-  [ -n "$(app_pid)" ] || warn "$APP_NAME not running — start it first with 'remote-pair host'"
+  # 호스트 앱(pgrep)이 안 보여도 tmux 서버(host_up)가 살아있으면 호스트 세션 안 — 경고 불필요.
+  # 클라이언트 머신에선 둘 다 없을 수 있으니 차단하지 말고(트리거는 보냄) 안내만 한다.
+  if [ -z "$(app_pid)" ] && ! host_up; then
+    warn "이 머신엔 호스트 앱 없음 — approve 는 호스트 세션에서 동작(클라이언트면 무시하고 진행)"
+  fi
   # base0 = log length just before triggering (so we show only this request's router log to the agent)
   local base0=0; [ -f "$LOG_FILE" ] && base0=$(wc -l < "$LOG_FILE")
   local base="$base0"
