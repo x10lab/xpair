@@ -2,4 +2,4 @@
 # id <TAB> marker(감지 OCR 텍스트, 부분일치) <TAB> action
 #   action: ocr:<라벨|..>(버튼 텍스트 찾아 클릭) | key:<콤보>(cmd+return, return, esc)
 1Password	Access Requested	ocr:Authorize|Authorize Once|승인|허용|확인
-Claude for Chrome	New permissions required	key:return
+Claude for Chrome	New permissions required	key:cmd+return|return

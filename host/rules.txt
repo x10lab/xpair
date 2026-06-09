@@ -4,7 +4,7 @@
 #   action = ocr:<라벨|라벨..>  (그 버튼 텍스트를 OCR 로 찾아 클릭)
 #          | key:<콤보>         (키 전송 — cmd+return, return, esc …)
 1Password	Access Requested	ocr:Authorize|Authorize Once|Always Allow|Allow|Approve|Confirm|승인|한 번 승인|허용|확인
-Claude for Chrome	New permissions required	key:return
+Claude for Chrome	New permissions required	key:cmd+return|return
 # 예) 새 창 추가:
 # MyApp	Grant access?	ocr:Allow|허용
 # Some Dialog	Confirm action	key:return

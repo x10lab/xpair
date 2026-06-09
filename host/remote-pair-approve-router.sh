@@ -104,17 +104,34 @@ dialog_gone(){
 }
 
 # 액션 + 검증 + 재시도. $1=id $2=marker $3=action. 성공(닫힘) 0, 실패 1.
+# action 이 'key:A|B|...' 면 여러 후보 키를 순차로 시도(누를 때마다 창 닫힘 검증) — 하나라도 닫으면 성공.
+#   (Claude-for-Chrome 처럼 사이트마다 승인키가 cmd+return / return 으로 갈리는 창 대응)
 act_and_verify(){
   local id="$1" marker="$2" action="$3" i
-  do_action "$id" "$action" || return 1
-  [ "$DRY" = 1 ] && return 0
-  for i in $(seq 1 "$VERIFY_RETRY"); do
-    sleep 0.8
-    if dialog_gone "$marker"; then log "success [$id] (검증: 창 닫힘)"; return 0; fi
-    log "[$id] 아직 안 닫힘 — 재클릭 ($i/$VERIFY_RETRY)"
-    do_action "$id" "$action" || break
-  done
-  log "[$id] 클릭했으나 닫힘 미확인"; return 1
+  case "$action" in
+    key:*\|*)
+      local combo
+      IFS='|' read -ra _KC <<< "${action#key:}"
+      for combo in "${_KC[@]}"; do
+        [ -z "$combo" ] && continue
+        if [ "$DRY" = 1 ]; then echo "WOULD key '$combo' [$id]"; return 0; fi
+        sendkey "$combo" >/dev/null 2>&1; log "[$id] key $combo"
+        sleep 0.8
+        if dialog_gone "$marker"; then log "success [$id] (key=$combo, 창 닫힘)"; return 0; fi
+        log "[$id] key=$combo 후 미확인 → 다음 후보 키"
+      done
+      log "[$id] 모든 후보 키 시도했으나 닫힘 미확인"; return 1 ;;
+    *)
+      do_action "$id" "$action" || return 1
+      [ "$DRY" = 1 ] && return 0
+      for i in $(seq 1 "$VERIFY_RETRY"); do
+        sleep 0.8
+        if dialog_gone "$marker"; then log "success [$id] (검증: 창 닫힘)"; return 0; fi
+        log "[$id] 아직 안 닫힘 — 재클릭 ($i/$VERIFY_RETRY)"
+        do_action "$id" "$action" || break
+      done
+      log "[$id] 클릭했으나 닫힘 미확인"; return 1 ;;
+  esac
 }
 
 # haiku 분류: 화면에 어떤 "알려진 승인창"이 떴는지 ID 한 토큰. (좌표 안 줌 — 분류 전용)
