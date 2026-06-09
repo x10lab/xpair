@@ -18,7 +18,13 @@ remote-pair approve --for "Claude for Chrome" --type "key:cmd+return|return"   #
 - `--type "key:return"` → 단일 키.
 - `--type "ocr:Allow this action"` → 그 버튼 텍스트를 찾아 클릭(키가 안 먹히는 창에서).
 
-`--for "<무엇>"` 는 보조 힌트다(생략 가능). `--type` 이 있으면 그게 우선, 없으면 `--for` 룰의 기본 방식으로 폴백.
+**무엇을 고를지 — 그 창에 보이는 승인 단축키/버튼을 그대로 따라라(이미 computer-use 로 화면을 보고 있다):**
+- "Allow…" 버튼 옆에 ⏎(Return) → `--type "key:return"`   ·   ⌘⏎(Cmd+Return) → `--type "key:cmd+return"`
+- 단축키 표시가 없거나 키가 안 먹히는 창 → `--type "ocr:<그 버튼 텍스트>"` (예: `ocr:Allow this action`)
+- ⚠️ 검증은 "창이 닫혔나"로만 한다 → 엉뚱한 키가 **Decline 을 눌러 닫혀도 성공처럼 보인다**. 그러니 Allow 단축키가
+  **확실할 때만** `key:` 를 써라. 애매하면 버튼 텍스트 `ocr:` 가 안전하다(Allow 버튼만 정확히 누름).
+
+`--for "<무엇>"` 는 보조 힌트다(생략 가능, 별칭 관대: 브라우저명→Claude for Chrome). `--type` 이 있으면 그게 우선, 없으면 `--for` 룰의 기본 방식으로 폴백.
 폴백(힌트 없는 동작): `~/.remote-pair/bin/approve` 또는 `touch /tmp/remote-pair.approve-request`.
 
 그게 전부다. 이후는 **RemotePair**(메뉴바 앱, 화면기록+손쉬운사용 granted)가 알아서 한다:
