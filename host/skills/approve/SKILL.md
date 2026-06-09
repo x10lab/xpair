@@ -20,6 +20,7 @@ remote-pair approve --for "Claude for Chrome" --type "key:cmd+return|return"   #
 
 **무엇을 고를지 — 그 창에 보이는 승인 단축키/버튼을 그대로 따라라(이미 computer-use 로 화면을 보고 있다):**
 - "Allow…" 버튼 옆에 ⏎(Return) → `--type "key:return"`   ·   ⌘⏎(Cmd+Return) → `--type "key:cmd+return"`
+- **Claude for Chrome 권한 모달은 `--type "key:cmd+return|return"` 권장** — **Cmd+Return 이 "항상 허용"(다시 안 물음)이라 먼저** 시도해 매 액션마다 반복되는 팝업을 끊는다. Cmd+Return 을 안 받는 모달이면 **Return(1회 허용)으로 자동 폴백**한다(라우터가 후보 키를 순차 시도). 즉 첫째=반복 차단, 둘째=호환 보장.
 - 단축키 표시가 없거나 키가 안 먹히는 창 → `--type "ocr:<그 버튼 텍스트>"` (예: `ocr:Allow this action`)
 - ⚠️ 검증은 "창이 닫혔나"로만 한다 → 엉뚱한 키가 **Decline 을 눌러 닫혀도 성공처럼 보인다**. 그러니 Allow 단축키가
   **확실할 때만** `key:` 를 써라. 애매하면 버튼 텍스트 `ocr:` 가 안전하다(Allow 버튼만 정확히 누름).
