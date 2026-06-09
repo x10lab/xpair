@@ -125,6 +125,13 @@ remote-pair launch ~/Drive/proj --yes     # non-interactive
 
 The only per-session interaction is claude's own **"Allow for this session"** prompt — press Enter once.
 
+### Launch from Finder (GUI) — requires a folder mapping
+
+Right-click a folder → **Services → "Launch Remote Claude"** to attach that folder's host session. **The folder must be mapped** first (the GUI can't prompt you for the host path interactively):
+- **Mapped** (registered via `remote-pair map add`, or client==host same path) → attaches/creates directly.
+- **Not mapped** → the GUI can't resolve the host path and does nothing. Register it once first:
+  `remote-pair map add <folder> <host-path>` or `remote-pair launch <folder>` (prompts to register when unmapped). After that the GUI works for that folder.
+
 Other commands:
 
 ```bash
@@ -133,6 +140,7 @@ remote-pair open-gui <dir>   # open the configured terminal app and launch <dir>
 remote-pair ls               # host sessions + folder mappings
 remote-pair status           # app PID, host server, heartbeat age
 remote-pair doctor           # check SSH auth, host app, tmux-aqua on host
+remote-pair self-update      # update client (launcher/CLI) to latest from GitHub — keep in sync with host
 remote-pair config set host my-mac-mini
 remote-pair config set terminal iterm2     # or: terminal
 ```
