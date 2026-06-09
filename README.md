@@ -1,154 +1,299 @@
 # RemotePair
 
-원격(mosh/ssh)으로 attach하는 persistent tmux 세션 안의 **Claude Code가 macOS 빌트인 computer-use(스크린샷·클릭·타이핑)를 쓸 수 있게** 하는 시스템.
-
-헤드리스 24h Mac 서버(**host**)에 노트북(**client**)에서 붙어 `tmux` 세션의 `claude`를 돌리면서도 — 그 claude가 host 화면을 보고 마우스/키보드를 조작할 수 있다. 터미널 + 가벼운 원격 + 영속 + computer-use, 네 조건 동시 충족.
-
-**2개 제품**으로 나뉜다:
-- **RemotePairHost.app** — 원격 맥(host)에 설치되는 메뉴바 앱. tmux 데몬을 호스팅하고, 권한·세션·승인·업데이트를 관리.
-- **`remote-pair` CLI** — 클라이언트 맥에 설치. Finder 폴더 우클릭 → **빠른 동작 → Launch Remote Pair** 로 host 의 tmux 데몬에 붙는다. 빌드·Xcode·권한 불필요.
-
-하나의 host 에 **여러 client** 가 붙을 수 있고, 같은 폴더면 **같은 tmux 세션을 공유**(multi-attach)한다.
+Let Claude Code running inside a remote persistent tmux session use macOS built-in **computer-use** (screenshot, click, type) — from a laptop, over mosh/SSH.
 
 ---
 
-## 왜 어려운가 (macOS TCC 2-게이트)
+## What it is
 
-빌트인 computer-use는 claude 프로세스가 **두 권한**을 가져야 한다:
-- **SR (Screen Recording / 화면 기록)** — 스크린샷. responsible-process 체인으로 평가(daemon 거쳐도 상속).
-- **AX (Accessibility / 손쉬운 사용)** — 클릭·타이핑(CGEvent 합성입력). host .app의 activation policy + Aqua graphic-session으로 평가.
+Running `claude` remotely breaks computer-use: the process loses the Accessibility (AX) and Screen Recording (SR) grants that macOS requires. RemotePair solves this by keeping `claude` inside the process subtree of a privileged menu-bar app on the host machine, so grants persist regardless of which client attaches.
 
-핵심 사실:
-- `claude-code` CLI는 버전경로 + 비-.app이라 **System Settings 권한 목록에 등록조차 안 됨** → 직접 grant 불가.
-- 따라서 **권한을 가진 .app(RemotePairHost)이 host가 되어**, claude를 자기 프로세스 서브트리에 두고 권한을 상속시켜야 한다.
-- **tmux 기본은 막힘**: `proc.c`의 `proc_fork_and_daemon()`이 `daemon(3)`으로 서버를 launchd로 reparent → claude가 host 서브트리에서 빠져나가 AX 실패.
-- SIP enabled + non-MDM에서는 `sudo`/`tccutil`/PPPC로 TCC 부여 불가 → **System Settings 사용자 토글만**.
+Four requirements satisfied simultaneously:
 
-## 해법 아키텍처
+| Requirement | How |
+|---|---|
+| Terminal | mosh/SSH + tmux session |
+| Remote | client laptop attaches to headless host |
+| Persistent | tmux-aqua survives disconnects |
+| computer-use | claude inherits AX+SR from RemotePairHost.app |
+
+**Two components:**
+
+- **RemotePairHost.app** — menu-bar app installed on the host (the always-on Mac). Hosts the tmux daemon, manages permissions, sessions, approval routing, and updates.
+- **`remote-pair` CLI** — installed on the client laptop. No build, no Xcode, no permission toggles required. Finder right-click → **Quick Actions → Launch Remote Pair** or `remote-pair launch <dir>` to attach.
+
+---
+
+## Why it is hard: macOS TCC 2-gate
+
+Built-in computer-use requires the `claude` process to hold two grants simultaneously:
+
+- **SR (Screen Recording)** — evaluated through the responsible-process chain; inherited through daemons.
+- **AX (Accessibility)** — evaluated against the host `.app`'s activation policy and Aqua graphic session; not inherited through a standard daemon fork.
+
+Key constraints:
+
+- `claude-code` CLI is a versioned non-`.app` binary — it does not appear in System Settings and cannot be granted directly.
+- Therefore a privileged `.app` (RemotePairHost) must be the parent, and `claude` must stay inside its process subtree.
+- **Stock tmux is blocked**: `proc_fork_and_daemon()` in `proc.c` calls `daemon(3)`, which reparents the server to launchd — ejecting `claude` from the RemotePairHost subtree and breaking AX.
+- On SIP-enabled non-MDM machines, `sudo`/`tccutil`/PPPC cannot grant TCC — only the System Settings user toggle works.
+
+---
+
+## How it works
 
 ```
-[host: gh-mac-m1]  login → LaunchAgent(KeepAlive) → RemotePairHost.app  (메뉴바, AX+SR granted)
-   └─ script(pty) → tmux-aqua 서버 (/tmp/aqua-tmux.sock, _keeper 세션)   ← RemotePairHost 서브트리
-        └─ (client launch 가 추가한 claude 세션) → computer-use ✅
+[host: gh-mac-m1]
+  login → LaunchAgent (KeepAlive) → RemotePairHost.app  (menu bar, AX+SR granted)
+    └─ script(pty) → tmux-aqua server (/tmp/aqua-tmux.sock, _keeper session)
+         └─ (client-launched claude session) → computer-use ✅
 
-[client: gh-mac-m4]  Finder Service / `remote-pair launch <dir>`
-   → 경로 매핑(client→host) → ssh setup(세션 생성/공유) → mosh attach
+[client: gh-mac-m4]
+  Finder Service / remote-pair launch <dir>
+    → path mapping (client→host) → SSH session setup → mosh attach
 ```
 
-- **patched tmux (`tmux-aqua`)**: `daemon(1,0)` → `setsid()` + stdio redirect. reparent fork 제거 → 서버가 부모(RemotePairHost) 서브트리에 남는다.
-- **RemotePairHost.app (네이티브 Swift, 메뉴바)**: ① `posix_spawn`으로 tmux-aqua 서버를 자식으로 붙듦 ② on-demand approve 라우터(OCR 승인창 클릭) 스폰 ③ 동적 세션 목록·권한·설정·업데이트 메뉴 ④ NSStatusItem 으로 graphic-session 확보.
-- claude는 **서버의 자식**이라, attach하는 client(mosh/ssh)가 무엇이든 RemotePairHost의 권한을 상속한다.
+**patched tmux (`tmux-aqua`)**: replaces `daemon(1,0)` with `setsid()` + stdio redirect. The reparent fork is removed, so the server stays in the RemotePairHost process subtree.
 
-## 자기완결 네임스페이스 — `~/.remote-pair`
+**RemotePairHost.app** (native Swift, menu bar):
+1. Spawns tmux-aqua as a child via `posix_spawn`.
+2. Runs an on-demand approve router (OCR + AppleScript click) for permission dialogs.
+3. Shows a dynamic session list with attach state, permissions, settings, and update check.
+4. Holds an `NSStatusItem` to maintain an Aqua graphic session.
 
-RemotePair 의 모든 런타임 상태·설정은 `~/.remote-pair` 아래 산다. **`~/.claude` 동기화 여부에 의존하지 않는다.**
+Because `claude` is a descendant of the tmux-aqua **server**, it inherits RemotePairHost's grants regardless of which mosh/SSH client is attached.
 
-| 경로 | 내용 |
-|---|---|
-| `~/.remote-pair/{common,host,client}.env` | role 별 설정 (서로 침범 안 함) |
-| `~/.remote-pair/logs/` | `remote-pair.log` · `remote-pair.heartbeat` |
-| `~/.remote-pair/rules.txt` | approve 라우터 룰 (즉시 반영) |
-| `~/.remote-pair/bin/` | 런처·watchdog·hangul-romanize |
-| `~/.remote-pair/.manifest-*` · `backups/` | 가역 설치 기록 |
-| `~/.claude/skills/approve/` | **유일한 `~/.claude` 설치물** — 클로드 하네스가 보는 위치 |
+**1:1 session model**: each `launch` derives a deterministic session name from the host working directory. A **detached** session is reattached via `attach -d` (taking over any stale client); a session **already held by a live client** gets a fresh `_N`-suffixed session instead. Multiple clients do **not** share one session.
 
-> `~/.claude` git-sync(두 기기의 에이전트 정체성 공유)는 **선택적 개인 편의 기능**(`--with-sync`)일 뿐, RemotePair 동작의 전제가 아니다. sync 가 없거나 실패해도 launch 는 성공한다.
+---
 
-## 구성 파일
+## Requirements
 
-| 파일 | 역할 |
-|---|---|
-| `host/RemotePairHost/*.swift` | 호스트 앱 (Config/HostManager/ApproveManager/Sessions/Permissions/SettingsWindow/Updater/AppDelegate/main) |
-| `host/build-tmux-aqua.sh` | patched tmux 빌드 → `~/.local/bin/tmux-aqua` |
-| `host/make-signing-cert.sh` | 안정 self-signed 코드서명 cert (재빌드·업데이트에도 grant 유지) |
-| `host/build-host.sh` | RemotePairHost.app 빌드·서명 (+`--deploy` 원격 설치 / `--release` GitHub Releases) |
-| `host/rules.txt` · `host/remote-pair-approve-router.sh` · `host/ocr-find.swift` | approve 룰 템플릿 + 라우터 + OCR (앱 번들에 임베드) |
-| `host/skills/approve/SKILL.md` | on-demand 승인 스킬 (claude 가 요청 → RemotePairHost 가 클릭) |
-| `client/remote-pair` | 클라이언트 CLI (launch/ls/map/doctor/approve/status/host) |
-| `client/remote-pair-launch` | 런처 (경로매핑·세션공유·비인터랙티브) |
-| `client/Launch Remote Pair.workflow` | Finder Service |
-| `shared/` | 가역적 설치/원복(`install.sh`/`uninstall.sh`) + 설정 단일출처(`config.sh`) + 부트스트랩(`bootstrap.sh`) |
-| `shared/bootstrap.sh` | `curl … \| bash` 원샷 설치 (role 별) |
+- Apple Silicon Mac (host and client; macOS tested on Apple Silicon)
+- macOS — Sequoia or later recommended
+- SSH key authentication between client and host
+- `mosh` on both machines (SSH fallback works but disconnects kill the session)
+- **Host only**: Xcode Command Line Tools or full Xcode, Homebrew (for tmux static-build dependencies)
 
-## 설치 (사용자)
+---
+
+## Installation
 
 ```bash
-# host (claude 가 computer-use 로 도는 머신 — 빌드+권한 1회)
+# Host — the always-on Mac where claude runs with computer-use
 curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=host bash
 
-# client (앉아서 띄우는 노트북 — 빌드 없음)
+# Client — the laptop you sit at (no build, no Xcode)
 curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=client bash
 ```
 
-| role | 설치물 | 빌드 | 권한 토글 |
+| Role | What gets installed | Build required | Permission toggles |
 |---|---|---|---|
-| **host** | `RemotePairHost.app`(tmux-aqua·router·ocr-find 임베드) + LaunchAgent + watchdog + approve(skill/rules) | 필요 | 필요(1회) |
-| **client** | Service "Launch Remote Pair" + 런처 + `remote-pair` CLI | 불필요 | 불필요 |
+| **host** | `RemotePairHost.app` (embeds tmux-aqua, approve router, OCR finder) + LaunchAgent + watchdog + approve skill/rules | Yes | Yes — once, in System Settings |
+| **client** | Finder Quick Action "Launch Remote Pair" + launcher + `remote-pair` CLI | No | No |
 
-- 되돌리기: `~/.local/share/remote-pair/shared/uninstall.sh` (manifest 기반 정확한 원복). `--purge` 로 `~/.remote-pair` 까지.
-- client 설치는 끝에 `remote-pair doctor` 로 **SSH 키 연결**을 점검·안내한다.
+After a client install, `remote-pair onboard` runs automatically to configure the host address, terminal app, and folder mappings.
 
-## 사용
+**Reversible uninstall:**
 
 ```bash
-# 1) 두 기기에서 같은 내용인 폴더 매핑 (외부 sync = Google Drive/Syncthing 등이 내용 동기화).
-#    절대경로가 달라도 됨.  client 경로  →  host 경로
+~/.local/share/remote-pair/shared/uninstall.sh          # removes installed files (manifest-tracked)
+~/.local/share/remote-pair/shared/uninstall.sh --purge  # also removes ~/.remote-pair state
+```
+
+---
+
+## Usage
+
+### 1. Map folders
+
+Client and host paths often differ (Google Drive, Syncthing, etc.). Register the mapping once:
+
+```bash
 remote-pair map add ~/Drive/proj /Users/ghyeong/proj
-remote-pair map ls
+remote-pair map list
+```
 
-# 2) 폴더로 세션 실행·attach (또는 Finder 폴더 우클릭 → 빠른 동작 → Launch Remote Pair)
+Launching an unmapped folder triggers an interactive probe: RemotePair SSH-checks whether the candidate host path exists, then offers to register it, create it on the host, or cancel. No blind warnings.
+
+### 2. Launch a session
+
+```bash
 remote-pair launch ~/Drive/proj
-#   - 같은 폴더를 다른 터미널/다른 client 에서 launch → 같은 tmux 세션 공유(multi-attach)
-#   - 새 독립 세션을 원하면:  remote-pair launch ~/Drive/proj --fresh
-#   - 비인터랙티브(프롬프트 없이):  RP_YES=1 remote-pair launch <dir>  또는 --yes
-
-# 점검 / 현황
-remote-pair doctor     # SSH 키·host 앱·tmux 점검 + 안내
-remote-pair ls         # host 세션 + 매핑 목록
-remote-pair status     # 앱·서버·heartbeat
 ```
 
-매 세션 유일 상호작용 = claude 자체 "Allow for this session" 프롬프트(빌트인, Enter 1회).
+Or right-click the folder in Finder → **Quick Actions → Launch Remote Pair**.
 
-### host 메뉴바 (RemotePairHost.app)
-- **권한 상태 + Grant Permissions…** — AX/SR 현황 표시, 설정창 열기.
-- **Sessions (N)** — 현재 tmux 세션 동적 목록 + attach 현황. 세션 클릭 → 모달(**Detach all** / **Kill session**).
-- **Restart tmux host / Approve now**.
-- **Settings…** — 소켓·버전·세션 cwd·자동 업데이트 토글.
-- **Check for Updates…** — GitHub Releases 확인·적용.
-- **About / Quit**.
-
-## 빌드 (메인테이너)
-
-Apple Silicon + Xcode(또는 CLT) + Homebrew(tmux 정적 빌드 의존성).
+Options:
 
 ```bash
-./host/build-tmux-aqua.sh        # patched tmux → ~/.local/bin/tmux-aqua  (tmux -V == 3.6)
-./host/make-signing-cert.sh      # 안정 cert "RemotePair Local Signing" (1회, idempotent)
-./host/build-host.sh             # → build/RemotePairHost.app (서명·검증)
-./host/build-host.sh --deploy [host]   # 위 + rsync → 원격 → install.sh --role host
+remote-pair launch ~/Drive/proj --fresh   # always open a new session
+remote-pair launch ~/Drive/proj --yes     # non-interactive (RP_YES=1)
+RP_YES=1 remote-pair launch ~/Drive/proj  # same via env var
 ```
 
-- **안정 cert** 가 핵심: ad-hoc 서명은 재빌드마다 cdhash 가 바뀌어 grant 무효화. 안정 cert 로 서명하면 TCC grant 가 designated requirement 에 묶여 **재빌드·업데이트에도 유지**. (Apple Developer/공증 불필요 — 본인 기기 전용. p12 백업: `~/Library/Application Support/RemotePair/signing.p12`.)
-- CLT(Swift 5.10) + 최신 SDK 조합이 깨지면 `build-host.sh` 가 자동으로 호환 SDK(14.x)로 폴백한다.
+The only per-session interaction is claude's own built-in **"Allow for this session"** prompt (press Enter once).
 
-### 권한 부여 (1회, 물리화면/VNC 필요)
-RemotePairHost 실행 후 claude 가 computer-use 를 처음 호출하면 프롬프트가 뜬다. **System Settings → 개인정보 보호 및 보안**:
-- **손쉬운 사용(Accessibility)**: `RemotePairHost` ON  (안 보이면 `+` → `~/Applications/RemotePairHost.app`)
-- **화면 기록(Screen Recording)**: `RemotePairHost` ON
-- 토글 후 메뉴 **Restart tmux host** 또는 `launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host`.
+### 3. Other commands
 
-### 릴리스 (GitHub Releases)
 ```bash
-RP_VERSION=4.1.0 ./host/build-host.sh --release   # 서명앱 zip → gh release create v4.1.0
+remote-pair onboard               # interactive, re-runnable client setup (host, terminal, mappings, doctor)
+remote-pair config list           # show host, terminal app, mapping count
+remote-pair config get host       # print current REMOTE_HOST
+remote-pair config set host my-mac-mini   # set SSH host
+remote-pair config set terminal iterm2    # or: terminal
+remote-pair open-gui ~/Drive/proj # open configured terminal app, run launch <dir> in new tab/window
+remote-pair ls                    # list host tmux-aqua sessions + folder mappings
+remote-pair status                # app PID, host server, heartbeat age, remote host
+remote-pair doctor                # check SSH key auth, host app, tmux-aqua on host
+remote-pair approve [--for "<hint>"] [--timeout N]  # trigger approve router for a permission dialog
+remote-pair host                  # ensure tmux-aqua host server is up (local mode)
 ```
-- 릴리스 자산은 반드시 **동일 안정 cert** 로 서명돼야 업데이트 후에도 grant 가 유지된다(앱 Updater 가 leaf CN 검증; 불일치 시 경고).
-- 앱 메뉴 **Check for Updates…** → 다운로드 → `codesign --verify` → 스왑 → 재기동.
 
-## 트러블슈팅
-- **claude update 후 'computer use not granted'**: claude 안에서 `/mcp disable computer-use && /mcp enable computer-use`.
-- **SSH 키 인증 실패**: `remote-pair doctor` 안내대로 `ssh-keygen` / `ssh-copy-id $REMOTE_HOST` / `~/.ssh/config`. 1Password SSH agent 면 승인창을 `remote-pair approve` 로 자동 클릭.
-- **재부팅 후**: LaunchAgent 가 RemotePairHost → tmux-aqua 서버 자동 기동. `tmux-aqua -S /tmp/aqua-tmux.sock ls` 로 `_keeper` 확인.
+---
 
-## 주의
-개인 도구. ad-hoc/self-signed 서명. macOS 26(Tahoe)/Apple Silicon 개발·검증.
+## Host menu bar (RemotePairHost.app)
+
+| Menu item | Function |
+|---|---|
+| Permission status + **Grant Permissions…** | Shows AX/SR state; opens System Settings |
+| **Sessions (N)** | Live session list with attach state. Click → modal: Detach all / Kill session |
+| **Restart tmux host** | Restarts the tmux-aqua server |
+| **Approve now** | Manually triggers the approve router |
+| **Settings…** | Socket path, version, session cwd, auto-update toggle |
+| **Check for Updates…** | Fetches GitHub Releases, downloads, verifies, swaps |
+| **About / Quit** | — |
+
+---
+
+## Configuration
+
+All runtime state and settings live under `~/.remote-pair`. RemotePair does not depend on `~/.claude` being synced between machines.
+
+| Path | Contents |
+|---|---|
+| `~/.remote-pair/common.env` | Shared config (socket path, app name, etc.) |
+| `~/.remote-pair/host.env` | Host-side config |
+| `~/.remote-pair/client.env` | Client config: `REMOTE_HOST`, `TERMINAL_APP`, `FOLDER_MAPS` |
+| `~/.remote-pair/logs/` | `remote-pair.log`, `remote-pair.heartbeat` |
+| `~/.remote-pair/rules.txt` | Approve router rules (hot-reloaded) |
+| `~/.remote-pair/bin/` | Launcher, watchdog, hangul-romanize |
+| `~/.remote-pair/.manifest-*`, `backups/` | Reversible install records |
+| `~/.claude/skills/approve/` | The only file outside `~/.remote-pair` — required by the Claude harness |
+
+`~/.claude` git-sync (shared agent identity across machines) is an optional convenience (`--with-sync`). RemotePair works without it.
+
+### Terminal app
+
+`open-gui` and `onboard` use the configured terminal app. Default: iTerm2 if `/Applications/iTerm.app` is present, otherwise Terminal.app.
+
+```bash
+remote-pair config set terminal iterm2    # iTerm2
+remote-pair config set terminal terminal  # Terminal.app
+```
+
+For iTerm2, `open-gui` opens a new tab in the current window (or a new window if none is open). For Terminal.app it opens a new window.
+
+---
+
+## Permission grant (one-time, requires physical screen or VNC)
+
+After installing on the host, run RemotePairHost and trigger any computer-use call from claude. When the prompt appears, open **System Settings → Privacy & Security**:
+
+- **Accessibility**: toggle `RemotePairHost` ON. (If not listed, click `+` and add `~/Applications/RemotePairHost.app`.)
+- **Screen Recording**: toggle `RemotePairHost` ON.
+
+After toggling, restart the tmux host:
+
+```bash
+# from the menu bar: Restart tmux host
+# or from the terminal:
+launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host
+```
+
+---
+
+## Building (maintainers)
+
+Requirements: Apple Silicon, Xcode or CLT (Swift 5.10+), Homebrew.
+
+```bash
+./host/build-tmux-aqua.sh          # patched tmux → ~/.local/bin/tmux-aqua  (tmux 3.6)
+./host/make-signing-cert.sh        # create stable self-signed cert "RemotePair Local Signing" (idempotent)
+./host/build-host.sh               # → build/RemotePairHost.app (signed + verified)
+./host/build-host.sh --deploy [host]   # build + rsync to host + install.sh --role host
+```
+
+**Why a stable cert matters**: ad-hoc signing changes the `cdhash` on every rebuild, invalidating TCC grants. A stable self-signed cert ties the TCC grant to the designated requirement, so it survives rebuilds and updates. No Apple Developer account or notarization required — this is a personal-device tool. Back up the cert: `~/Library/Application Support/RemotePair/signing.p12`.
+
+If CLT (Swift 5.10) + the latest SDK combination is broken, `build-host.sh` automatically falls back to a compatible SDK (14.x).
+
+---
+
+## Releasing
+
+```bash
+RP_VERSION=0.4.2 ./host/build-host.sh --release   # signs app, zips, creates gh release v0.4.2
+```
+
+Release assets **must** be signed with the same stable cert as the running installation. The app's Updater verifies the leaf CN; a mismatch produces a warning and blocks the swap. The update flow: **Check for Updates…** → download → `codesign --verify` → swap → restart.
+
+Current version: **0.4.2** (pre-1.0). Release tag: `v0.4.2`.
+
+---
+
+## Troubleshooting
+
+**`computer use not granted` after a `claude` update**
+```
+/mcp disable computer-use
+/mcp enable computer-use
+```
+
+**SSH key auth fails**
+Run `remote-pair doctor` for step-by-step guidance:
+1. Create a key if needed: `ssh-keygen -t ed25519`
+2. Register it on the host: `ssh-copy-id $REMOTE_HOST`
+3. Check `~/.ssh/config` for correct `HostName`, `User`, `IdentityFile`
+4. Using 1Password SSH agent? Use `remote-pair approve` to auto-click the unlock prompt.
+
+**After host reboot**
+The LaunchAgent starts RemotePairHost automatically, which starts tmux-aqua. Verify:
+```bash
+tmux-aqua -S /tmp/aqua-tmux.sock ls   # should show _keeper
+```
+
+---
+
+## Project layout
+
+| Path | Role |
+|---|---|
+| `host/RemotePairHost/*.swift` | Host app (AppDelegate, HostManager, ApproveManager, Sessions, Permissions, SettingsWindow, Updater, Config, Installer, main) |
+| `host/build-tmux-aqua.sh` | Builds patched tmux → `~/.local/bin/tmux-aqua` |
+| `host/make-signing-cert.sh` | Creates stable self-signed signing cert (idempotent) |
+| `host/build-host.sh` | Builds, signs, optionally deploys or releases RemotePairHost.app |
+| `shared/install.sh` / `uninstall.sh` | Reversible manifest-based install and rollback |
+| `client/remote-pair` | Client CLI (launch, ls, map, config, onboard, open-gui, doctor, approve, status, host) |
+| `client/remote-pair-launch` | Launcher (path mapping, session setup, non-interactive) |
+| `client/Launch Remote Pair.workflow` | Finder Quick Action |
+| `host/skills/approve/SKILL.md` | On-demand approve skill (claude requests → RemotePairHost clicks) |
+| `shared/bootstrap.sh` | One-shot `curl \| bash` installer (role-aware) |
+
+---
+
+## Contributing
+
+This project is an open-source personal tool. Contributions are welcome — bug reports, fixes, and improvements. Please open an issue before starting large changes to check alignment.
+
+---
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
+---
+
+## Disclaimer
+
+Personal tool, tested on macOS (Apple Silicon). Signed with a self-signed/ad-hoc certificate — not notarized, not endorsed by Apple. Building from source is recommended over trusting pre-built binaries from forks. macOS TCC behavior may change across OS versions.
