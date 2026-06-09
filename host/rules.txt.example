@@ -1,6 +1,5 @@
 # RemotePair approve rules v2 — 런타임 위치: ~/.claude/auto-approve/rules.txt
 # id <TAB> marker(감지 OCR 텍스트, 부분일치) <TAB> action
 #   action: ocr:<라벨|..>(버튼 텍스트 찾아 클릭) | key:<콤보>(cmd+return, return, esc)
-#   opt(선택, 4번째 필드): persist → 처리 후 종료 않고 계속 감시(반복적으로 뜨는 창)
 1Password	Access Requested	ocr:Authorize|Authorize Once|승인|허용|확인
-Claude for Chrome	New permissions required	key:cmd+return	persist
+Claude for Chrome	New permissions required	key:return
