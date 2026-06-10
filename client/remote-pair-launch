@@ -120,6 +120,12 @@ _proj_base() {
   name="$(_readable "$(basename "$dir")" | cut -c1-15 | LC_ALL=C sed 's/-$//')"   # cap readable name at 15 chars
   printf '%s_%s' "$name" "$(printf '%s' "$dir" | shasum -a 256 | cut -c1-5)"       # name_hash (underscore separator)
 }
+# Deterministic conversation UUID from the FULL-unicode host path + session number (_N).
+# Collision-free (unlike claude's lossy cwd→project-dir encoding) and stable across re-attach, so
+# the launcher can resume STRICTLY by id (--resume <SID> / create with --session-id <SID>).
+_session_uuid() { # $1=host_dir  $2=N  → echo UUID (empty on failure → respawn falls back to auto id)
+  printf '%s#%s' "$1" "$2" | /usr/bin/python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, sys.stdin.read().strip()))' 2>/dev/null
+}
 # Session name = "<host>_<proj_base>" — glance at the bottom-left status-left [...] to know which machine.
 # (':' is a tmux reserved char → normalize to '_'. '.' too: .claude → _claude)
 # Local session name is based on PROJECT_DIR; remote session name on map_to_host result —
@@ -141,30 +147,35 @@ trap 'kill -- -$$ 2>/dev/null' EXIT
 RC="${CLAUDE_WARP_RC:-$(hostname -s)_$(basename "$PWD")}"
 RC="${RC//[.:]/_}"
 export CLAUDE_WARP_RC="$RC"
-# Continue the existing conversation for this project. Priority:
-#   1) --resume <sid> if a per-machine last-session id exists (.git/last-session/<sha16(cwd)>, written by the Stop hook)
-#   2) --continue (most recent conversation in THIS cwd) — covers a missing last-session id (key mismatch) or a
-#      stale/unresumable one, so we continue instead of silently starting a blank conversation
-#   3) brand-new conversation only if there is genuinely nothing to continue
-# RemotePair runs claude on the single host machine, so --continue won't pull another machine's transcript.
-_LSD="$HOME/.claude/.git/last-session"
-_K="$(printf '%s' "$PWD" | shasum -a 256 | cut -c1-16)"
+# Conversation identity is STRICTLY id-based, via a DETERMINISTIC session id derived by the launcher
+# from the full-unicode host path + session number (CLAUDE_SESSION_ID, injected like CLAUDE_WARP_RC).
+#   • exists  → claude --resume <SID>        (id lookup; project-dir encoding is irrelevant)
+#   • first   → claude --session-id <SID>    (create the conversation WITH our id)
+#   • fresh   → claude (auto id)             (--fresh / _N>1: a genuinely new conversation)
+#
+# ⚠ Why NOT `claude --continue`: it is NOT id-based — it resumes "the most recent conversation in this
+# cwd", and claude encodes cwd → project-dir by replacing every non-[A-Za-z0-9] char (incl. ALL
+# non-ASCII, e.g. Korean) with '-'. Folders differing only by non-ASCII segments collapse to the SAME
+# project dir, so --continue pulls a *sibling project's* transcript → cross-session pollution
+# (two differently-named sessions sharing one conversation). A deterministic per-path id avoids this
+# entirely: we never rely on cwd-scoped "most recent", and the id is collision-free (full unicode path).
+SID="${CLAUDE_SESSION_ID:-}"
 _rplog="$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "$(dirname "$_rplog")" 2>/dev/null
+# Does a transcript already exist for this id? The file is named <SID>.jsonl regardless of which
+# (possibly colliding) project dir it lives under, so a glob by id is collision-proof.
+_sid_exists() { [ -n "$SID" ] && ls "$HOME/.claude/projects/"*/"$SID".jsonl >/dev/null 2>&1; }
 while :; do
-  # Re-read inside the loop so a crash-respawn picks up the latest session id (not one captured once before the loop).
-  RESUME_SID=""
-  [ "${CL_CONTINUE:-0}" = 1 ] && [ -f "$_LSD/$_K" ] && RESUME_SID="$(cat "$_LSD/$_K" 2>/dev/null | head -1)"
-  if [ -n "$RESUME_SID" ]; then
-    if ! claude --resume "$RESUME_SID" --remote-control "$RC"; then
-      printf '%s SESSION: --resume %s failed → --continue fallback (rc=%s)\n' "$(date '+%FT%T%z')" "$RESUME_SID" "$RC" >> "$_rplog" 2>/dev/null || true
-      claude --continue --remote-control "$RC" || claude --remote-control "$RC"
-    fi
-  elif [ "${CL_CONTINUE:-0}" = 1 ]; then
-    # No last-session id for this cwd → continue the most recent conversation here instead of starting blank.
-    printf '%s SESSION: no last-session id (key=%s) → --continue\n' "$(date '+%FT%T%z')" "$_K" >> "$_rplog" 2>/dev/null || true
-    claude --continue --remote-control "$RC" || claude --remote-control "$RC"
-  else
+  if [ "${CL_CONTINUE:-0}" != 1 ] || [ -z "$SID" ]; then
+    # --fresh / _N>1 / no id → brand-new conversation (claude auto-generates the id).
+    [ -n "$SID" ] && printf '%s SESSION: fresh (rc=%s)\n' "$(date '+%FT%T%z')" "$RC" >> "$_rplog" 2>/dev/null || true
     claude --remote-control "$RC"
+  elif _sid_exists; then
+    printf '%s SESSION: resume %s (rc=%s)\n' "$(date '+%FT%T%z')" "$SID" "$RC" >> "$_rplog" 2>/dev/null || true
+    # Re-checked each loop so a crash-respawn resumes the now-existing transcript.
+    claude --resume "$SID" --remote-control "$RC"
+  else
+    printf '%s SESSION: create %s (rc=%s)\n' "$(date '+%FT%T%z')" "$SID" "$RC" >> "$_rplog" 2>/dev/null || true
+    claude --session-id "$SID" --remote-control "$RC"
   fi
   [ $? -eq 0 ] && break
   printf '\n[claude crashed — restarting in 3s, Ctrl+C to abort]\n'
@@ -257,7 +268,8 @@ launch_local() {
     tm_local has-session -t "=$SESS" 2>/dev/null && NEED_CREATE=0             # detached → take-over re-attach
     if [ "$NEED_CREATE" = 1 ]; then
       [ -d "$PROJECT_DIR" ] || die "project directory missing: $PROJECT_DIR" 1
-      { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
+      local SID; SID="$(_session_uuid "$PROJECT_DIR" "$N")"
+      { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; printf "export CLAUDE_SESSION_ID=%q\n" "$SID"; respawn_body; } > "$T"
       tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T"
     fi   # RemotePairHost subtree → computer-use
     # host-side session-lifecycle log (local==host here; correlation id = session name)
@@ -394,6 +406,10 @@ RCONT=1
 [ "$RN" -gt 1 ] && RCONT=0   # _2+ → fresh
 [ "$FRESH" = 1 ] && RCONT=0  # --fresh → fresh
 
+# Deterministic conversation id for this (host path, _N) — computed client-side on the FULL host path
+# (collision-free) and embedded literally into the remote script. Resume is strictly by this id.
+R_SID="$(_session_uuid "$HOST_DIR" "$RN")"
+
 RESPAWN_B64="$(respawn_body | base64 | tr -d '\n')"
 
 # Current window size — create the remote detached tmux session at this size to avoid
@@ -445,7 +461,7 @@ CONT=${RCONT}; NEED_CREATE=1
 if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
 if [ "\$NEED_CREATE" = 1 ]; then
   T=\$(mktemp -t claude-respawn.XXXXXX)
-  { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
+  { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf "export CLAUDE_SESSION_ID=%q\n" "${R_SID}"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
   tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c '${HOST_DIR}' "bash \$T"
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached)
