@@ -127,7 +127,13 @@ The only per-session interaction is claude's own **"Allow for this session"** pr
 
 ### Launch from Finder (GUI) — requires a folder mapping
 
-Right-click a folder → **Services → "Launch Remote Claude"** to attach that folder's host session. **The folder must be mapped** first (the GUI can't prompt you for the host path interactively):
+Right-click a folder → **Services → "Launch Remote Claude"** to attach that folder's host session.
+
+<p align="center">
+  <img src="assets/usage-finder-launch.png" alt="Finder right-click → Services → Launch Remote Claude" width="420">
+</p>
+
+**The folder must be mapped** first (the GUI can't prompt you for the host path interactively):
 - **Mapped** (registered via `remote-pair map add`, or client==host same path) → attaches/creates directly.
 - **Not mapped** → the GUI can't resolve the host path and does nothing. Register it once first:
   `remote-pair map add <folder> <host-path>` or `remote-pair launch <folder>` (prompts to register when unmapped). After that the GUI works for that folder.
