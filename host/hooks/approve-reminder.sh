@@ -16,7 +16,7 @@
 EVENT="${1:-PostToolUseFailure}"
 INPUT="$(cat)"
 
-if printf '%s' "$INPUT" | grep -qiE 'denied|permission'; then
+if printf '%s' "$INPUT" | grep -qiE 'denied|permission|timed.?out|timeout'; then
   cat <<EOF
 {"hookSpecificOutput":{"hookEventName":"$EVENT","additionalContext":"If this denial might be an unclicked GUI dialog (remote session) rather than an intentional user denial, consider using the approve skill."}}
 EOF
