@@ -85,6 +85,26 @@ if is_host; then
       rel="${src#"$HOST_DIR/skills/"}"; install_file "$src" "$CLAUDE_DIR/skills/$rel"
     done < <(find "$HOST_DIR/skills" -type f)
   fi
+
+  # approve 리마인더 훅 → ~/.claude/settings.json (PermissionDenied/PostToolUseFailure).
+  # 헤드리스 호스트에서 GUI 승인창(Chrome 권한·1Password·시스템 프롬프트)에 막혀 도구가 거부되면
+  # 모델에게 approve 스킬을 결정적으로 상기시킨다(스킬 설명에만 의존하지 않게). 멱등 머지 — 기존 훅 보존.
+  if [ -f "$HOST_DIR/hooks/approve-reminder.sh" ] && [ -f "$HOST_DIR/hooks/manage-claude-hooks.py" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+      install_file "$HOST_DIR/hooks/manage-claude-hooks.py" "$RP_DIR/bin/manage-claude-hooks.py" 755
+      install_file "$HOST_DIR/hooks/approve-reminder.sh"    "$CLAUDE_DIR/hooks/remote-pair-approve-reminder.sh" 755
+      settings="$CLAUDE_DIR/settings.json"
+      hookcmd='$HOME/.claude/hooks/remote-pair-approve-reminder.sh'
+      existed=0; [ -f "$settings" ] && existed=1
+      say "[host] approve 훅 → $settings (멱등 머지)"
+      python3 "$RP_DIR/bin/manage-claude-hooks.py" add "$settings" "$hookcmd" || warn "approve 훅 머지 실패 — 수동 확인 필요"
+      if [ "$existed" = 1 ]; then record HOOKS "$settings" "$hookcmd"   # 기존 파일 → surgical 제거로 원복
+      else record FILE "$settings"; fi                                  # 우리가 새로 만든 파일 → 통째 삭제로 원복
+    else
+      warn "python3 없음 — approve 훅 설치 건너뜀(스킬은 설치됨). CLT 설치 후 install.sh --role host 재실행 권장"
+    fi
+  fi
+
   # Remove legacy label names — idempotent, best-effort
   U=$(id -u)
   for L in com.ghyeong.remote-pair com.ghyeong.remote-pair-watchdog com.ghyeong.auto-approve com.ghyeong.auto-approve-watchdog com.x10lab.remote-pair com.x10lab.remote-pair-watchdog; do

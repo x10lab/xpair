@@ -489,6 +489,17 @@ EOF
   printf '%-22s %s\n' "host tmux-aqua" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -x $rb ]" 2>/dev/null && echo OK || { echo "missing — run install.sh --role host on the host"; fail=1; })"
   printf '%-22s %s\n' "host app" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -d ~/Applications/$APP_NAME.app ]" 2>/dev/null && echo "OK ($APP_NAME.app)" || { echo "missing"; fail=1; })"
   printf '%-22s %s\n' "host server" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "$rb -S '$AQUA_SOCK' has-session" 2>/dev/null && echo "up" || echo "down (check app launch/permissions)")"
+  # approve 경로(스킬+훅) — 헤드리스 호스트에서 GUI 승인창 통과의 핵심. 둘 다 install.sh --role host 가 깖.
+  printf '%-22s %s\n' "host approve skill" "$(ssh -o BatchMode=yes "$REMOTE_HOST" '[ -f ~/.claude/skills/approve/SKILL.md ]' 2>/dev/null && echo OK || { echo "missing — install.sh --role host"; fail=1; })"
+  printf '%-22s %s\n' "host approve hook" "$(ssh -o BatchMode=yes "$REMOTE_HOST" 'grep -q remote-pair-approve-reminder ~/.claude/settings.json 2>/dev/null' 2>/dev/null && echo OK || { echo "missing — install.sh --role host (or python3 absent)"; fail=1; })"
+  # AX/SR grant — computer-use(=approve 클릭/스샷)의 실제 게이트. status.json(ground truth)에서 읽음.
+  local sj; sj="$(ssh -o BatchMode=yes "$REMOTE_HOST" 'cat ~/.remote-pair/logs/status.json 2>/dev/null' 2>/dev/null)"
+  if [ -n "$sj" ]; then
+    local ax sr; ax="$(_jget "$sj" ax)"; sr="$(_jget "$sj" sr)"
+    printf '%-22s %s\n' "host AX+SR grant" "$([ "$ax" = true ] && [ "$sr" = true ] && echo "OK (AX✓ SR✓)" || { echo "NOT granted (AX $(_mark "$ax") SR $(_mark "$sr")) — System Settings 에서 켜야 computer-use/approve 동작"; fail=1; })"
+  else
+    printf '%-22s %s\n' "host AX+SR grant" "unknown (status.json 없음 — 호스트 앱 최신화 필요)"
+  fi
   [ "$fail" = 0 ] && ok "all good — remote-pair launch ready" || warn "check the items above"
   return "$fail"
 }

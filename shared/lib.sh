@@ -80,6 +80,11 @@ manifest_revert() {
       LAUNCHCTL) launchctl bootout "gui/$(id -u)/$a" 2>/dev/null || true
                  [ -n "$b" ] && [ -e "$b" ] && rm -f "$b"; echo "  bootout $a" ;;
       GITREMOTE) ( cd "$CLAUDE_DIR" && git remote remove "$a" 2>/dev/null ) && echo "  remote- $a" || true ;;
+      # HOOKS: settings.json(기존 사용자 파일)을 in-place 수정한 것 → surgical 제거(우리 엔트리만).
+      #   a=settings.json 경로, b=훅 command(식별자). manage 스크립트는 같은 manifest 의 FILE 로
+      #   설치돼 있고 역순 처리상 이 HOOKS 보다 뒤에 제거되므로, 여기서 아직 존재해 호출 가능.
+      HOOKS)     [ -f "$a" ] && python3 "$RP_DIR/bin/manage-claude-hooks.py" remove "$a" "$b" >/dev/null 2>&1 \
+                   && echo "  hook- $b" || true ;;
       NOTE)      : ;;
     esac
   done
