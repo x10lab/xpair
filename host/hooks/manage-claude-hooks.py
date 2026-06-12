@@ -13,7 +13,9 @@
 import json, os, sys
 
 EVENTS = ["PermissionDenied", "PostToolUseFailure"]
-MATCHER = r"mcp__claude-in-chrome__.*|mcp__computer-use__.*"
+# 매칭 도구: GUI 승인창을 띄우는 것들 + Bash(ssh/git 이 1Password SSH agent 창에 막혀 hang→timeout).
+# Bash 는 광범위하지만 스크립트가 denied|permission|timeout 신호일 때만 주입하므로 일반 실패엔 안 뜬다.
+MATCHER = r"mcp__claude-in-chrome__.*|mcp__computer-use__.*|Bash"
 
 
 def load(path):

@@ -8,8 +8,9 @@
 #   이 훅이 그 상황에서 모델을 approve 스킬로 결정적으로 유도한다(스킬 설명만 믿지 않게).
 #
 # 설치 위치: ~/.claude/settings.json 의 PermissionDenied / PostToolUseFailure 훅으로,
-#   matcher = GUI 다이얼로그를 띄우는 도구(claude-in-chrome · computer-use)에 한정.
-#   (Bash 등 일반 도구의 거부는 보통 '의도된 거부'라 제외 — 노이즈 방지.)
+#   matcher = GUI 다이얼로그를 띄우는 도구(claude-in-chrome · computer-use) + Bash.
+#   Bash 를 넣는 건 ssh/git 이 1Password SSH agent 창에 막혀 hang→timeout 나는 케이스 때문.
+#   Bash 는 광범위하지만, 아래 grep 게이트(denied|permission|timeout…)가 일반 실패엔 안 뜨게 막는다.
 #
 # 계약(Claude Code hooks): stdin = JSON 이벤트, exit 0 + stdout JSON 의 additionalContext 가 모델에 주입.
 # 사용법: approve-reminder.sh <HookEventName>
@@ -19,7 +20,7 @@ INPUT="$(cat 2>/dev/null || true)"
 
 # '의도된 사용자 거부'와 '미클릭 GUI 타임아웃'을 이벤트만으로 구별할 수 없으므로,
 # 입력에 권한/거부 신호가 있을 때만 — 그리고 판단은 모델에 맡기는 '제안' 문구로 — 주입한다.
-if printf '%s' "$INPUT" | grep -qiE 'denied|permission|timeout|not.?clicked|no.?response'; then
+if printf '%s' "$INPUT" | grep -qiE 'denied|permission|timeout|timed.?out|not.?clicked|no.?response|1password|ssh|authoriz|agent'; then
   MSG='이 거부가 (의도된 거부가 아니라) 헤드리스 호스트에서 아무도 못 누른 GUI 승인창 때문일 수 있습니다. 그렇다면 approve 스킬을 쓰세요: 화면을 보고(computer-use) 어떤 창인지 판단한 뒤 `remote-pair approve --for "<무엇>" --type "key:..."|"ocr:<버튼텍스트>"` 로 요청하면 권한 가진 RemotePair 앱이 대신 눌러줍니다. (1Password·시스템 권한창·Claude-for-Chrome 모달 모두 대응)'
   # jq 없이도 안전하도록 python3 로 JSON 직렬화(따옴표/유니코드 이스케이프).
   python3 - "$EVENT" "$MSG" <<'PY' 2>/dev/null || printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"이 거부가 헤드리스 호스트의 미클릭 GUI 승인창 때문일 수 있습니다 — approve 스킬(remote-pair approve)을 고려하세요."}}\n' "$EVENT"
