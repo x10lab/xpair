@@ -37,8 +37,8 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Releasing v$v"
 
-      - name: Install build deps (tmux-aqua)
-        run: brew install libevent ncurses utf8proc
+      - name: Install build deps (tmux-aqua + cliclick for bundle embed)
+        run: brew install libevent ncurses utf8proc cliclick
 
       - name: Build patched tmux-aqua
         run: ./host/build-tmux-aqua.sh

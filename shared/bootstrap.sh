@@ -58,18 +58,24 @@ INSTALL_ARGS=(--role "$ROLE")
 c "설치 (install.sh --role $ROLE$([ -n "$SYNC_URL" ] && echo ' --with-sync'))"
 ./shared/install.sh "${INSTALL_ARGS[@]}"
 
-# ── host: RemotePairHost.app 보장 (Homebrew cask) ──
-if [ "$ROLE" != client ] \
-   && [ ! -d "$HOME/Applications/RemotePairHost.app" ] && [ ! -d /Applications/RemotePairHost.app ]; then
+# ── host: cliclick(click primitive) + RemotePairHost.app(cask) 보장 ──
+# cliclick = InputServer 의 click 주입기. cask 번들엔 없으므로(CI 러너에 미설치) 호스트에서 brew 로 보장.
+#   없으면 click primitive 가 런타임에 실패한다(키는 osascript 라 무관).
+if [ "$ROLE" != client ]; then
   if command -v brew >/dev/null; then
-    c "RemotePairHost.app 설치 (Homebrew cask)"
-    brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair 2>/dev/null || true
-    brew install --cask remote-pair-host || warn "cask 설치 실패 — 수동: brew install --cask remote-pair-host"
+    command -v cliclick >/dev/null || { c "cliclick 설치 (click primitive)"; brew install cliclick || warn "cliclick 설치 실패 — 수동: brew install cliclick"; }
+    # cask 보장 (앱이 아직 없을 때만)
+    if [ ! -d "$HOME/Applications/RemotePairHost.app" ] && [ ! -d /Applications/RemotePairHost.app ]; then
+      c "RemotePairHost.app 설치 (Homebrew cask)"
+      brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair 2>/dev/null || true
+      brew trust ghyeongl/remote-pair 2>/dev/null || true   # 서드파티 tap 신뢰(최신 brew 보안 게이트)
+      brew install --cask remote-pair-host || warn "cask 설치 실패 — 수동: brew trust ghyeongl/remote-pair && brew install --cask remote-pair-host"
+    fi
   else
-    warn "Homebrew 없음 — 앱 설치에 필요. 먼저 Homebrew 를 깔고 이 스크립트를 다시 실행하세요:"
+    warn "Homebrew 없음 — 앱(cask)+cliclick 설치에 필요. 먼저 Homebrew 를 깔고 다시 실행하세요:"
     cat <<'EOF' >&2
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   (https://brew.sh) — 설치 후 다시 실행하면 앱(cask)까지 자동으로 깝니다.
+   (https://brew.sh) — 설치 후 다시 실행하면 앱(cask)+cliclick 까지 자동으로 깝니다.
 EOF
   fi
 fi
