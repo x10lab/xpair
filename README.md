@@ -1,4 +1,10 @@
-# RemotePair
+<p align="center">
+  <img src="assets/icon/AppIcon-1024.png" alt="RemotePair" width="128">
+</p>
+
+<h1 align="center">RemotePair</h1>
+
+<p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
 
 Run Claude Code on an always-on Mac, with full macOS **computer-use** (screenshot, click, type), and attach to it from your laptop or phone — over mosh/SSH.
 
@@ -7,6 +13,18 @@ Run Claude Code on an always-on Mac, with full macOS **computer-use** (screensho
 - **Host Mac** — runs `claude` inside persistent tmux sessions, 24/7, with computer-use working.
 - **Client Mac** — attach (and detach) from your laptop with a Finder right-click.
 - **Mobile** — reach the same sessions from Claude Code on your phone.
+
+---
+
+## Quick start — let Claude Code install it
+
+Already have Claude Code? Paste the block below into a session **on the Mac you're setting up** and it drives the whole install end-to-end — figuring out the role, installing, wiring SSH, and walking you through the one manual permission step.
+
+```text
+Set up RemotePair (https://github.com/ghyeongl/remote-pair) on this Mac. Fetch and read its README, then follow it. Figure out whether this Mac is the host or the client, explain each command before you run it, and stop for anything that needs my input or my physical screen (like the one-time permission grant). Finish with remote-pair doctor and a summary of what's left for me to do.
+```
+
+Prefer to do it by hand? See [Installation](#installation) below.
 
 ---
 
@@ -26,21 +44,9 @@ Each feature exists to solve a concrete problem.
 **Problem:** You're not sitting at the host Mac.
 **Solution:** Attach from a client Mac (Finder → right-click → Launch Remote Pair) or from Claude Code on mobile. Same sessions, same state, wherever you are.
 
-### A permission grant that sticks
-**Problem:** macOS ties TCC grants to a code signature, so every rebuild or auto-update normally re-triggers the permission prompts.
-**Solution:** A stable self-signed cert ties the grant to the app's designated requirement, so it survives rebuilds and in-app updates. No Apple Developer account or notarization needed.
-
 ### Permission dialogs answered for you
 **Problem:** A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host stalls the whole session.
 **Solution:** An on-demand approve router (OCR + click) detects and clicks the right button, so headless sessions don't hang.
-
-### Zero-build client
-**Problem:** Onboarding a new laptop usually means Xcode, builds, and toggling permissions.
-**Solution:** The client install needs none of that — just a Finder Quick Action plus the `remote-pair` CLI. A guided `onboard` configures the host, terminal app, and folder mappings.
-
-### Folder path mapping
-**Problem:** The same project lives at different paths on each machine (Google Drive, Syncthing, etc.).
-**Solution:** Register a mapping once. Launching an unmapped folder runs an interactive probe — it checks whether the host path exists and offers to register it, create it, or cancel. No blind guesses.
 
 ---
 
@@ -50,7 +56,8 @@ Each feature exists to solve a concrete problem.
 - macOS Sequoia or later recommended
 - SSH key authentication between client and host
 - `mosh` on both machines (plain SSH works, but a disconnect kills the live attach)
-- **Host only:** Xcode Command Line Tools (or full Xcode) and Homebrew, for the tmux static build
+- **Host — Homebrew install (Option A):** just Homebrew. tmux-aqua ships embedded in the app, so no Xcode needed.
+- **Host — source build (Option B) only:** Xcode Command Line Tools (or full Xcode), for the tmux static build
 
 ---
 
@@ -58,14 +65,15 @@ Each feature exists to solve a concrete problem.
 
 ### Host — the always-on Mac (pick one)
 
-**Option A — Download the app (GUI, no build).** Easiest. The app self-installs on first launch (LaunchAgent, `~/.remote-pair`, embedded tmux-aqua + approve skill — no `install.sh` needed).
+**Option A — Homebrew (recommended, no build).** The app is self-signed, not notarized — so a raw download is Gatekeeper-blocked on first open. Homebrew strips the quarantine flag for you, so the app launches normally *and* its Accessibility / Screen Recording grants stick to the stable signing identity (TCC doesn't need notarization — only a quarantine-free, stably-signed app).
 
-1. Download the signed app: **[latest release → `RemotePairHost.zip`](https://github.com/ghyeongl/remote-pair/releases/latest/download/RemotePairHost.zip)**
-2. Unzip into `~/Applications` and open it once:
-   ```bash
-   cd ~/Applications && ditto -x -k ~/Downloads/RemotePairHost.zip . && open RemotePairHost.app
-   ```
-   It's self-signed (not notarized), so the **first** open is Gatekeeper-blocked — approve it once: **System Settings → Privacy & Security → "RemotePairHost.app was blocked" → Open Anyway** (or, headless: `xattr -dr com.apple.quarantine ~/Applications/RemotePairHost.app`). Downloading via `curl`/`gh` instead of a browser skips this entirely.
+```bash
+brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair
+brew install --cask remote-pair-host
+open ~/Applications/RemotePairHost.app   # first launch; self-installs its daemon
+```
+
+On first launch the app self-installs its **daemon** (LaunchAgent, `~/.remote-pair`, tmux-aqua link, watchdog) and starts running. That covers the daemon only — to also get the approve rules + skill and the `remote-pair` CLI, run the host setup (Option B). The app stays a pure privileged daemon; skills/rules/CLI are owned by the setup, not the app (low coupling).
 
 **Option B — CLI bootstrap (build from source).** For those who'd rather compile than trust a binary. Needs Xcode CLT + Homebrew.
 ```bash
@@ -73,6 +81,41 @@ curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bo
 ```
 
 Either way, finish with the [one-time permission grant](#one-time-permission-grant-host--needs-a-physical-screen-or-vnc) below.
+
+### SSH access — key-based login from client to host
+
+The client reaches the host over SSH, so set up passwordless key auth once (the client `onboard` and `remote-pair doctor` both assume it works).
+
+**On the host** — turn on Remote Login:
+
+```bash
+sudo systemsetup -setremotelogin on   # or: System Settings → General → Sharing → Remote Login
+```
+
+**On the client** — create a key if you don't have one, copy it to the host, then add a friendly alias:
+
+```bash
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519        # skip if you already have a key
+ssh-copy-id ghyeong@192.168.1.42                          # host username @ host address (LAN IP, hostname, or Tailscale name)
+```
+
+Add a short alias to `~/.ssh/config` so you can type `ssh gh-mac-m1` instead of the full address:
+
+```ssh-config
+Host gh-mac-m1
+    HostName 192.168.1.42      # LAN IP, mDNS name (mac-m1.local), or Tailscale name
+    User ghyeong
+```
+
+Verify it logs in without a password:
+
+```bash
+ssh gh-mac-m1   # should drop you into a host shell, no prompt
+```
+
+That `gh-mac-m1` alias is exactly what you give `remote-pair config set host gh-mac-m1` later.
+
+> Reaching the host from outside your LAN? A mesh VPN like **[Tailscale](https://tailscale.com)** gives the host a stable name that works anywhere — point `HostName` at that. Pair with `mosh` so the attach survives network drops.
 
 ### Client — the laptop you sit at (no build, no Xcode)
 
@@ -90,7 +133,7 @@ This is the one manual step, and it can only be done at the host's screen (TCC c
 |---|---|---|
 | **Accessibility** | Synthetic input (click/type) for computer-use | **Required** |
 | **Screen Recording** | Screenshots for computer-use | **Required** |
-| **Full Disk Access** | Silences macOS folder prompts that a *headless* host can't answer remotely (an unanswered prompt stalls the session). Trade-off: every session can then silently read the whole disk (Mail/Messages/browser included) — fine for a personal box, your call. | **Recommended** for an always-on host |
+| **Full Disk Access** | Prevents macOS folder prompts that a *headless* host can't answer remotely (an unanswered prompt stalls the session). Trade-off: the grant is exercised not by RemotePair's own logic but by the **Claude Code session running inside it** (RemotePair itself touches the disk only at install) — so that session can silently read the whole disk (Mail/Messages/browser included). | **Recommended** |
 
 The in-app **Grant Permissions…** menu item opens all three panes and shows live ✓/✗ status for each. After toggling, pick up the grants with:
 
@@ -106,6 +149,29 @@ launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host   # or: menu bar
 ~/.local/share/remote-pair/shared/uninstall.sh          # remove installed files (manifest-tracked)
 ~/.local/share/remote-pair/shared/uninstall.sh --purge  # also remove ~/.remote-pair state
 ```
+
+---
+
+## Folder mapping (do this first)
+
+RemotePair runs `claude` **on the host**, against files **on the host**. So the project you launch from your laptop has to already exist on the host — RemotePair doesn't copy files, it attaches to a host path. You keep both sides in sync yourself with **Google Drive, Syncthing, iCloud, or any file-sync tool**; the same project then lives at a (possibly different) absolute path on each machine.
+
+A **mapping** tells RemotePair which host path a given client path corresponds to. The sync root sits at a different parent path on each machine (`ghyeong` vs `rpi/Desktop`), but **everything below it must be identical** — RemotePair attaches to the same subfolder structure on the host:
+
+<p align="center">
+  <img src="assets/folder-mapping.png" alt="Folder mapping: host and client sync roots differ in parent path but share identical subfolders" width="720">
+</p>
+
+```bash
+remote-pair map add ~/Drive/proj /Users/me/proj   # register once
+remote-pair launch ~/Drive/proj                   # → attaches to /Users/me/proj on the host
+```
+
+- **Same path on both machines?** (e.g. `~/Spaces/proj` exists identically) — no mapping needed; launch resolves it directly.
+- **Different paths?** Register the mapping once. After that, both the CLI and the Finder Quick Action resolve it automatically.
+- **Not mapped + different paths?** `remote-pair launch` runs an interactive probe (checks whether the host path exists, offers to register / create / cancel). The Finder GUI can't prompt, so it needs the mapping up front.
+
+> Sync only the **working tree**, not `.git` — syncing a live `.git` across machines corrupts the repo. Each machine keeps its own `.git`; share source files only.
 
 ---
 
@@ -155,15 +221,27 @@ remote-pair config set terminal iterm2     # or: terminal
 
 ## Notes & caveats
 
-> ⚠️ **Security & responsibility — read this.** RemotePair intentionally lowers macOS's safety guardrails on the host: it holds Accessibility + Screen Recording (and, if you enable it, **Full Disk Access**) and keeps an autonomous `claude` agent running *inside* that privileged process subtree, reachable remotely 24/7. In effect, an agent on the host can see the screen, synthesize clicks/keystrokes, and — with Full Disk Access — silently read and write your entire disk (Mail, Messages, browser data, SSH keys, everything). That is the whole point of the tool, and it is a deliberate trade-off you are opting into. **You are solely responsible for what runs on the host.** Any data loss, leakage, or damage caused by misconfiguration, a careless instruction, a prompt-injection, or an unattended session is entirely the operator's responsibility. Run this only on a personal machine you own, grant the minimum permissions you actually need (prefer a non-protected project root over Full Disk Access), and don't point it at anything you can't afford to lose. The software is provided **as-is, without warranty** (see [LICENSE](LICENSE)).
+> ⚠️ **Security & responsibility — read this.** RemotePair intentionally lowers macOS's safety guardrails on the host: it holds Accessibility + Screen Recording (and, if you enable it, **Full Disk Access**) and keeps an autonomous `claude` agent running *inside* that privileged process subtree, reachable remotely 24/7. In effect, an agent on the host can see the screen, synthesize clicks/keystrokes, and — with Full Disk Access — silently read and write your entire disk (Mail, Messages, browser data, SSH keys, everything). (What actually exercises these grants is the `claude` session running inside RemotePair, not RemotePair's own logic — RemotePair itself never touches the disk except at install.) That is the whole point of the tool, and it is a deliberate trade-off you are opting into. **You are solely responsible for what runs on the host.** Any data loss, leakage, or damage caused by misconfiguration, a careless instruction, a prompt-injection, or an unattended session is entirely the operator's responsibility. Run this only on a personal machine you own, grant the minimum permissions you actually need (prefer a non-protected project root over Full Disk Access), and don't point it at anything you can't afford to lose. The software is provided **as-is, without warranty** (see [LICENSE](LICENSE)).
 
-- **Grant is one-time but host-local.** It must be granted at the host screen once; after that, rebuilds and updates keep it (stable cert). Back up the cert at `~/Library/Application Support/RemotePair/signing.p12` — losing it means re-granting.
-- **Updates restart the host.** Applying an update or "Restart tmux host" relaunches the server and disconnects active sessions; RemotePair warns first when sessions are live.
-- **mosh strongly recommended.** Plain SSH works, but a network drop ends the attach (the host session itself survives — just reattach).
-- **`~/.remote-pair` is the single source of state.** RemotePair does not require `~/.claude` to be synced between machines. The only installed file outside `~/.remote-pair` is `~/.claude/skills/approve/` (required by the Claude harness).
-- **`computer use not granted` after a `claude` update:** toggle the MCP server — `/mcp disable computer-use` then `/mcp enable computer-use`.
-- **1Password SSH agent** can gate git push and the SSH unlock prompt; `remote-pair approve` can auto-click the unlock.
-- **Self-signed, not notarized.** This is a personal-device tool. Building from source is recommended over trusting pre-built binaries from forks. macOS TCC behavior can change across OS versions.
+
+---
+
+## Troubleshooting & reporting bugs
+
+Hit something broken? Work through this before filing:
+
+1. **Run the doctor.** `remote-pair doctor` checks SSH auth, the host app, and tmux-aqua on the host — it catches most setup problems and tells you which side is wrong.
+2. **Check status + logs.** `remote-pair status` shows the app PID, host server, and heartbeat age. Logs live at `~/.remote-pair/logs/` (`remote-pair.log` is the main one).
+3. **Computer-use stopped after a `claude` update?** Toggle the MCP server: `/mcp disable computer-use` then `/mcp enable computer-use`. (No need to re-grant TCC.)
+4. **Permissions look granted but computer-use fails?** Re-pick up the grants: `launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host`.
+
+Still stuck? **[Open an issue](https://github.com/ghyeongl/remote-pair/issues)** and include:
+
+- Version (`remote-pair status`, or the app's menu-bar **About**) and your macOS version.
+- `remote-pair doctor` output, and the relevant tail of `~/.remote-pair/logs/remote-pair.log`.
+- What you expected vs. what happened, and the exact steps to reproduce.
+
+> Please don't paste secrets — scrub SSH hostnames, keys, and tokens from logs before attaching.
 
 ---
 
@@ -174,10 +252,10 @@ remote-pair config set terminal iterm2     # or: terminal
 ./host/make-signing-cert.sh            # stable self-signed cert "RemotePair Local Signing" (idempotent)
 ./host/build-host.sh                   # → build/RemotePairHost.app (signed + verified)
 ./host/build-host.sh --deploy [host]   # build + rsync + install on host
-RP_VERSION=0.4.9 ./host/build-host.sh --release   # sign, zip, create gh release v0.4.9
+RP_VERSION=0.4.10 ./host/build-host.sh --release  # sign, zip, gh release, bump cask
 ```
 
-Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.9** (pre-1.0).
+Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.10** (pre-1.0).
 
 Repo layout: `host/` (app, build scripts, approve router, skills), `client/` (CLI, launcher, Finder service), `shared/` (install lib, config SSOT, bootstrap).
 
