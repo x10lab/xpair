@@ -20,3 +20,10 @@ GUI 확인/검증을 "환경상 불가"라고 건너뛰지 말 것.
 
 - 화면 보기: computer-use 스크린샷(또는 `screencapture -x file.png` 후 확인).
 - 승인/권한 다이얼로그는 직접 누르지 말고 `approve` 스킬(`remote-pair approve --for "..."`)로.
+
+## 호스트 앱이 살아있나 / grant 됐나 (오진 방지)
+- 메뉴바 앱(RemotePairHost)은 **권한이 없어도 실행된다** — 권한은 computer-use *동작*만 게이트한다.
+  CLI 에서 `open` 후 메뉴바에 바로 안 보여도 "죽은" 게 아니다.
+- 생존·권한은 추측 말고 한 줄로 확인하라:  `remote-pair status`
+  (앱 생존 = launchctl 기준, AX/SR/FDA grant = 앱이 1초마다 쓰는 `~/.remote-pair/logs/status.json` 기준.)
+- ⚠ `pgrep` 은 `.app` 번들 프로세스를 자주 못 잡아 "앱 안 떴다" 오인을 부른다. 생존 판단에 쓰지 마라.

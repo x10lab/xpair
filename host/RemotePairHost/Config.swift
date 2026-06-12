@@ -21,8 +21,14 @@ let SOCKET = "/tmp/aqua-tmux.sock"                                    // host tm
 let ROUTER = helper("remote-pair-approve-router.sh", "\(RP_DIR)/bin/remote-pair-approve-router.sh")
 let LOGP = "\(LOG_DIR)/remote-pair.log"
 let HEARTBEAT = "\(LOG_DIR)/remote-pair.heartbeat"                    // watchdog 가 읽음
+let STATUS_FILE = "\(LOG_DIR)/status.json"                            // 에이전트가 읽는 ground truth: 앱 생존 + AX/SR/FDA grant
 let RULES_FILE = "\(RP_DIR)/rules.txt"                                // approve 라우터 룰
-let TRIGGER = "/tmp/remote-pair.approve-request"                     // /approve 스킬이 touch → on-demand 승인
+let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy) /approve 스킬 touch → 구 라우터 폴백
+// CLI(두뇌, 권한 0) ↔ 앱(권한 경계) primitive 채널. CLI 가 요청, 앱이 grant 로 실행.
+//   요청(INPUT_REQ, 탭구분):  shot\t<outpath>  |  click\t<x>\t<y>  |  key\t<combo>
+//   응답(INPUT_RES):          ok  |  ok\t<path>  |  err\t<msg>
+let INPUT_REQ = "/tmp/remote-pair.input-req"
+let INPUT_RES = "/tmp/remote-pair.input-res"
 
 // 표시용 버전 + 업데이트 대상 (Info.plist 단일 출처; build-host.sh 가 채움)
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
@@ -32,6 +38,17 @@ let BUNDLE_ID = Bundle.main.bundleIdentifier ?? "com.x10lab.remote-pair-host"
 
 func ensureDirs() {
     try? FileManager.default.createDirectory(atPath: LOG_DIR, withIntermediateDirectories: true)
+}
+
+/// 에이전트(remote-pair status/doctor)가 읽는 단일 ground truth. 앱이 살아있고 grant 됐는지를
+/// 추측(pgrep 등)이 아니라 사실로 알 수 있게 한다. 매 tick(1s) 갱신 → ts 신선도로 생존 판단.
+func writeStatus() {
+    ensureDirs()
+    let ts = Int(Date().timeIntervalSince1970)
+    let json = "{\"ts\":\(ts),\"pid\":\(getpid()),\"version\":\"\(APP_VERSION)\","
+        + "\"bundle_id\":\"\(BUNDLE_ID)\",\"socket\":\"\(SOCKET)\","
+        + "\"ax\":\(Permissions.axTrusted()),\"sr\":\(Permissions.srGranted()),\"fda\":\(Permissions.fdaGranted())}\n"
+    try? json.write(toFile: STATUS_FILE, atomically: true, encoding: .utf8)
 }
 
 let LOG_MAX_BYTES = 5_000_000        // rotate remote-pair.log past 5MB, keep one .1 backup (24/7 host → unbounded growth otherwise)
