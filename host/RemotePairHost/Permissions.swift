@@ -51,7 +51,7 @@ enum Permissions {
           • 손쉬운 사용 (Accessibility)  [필수]  : \(axTrusted() ? "✓ 이미 켜짐" : "OFF — 켜기")
           • 화면 기록 (Screen Recording) [필수]  : \(srGranted() ? "✓ 이미 켜짐" : "OFF — 켜기")
           • 전체 디스크 접근 (Full Disk)  [권장]  : \(fdaGranted() ? "✓ 이미 켜짐" : "OFF — 헤드리스면 켜기")
-        목록에 없으면 + 로 ~/Applications/\(APP_NAME).app 추가.
+        목록에 없으면 + 로 /Applications/\(APP_NAME).app 추가.
         전체 디스크 접근은 원격에서 누를 수 없는 폴더 프롬프트를 없애주지만, 모든 세션이 디스크 전체를 읽게 된다(트레이드오프).
         토글 후 메뉴의 'Restart tmux host' 로 grant 픽업.
         """

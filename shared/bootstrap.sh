@@ -69,7 +69,8 @@ if [ "$ROLE" != client ]; then
       c "RemotePairHost.app 설치 (Homebrew cask)"
       brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair 2>/dev/null || true
       brew trust ghyeongl/remote-pair 2>/dev/null || true   # 서드파티 tap 신뢰(최신 brew 보안 게이트)
-      brew install --cask remote-pair-host || warn "cask 설치 실패 — 수동: brew trust ghyeongl/remote-pair && brew install --cask remote-pair-host"
+      brew install --cask remote-pair-host \
+        || warn "cask 설치 실패 — 수동: brew trust ghyeongl/remote-pair && brew install --cask remote-pair-host"
     fi
   else
     warn "Homebrew 없음 — 앱(cask)+cliclick 설치에 필요. 먼저 Homebrew 를 깔고 다시 실행하세요:"
@@ -89,7 +90,7 @@ if [ "$ROLE" != client ]; then
    System Settings → 개인정보 보호 및 보안 에서 RemotePairHost 를 켜라:
      • 손쉬운 사용 (Accessibility)  : RemotePairHost ON
      • 화면 기록 (Screen Recording) : RemotePairHost ON
-   (목록에 없으면 + 로  ~/Applications/RemotePairHost.app  추가)
+   (목록에 없으면 + 로  /Applications/RemotePairHost.app  추가)
    토글 후:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.remote-pair-host}
 EOF
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true

@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bo
 
 #### 일회성 권한 부여 — 물리적 화면 또는 VNC 필요
 
-이건 유일한 수동 단계이고, 호스트 화면에서만 할 수 있습니다(SIP가 켜진 비-MDM Mac에서는 TCC를 SSH로 부여할 수 없습니다). **시스템 설정 → 개인정보 보호 및 보안**을 열고 `RemotePairHost`를 세 권한에 대해 ON 하세요(어떤 창에 목록이 없으면 `+`를 눌러 `~/Applications/RemotePairHost.app`을 추가):
+이건 유일한 수동 단계이고, 호스트 화면에서만 할 수 있습니다(SIP가 켜진 비-MDM Mac에서는 TCC를 SSH로 부여할 수 없습니다). **시스템 설정 → 개인정보 보호 및 보안**을 열고 `RemotePairHost`를 세 권한에 대해 ON 하세요(어떤 창에 목록이 없으면 `+`를 눌러 `/Applications/RemotePairHost.app`을 추가):
 
 | 권한 | 이유 | 필요? |
 |---|---|---|

@@ -1,7 +1,7 @@
 // Updater.swift — GitHub Releases 기반 자가 업데이트.
 //
 // 흐름: releases/latest 조회 → tag vs CFBundleShortVersionString(semver) → 최신이면 asset(zip) 다운
-//   → ditto 압축해제 → codesign --verify --strict + 안정 cert(leaf CN) 확인 → ~/Applications 스왑
+//   → ditto 압축해제 → codesign --verify --strict + 안정 cert(leaf CN) 확인 → /Applications 스왑
 //   → detached 헬퍼가 현 프로세스 종료 대기 후 launchctl kickstart -k 로 재기동.
 //
 // ⚠ 자기서명/비공증: 릴리스 자산은 반드시 동일 "RemotePair Local Signing" cert 로 서명돼야
@@ -166,10 +166,10 @@ enum Updater {
     }
 
     private static func swapInPlace(_ newApp: String) throws {
-        let dest = "\(HOME)/Applications/\(APP_NAME).app"
+        let dest = "/Applications/\(APP_NAME).app"
         runCapture("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp])
         try? FileManager.default.removeItem(atPath: dest)
-        try FileManager.default.createDirectory(atPath: "\(HOME)/Applications", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "/Applications", withIntermediateDirectories: true)
         try FileManager.default.moveItem(atPath: newApp, toPath: dest)
         log("UPDATE: swapped → \(dest)")
     }
@@ -180,7 +180,7 @@ enum Updater {
         let script = """
         while kill -0 \(getpid()) 2>/dev/null; do sleep 0.3; done
         /bin/launchctl kickstart -k gui/\(uid)/\(BUNDLE_ID) 2>/dev/null \
-          || /usr/bin/open -a '\(HOME)/Applications/\(APP_NAME).app'
+          || /usr/bin/open -a '/Applications/\(APP_NAME).app'
         """
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")

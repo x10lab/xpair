@@ -34,7 +34,7 @@ APP_NAME="${APP_NAME:-RemotePairHost}"
 SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"
 GH_REPO="${GH_REPO:-ghyeongl/remote-pair}"             # Updater (GitHub Releases) target owner/repo
 APP_LABEL="$BUNDLE_PREFIX"; WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
-APP_PATH="$HOME/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"
+APP_PATH="/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"   # Homebrew cask 기본 위치(/Applications)에 맞춤
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/remote-pair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$LOG_DIR/remote-pair.heartbeat}"

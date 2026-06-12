@@ -121,7 +121,7 @@
 
 ## 4. 미해결 / 열린 항목 (Open issues)
 
-- **brew cask appdir 불일치 가능성** — config의 `APP_PATH`는 `~/Applications`인데 cask 기본 설치 위치가 `/Applications`일 수 있어 LaunchAgent 경로가 어긋날 위험.
+- ~~**brew cask appdir 불일치**~~ (해결됨) — Homebrew cask 기본 위치 `/Applications`에 맞춰 통일. `config.sh` `APP_PATH`·Updater·Installer 폴백·Permissions 안내·README를 모두 `/Applications`로 변경(`install.sh` 소스빌드도 `APP_PATH` 경유라 함께 정렬). 앱 자기설치 LaunchAgent는 `Bundle.main` 실제 경로를 써서 원래도 무관.
 - 메인테이너 문서의 버전(0.4.10)과 실제 cask 버전(0.4.11) 불일치.
 - **알려진 버그 큐** — approve 오진 경고·status pid 중복 출력·메뉴바 세션 표시·m1/m4 클린설치 — 0.4.10에 수정 목표.
 - 클린설치 테스트(m1/m4)를 cron 예약으로 검증.

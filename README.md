@@ -80,7 +80,7 @@ Once installed, finish with the **one-time permission grant** below.
 
 #### One-time permission grant — needs a physical screen or VNC
 
-This is the one manual step, and it can only be done at the host's screen (TCC cannot be granted over SSH on SIP-enabled, non-MDM Macs). Open **System Settings → Privacy & Security** and turn `RemotePairHost` ON for three grants (if it isn't listed in a pane, click `+` and add `~/Applications/RemotePairHost.app`):
+This is the one manual step, and it can only be done at the host's screen (TCC cannot be granted over SSH on SIP-enabled, non-MDM Macs). Open **System Settings → Privacy & Security** and turn `RemotePairHost` ON for three grants (if it isn't listed in a pane, click `+` and add `/Applications/RemotePairHost.app`):
 
 | Grant | Why | Needed? |
 |---|---|---|

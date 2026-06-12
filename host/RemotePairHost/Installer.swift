@@ -18,7 +18,7 @@ enum Installer {
     static let COMMON_ENV = "\(RP_DIR)/common.env"
     static let HOST_ENV = "\(RP_DIR)/host.env"
     static let WATCHDOG_SH = "\(RP_DIR)/bin/remote-pair-watchdog.sh"
-    static let APP_EXEC = Bundle.main.executablePath ?? "\(HOME)/Applications/\(APP_NAME).app/Contents/MacOS/\(APP_NAME)"
+    static let APP_EXEC = Bundle.main.executablePath ?? "/Applications/\(APP_NAME).app/Contents/MacOS/\(APP_NAME)"
 
     private static var fm: FileManager { FileManager.default }
     private static var appPlist: String { "\(LAUNCH_AGENTS)/\(APP_LABEL).plist" }
