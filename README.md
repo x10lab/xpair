@@ -227,10 +227,10 @@ Still stuck? **[Open an issue](https://github.com/ghyeongl/remote-pair/issues)**
 ./host/make-signing-cert.sh            # stable self-signed cert "RemotePair Local Signing" (idempotent)
 ./host/build-host.sh                   # → build/RemotePairHost.app (signed + verified)
 ./host/build-host.sh --deploy [host]   # build + rsync + install on host
-RP_VERSION=0.4.10 ./host/build-host.sh --release  # sign, zip, gh release, bump cask
+RP_VERSION=0.4.12 ./host/build-host.sh --release  # sign, zip, gh release, bump cask
 ```
 
-Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.10** (pre-1.0).
+Release assets **must** be signed with the same stable cert as the running install — the in-app Updater verifies the leaf CN and blocks a mismatched swap. Current version: **0.4.12** (pre-1.0).
 
 Repo layout: `host/` (app, build scripts, approve router, skills), `client/` (CLI, launcher, Finder service), `shared/` (install lib, config SSOT, bootstrap).
 

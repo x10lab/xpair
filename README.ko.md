@@ -228,10 +228,10 @@ remote-pair config set terminal iterm2     # 또는: terminal
 ./host/make-signing-cert.sh            # 안정 self-signed cert "RemotePair Local Signing" (멱등)
 ./host/build-host.sh                   # → build/RemotePairHost.app (서명 + 검증)
 ./host/build-host.sh --deploy [host]   # 빌드 + rsync + 호스트에 설치
-RP_VERSION=0.4.10 ./host/build-host.sh --release  # 서명, zip, gh 릴리스, cask bump
+RP_VERSION=0.4.12 ./host/build-host.sh --release  # 서명, zip, gh 릴리스, cask bump
 ```
 
-릴리스 자산은 실행 중인 설치와 **같은** 안정 cert로 서명돼야 합니다 — 인앱 업데이터가 leaf CN을 검증해 불일치 교체를 막습니다. 현재 버전: **0.4.10**(pre-1.0).
+릴리스 자산은 실행 중인 설치와 **같은** 안정 cert로 서명돼야 합니다 — 인앱 업데이터가 leaf CN을 검증해 불일치 교체를 막습니다. 현재 버전: **0.4.12**(pre-1.0).
 
 저장소 구조: `host/`(앱, 빌드 스크립트, approve 라우터, 스킬), `client/`(CLI, 런처, Finder 서비스), `shared/`(설치 라이브러리, 설정 SSOT, bootstrap), `Casks/`(Homebrew cask).
 
