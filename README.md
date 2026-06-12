@@ -56,76 +56,29 @@ Each feature exists to solve a concrete problem.
 - macOS Sequoia or later recommended
 - SSH key authentication between client and host
 - `mosh` on both machines (plain SSH works, but a disconnect kills the live attach)
-- **Host — Homebrew install (Option A):** just Homebrew. tmux-aqua ships embedded in the app, so no Xcode needed.
-- **Host — source build (Option B) only:** Xcode Command Line Tools (or full Xcode), for the tmux static build
+- **Host:** Homebrew (for the app cask) + git. No build — tmux-aqua ships embedded in the app, so no Xcode needed. (Source build is maintainers-only.)
 
 ---
 
 ## Installation
 
-### Host — the always-on Mac (pick one)
+### Host — the always-on Mac
 
-**Option A — Homebrew (recommended, no build).** The app is self-signed, not notarized — so a raw download is Gatekeeper-blocked on first open. Homebrew strips the quarantine flag for you, so the app launches normally *and* its Accessibility / Screen Recording grants stick to the stable signing identity (TCC doesn't need notarization — only a quarantine-free, stably-signed app).
+One command sets up the host. It installs the `remote-pair` CLI + the approve rules/skill (the daemon glue), then installs the app (`RemotePairHost.app`) via Homebrew Cask:
 
-```bash
-brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair
-brew install --cask remote-pair-host
-open ~/Applications/RemotePairHost.app   # first launch; self-installs its daemon
-```
-
-On first launch the app self-installs its **daemon** (LaunchAgent, `~/.remote-pair`, tmux-aqua link, watchdog) and starts running. That covers the daemon only — to also get the approve rules + skill and the `remote-pair` CLI, run the host setup (Option B). The app stays a pure privileged daemon; skills/rules/CLI are owned by the setup, not the app (low coupling).
-
-**Option B — CLI bootstrap (build from source).** For those who'd rather compile than trust a binary. Needs Xcode CLT + Homebrew.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=host bash
 ```
 
-Either way, finish with the [one-time permission grant](#one-time-permission-grant-host--needs-a-physical-screen-or-vnc) below.
+On first launch the app self-installs its **daemon** (LaunchAgent, `~/.remote-pair`, tmux-aqua link, watchdog). The app is self-signed, not notarized — Homebrew strips the quarantine flag so it launches normally *and* its Accessibility / Screen Recording grants stick to the stable signing identity (TCC needs no notarization, only a quarantine-free, stably-signed app).
 
-### SSH access — key-based login from client to host
+> No Homebrew? The script tells you and stops — install it ([brew.sh](https://brew.sh)) and re-run; it'll handle the cask. Homebrew supplies the app binary; the script does the rest.
 
-The client reaches the host over SSH, so set up passwordless key auth once (the client `onboard` and `remote-pair doctor` both assume it works).
+> Just want the app, no CLI? `brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair && brew install --cask remote-pair-host`. (Building from source instead is in [For maintainers](#for-maintainers).)
 
-**On the host** — turn on Remote Login:
+Once installed, finish with the **one-time permission grant** below.
 
-```bash
-sudo systemsetup -setremotelogin on   # or: System Settings → General → Sharing → Remote Login
-```
-
-**On the client** — create a key if you don't have one, copy it to the host, then add a friendly alias:
-
-```bash
-[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519        # skip if you already have a key
-ssh-copy-id ghyeong@192.168.1.42                          # host username @ host address (LAN IP, hostname, or Tailscale name)
-```
-
-Add a short alias to `~/.ssh/config` so you can type `ssh gh-mac-m1` instead of the full address:
-
-```ssh-config
-Host gh-mac-m1
-    HostName 192.168.1.42      # LAN IP, mDNS name (mac-m1.local), or Tailscale name
-    User ghyeong
-```
-
-Verify it logs in without a password:
-
-```bash
-ssh gh-mac-m1   # should drop you into a host shell, no prompt
-```
-
-That `gh-mac-m1` alias is exactly what you give `remote-pair config set host gh-mac-m1` later.
-
-> Reaching the host from outside your LAN? A mesh VPN like **[Tailscale](https://tailscale.com)** gives the host a stable name that works anywhere — point `HostName` at that. Pair with `mosh` so the attach survives network drops.
-
-### Client — the laptop you sit at (no build, no Xcode)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=client bash
-```
-
-Installs the Finder Quick Action + `remote-pair` CLI, then auto-runs `remote-pair onboard` (host address, terminal app, folder mappings). No permissions, no build.
-
-### One-time permission grant (host) — needs a physical screen or VNC
+#### One-time permission grant — needs a physical screen or VNC
 
 This is the one manual step, and it can only be done at the host's screen (TCC cannot be granted over SSH on SIP-enabled, non-MDM Macs). Open **System Settings → Privacy & Security** and turn `RemotePairHost` ON for three grants (if it isn't listed in a pane, click `+` and add `~/Applications/RemotePairHost.app`):
 
@@ -142,6 +95,28 @@ launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host   # or: menu bar
 ```
 
 > Prefer not to grant Full Disk Access? Keep your project folders under a **non-protected root** (e.g. `~/Spaces`, not `~/Desktop`/`~/Documents`/`~/Downloads`) — then sessions never hit a protected folder and never prompt, without opening the whole disk.
+
+### Client — the laptop you sit at
+
+#### SSH access — key-based login to the host
+
+RemotePair drives the host over SSH, so all you need is passwordless login working. Check it:
+
+```bash
+ssh gh-mac-m1   # logs into the host shell with no password prompt → you're set
+```
+
+Not there yet? Turn on **Remote Login** on the host (System Settings → General → Sharing — [Apple's how-to](https://support.apple.com/guide/mac-help/allow-a-remote-computer-to-access-your-mac-mchlp1066/mac)), then set up key auth from the client the usual way (`ssh-keygen` if you have no key, then `ssh-copy-id user@host`). Give the host a short `~/.ssh/config` alias like `gh-mac-m1` — that alias is the value you pass to `remote-pair config set host` later.
+
+> Reaching the host from outside your LAN? A mesh VPN like **[Tailscale](https://tailscale.com)** gives the host a stable name that works anywhere. Pair with `mosh` so the attach survives network drops.
+
+#### Install the client
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=client bash
+```
+
+Installs the Finder Quick Action + `remote-pair` CLI, then auto-runs `remote-pair onboard` (host address, terminal app, folder mappings).
 
 ### Reversible uninstall
 
