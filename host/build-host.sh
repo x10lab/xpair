@@ -76,12 +76,18 @@ cp host/remote-pair-approve-router.sh "$HELP/"; chmod +x "$HELP/remote-pair-appr
 cp host/ocr-find "$HELP/"; chmod +x "$HELP/ocr-find"
 # cliclick = 앱의 click/key primitive 주입기. 번들에 동봉(자기완결). 없으면 런타임에 homebrew 경로 폴백.
 if [ -x /opt/homebrew/bin/cliclick ]; then cp /opt/homebrew/bin/cliclick "$HELP/cliclick"; chmod +x "$HELP/cliclick"; echo "  embedded: cliclick"; fi
-if [ -x "$HOME/.local/bin/tmux-aqua" ]; then
-  cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
-  echo "  embedded: tmux-aqua + remote-pair-approve-router.sh + ocr-find"
-else
-  echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./host/build-tmux-aqua.sh 먼저 실행 권장(런타임 외부경로 폴백)"
+# tmux-aqua 는 호스트의 심장(keeper 서버 = 모든 세션의 부모). cask 는 .app 만 설치하므로
+# 런타임 ~/.local/bin 폴백이 존재하지 않는다 → 번들에 없으면 호스트가 죽은 채로 배포됨(세션 0).
+# 따라서 "없으면 경고하고 통과"가 아니라: 없으면 빌드 시도 → 그래도 없으면 HARD-FAIL.
+if [ ! -x "$HOME/.local/bin/tmux-aqua" ]; then
+  echo "  tmux-aqua 없음(~/.local/bin) → ./host/build-tmux-aqua.sh 자동 실행 ..."
+  ./host/build-tmux-aqua.sh || { echo "✗ tmux-aqua 빌드 실패 — 수동으로 ./host/build-tmux-aqua.sh 실행 후 재시도" >&2; exit 1; }
 fi
+[ -x "$HOME/.local/bin/tmux-aqua" ] || { echo "✗ tmux-aqua 여전히 없음 — 번들 불가(헬퍼 없으면 cask 호스트 전멸: 세션 0)" >&2; exit 1; }
+cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
+# 번들에 실제로 들어갔는지 최종 검증 — 깨진 번들이 release/cask 로 새는 것을 원천 차단.
+[ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua 번들 임베드 검증 실패: $HELP/tmux-aqua" >&2; exit 1; }
+echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + remote-pair-approve-router.sh + ocr-find"
 
 RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (icon 용; 아래에서 채움)
 # NOTE: 결합도 낮게 — 앱 번들엔 런타임에 앱이 직접 쓰는 것(Helpers: tmux-aqua·router·ocr-find)만 둔다.
