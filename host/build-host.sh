@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."                       # repo 루트
 . shared/config.sh                            # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
 
-VERSION="${RP_VERSION:-0.4.11}"                # 버전 단일 출처(Info.plist 로 박힘). 릴리스 태그 = v$VERSION. (pre-1.0, 패치 +0.0.1)
+VERSION="${RP_VERSION:-0.4.12}"                # 버전 단일 출처(Info.plist 로 박힘). 릴리스 태그 = v$VERSION. (pre-1.0, 패치 +0.0.1)
 SRC_DIR=host/RemotePairHost
 APP="build/${APP_NAME}.app"
 EXEC="$APP_NAME"
@@ -136,7 +136,9 @@ if [ "${1:-}" = "--release" ]; then
   command -v gh >/dev/null || { echo "✗ gh CLI 필요 (brew install gh)"; exit 1; }
   # 가드: ad-hoc 서명 릴리스 금지. TCC(AX·SR) grant 는 designated requirement(= cert leaf)에 묶이는데,
   #   ad-hoc 은 cdhash 뿐이라 업데이트마다 모든 설치처가 권한 재토글 → 배포본으로 절대 내보내지 않는다.
-  #   안정 cert 있는 캐노니컬 서명 머신(README: gh-mac-m4)에서만 릴리스할 것.
+  # NOTE: 캐노니컬 릴리스 경로는 'tag push → CI(release.yml)' 이며 repo 시크릿의 안정 p12(leaf 898E32)로 서명.
+  #   이 수동 경로는 그 시크릿과 같은 cert 를 가진 머신에서만 쓸 것. 다른 cert(예: 클라이언트 33849F)로
+  #   수동 릴리스하면 서명 정체성이 갈려 기존 설치처 grant 가 깨진다.
   [ "$SIGN_ID" = "-" ] && { echo "✗ release 거부: ad-hoc 서명. 안정 cert '$SIGN_CN' 있는 머신에서만 릴리스(./host/make-signing-cert.sh)"; exit 1; }
   ZIP="build/${APP_NAME}-${VERSION}.zip"
   echo "=== release: $ZIP → gh release create v$VERSION ($GH_REPO) ==="
