@@ -3,25 +3,23 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | bash
 #
-# 하는 일(순서대로, 멱등):
-#   1) prereq 점검 (Apple Silicon macOS / Xcode swiftc / Homebrew+tmux 의존성 / git)
+# 하는 일(순서대로, 멱등) — glue(CLI/approve/Service/런처) 설치만. 앱 바이너리는 Homebrew 가 공급:
+#   1) prereq 점검 (macOS / git)
 #   2) repo clone 또는 update  → $REMOTE_PAIR_SRC (기본 ~/.local/share/remote-pair)
-#   3) 안정 코드서명 cert 생성 (host/make-signing-cert.sh)
-#   4) patched tmux 빌드      (host/build-tmux-aqua.sh → ~/.local/bin/tmux-aqua)
-#   5) RemotePairHost.app 빌드 (host/build-host.sh)
-#   6) glue+native 설치 + sync (shared/install.sh — manifest 가역)
-#   7) ⚠ 수동 1회: 손쉬운사용/화면기록 권한 토글 안내 (macOS 가 자동화 불가)
+#   3) glue+native 설치 + sync (shared/install.sh — manifest 가역)
+#   4) ⚠ host: 수동 1회 손쉬운사용/화면기록 권한 토글 안내 (macOS 가 자동화 불가)
+#
+# 호스트 앱(RemotePairHost.app)은 Homebrew 가 공급: brew install --cask remote-pair-host.
+# 이 스크립트는 앱을 빌드/설치하지 않는다 — 소스 빌드는 메인테이너 스크립트(host/build-*.sh) 영역.
 #
 # 비대화 환경변수(파이프 설치 시 권장):
-#   REMOTE_HOST=my-mac  SYNC_URL=git@github.com:me/claude.git  RP_ORG=com.acme
-#   SKIP_BUILD=1 (앱/ tmux 이미 빌드됨)   SKIP_SYNC=1   BRANCH=main
+#   REMOTE_HOST=my-mac  SYNC_URL=git@github.com:me/claude.git  RP_ORG=com.acme  SKIP_SYNC=1  BRANCH=main
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/ghyeongl/remote-pair.git}"
 SRC="${REMOTE_PAIR_SRC:-$HOME/.local/share/remote-pair}"
 BRANCH="${BRANCH:-main}"
-ROLE="${ROLE:-both}"     # host | client | both. client 는 빌드/Xcode 불필요.
-needs_build() { [ "$ROLE" != client ] && [ "${SKIP_BUILD:-0}" != "1" ]; }
+ROLE="${ROLE:-both}"     # host | client | both
 
 c()    { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
@@ -30,19 +28,11 @@ die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 # 파이프(curl|bash)에서도 사용자 입력을 받으려면 /dev/tty 사용
 ask()  { local q="$1" v=""; { printf '%s' "$q" > /dev/tty; read -r v < /dev/tty; } 2>/dev/null || true; printf '%s' "$v"; }
 
-# ── 1. prereq ──
+# ── 1. prereq ── (빌드 없음 → git 만 필수. 앱은 brew cask)
 c "prereq 점검 (role=$ROLE)"
 [ "$(uname -s)" = "Darwin" ] || die "macOS 전용입니다 (현재: $(uname -s))"
 command -v git >/dev/null   || die "git 없음 — xcode-select --install 후 다시 시도"
-if needs_build; then
-  # host/both: 앱·tmux 빌드에 Xcode + brew 의존성 필요
-  [ "$(uname -m)" = "arm64" ]  || warn "Apple Silicon 가정 (현재: $(uname -m)) — Homebrew 경로가 다를 수 있음"
-  xcrun --find swiftc >/dev/null 2>&1 || die "Swift 툴체인 없음 — Xcode/CLT 설치 (xcode-select --install)"
-  command -v brew >/dev/null || warn "Homebrew 없음 — tmux 정적 빌드 의존성에 필요. https://brew.sh"
-else
-  # client: 빌드 없음. mosh 만 있으면 좋음(없어도 ssh 폴백)
-  command -v mosh >/dev/null || warn "mosh 없음 — 원격 attach 시 ssh 로 폴백됨 (brew install mosh 권장)"
-fi
+command -v mosh >/dev/null   || warn "mosh 없음 — 원격 attach 시 ssh 로 폴백됨 (brew install mosh 권장)"
 ok "prereq OK"
 
 # ── 2. clone / update ──
@@ -57,16 +47,7 @@ fi
 cd "$SRC"
 ok "소스 준비: $SRC ($(git rev-parse --short HEAD))"
 
-# ── 3~5. 빌드 (host/both 만; client 는 생략) ──
-if needs_build; then
-  c "안정 코드서명 cert (idempotent)"; ./host/make-signing-cert.sh || warn "cert 생성 실패 — ad-hoc 폴백(재빌드 시 재토글 필요)"
-  c "patched tmux 빌드 (static, self-contained)"; ./host/build-tmux-aqua.sh || die "tmux 빌드 실패"
-  c "RemotePairHost.app 빌드 (tmux-aqua 임베드)";  ./host/build-host.sh      || die "앱 빌드 실패"
-else
-  c "role=$ROLE — 빌드 생략 (client 는 Service+런처만)"
-fi
-
-# ── 6. 설치 ──
+# ── 3. 설치 ── (glue 만; 앱 빌드는 메인테이너 host/build-*.sh 영역)
 # client/both 는 attach 대상 REMOTE_HOST 가 필요. sync 는 opt-in(SYNC_URL 줄 때만).
 if [ "$ROLE" != host ] && [ -z "${REMOTE_HOST:-}" ]; then
   REMOTE_HOST="$(ask '원격 host (mosh/ssh 대상, 단일 머신이면 빈칸 Enter): ')"
@@ -77,7 +58,23 @@ INSTALL_ARGS=(--role "$ROLE")
 c "설치 (install.sh --role $ROLE$([ -n "$SYNC_URL" ] && echo ' --with-sync'))"
 ./shared/install.sh "${INSTALL_ARGS[@]}"
 
-# ── 7. 수동 권한 단계 안내 (host/both 에서 앱을 깐 경우만; macOS 자동화 불가) ──
+# ── host: RemotePairHost.app 보장 (Homebrew cask) ──
+if [ "$ROLE" != client ] \
+   && [ ! -d "$HOME/Applications/RemotePairHost.app" ] && [ ! -d /Applications/RemotePairHost.app ]; then
+  if command -v brew >/dev/null; then
+    c "RemotePairHost.app 설치 (Homebrew cask)"
+    brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair 2>/dev/null || true
+    brew install --cask remote-pair-host || warn "cask 설치 실패 — 수동: brew install --cask remote-pair-host"
+  else
+    warn "Homebrew 없음 — 앱 설치에 필요. 먼저 Homebrew 를 깔고 이 스크립트를 다시 실행하세요:"
+    cat <<'EOF' >&2
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   (https://brew.sh) — 설치 후 다시 실행하면 앱(cask)까지 자동으로 깝니다.
+EOF
+  fi
+fi
+
+# ── 4. 수동 권한 단계 안내 (host/both; macOS 자동화 불가) ──
 echo
 ok "설치 완료."
 if [ "$ROLE" != client ]; then

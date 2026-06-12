@@ -54,9 +54,47 @@ c()    { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 
+STATUS_FILE="${STATUS_FILE:-$RP_DIR/logs/status.json}"
+
 tm() { "$TMUXB" -S "$AQUA_SOCK" "$@"; }
 host_up() { [ -x "$TMUXB" ] && tm has-session >/dev/null 2>&1; }
-app_pid() { pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null | head -1 || true; }
+# launchctl is authoritative for our LaunchAgent. pgrep -f MISSES .app-bundle processes on macOS
+# (false "not running"), which is what misleads agents — so check the label first, pgrep only as fallback.
+app_pid() {
+  local p
+  p="$(launchctl list 2>/dev/null | awk -v l="$BUNDLE_PREFIX" '$3==l && $1 ~ /^[0-9]+$/ {print $1; exit}')"
+  [ -n "$p" ] || p="$(pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null | head -1)"
+  printf '%s' "$p"
+}
+# Minimal flat-JSON value reader (no jq dep). _jget '<json>' key → value (string or bool/number).
+_jget() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p"; }
+_mark() { [ "$1" = true ] && printf '✓' || printf '✗'; }
+# Are we running INSIDE a RemotePair host tmux session? (computer-use available here)
+in_host_session() { case "${TMUX:-}" in *aqua-tmux.sock*) return 0;; *) return 1;; esac; }
+
+# Is the RemotePairHost app available to serve app-dependent commands here?
+#   true if the app is installed locally (bundle/process/status.json) OR we're inside a live host session.
+app_available() {
+  [ -d "$HOME/Applications/$APP_NAME.app" ] && return 0
+  [ -n "$(app_pid)" ] && return 0
+  [ -f "$STATUS_FILE" ] && return 0
+  in_host_session && host_up && return 0
+  return 1
+}
+# Shown when an app-dependent command (approve/host) runs where the host app isn't installed.
+# host = CLI + app;  client = CLI only.  These commands need the app → guide to install it on the host.
+need_app_guidance() {
+  warn "this command needs the RemotePairHost app (the privileged daemon) — set up the HOST Mac:"
+  cat >&2 <<EOF
+   • One-shot host setup (app daemon + approve rules + skills + CLI):
+       curl -fsSL https://raw.githubusercontent.com/${GH_REPO:-ghyeongl/remote-pair}/main/shared/bootstrap.sh | ROLE=host bash
+   • App binary only: RemotePairHost.zip from Releases → ~/Applications → open once (daemon only;
+     run the host setup above for approve rules + the approve skill).
+       https://github.com/${GH_REPO:-ghyeongl/remote-pair}/releases/latest
+   Then grant Accessibility + Screen Recording once. Verify with: remote-pair status
+   (This client/CLI maps/launches/attaches; approve & host run where the app lives.)
+EOF
+}
 
 # Is there a tty for interactive prompts?
 have_tty() { [ -t 0 ] || [ -e /dev/tty ]; }
@@ -375,6 +413,8 @@ cmd_launch() {
 
 cmd_host() {
   if host_up; then ok "host server OK ($AQUA_SOCK)"; return 0; fi
+  # Starting the server means launching the local app. If the app isn't installed here, guide instead.
+  if [ ! -d "$HOME/Applications/$APP_NAME.app" ] && [ -z "$(app_pid)" ]; then need_app_guidance; return 1; fi
   c "host server not running → starting $APP_NAME ..."
   open -a "$APP_NAME" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$BUNDLE_PREFIX" 2>/dev/null || true
   for _ in $(seq 1 12); do host_up && { ok "host server OK"; return 0; }; sleep 0.5; done
@@ -386,10 +426,25 @@ cmd_status() {
   if [ -n "$p" ]; then printf '%-14s %s\n' "app" "running (pid $p)"
   else                 printf '%-14s %s\n' "app" "NOT running"; fi
   printf '%-14s %s\n' "host server" "$(host_up && echo "up ($AQUA_SOCK)" || echo down)"
+  # Ground truth from the app's status.json — AX/SR are the real computer-use gates.
+  # This lets you tell "app up but NOT granted" (→ re-grant) from "app down" (→ start it) —
+  # instead of guessing. The app rewrites this every ~1s while alive.
+  if [ -f "$STATUS_FILE" ]; then
+    local s sage sts; s="$(cat "$STATUS_FILE" 2>/dev/null)"
+    sts="$(_jget "$s" ts)"; sage=$(( $(date +%s) - ${sts:-0} ))
+    printf '%-14s AX %s  SR %s  FDA %s   (status.json, %ss ago%s)\n' "permissions" \
+      "$(_mark "$(_jget "$s" ax)")" "$(_mark "$(_jget "$s" sr)")" "$(_mark "$(_jget "$s" fda)")" \
+      "$sage" "$([ "$sage" -gt 15 ] && echo ' — STALE, app may be down')"
+    [ "$(_jget "$s" ax)" = true ] && [ "$(_jget "$s" sr)" = true ] || \
+      printf '%-14s %s\n' "" "⚠ computer-use gated: AX+SR must both be ✓. If ✗, the app is running but NOT granted → grant in System Settings (this is NOT 'host down')."
+  elif [ -n "$p" ] || host_up; then
+    printf '%-14s %s\n' "permissions" "unknown (no status.json yet — update host app)"
+  fi
   if [ -f "$HEARTBEAT_FILE" ]; then
     local age=$(( $(date +%s) - $(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0) ))
     printf '%-14s %s\n' "heartbeat" "${age}s ago $([ "$age" -le 90 ] && echo "(fresh)" || echo "(STALE)")"
   else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
+  in_host_session && printf '%-14s %s\n' "this session" "INSIDE RemotePair host → computer-use available here"
   printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(local-only)}"
   printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
   return 0
@@ -398,7 +453,15 @@ cmd_status() {
 cmd_doctor() {
   local fail=0
   c "RemotePair doctor"
-  # local
+  # If we're ON the host (inside its tmux) or the app's status.json exists, report local app/grant
+  # ground truth FIRST. This is the check that prevents the "host is down" misdiagnosis: the app
+  # liveness comes from launchctl + status.json (reliable), not pgrep (false-negatives on .app).
+  if in_host_session || [ -f "$STATUS_FILE" ]; then
+    c "host app (this machine)"
+    cmd_status | sed 's/^/  /'
+    echo
+  fi
+  # local (client)
   printf '%-22s %s\n' "launcher" "$([ -x "$LAUNCHER" ] && echo "OK ($LAUNCHER)" || { echo "missing — install.sh --role client"; fail=1; })"
   printf '%-22s %s\n' "mosh (local)" "$(command -v mosh >/dev/null && echo OK || echo "missing (ssh fallback)")"
   printf '%-22s %s\n' "folder mappings" "$([ -n "$FOLDER_MAPS" ] && echo "$(printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c .) entries" || echo "none (registered on first launch)")"
@@ -438,11 +501,9 @@ cmd_approve() {
     --timeout) timeout="${2:-22}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; return 2 ;;
   esac; done
-  # 호스트 앱(pgrep)이 안 보여도 tmux 서버(host_up)가 살아있으면 호스트 세션 안 — 경고 불필요.
-  # 클라이언트 머신에선 둘 다 없을 수 있으니 차단하지 말고(트리거는 보냄) 안내만 한다.
-  if [ -z "$(app_pid)" ] && ! host_up; then
-    warn "이 머신엔 호스트 앱 없음 — approve 는 호스트 세션에서 동작(클라이언트면 무시하고 진행)"
-  fi
+  # approve needs the privileged app. If it isn't here (e.g. a client-only machine), guide to install
+  # the host app instead of silently sending a trigger nobody will pick up.
+  if ! app_available; then need_app_guidance; return 1; fi
   # base0 = log length just before triggering (so we show only this request's router log to the agent)
   local base0=0; [ -f "$LOG_FILE" ] && base0=$(wc -l < "$LOG_FILE")
   local base="$base0"

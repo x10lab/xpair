@@ -15,12 +15,10 @@ enum Installer {
     static let WATCHDOG_LABEL = "\(BUNDLE_ID)-watchdog"
     static let LAUNCH_AGENTS = "\(HOME)/Library/LaunchAgents"
     static let LOCAL_BIN = "\(HOME)/.local/bin"
-    static let CLAUDE_SKILLS = "\(HOME)/.claude/skills"
     static let COMMON_ENV = "\(RP_DIR)/common.env"
     static let HOST_ENV = "\(RP_DIR)/host.env"
     static let WATCHDOG_SH = "\(RP_DIR)/bin/remote-pair-watchdog.sh"
     static let APP_EXEC = Bundle.main.executablePath ?? "\(HOME)/Applications/\(APP_NAME).app/Contents/MacOS/\(APP_NAME)"
-    static let RES = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").path
 
     private static var fm: FileManager { FileManager.default }
     private static var appPlist: String { "\(LAUNCH_AGENTS)/\(APP_LABEL).plist" }
@@ -71,33 +69,8 @@ enum Installer {
             ("RULES_FILE", RULES_FILE),
         ], onlyIfAbsent: !force)
 
-        // 2. rules.txt ← 번들 Resources/rules.txt
-        let bundledRules = "\(RES)/rules.txt"
-        if fm.fileExists(atPath: bundledRules) {
-            if force || refreshResources || !fm.fileExists(atPath: RULES_FILE) {
-                var backedUp = false
-                if fm.fileExists(atPath: RULES_FILE) {   // 사용자 커스텀 보존: 덮기 전 .bak 백업
-                    let bak = RULES_FILE + ".bak"
-                    try? fm.removeItem(atPath: bak)
-                    if (try? fm.copyItem(atPath: RULES_FILE, toPath: bak)) != nil { backedUp = true }
-                }
-                try? fm.removeItem(atPath: RULES_FILE)
-                try? fm.copyItem(atPath: bundledRules, toPath: RULES_FILE)
-                log("INSTALL: rules.txt → \(RULES_FILE)\(backedUp ? " (이전 룰 .bak 백업)" : "")")
-            }
-        } else { log("INSTALL: bundled rules.txt 없음 (\(bundledRules))") }
-
-        // 3. skills ← 번들 Resources/skills/* → ~/.claude/skills (앱이 소유, 덮어쓰기 OK)
-        let bundledSkills = "\(RES)/skills"
-        if let names = try? fm.contentsOfDirectory(atPath: bundledSkills) {
-            ensureDir(CLAUDE_SKILLS)
-            for name in names where !name.hasPrefix(".") {
-                let src = "\(bundledSkills)/\(name)", dst = "\(CLAUDE_SKILLS)/\(name)"
-                try? fm.removeItem(atPath: dst)
-                do { try fm.copyItem(atPath: src, toPath: dst); log("INSTALL: skill \(name) → \(dst)") }
-                catch { log("INSTALL: skill \(name) copy 실패: \(error)") }
-            }
-        } else { log("INSTALL: bundled skills 없음 (\(bundledSkills))") }
+        // NOTE: rules.txt(approve 설정) + skills(claude 하네스)는 앱이 설치하지 않는다 (결합도 낮게).
+        //       그건 CLI/README 단일설치(shared/install.sh)의 몫이다. 앱은 자기 데몬 bring-up 만.
 
         // 4. tmux-aqua 심볼릭링크 → 번들 Helpers/tmux-aqua (잘못/오래된 링크면 교체)
         let tmuxSrc = "\(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path)/tmux-aqua"

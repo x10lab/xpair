@@ -10,8 +10,19 @@ final class HostManager {
     private(set) var childPid: pid_t = 0
 
     func ensureServer() {
-        if childPid != 0 && kill(childPid, 0) == 0 { return }   // 살아있으면 유지
+        if childPid != 0 && isAlive(childPid) { return }   // 진짜 살아있으면 유지
         spawn()
+    }
+
+    // childPid 가 "진짜로" 살아있는지. 우리는 posix_spawn 후 waitpid 를 안 하므로, 자식(script)이
+    // 죽으면 좀비(defunct)로 남는다. 좀비는 reap 전까지 kill(pid,0)==0 을 반환 → "살아있다"고 오판하면
+    // tmux-aqua 가 죽어도 서버를 영영 재기동하지 않는다(세션 0). 여기서 좀비를 reap 하고 죽음으로 판정.
+    private func isAlive(_ pid: pid_t) -> Bool {
+        var status: Int32 = 0
+        let r = waitpid(pid, &status, WNOHANG)
+        if r == pid { return false }          // 방금 reap 한 좀비 = 죽음
+        if r == -1 && errno == ECHILD { return false }  // 우리 자식이 아님(이미 reap/소멸) = 죽음
+        return kill(pid, 0) == 0              // r==0: 아직 실행 중 → 실제 생존 재확인
     }
 
     /// 강제 재시작 — 기존 서버(+그 안 세션)를 reap 하고 새 _keeper 를 띄운다.

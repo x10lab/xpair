@@ -9,10 +9,12 @@ import Cocoa
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let host = HostManager()
     let approve = ApproveManager()
+    let inputsrv = InputServer()              // CLI 두뇌가 요청하는 권한 primitive(스샷/클릭/키) 실행기
     var statusItem: NSStatusItem!
     var menu: NSMenu!
     var hostTimer: Timer?
     var tickTimer: Timer?
+    var inputTimer: Timer?
     var settings: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -38,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         host.ensureServer()
         hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.host.ensureServer() }
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        // CLI 두뇌의 primitive 요청을 빠르게 처리(저지연 클릭/스샷). 권한 사용은 여기(앱) 안에서만.
+        inputTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.inputsrv.tick() }
 
         if UserDefaults.standard.bool(forKey: SettingsWindowController.autoUpdateKey) {
             Updater.checkForUpdates(interactive: false)
@@ -129,9 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // ── 평소 루프: heartbeat + 트리거 확인 (둘 다 가벼움) ──
+    // ── 평소 루프: heartbeat + status(ground truth) + 트리거 확인 (모두 가벼움) ──
     @objc func poll() {
         try? "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8)
+        writeStatus()   // 앱 생존 + AX/SR/FDA grant 사실을 status.json 에 — 에이전트가 추측 없이 읽도록
         if FileManager.default.fileExists(atPath: TRIGGER) {
             try? FileManager.default.removeItem(atPath: TRIGGER)
             log("APPROVE: trigger → router")

@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."                       # repo 루트
 . shared/config.sh                            # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
 
-VERSION="${RP_VERSION:-0.4.9}"                 # 버전 단일 출처(Info.plist 로 박힘). 릴리스 태그 = v$VERSION. (pre-1.0, 패치 +0.0.1)
+VERSION="${RP_VERSION:-0.4.12}"                # 버전 단일 출처(Info.plist 로 박힘). 릴리스 태그 = v$VERSION. (pre-1.0, 패치 +0.0.1)
 SRC_DIR=host/RemotePairHost
 APP="build/${APP_NAME}.app"
 EXEC="$APP_NAME"
@@ -74,27 +74,25 @@ echo "=== embed helpers → Contents/Helpers ==="
 HELP="$APP/Contents/Helpers"; mkdir -p "$HELP"
 cp host/remote-pair-approve-router.sh "$HELP/"; chmod +x "$HELP/remote-pair-approve-router.sh"
 cp host/ocr-find "$HELP/"; chmod +x "$HELP/ocr-find"
-if [ -x "$HOME/.local/bin/tmux-aqua" ]; then
-  cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
-  echo "  embedded: tmux-aqua + remote-pair-approve-router.sh + ocr-find"
-else
-  echo "  ⚠ tmux-aqua 없음(~/.local/bin) — 번들 미포함. ./host/build-tmux-aqua.sh 먼저 실행 권장(런타임 외부경로 폴백)"
+# cliclick = 앱의 click/key primitive 주입기. 번들에 동봉(자기완결). 없으면 런타임에 homebrew 경로 폴백.
+if [ -x /opt/homebrew/bin/cliclick ]; then cp /opt/homebrew/bin/cliclick "$HELP/cliclick"; chmod +x "$HELP/cliclick"; echo "  embedded: cliclick"; fi
+# tmux-aqua 는 호스트의 심장(keeper 서버 = 모든 세션의 부모). cask 는 .app 만 설치하므로
+# 런타임 ~/.local/bin 폴백이 존재하지 않는다 → 번들에 없으면 호스트가 죽은 채로 배포됨(세션 0).
+# 따라서 "없으면 경고하고 통과"가 아니라: 없으면 빌드 시도 → 그래도 없으면 HARD-FAIL.
+if [ ! -x "$HOME/.local/bin/tmux-aqua" ]; then
+  echo "  tmux-aqua 없음(~/.local/bin) → ./host/build-tmux-aqua.sh 자동 실행 ..."
+  ./host/build-tmux-aqua.sh || { echo "✗ tmux-aqua 빌드 실패 — 수동으로 ./host/build-tmux-aqua.sh 실행 후 재시도" >&2; exit 1; }
 fi
+[ -x "$HOME/.local/bin/tmux-aqua" ] || { echo "✗ tmux-aqua 여전히 없음 — 번들 불가(헬퍼 없으면 cask 호스트 전멸: 세션 0)" >&2; exit 1; }
+cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
+# 번들에 실제로 들어갔는지 최종 검증 — 깨진 번들이 release/cask 로 새는 것을 원천 차단.
+[ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua 번들 임베드 검증 실패: $HELP/tmux-aqua" >&2; exit 1; }
+echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + remote-pair-approve-router.sh + ocr-find"
 
-echo "=== embed skills + rules → Contents/Resources (self-install payload) ==="
-RES="$APP/Contents/Resources"; mkdir -p "$RES"
-if [ -d host/skills ]; then
-  rm -rf "$RES/skills"; mkdir -p "$RES/skills"
-  cp -R host/skills/. "$RES/skills/"
-  echo "  embedded: skills/ ($(find "$RES/skills" -name SKILL.md | wc -l | tr -d ' ') skill(s)) → Resources/skills"
-else
-  echo "  ⚠ host/skills 없음 — 앱 self-install 시 스킬 미동봉"
-fi
-if [ -f host/rules.txt ]; then
-  cp host/rules.txt "$RES/rules.txt"; echo "  embedded: rules.txt → Resources/rules.txt"
-else
-  echo "  ⚠ host/rules.txt 없음 — 앱 self-install 시 룰 미동봉"
-fi
+RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (icon 용; 아래에서 채움)
+# NOTE: 결합도 낮게 — 앱 번들엔 런타임에 앱이 직접 쓰는 것(Helpers: tmux-aqua·router·ocr-find)만 둔다.
+#   skills(claude 하네스) · rules.txt(approve 설정) · CLI 는 동봉/자기설치하지 않는다.
+#   그건 CLI/README 단일설치(shared/install.sh)가 담당한다.
 
 echo "=== embed app icon + menu-bar template → Contents/Resources ==="
 if [ -f assets/icon/AppIcon-1024.png ]; then
@@ -133,9 +131,15 @@ if [ "${1:-}" = "--deploy" ]; then
   echo "※ 새 bundle id($BUNDLE_PREFIX)면 1회 재grant: System Settings → 손쉬운 사용 / 화면 기록 → $APP_NAME ON"
 fi
 
-# ── --release: 서명앱 zip → GitHub Releases ──
+# ── --release: 서명앱 zip → GitHub Releases (+ Homebrew Cask bump) ──
 if [ "${1:-}" = "--release" ]; then
   command -v gh >/dev/null || { echo "✗ gh CLI 필요 (brew install gh)"; exit 1; }
+  # 가드: ad-hoc 서명 릴리스 금지. TCC(AX·SR) grant 는 designated requirement(= cert leaf)에 묶이는데,
+  #   ad-hoc 은 cdhash 뿐이라 업데이트마다 모든 설치처가 권한 재토글 → 배포본으로 절대 내보내지 않는다.
+  # NOTE: 캐노니컬 릴리스 경로는 'tag push → CI(release.yml)' 이며 repo 시크릿의 안정 p12(leaf 898E32)로 서명.
+  #   이 수동 경로는 그 시크릿과 같은 cert 를 가진 머신에서만 쓸 것. 다른 cert(예: 클라이언트 33849F)로
+  #   수동 릴리스하면 서명 정체성이 갈려 기존 설치처 grant 가 깨진다.
+  [ "$SIGN_ID" = "-" ] && { echo "✗ release 거부: ad-hoc 서명. 안정 cert '$SIGN_CN' 있는 머신에서만 릴리스(./host/make-signing-cert.sh)"; exit 1; }
   ZIP="build/${APP_NAME}-${VERSION}.zip"
   echo "=== release: $ZIP → gh release create v$VERSION ($GH_REPO) ==="
   ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${APP_NAME}.app" "$(basename "$ZIP")" )
@@ -143,4 +147,15 @@ if [ "${1:-}" = "--release" ]; then
   gh release create "v$VERSION" "$ZIP" --repo "$GH_REPO" --title "v$VERSION" --generate-notes \
     || gh release upload "v$VERSION" "$ZIP" --repo "$GH_REPO" --clobber
   echo "released v$VERSION ✓"
+
+  # Homebrew Cask 자동 bump: version + sha256 를 방금 올린 zip 기준으로 갱신(SSOT = 릴리스 산출물).
+  CASK="Casks/remote-pair-host.rb"
+  if [ -f "$CASK" ]; then
+    SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
+    /usr/bin/sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" "$CASK"
+    /usr/bin/sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" "$CASK"
+    echo "cask bumped: $CASK → v$VERSION sha256=${SHA:0:12}…  (커밋 후 tap 반영)"
+  else
+    echo "⚠ $CASK 없음 — cask bump 건너뜀"
+  fi
 fi
