@@ -1,0 +1,116 @@
+{
+  "publisher": "x10lab",
+  "name": "remotepair",
+  "displayName": "RemotePair",
+  "description": "Turns the RemotePair IDE into a remote-pair client: live Remote Desktop of the host, input forwarding, one-click SSH connect, and host-side notifications.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/x10lab/remotepair-ide.git"
+  },
+  "icon": "media/icon-128.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "remotepair",
+          "title": "RemotePair",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "remotepair": [
+        {
+          "id": "remotepair.remoteDesktop",
+          "type": "webview",
+          "name": "Remote Desktop"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "remotepair.connectHost",
+        "title": "RemotePair: Connect to Host",
+        "icon": "$(remote)"
+      },
+      {
+        "command": "remotepair.remoteDesktop.refresh",
+        "title": "RemotePair: Refresh Remote Desktop",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "remotepair.remoteDesktop.toggleInput",
+        "title": "RemotePair: Toggle Input Forwarding",
+        "icon": "$(record-keys)"
+      },
+      {
+        "command": "remotepair.ensureExtensions",
+        "title": "RemotePair: Install AI Extensions"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "remotepair.remoteDesktop.refresh",
+          "when": "view == remotepair.remoteDesktop",
+          "group": "navigation@1"
+        },
+        {
+          "command": "remotepair.remoteDesktop.toggleInput",
+          "when": "view == remotepair.remoteDesktop",
+          "group": "navigation@2"
+        },
+        {
+          "command": "remotepair.connectHost",
+          "when": "view == remotepair.remoteDesktop",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "remotepair.setup",
+        "title": "RemotePair setup",
+        "description": "Connect to your host, understand the host-side permission model, and install the AI extensions.",
+        "steps": [
+          {
+            "id": "remotepair.setup.connect",
+            "title": "Connect to your host",
+            "description": "RemotePair drives a remote macOS host (default REMOTE_HOST from ~/.remote-pair/client.env). Click below to open the host filesystem over SSH.\n[Connect to Host](command:remotepair.connectHost)",
+            "media": {
+              "markdown": "media/walkthrough-connect.md"
+            }
+          },
+          {
+            "id": "remotepair.setup.permissions",
+            "title": "Permissions are host-side",
+            "description": "Screen recording, accessibility (clicks/keys) and folder access are granted on the HOST machine (RemotePairHost.app), not on this client. If the Remote Desktop is blank, check the host's System Settings > Privacy & Security.",
+            "media": {
+              "markdown": "media/walkthrough-permissions.md"
+            }
+          },
+          {
+            "id": "remotepair.setup.extensions",
+            "title": "Install the AI extensions",
+            "description": "RemotePair bundles Claude Code, ChatGPT, and Open Remote - SSH. They are installed automatically on first run; you can re-run it anytime.\n[Install AI Extensions](command:remotepair.ensureExtensions)",
+            "media": {
+              "markdown": "media/walkthrough-extensions.md"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
