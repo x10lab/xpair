@@ -32,6 +32,21 @@ enum Permissions {
 
     /// 권한 요청 프롬프트 유도 + 해당 설정창 열기 + 안내.
     static func requestAndOpen() {
+        // CLIENT = ACCESS-ONLY: AX/SR 시스템 프롬프트를 절대 띄우지 않는다(이 머신은 권한 경계가 아님).
+        // 두 prompt API(AXIsProcessTrustedWithOptions / CGRequestScreenCaptureAccess) 호출 전에 조기 반환.
+        if isClientRole {
+            let a = NSAlert()
+            a.messageText = "이 머신은 client (access-only)"
+            a.informativeText = """
+            client 머신은 권한(손쉬운 사용·화면 기록)을 요청하지 않습니다.
+            computer-use 권한은 호스트(host/both) 머신에서만 부여합니다.
+            이 머신은 'remote-pair' CLI 로 호스트에 접속해 세션을 씁니다.
+            """
+            a.addButton(withTitle: "확인")
+            bringToFront()
+            a.runModal()
+            return
+        }
         // 시스템 프롬프트 유도(처음이면 다이얼로그, 이미 결정됐으면 no-op).
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)

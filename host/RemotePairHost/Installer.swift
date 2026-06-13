@@ -30,6 +30,14 @@ enum Installer {
     /// 설치됐지만 버전이 올라갔으면 리소스(skills/rules/tmux-aqua)만 갱신한다 — 앱만 새 버전으로
     /// 바뀌고 ~/.remote-pair·~/.claude 리소스가 옛날로 남는 문제(앱 교체/인앱 업데이트 공통)를 막는다.
     /// grant·LaunchAgent·host.env(사용자 설정)는 건드리지 않는다.
+    ///
+    /// ── M6 LEVEL-1 (hot update) 비방해 보장 ──────────────────────────────────────
+    /// glue/web(CLI·rules·skills·web·hooks) 변경은 CLI(`remote-pair update`)가 디스크에서
+    /// 핫스왑한다 — .app/tmux 무재기동. 앱의 역할은 그걸 **방해하지 않는 것**:
+    ///   • 버전 동일 → 진짜 no-op. tmux 서버/LaunchAgent/grant 를 절대 건드리지 않는다(핫스왑 보호).
+    ///   • 버전 업 → 리소스만 refresh(tmux-aqua 링크/env 정렬), grant·LaunchAgent·host.env 보존.
+    /// 즉 LEVEL-1 핫스왑이 디스크 리소스를 바꿔도 앱이 그걸 되돌리거나 재기동을 유발하지 않는다.
+    /// (네이티브 재기동이 필요한 LEVEL-2 는 Updater.swift 의 게이트가 담당.)
     /// 호스트 자기설치를 하면 안 되는 머신/실행인가. (gh-mac-m4 사고: 클라 노트북이 build/ 앱을 한 번
     /// 열어 호스트로 자기설치된 사례 차단.) ① 비설치 위치(repo build/)에서 실행 ② role=client 마커
     /// ③ client.env 만 있고 host.env 없음(호스트 아닌 클라 설치) → 어느 하나라도 참이면 skip.
@@ -57,10 +65,10 @@ enum Installer {
         let installed = fm.fileExists(atPath: appPlist) && fm.fileExists(atPath: HOST_ENV)
         let stamped = (try? String(contentsOfFile: versionFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if installed && stamped == APP_VERSION { return }                 // 설치됨 + 최신 → no-op
+        if installed && stamped == APP_VERSION { return }                 // LEVEL-1: 버전 동일 → 진짜 no-op (핫스왑/tmux 무간섭)
         if installed {
             log("INSTALL: version \(stamped.isEmpty ? "(none)" : stamped) → \(APP_VERSION) — refreshing resources (grant/config preserved)")
-            install(force: false, refreshResources: true)                 // 버전 올라감 → 리소스만 갱신
+            install(force: false, refreshResources: true)                 // LEVEL-1: 버전업 → 리소스만 갱신(grant/LaunchAgent 보존)
         } else {
             log("INSTALL: not fully installed (plist=\(fm.fileExists(atPath: appPlist)) host.env=\(fm.fileExists(atPath: HOST_ENV))) → installing")
             install(force: false)
@@ -103,6 +111,10 @@ enum Installer {
         // NOTE: rules.txt(approve 설정) + skills(claude 하네스)는 앱이 설치하지 않는다 (결합도 낮게).
         //       그건 CLI/README 단일설치(shared/install.sh)의 몫이다. 앱은 자기 데몬 bring-up 만.
 
+        // 3.5 host 알림 훅 미러 — cask-only 호스트(install.sh 안 거친 경우)도 알림 전달이 되도록,
+        //     CLI 와 동일하게 remote-pair-notify.sh + manage-claude-hooks.py 를 best-effort 로 설치/등록.
+        installNotifyHook()
+
         // 4. tmux-aqua 심볼릭링크 → 번들 Helpers/tmux-aqua (잘못/오래된 링크면 교체)
         let tmuxSrc = "\(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path)/tmux-aqua"
         let tmuxLink = "\(LOCAL_BIN)/tmux-aqua"
@@ -125,6 +137,209 @@ enum Installer {
 
         try? APP_VERSION.write(toFile: versionFile, atomically: true, encoding: .utf8)   // 버전 스탬프 → 다음 실행 no-op 판단
         log("INSTALL: done (force=\(force) → version \(APP_VERSION))")
+    }
+
+    // ── host 알림 훅 미러 (cask-only 호스트용) ────────────────────────────────────
+    //
+    // 왜: 알림 전달은 host 의 Claude Code 훅(remote-pair-notify.sh)이 이벤트를 큐에 적는 것에서
+    //   시작한다. install.sh(--role host)는 이걸 깔지만, cask 로 .app 만 받은 호스트는 install.sh 를
+    //   거치지 않아 훅이 없다 → 클라가 알림을 못 받는다. 그래서 앱 자기설치가 CLI 와 같은 방식으로 미러.
+    //
+    // 방식(shared/install.sh 의 approve/notify 훅 섹션과 정합):
+    //   소스 탐색 순서 ① 앱 번들 Contents/Helpers/hooks ② repo HOST_DIR/hooks (개발/소스 트리)
+    //   둘 다 없으면(순수 cask + repo 도달 불가) graceful skip — 로그만 남기고 통과.
+    //   설치 위치(install.sh 와 글자 단위 동일 — 가역성 보장): notify.sh → $RP_DIR/bin/remote-pair-notify.sh,
+    //             manage-claude-hooks.py → $RP_DIR/bin/ (멱등 JSON 머지기, install.sh 와 동일)
+    //   등록: manage-claude-hooks.py add <settings> <approve_cmd> <notify_cmd> — 기존 사용자 훅 보존(멱등).
+    //     notify_cmd 는 install.sh 와 동일한 절대경로($RP_DIR/bin/remote-pair-notify.sh)로 등록한다 →
+    //     uninstall.sh 의 path-keyed remove(manage-claude-hooks.py remove)가 CLI/앱 어느 쪽이 등록했든
+    //     같은 키로 정확히 제거한다(가역성 leak 차단).
+    //   python3 없으면 skip(스킬/알림스크립트는 깔되 훅 등록만 보류) — install.sh 와 동일한 보수적 처리.
+    //
+    // 가역성(cask-only): install.sh 를 안 거친 순수 cask 호스트는 install.sh manifest 가 없다. 그래서
+    //   여기서 설치/등록한 것을 $RP_DIR/.install-manifest 에 shared/lib.sh record() 의 TAB 포맷으로
+    //   직접 추가한다(FILE notify.sh + FILE manage-claude-hooks.py [+ FILE approve-reminder.sh],
+    //   HOOKS <settings> <cmd>). uninstall.sh 가 .install-manifest 를 글롭해 역순 원복하므로 leak 없음.
+    //   (install.sh 가 깐 .manifest-host 와는 별도 파일 — 중복/충돌 없음.)
+    //
+    // best-effort: 실패해도 데몬 bring-up(install() 본체)을 막지 않는다.
+    private static func installNotifyHook() {
+        // python3 게이트 (manage-claude-hooks.py 는 멱등 JSON 머지에 python3 필요 — macOS 에 jq 없음)
+        guard let py = whichPython3() else {
+            log("INSTALL: notify 훅 skip — python3 없음 (CLT 설치 후 install.sh --role host 권장)")
+            return
+        }
+
+        // 소스 탐색: ① 번들 Helpers/hooks ② repo HOST_DIR/hooks
+        let bundleHooks = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/hooks").path
+        let repoHooks = repoHostHooksDir()
+        let candidates = [bundleHooks, repoHooks].compactMap { $0 }
+        var notifySrc: String?
+        var managerSrc: String?
+        var approveSrc: String?
+        for base in candidates {
+            let n = "\(base)/remote-pair-notify.sh"
+            let m = "\(base)/manage-claude-hooks.py"
+            if notifySrc == nil, fm.fileExists(atPath: n) { notifySrc = n }
+            if managerSrc == nil, fm.fileExists(atPath: m) { managerSrc = m }
+            let ar = "\(base)/approve-reminder.sh"
+            if approveSrc == nil, fm.fileExists(atPath: ar) { approveSrc = ar }
+        }
+
+        guard let notify = notifySrc, let manager = managerSrc else {
+            // cask-only + repo 도달 불가 → 알림 훅 소스가 번들에 없음. graceful skip.
+            log("INSTALL: notify 훅 skip — 소스 미도달 (notify.sh/manage-claude-hooks.py 없음; cask-only 면 정상)")
+            return
+        }
+
+        let claudeDir = "\(HOME)/.claude"
+        let hooksDst = "\(claudeDir)/hooks"
+        // FIX 9: install.sh 와 동일 경로로 통일 — notify.sh 는 $RP_DIR/bin (CLI 와 같은 키로 등록/원복).
+        let notifyDst = "\(RP_DIR)/bin/remote-pair-notify.sh"
+        let managerDst = "\(RP_DIR)/bin/manage-claude-hooks.py"
+        let approveDst = "\(hooksDst)/remote-pair-approve-reminder.sh"   // install.sh 와 동일(approve 전용)
+        let settings = "\(claudeDir)/settings.json"
+
+        // cask-only 가역성 기록 대상(install.sh 의 .manifest-host 와 별개 파일). 새로 만든 파일/등록만 기록.
+        let manifest = "\(RP_DIR)/.install-manifest"
+        var fileRecords: [String] = []     // record FILE <path>
+        let settingsExisted = fm.fileExists(atPath: settings)
+
+        // 1) 스크립트 복사 (실행권한 부여) — 모두 $RP_DIR/bin (notify·manager), approve 는 ~/.claude/hooks.
+        ensureDir(hooksDst)
+        ensureDir("\(RP_DIR)/bin")
+        let notifyNew = !fm.fileExists(atPath: notifyDst)
+        if !copyFile(notify, to: notifyDst, mode: 0o755) {
+            log("INSTALL: notify 훅 skip — notify.sh 복사 실패")
+            return
+        }
+        if notifyNew { fileRecords.append(notifyDst) }
+        let managerNew = !fm.fileExists(atPath: managerDst)
+        if !copyFile(manager, to: managerDst, mode: 0o755) {
+            log("INSTALL: notify 훅 skip — manage-claude-hooks.py 복사 실패")
+            return
+        }
+        if managerNew { fileRecords.append(managerDst) }
+
+        // FIX 11: approve-reminder 소스가 있을 때만 dedicated approve 훅을 깔고 등록한다.
+        //   없으면 approve identity 등록을 SKIP 한다(notify 훅만 등록) — notifyDst 로 aliasing 하지 않는다.
+        //   (aliasing 하면 approve 이벤트에 notify.sh 가 붙어 전용 approve-skill nudge 를 잃는 degraded 동작.)
+        var approveCmdPath: String? = nil
+        if let approve = approveSrc {
+            let approveNew = !fm.fileExists(atPath: approveDst)
+            if copyFile(approve, to: approveDst, mode: 0o755) {
+                approveCmdPath = approveDst
+                if approveNew { fileRecords.append(approveDst) }
+            } else {
+                log("INSTALL: approve-reminder 복사 실패 — approve 등록 skip(notify 훅만)")
+            }
+        } else {
+            log("INSTALL: approve-reminder 소스 없음 — approve 등록 skip(notify 훅만, aliasing 안 함)")
+        }
+
+        // 2) 멱등 등록: manage-claude-hooks.py add <settings> <approve_cmd> <notify_cmd>
+        //    (python add 모드가 approve 계열 + Stop/Notification/SubagentStop 훅을 한 번에 머지. 기존 훅 보존.)
+        //    approve 가 없으면 빈 인자로 garbage 엔트리가 생기므로, approve 부재 시엔 notify 경로를 approve
+        //    인자로도 넘기되 — python 의 has_ours(substring) 멱등성 덕에 notify 엔트리만 한 번 등록된다(중복 무시).
+        //    즉 "approve identity 미등록 + notify 만" 을 달성하고, manifest HOOKS 도 notify 한 줄만 기록한다.
+        let approveArg = approveCmdPath ?? notifyDst
+        let r = runCapture(py, [managerDst, "add", settings, approveArg, notifyDst])
+        if r.status == 0 {
+            log("INSTALL: notify 훅 등록 ok (\(settings))")
+            // 3) cask-only 가역성 기록 — install.sh manifest 가 없을 때만(글롭 .manifest-* 부재) 의미가 있다.
+            //    install.sh 가 이미 깐 호스트면 그쪽 .manifest-host 가 원복을 담당하므로 중복 기록만 피하면 됨:
+            //    여기 기록은 .install-manifest(별도 파일)라 install.sh 의 .manifest-host 와 충돌하지 않는다.
+            //    재실행(버전업 refresh) 시 add 가 no-op 면 새 HOOKS 가 없으므로 HOOKS 기록은 생략(manifest bloat 방지).
+            //    add 가 실제로 머지했을 때만(=출력에 "no-op" 없음) HOOKS/신규 settings 를 기록한다.
+            let registeredNew = !r.out.contains("no-op")
+            recordManifest(manifest, fileRecords: fileRecords,
+                           settings: settings, settingsExisted: settingsExisted,
+                           approveCmd: approveCmdPath, notifyCmd: notifyDst,
+                           recordHooks: registeredNew)
+        } else {
+            log("INSTALL: notify 훅 등록 rc=\(r.status) — 수동 확인 필요 (\(settings))")
+        }
+    }
+
+    /// cask-only 가역성 기록 — shared/lib.sh record() 와 동일한 TAB 3-필드 포맷으로 $RP_DIR/.install-manifest 에 append.
+    ///   FILE  <path>            : 새로 만든 파일(notify.sh / manage-claude-hooks.py / approve-reminder.sh)
+    ///   HOOKS <settings> <cmd>  : settings.json 에 머지한 우리 훅(경로 키). settings 가 기존 파일일 때만 surgical
+    ///                             HOOKS 로 기록하고, 우리가 새로 만들었으면 FILE <settings> 한 줄로 통째 원복.
+    /// install.sh 의 approve/notify 훅 섹션(existed 분기)과 동일한 의미. python3/lib.sh 정합.
+    private static func recordManifest(_ manifest: String, fileRecords: [String],
+                                       settings: String, settingsExisted: Bool,
+                                       approveCmd: String?, notifyCmd: String,
+                                       recordHooks: Bool) {
+        func rec(_ action: String, _ a: String, _ b: String = "") -> String {
+            // shared/lib.sh record(): printf '%s\t%s\t%s\n' — 미사용 필드는 빈 문자열.
+            return "\(action)\t\(a)\t\(b)\n"
+        }
+        var lines = ""
+        for f in fileRecords { lines += rec("FILE", f) }
+        // 훅 머지가 실제로 새 엔트리를 추가했을 때만 HOOKS/신규 settings 를 기록(no-op 재실행은 생략).
+        if recordHooks {
+            if settingsExisted {
+                // 기존 사용자 파일 → 우리 엔트리만 surgical 제거. approve/notify 각각 한 줄(경로별 고유 키).
+                if let ac = approveCmd { lines += rec("HOOKS", settings, ac) }
+                lines += rec("HOOKS", settings, notifyCmd)
+            } else {
+                // 우리가 새로 만든 settings.json → 통째 삭제로 원복.
+                lines += rec("FILE", settings)
+            }
+        }
+        guard !lines.isEmpty else { return }
+        ensureDir((manifest as NSString).deletingLastPathComponent)
+        if let h = FileHandle(forWritingAtPath: manifest) {
+            h.seekToEndOfFile()
+            if let d = lines.data(using: .utf8) { h.write(d) }
+            try? h.close()
+        } else {
+            // 파일 없음 → 새로 생성(append 시작점). 실패해도 best-effort.
+            try? lines.write(toFile: manifest, atomically: true, encoding: .utf8)
+        }
+        log("INSTALL: cask-only manifest 기록 → \(manifest) (\(fileRecords.count) file + hooks)")
+    }
+
+    /// repo 소스 트리의 host/hooks 경로를 best-effort 로 추정(개발/소스 설치). 없으면 nil.
+    /// 번들은 보통 /Applications 에 있어 repo 와 무관 → 환경변수/관용 경로만 가볍게 확인.
+    private static func repoHostHooksDir() -> String? {
+        var bases: [String] = []
+        if let env = ProcessInfo.processInfo.environment["REPO_ROOT"], !env.isEmpty {
+            bases.append("\(env)/host/hooks")
+        }
+        // bootstrap.sh 가 쓰는 관용 위치 (있으면)
+        bases.append("\(HOME)/.local/share/remote-pair/host/hooks")
+        for b in bases where fm.fileExists(atPath: "\(b)/remote-pair-notify.sh") { return b }
+        return nil
+    }
+
+    /// python3 경로 탐색 — 관용 경로 우선, 없으면 /usr/bin/env 로 PATH 위임.
+    private static func whichPython3() -> String? {
+        for p in ["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"] {
+            if fm.isExecutableFile(atPath: p) { return p }
+        }
+        let r = runCapture("/usr/bin/which", ["python3"])
+        let path = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (r.status == 0 && !path.isEmpty && fm.isExecutableFile(atPath: path)) ? path : nil
+    }
+
+    /// 원자적 복사(덮어쓰기) + 권한. 성공 여부 반환.
+    @discardableResult
+    private static func copyFile(_ src: String, to dst: String, mode: Int) -> Bool {
+        ensureDir((dst as NSString).deletingLastPathComponent)
+        guard let data = fm.contents(atPath: src) else { return false }
+        let tmp = dst + ".rp-tmp"
+        do {
+            try data.write(to: URL(fileURLWithPath: tmp), options: .atomic)
+            try? fm.removeItem(atPath: dst)
+            try fm.moveItem(atPath: tmp, toPath: dst)
+            try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: dst)
+            return true
+        } catch {
+            try? fm.removeItem(atPath: tmp)
+            log("INSTALL: copyFile 실패 \(src) → \(dst): \(error)")
+            return false
+        }
     }
 
     // ── helpers ──

@@ -12,6 +12,23 @@ let LOG_DIR = "\(RP_DIR)/logs"
 let ROLE_FILE = "\(RP_DIR)/role"            // host|client|both — install.sh 가 기록. 클라에서 호스트 자기설치 차단용.
 let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // 존재 = 이 머신에 client 설치됨
 
+/// 이 머신의 역할. ROLE_FILE 트림 후 그대로(host|client|both), 없거나 비면 "" (= 기본 host).
+/// 파싱은 Installer.shouldSkipSelfInstall(Installer.swift:50-55)과 동일하게 맞춘다.
+func currentRole() -> String {
+    (try? String(contentsOfFile: ROLE_FILE, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+/// 호스트로 동작하는가. host / both / 빈값(미설정=기본 host) → true.  client 만 false.
+/// HOST/both 는 오늘과 동일한 grant 플로우, client 는 ACCESS-ONLY(AX/SR 프롬프트 금지).
+var isHostRole: Bool {
+    let role = currentRole()
+    return role == "host" || role == "both" || role.isEmpty
+}
+
+/// client(ACCESS-ONLY) 머신인가. role == "client" 일 때만 true.
+var isClientRole: Bool { currentRole() == "client" }
+
 let HELPERS = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path
 func helper(_ name: String, _ fallback: String) -> String {
     let bundled = "\(HELPERS)/\(name)"

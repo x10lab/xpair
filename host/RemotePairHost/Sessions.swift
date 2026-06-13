@@ -41,6 +41,18 @@ enum Sessions {
     /// 서버(=_keeper) 가 살아있는지.
     static func serverUp() -> Bool { tmux(["has-session"]).status == 0 }
 
+    // ── M6 (LEVEL-2 native relaunch) 게이트용 헬퍼 ────────────────────────────
+    // 인앱 Updater 가 .app 바이너리를 교체·재기동하기 전에 "지금 끊기면 안 되는 실제 작업이
+    // 돌고 있는가"를 사실로 알아야 한다. list() 가 이미 _keeper(내부 유지 더미)를 제외하므로
+    // 그 결과가 곧 "사용자 세션"이다. attached(붙어있는) + detached(떨어졌지만 살아있는) 모두
+    // 포함한다 — detached 라도 claude 세션이 그 안에서 계속 돌고 있을 수 있기 때문(재기동 시 손실 위험).
+
+    /// _keeper 제외, attached/detached 무관 실제 사용자 세션 목록. (list() 의 의미를 명시적 이름으로 노출)
+    static func listReal() -> [TmuxSession] { list() }
+
+    /// LEVEL-2 게이트 판단용 카운트 — attached + detached 합. 0 이면 무중단 재기동 안전.
+    static func liveSessionCount() -> Int { listReal().count }
+
     @discardableResult
     static func detachAll(_ name: String) -> Bool {
         let r = tmux(["detach-client", "-s", "=\(name)"])

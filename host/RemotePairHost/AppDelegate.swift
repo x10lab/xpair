@@ -69,11 +69,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
 
-        // 권한 상태 + 부여
+        // 권한 상태 + 부여 (CLIENT = access-only: 상태만 표시, Grant 항목은 호스트/both 에서만)
         let perm = NSMenuItem(title: Permissions.summary(), action: nil, keyEquivalent: "")
         perm.isEnabled = false
         menu.addItem(perm)
-        menu.addItem(withTitle: "Grant Permissions…", action: #selector(grantPermissions), keyEquivalent: "")
+        if isHostRole {
+            menu.addItem(withTitle: "Grant Permissions…", action: #selector(grantPermissions), keyEquivalent: "")
+        }
         menu.addItem(.separator())
 
         // 세션 목록 (서버 상태 + 각 세션 → 클릭 시 모달)

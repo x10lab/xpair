@@ -53,10 +53,13 @@ final class SettingsWindowController: NSWindowController {
 
         let row = NSStackView()
         row.orientation = .horizontal; row.spacing = 8
-        for (t, sel) in [("권한 부여…", #selector(grant)),
-                         ("업데이트 확인…", #selector(update)),
-                         ("폴더 열기", #selector(openDir)),
-                         ("새로고침", #selector(refresh))] {
+        // CLIENT = access-only: '권한 부여' 버튼 생략(호스트/both 에서만). 나머지는 동일.
+        var buttons: [(String, Selector)] = []
+        if isHostRole { buttons.append(("권한 부여…", #selector(grant))) }
+        buttons += [("업데이트 확인…", #selector(update)),
+                    ("폴더 열기", #selector(openDir)),
+                    ("새로고침", #selector(refresh))]
+        for (t, sel) in buttons {
             let b = NSButton(title: t, target: self, action: sel)
             b.bezelStyle = .rounded
             row.addArrangedSubview(b)
