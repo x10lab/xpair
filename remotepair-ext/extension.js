@@ -9,12 +9,19 @@
 //            key\t<combo>     -> sends a key combo
 //
 // All ssh invocations are argv-safe (spawn, never a shell string built from REMOTE_HOST).
+//
+// v1: WebSocket streaming mode — ssh local-forward tunnel → ws://127.0.0.1:<port>
+//     The sidecar `remote-pair-screen serve` on the host pushes binary JPEG frames
+//     at ~10 fps over loopback WS on 127.0.0.1:8889.
+//     Mode is controlled by setting remotepair.remoteDesktop.mode (auto|v1|v0).
+//     In "auto": try v1 and if no frame arrives within ~4 s fall back to v0 polling.
 
 const vscode = require("vscode");
 const cp = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const net = require("net");
 
 // --- constants -------------------------------------------------------------
 
@@ -29,11 +36,16 @@ const REQ_FILE = "/tmp/remote-pair.input-req";
 const RES_FILE = "/tmp/remote-pair.input-res";
 const SHOT_FILE = "/tmp/rp-rd.png"; // remote temp screenshot path
 
-const SHOT_INTERVAL_MS = 1200; // poll cadence while view visible
+const SHOT_INTERVAL_MS = 1200; // poll cadence while view visible (v0)
 const SHOT_SETTLE_MS = 400; // wait for host to render the png after request
 const NOTIFY_INTERVAL_MS = 5000;
 const INPUT_THROTTLE_MS = 120; // min gap between forwarded input events
 const SSH_CONNECT_TIMEOUT = 6; // seconds
+
+// v1 WS stream constants
+const SIDECAR_REMOTE_PORT = 8889; // port the sidecar listens on on the host
+const V1_FIRST_FRAME_TIMEOUT_MS = 4000; // auto-mode: fall back if no frame in this window
+const V1_TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before WS connect
 
 // REMOTE_HOST must be a bare ssh host alias / hostname. Validate hard before
 // it ever reaches a spawned process (defense in depth even though spawn is
@@ -215,68 +227,273 @@ function shSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
-// --- Remote Desktop webview view provider ----------------------------------
+// --- v1 tunnel helpers -------------------------------------------------------
 
-class RemoteDesktopViewProvider {
+/**
+ * Find a free local TCP port by asking the OS.
+ * @returns {Promise<number>}
+ */
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
+
+/**
+ * Spawn an ssh local-forward tunnel (non-blocking: ssh -fN).
+ * argv-safe: host is validated, port is an integer, SIDECAR_REMOTE_PORT is a constant.
+ *
+ * Returns { child, port } — child.kill() to teardown.
+ * The caller should wait V1_TUNNEL_SETTLE_MS before connecting.
+ */
+function spawnTunnel(host, localPort) {
+  // -fN: go to background, no remote command.  ControlMaster=auto reuses
+  // the existing authenticated master so there's no new key prompt.
+  const args = [
+    "-o", "BatchMode=yes",
+    "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPath=/tmp/rp-cm-%C",
+    "-o", "ControlPersist=300",
+    "-fN",
+    "-L", `${localPort}:127.0.0.1:${SIDECAR_REMOTE_PORT}`,
+    host, // validated HOST_RE element
+  ];
+  log(`v1 tunnel: ssh -fN -L ${localPort}:127.0.0.1:${SIDECAR_REMOTE_PORT} ${host}`);
+  const child = cp.spawn("ssh", args, { windowsHide: true, detached: false });
+  child.stderr.on("data", (d) => log(`tunnel stderr: ${d.toString().trim()}`));
+  child.on("error", (e) => log(`tunnel spawn error: ${e.message}`));
+  child.on("close", (code) => log(`tunnel exited code=${code}`));
+  return child;
+}
+
+/** Read the configured mode: "auto" | "v1" | "v0" */
+function getDesktopMode() {
+  try {
+    const cfg = vscode.workspace.getConfiguration("remotepair.remoteDesktop");
+    const m = cfg.get("mode");
+    if (m === "v1" || m === "v0") return m;
+  } catch (_e) {}
+  return "auto"; // default
+}
+
+// --- Remote Desktop editor-tab panel ---------------------------------------
+// Wireframe: Remote Desktop is a *pinned editor tab* ("RD") in the main editor
+// area (the right pane), behaving like a normal editor tab next to file tabs —
+// NOT a view in the left activity bar.
+
+class RemoteDesktopPanel {
   /** @param {vscode.Uri} extensionUri */
   constructor(extensionUri, state) {
     this.extensionUri = extensionUri;
     this.state = state; // shared mutable: { inputEnabled, lastShot:{w,h} }
-    this.view = null;
+    this.panel = null;
     this.pollTimer = null;
     this.visible = false;
     this.busy = false;
     this.lastInputTs = 0;
+
+    // v1 tunnel state
+    this._tunnelChild = null;   // ssh -fN child process
+    this._tunnelPort = null;    // local port in use
+    this._v1Active = false;     // true while v1 WS stream is expected to be running
+    this._v1FallbackTimer = null; // auto-mode first-frame watchdog
   }
 
-  resolveWebviewView(webviewView) {
-    this.view = webviewView;
-    const webview = webviewView.webview;
-    webview.options = {
-      enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
-    };
-    webview.html = this.getHtml(webview);
+  /** Create the singleton RD editor tab, or reveal it if it already exists. */
+  reveal() {
+    if (this.panel) {
+      try {
+        this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
+      } catch (_e) {}
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      "remotepair.remoteDesktop",
+      "RD",
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: false,
+        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+      }
+    );
+    this.panel = panel;
+    try {
+      panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "media", "icon.svg");
+    } catch (_e) {}
+    panel.webview.html = this.getHtml(panel.webview);
 
-    webview.onDidReceiveMessage((msg) => this.onMessage(msg));
+    panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
 
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
+    panel.onDidChangeViewState(() => {
+      if (panel.visible) {
         this.visible = true;
-        this.startPolling();
+        this._startStream();
       } else {
         this.visible = false;
-        this.stopPolling();
+        this._stopAll();
       }
     });
-    webviewView.onDidDispose(() => {
+    panel.onDidDispose(() => {
       this.visible = false;
-      this.stopPolling();
-      this.view = null;
+      this._stopAll();
+      this.panel = null;
     });
 
-    this.visible = webviewView.visible;
+    this.visible = panel.visible;
     this.postInputState();
-    if (this.visible) this.startPolling();
+    // Pin so it behaves like a permanent tab (wireframe: RD is a pinned editor tab).
+    vscode.commands.executeCommand("workbench.action.pinEditor").then(undefined, () => {});
+    if (this.visible) this._startStream();
+  }
+
+  /** Entry point: decide v0 or v1 based on mode setting, then start. */
+  async _startStream() {
+    const mode = getDesktopMode();
+    if (mode === "v0") {
+      this._startV0();
+      return;
+    }
+    // mode === "v1" or "auto"
+    const host = getValidHost();
+    if (!host) {
+      this.post({ type: "status", state: "no-host" });
+      return;
+    }
+    await this._startV1(host, mode === "auto");
+  }
+
+  /** Stop both v0 polling and any v1 tunnel. */
+  _stopAll() {
+    this._stopV0();
+    this._stopV1();
+  }
+
+  // --- v0 polling -----------------------------------------------------------
+
+  _startV0() {
+    if (this.pollTimer) return;
+    this.tick(true);
+    this.pollTimer = setInterval(() => this.tick(false), SHOT_INTERVAL_MS);
+  }
+
+  _stopV0() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  // --- v1 WS tunnel ---------------------------------------------------------
+
+  async _startV1(host, autoFallback) {
+    this._stopV1(); // clean up any previous tunnel
+
+    let localPort;
+    try {
+      localPort = await getFreePort();
+    } catch (e) {
+      log(`v1: getFreePort error: ${e.message}; falling back to v0`);
+      this._startV0();
+      return;
+    }
+
+    this._tunnelPort = localPort;
+    this._tunnelChild = spawnTunnel(host, localPort);
+    this._v1Active = true;
+
+    // Wait for the tunnel to establish, then tell the webview to connect.
+    const self = this;
+    setTimeout(() => {
+      if (!self._v1Active || !self.panel) return;
+      const wsUrl = `ws://127.0.0.1:${localPort}`;
+      log(`v1: telling webview to connect ${wsUrl}`);
+      self.post({ type: "v1Connect", wsUrl });
+
+      if (autoFallback) {
+        // Watchdog: if no first-frame message arrives within the timeout, fall back.
+        self._v1FallbackTimer = setTimeout(() => {
+          if (!self._v1Active) return;
+          log(`v1: no first frame within ${V1_FIRST_FRAME_TIMEOUT_MS}ms — falling back to v0`);
+          self._stopV1();
+          self._startV0();
+        }, V1_FIRST_FRAME_TIMEOUT_MS);
+      }
+    }, V1_TUNNEL_SETTLE_MS);
+  }
+
+  _stopV1() {
+    this._v1Active = false;
+    if (this._v1FallbackTimer) {
+      clearTimeout(this._v1FallbackTimer);
+      this._v1FallbackTimer = null;
+    }
+    if (this._tunnelChild) {
+      try { this._tunnelChild.kill("SIGTERM"); } catch (_e) {}
+      this._tunnelChild = null;
+    }
+    this._tunnelPort = null;
   }
 
   postInputState() {
-    if (this.view) {
-      this.view.webview.postMessage({ type: "inputState", enabled: !!this.state.inputEnabled });
+    if (this.panel) {
+      this.panel.webview.postMessage({ type: "inputState", enabled: !!this.state.inputEnabled });
     }
   }
 
   async onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     const host = getValidHost();
+
     if (msg.type === "ready") {
       this.postInputState();
       return;
     }
     if (msg.type === "refresh") {
-      this.tick(true);
+      if (this._v1Active) {
+        // Re-trigger v1 connect (re-send the wsUrl to webview).
+        if (host && this._tunnelPort) {
+          this.post({ type: "v1Connect", wsUrl: `ws://127.0.0.1:${this._tunnelPort}` });
+        } else {
+          this._stopAll();
+          this._startStream();
+        }
+      } else {
+        this.tick(true);
+      }
       return;
     }
+
+    // v1 feedback from webview
+    if (msg.type === "v1FirstFrame") {
+      log(`v1: first frame received by webview`);
+      // Cancel the auto-fallback watchdog — v1 is working.
+      if (this._v1FallbackTimer) {
+        clearTimeout(this._v1FallbackTimer);
+        this._v1FallbackTimer = null;
+      }
+      return;
+    }
+    if (msg.type === "v1Error") {
+      log(`v1: webview reported error: ${msg.detail || "unknown"}`);
+      if (this._v1Active) {
+        const mode = getDesktopMode();
+        if (mode === "auto" || mode === "v0") {
+          log(`v1: falling back to v0`);
+          this._stopV1();
+          this._startV0();
+        }
+      }
+      return;
+    }
+
     if (!host) return;
     if (!this.state.inputEnabled) return;
 
@@ -301,25 +518,27 @@ class RemoteDesktopViewProvider {
       if (!combo) return;
       log(`key -> ${combo}`);
       await sendInput(host, ["key", combo]);
+    } else if (msg.type === "v1Dimensions") {
+      // v1 stream can report frame dimensions for input scaling
+      const w = Number(msg.w);
+      const h = Number(msg.h);
+      if (w > 0 && h > 0 && w < 100000 && h < 100000) {
+        this.state.lastShot = { w, h };
+      }
     }
   }
 
   startPolling() {
-    if (this.pollTimer) return;
-    this.tick(true);
-    this.pollTimer = setInterval(() => this.tick(false), SHOT_INTERVAL_MS);
+    this._startV0();
   }
 
   stopPolling() {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
+    this._stopV0();
   }
 
-  /** One screenshot poll cycle. */
+  /** One screenshot poll cycle (v0 path). */
   async tick(force) {
-    if (!this.view || (!this.visible && !force)) return;
+    if (!this.panel || (!this.visible && !force)) return;
     if (this.busy) return;
     this.busy = true;
     try {
@@ -374,15 +593,21 @@ class RemoteDesktopViewProvider {
   }
 
   post(m) {
-    if (this.view) {
+    if (this.panel) {
       try {
-        this.view.webview.postMessage(m);
+        this.panel.webview.postMessage(m);
       } catch (_e) {}
     }
   }
 
   refresh() {
-    if (this.view) this.tick(true);
+    if (this.panel) {
+      if (this._v1Active) {
+        this.onMessage({ type: "refresh" });
+      } else {
+        this.tick(true);
+      }
+    }
   }
 
   getHtml(webview) {
@@ -393,13 +618,15 @@ class RemoteDesktopViewProvider {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "media", "remote-desktop.css")
     );
-    // Strict CSP: only our nonce'd script, our stylesheet, and data: images.
+    // CSP: allow our nonce'd script, our stylesheet, data: images, blob: images,
+    // and WebSocket connections to loopback (for v1 WS stream).
     const csp = [
       `default-src 'none'`,
-      `img-src ${webview.cspSource} data:`,
+      `img-src ${webview.cspSource} data: blob:`,
       `style-src ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
       `font-src ${webview.cspSource}`,
+      `connect-src ws://127.0.0.1:*`,
     ].join("; ");
 
     return `<!DOCTYPE html>
@@ -414,11 +641,13 @@ class RemoteDesktopViewProvider {
 <body>
   <div id="stage">
     <img id="screen" alt="Host screen" draggable="false" />
+    <canvas id="screen-canvas"></canvas>
     <div id="overlay" class="hidden">
       <div id="overlay-title">RemotePair</div>
       <div id="overlay-msg">Connecting to host…</div>
     </div>
     <div id="badge" class="off" title="Input forwarding">input: off</div>
+    <div id="mode-badge" class="mode-v0" title="Stream mode">v0</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -612,6 +841,40 @@ class NotificationPoller {
   }
 }
 
+// --- one-time workbench layout ---------------------------------------------
+// Wireframe: LEFT pane = terminal (the panel, moved to the left), RIGHT pane =
+// the editor area (where the RD tab + file tabs live), no right-side bar.
+// This rearranges the workbench once per profile so we don't fight the user's
+// later manual changes.
+
+async function setupLayout(context, force) {
+  const KEY = "remotepair.layoutInitialized.v2";
+  if (!force && context.globalState.get(KEY)) return;
+  // Move the panel (terminal host) to the left so it forms the left pane.
+  try {
+    await vscode.commands.executeCommand("workbench.action.positionPanelLeft");
+  } catch (e) {
+    log(`setupLayout positionPanelLeft: ${e && e.message ? e.message : e}`);
+  }
+  // Minimality: no right-side (secondary) bar, and no primary sidebar clutter —
+  // the terminal panel (now on the left) is the left pane.
+  try {
+    await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
+  } catch (_e) {}
+  try {
+    await vscode.commands.executeCommand("workbench.action.closeSidebar");
+  } catch (_e) {}
+  // Open a terminal so the left pane shows a terminal with tabs (Tab 1/2/3 + "+").
+  try {
+    await vscode.commands.executeCommand("workbench.action.terminal.new");
+  } catch (e) {
+    log(`setupLayout terminal.new: ${e && e.message ? e.message : e}`);
+  }
+  try {
+    await context.globalState.update(KEY, true);
+  } catch (_e) {}
+}
+
 // --- activation -------------------------------------------------------------
 
 function activate(context) {
@@ -622,27 +885,25 @@ function activate(context) {
   // 1) First-run: ensure the 3 AI extensions (best-effort, swallow errors).
   ensureExtensions(false).catch((e) => log(`ensureExtensions error: ${e}`));
 
-  // 2) Remote Desktop webview view.
-  const provider = new RemoteDesktopViewProvider(context.extensionUri, state);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("remotepair.remoteDesktop", provider, {
-      webviewOptions: { retainContextWhenHidden: false },
-    })
-  );
+  // 2) Remote Desktop = a pinned editor tab ("RD") in the main editor area
+  //    (NOT a left activity-bar view).
+  const panel = new RemoteDesktopPanel(context.extensionUri, state);
 
   // 3) Commands.
   context.subscriptions.push(
+    vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
-    vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => provider.refresh()),
+    vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.toggleInput", () => {
       state.inputEnabled = !state.inputEnabled;
-      provider.postInputState();
+      panel.postInputState();
       vscode.window.setStatusBarMessage(
         `RemotePair input forwarding: ${state.inputEnabled ? "ON" : "OFF"}`,
         2000
       );
     }),
-    vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true))
+    vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
+    vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true))
   );
 
   // 4) Host notifications poller.
@@ -650,8 +911,10 @@ function activate(context) {
   notifier.start();
   context.subscriptions.push({ dispose: () => notifier.stop() });
 
-  // 5) Reveal the RemotePair view on startup — Remote Desktop is this client's primary surface.
-  vscode.commands.executeCommand("workbench.view.extension.remotepair").then(undefined, () => {});
+  // 5) Open the RD editor tab on startup (Remote Desktop is this client's
+  //    primary surface), then apply the one-time workbench layout.
+  panel.reveal();
+  setupLayout(context, false).catch((e) => log(`setupLayout error: ${e}`));
 
   log("RemotePair activated.");
 }

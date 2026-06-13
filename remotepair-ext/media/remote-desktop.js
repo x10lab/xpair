@@ -1,20 +1,36 @@
 // RemotePair Remote Desktop webview script.
-// Receives PNG frames from the extension and renders them; captures mouse
-// clicks (as relative 0..1 coords) and key combos and posts them back.
+// v0: receives PNG frames from the extension and renders them via <img>.
+// v1: opens a WebSocket to the local-forwarded sidecar port, receives binary
+//     JPEG frames, and draws them onto a <canvas> via createImageBitmap.
+// Both paths: captures mouse clicks (relative 0..1) and key combos and posts
+// them back to the extension. Input forwarding works over both modes.
 (function () {
   "use strict";
   const vscode = acquireVsCodeApi();
 
   const img = document.getElementById("screen");
+  const canvas = document.getElementById("screen-canvas");
+  const ctx = canvas.getContext("2d");
   const overlay = document.getElementById("overlay");
   const overlayMsg = document.getElementById("overlay-msg");
   const badge = document.getElementById("badge");
+  const modeBadge = document.getElementById("mode-badge");
   const stage = document.getElementById("stage");
 
   let inputEnabled = false;
   let haveFrame = false;
   let lastSent = 0;
   const THROTTLE_MS = 120;
+
+  // v1 state
+  let ws = null;
+  let v1Mode = false;
+  let v1FirstFrameReported = false;
+  let lastFrameObjectUrl = null; // track for revocation
+
+  // -------------------------------------------------------------------------
+  // Overlay helpers
+  // -------------------------------------------------------------------------
 
   function showOverlay(msg) {
     overlayMsg.textContent = msg;
@@ -29,9 +45,19 @@
     badge.className = inputEnabled ? "on" : "off";
   }
 
-  // --- relative coordinate from a pointer event over the <img> -----------
+  function setModeBadge(mode) {
+    modeBadge.textContent = mode;
+    modeBadge.className = "mode-" + mode;
+  }
+
+  // -------------------------------------------------------------------------
+  // Relative coordinate from a pointer event over the active surface
+  // (canvas in v1 mode, img in v0 mode)
+  // -------------------------------------------------------------------------
+
   function relCoords(ev) {
-    const rect = img.getBoundingClientRect();
+    const el = v1Mode ? canvas : img;
+    const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     const rx = (ev.clientX - rect.left) / rect.width;
     const ry = (ev.clientY - rect.top) / rect.height;
@@ -46,7 +72,11 @@
     return true;
   }
 
-  img.addEventListener("click", function (ev) {
+  // -------------------------------------------------------------------------
+  // Input event listeners (shared: work for both v0 and v1)
+  // -------------------------------------------------------------------------
+
+  stage.addEventListener("click", function (ev) {
     if (!inputEnabled || !haveFrame) return;
     const c = relCoords(ev);
     if (!c) return;
@@ -90,18 +120,131 @@
     vscode.postMessage({ type: "key", combo: combo });
   });
 
-  // --- messages from the extension --------------------------------------
+  // -------------------------------------------------------------------------
+  // v1 WebSocket stream
+  // -------------------------------------------------------------------------
+
+  function closeWs() {
+    if (ws) {
+      try { ws.close(); } catch (_e) {}
+      ws = null;
+    }
+  }
+
+  function connectV1(wsUrl) {
+    closeWs();
+    v1Mode = true;
+    v1FirstFrameReported = false;
+
+    // Show canvas, hide img
+    img.style.display = "none";
+    canvas.style.display = "block";
+    setModeBadge("v1");
+
+    let sock;
+    try {
+      sock = new WebSocket(wsUrl);
+    } catch (e) {
+      vscode.postMessage({ type: "v1Error", detail: "WebSocket constructor threw: " + String(e) });
+      return;
+    }
+    ws = sock;
+    sock.binaryType = "arraybuffer";
+
+    sock.addEventListener("open", function () {
+      showOverlay("v1: connected, waiting for first frame…");
+    });
+
+    sock.addEventListener("message", function (ev) {
+      if (!(ev.data instanceof ArrayBuffer)) return;
+
+      // Verify JPEG magic bytes FF D8
+      const bytes = new Uint8Array(ev.data);
+      if (bytes.length < 2 || bytes[0] !== 0xFF || bytes[1] !== 0xD8) return;
+
+      const blob = new Blob([ev.data], { type: "image/jpeg" });
+
+      createImageBitmap(blob).then(function (bmp) {
+        // Resize canvas to match frame if needed
+        if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+          canvas.width = bmp.width;
+          canvas.height = bmp.height;
+          // Report dimensions to extension for input scaling
+          vscode.postMessage({ type: "v1Dimensions", w: bmp.width, h: bmp.height });
+        }
+        ctx.drawImage(bmp, 0, 0);
+        bmp.close();
+
+        if (!haveFrame) {
+          haveFrame = true;
+          hideOverlay();
+        }
+
+        if (!v1FirstFrameReported) {
+          v1FirstFrameReported = true;
+          vscode.postMessage({ type: "v1FirstFrame" });
+        }
+      }).catch(function (e) {
+        // Non-fatal: skip this frame
+      });
+    });
+
+    sock.addEventListener("error", function () {
+      vscode.postMessage({ type: "v1Error", detail: "WebSocket error on " + wsUrl });
+    });
+
+    sock.addEventListener("close", function (ev) {
+      if (v1Mode && !ev.wasClean) {
+        vscode.postMessage({ type: "v1Error", detail: "WebSocket closed unexpectedly (code=" + ev.code + ")" });
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // v0: img-based frame rendering
+  // -------------------------------------------------------------------------
+
+  function renderV0Frame(dataUri) {
+    // Ensure we're in v0 visual mode
+    if (v1Mode) {
+      v1Mode = false;
+      closeWs();
+      canvas.style.display = "none";
+      img.style.display = "block";
+      setModeBadge("v0");
+    }
+    img.src = dataUri;
+    haveFrame = true;
+    hideOverlay();
+  }
+
+  // -------------------------------------------------------------------------
+  // Messages from the extension
+  // -------------------------------------------------------------------------
+
   window.addEventListener("message", function (e) {
     const m = e.data;
     if (!m || typeof m !== "object") return;
+
+    if (m.type === "v1Connect") {
+      // Extension tells webview to open WS stream
+      connectV1(m.wsUrl);
+      return;
+    }
+
     if (m.type === "frame") {
-      img.src = m.dataUri;
-      haveFrame = true;
-      hideOverlay();
-    } else if (m.type === "inputState") {
+      // v0 PNG frame
+      renderV0Frame(m.dataUri);
+      return;
+    }
+
+    if (m.type === "inputState") {
       inputEnabled = !!m.enabled;
       setBadge();
-    } else if (m.type === "status") {
+      return;
+    }
+
+    if (m.type === "status") {
       haveFrame = m.state === "frame";
       let msg = "Connecting to host…";
       if (m.state === "no-host") {
@@ -109,7 +252,7 @@
       } else if (m.state === "unreachable") {
         msg = "Host unreachable. Check SSH to the host." + (m.detail ? "\n" + m.detail : "");
       } else if (m.state === "no-image") {
-        msg = "No screen yet. Is RemotePairHost.app running on the host?";
+        msg = "No screen yet. Is RemotePairHost.app running on the host?\n(v1: is remote-pair-screen serve running?)";
       } else if (m.state === "error") {
         msg = "Error: " + (m.detail || "unknown");
       }
@@ -117,6 +260,14 @@
     }
   });
 
+  // -------------------------------------------------------------------------
+  // Init
+  // -------------------------------------------------------------------------
+
+  // Start in v0 visual mode; v1 canvas is hidden until connectV1 is called.
+  canvas.style.display = "none";
+  img.style.display = "block";
+  setModeBadge("v0");
   setBadge();
   showOverlay("Connecting to host…");
   vscode.postMessage({ type: "ready" });
