@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RemotePair</title>
+  <link rel="stylesheet" href="style.css">
+  <!--
+    xterm.js (M3 터미널 렌더러) — web/vendor/ 에 로컬 벤더링 (오프라인 동작, CDN 비의존).
+    원본: https://cdn.jsdelivr.net/npm/xterm@5.3.0/  (xterm.min.js, css/xterm.min.css)
+    파일이 없거나 로드 실패 시: app.js 가 window.Terminal 부재를 감지하고 자동으로
+    <pre> ANSI fallback 렌더러로 동작한다 (real terminal 대신 polling capture view).
+  -->
+  <link rel="stylesheet" href="vendor/xterm.min.css">
+</head>
+<body>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       WIZARD VIEW (first-run / #wizard 라우트) — 기존 온보딩 마법사 그대로.
+       shell 과 상호배타적으로 표시된다.
+  ─────────────────────────────────────────────────────────────────────── -->
+  <div id="wizard-root" hidden>
+    <!-- 상단 앱 상태 배지 바 (폴링으로 실시간 갱신) -->
+    <div class="status-bar" id="status-bar">
+      <span class="badge off">– 연결 중...</span>
+    </div>
+    <!-- 진행 표시줄 -->
+    <div id="progress-bar"></div>
+    <!-- 스텝 콘텐츠 (app.js 가 동적으로 렌더링) -->
+    <div id="main-content"></div>
+  </div>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       APP SHELL (메인) — 좌: 터미널 탭 + 파일/역할 / 우: Remote Desktop + Editor 탭
+  ─────────────────────────────────────────────────────────────────────── -->
+  <div id="shell-root" hidden>
+
+    <!-- 상단 바: 좌측 브랜드 + 앱 상태 배지, 우측 알림/설정/마법사 토글 -->
+    <header class="shell-top">
+      <div class="shell-brand">RemotePair</div>
+      <div class="shell-badges" id="shell-badges"></div>
+      <div class="shell-actions">
+        <button class="icon-btn" id="btn-open-notif" title="알림">🔔<span class="notif-dot" id="notif-dot" hidden></span></button>
+        <button class="icon-btn" id="btn-open-settings" title="설정">⚙️</button>
+        <button class="icon-btn" id="btn-open-wizard" title="설정 마법사">🧭</button>
+      </div>
+    </header>
+
+    <!-- 본문: 좌 패널 + 우 패널 (split) -->
+    <div class="shell-body">
+
+      <!-- LEFT: 터미널 탭들 (iTerm 스타일) + 파일/역할 영역 -->
+      <section class="pane pane-left" id="pane-left">
+        <div class="tabbar" id="term-tabbar">
+          <!-- 탭 버튼들 (동적) + 새로고침 -->
+          <div class="tabbar-tabs" id="term-tabs"></div>
+          <button class="tab-tool" id="term-refresh" title="세션 목록 새로고침">⟳</button>
+        </div>
+        <div class="term-host" id="term-host">
+          <div class="empty-hint" id="term-empty">
+            세션을 불러오는 중...
+          </div>
+        </div>
+        <!-- 파일/역할 영역 (좌 하단) -->
+        <div class="left-meta" id="left-meta"></div>
+      </section>
+
+      <div class="split-handle" id="split-handle" title="드래그하여 너비 조정"></div>
+
+      <!-- RIGHT: 단일 탭 섹션 (Remote Desktop / Editor) -->
+      <section class="pane pane-right" id="pane-right">
+        <div class="tabbar">
+          <div class="tabbar-tabs">
+            <button class="rtab active" data-rtab="desktop">🖥 Remote Desktop</button>
+            <button class="rtab" data-rtab="editor">📝 Editor</button>
+          </div>
+        </div>
+        <div class="rtab-host">
+          <div class="rtab-panel active" id="rpanel-desktop"></div>
+          <div class="rtab-panel" id="rpanel-editor"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 알림 패널 (슬라이드오버) -->
+    <aside class="drawer" id="notif-drawer" hidden>
+      <div class="drawer-head">
+        <strong>알림</strong>
+        <div>
+          <button class="btn-sm btn-ghost" id="notif-mark-seen">모두 읽음</button>
+          <button class="icon-btn" id="notif-close">✕</button>
+        </div>
+      </div>
+      <div class="drawer-body" id="notif-list">
+        <p class="muted-note">새 알림을 기다리는 중...</p>
+      </div>
+    </aside>
+
+    <!-- 설정 패널 (슬라이드오버) -->
+    <aside class="drawer" id="settings-drawer" hidden>
+      <div class="drawer-head">
+        <strong>설정</strong>
+        <button class="icon-btn" id="settings-close">✕</button>
+      </div>
+      <div class="drawer-body" id="settings-body"></div>
+    </aside>
+
+    <!-- 드로어 백드롭 -->
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  </div>
+
+  <!-- xterm.js (로컬 vendor). 로드 실패 시 window.Terminal 미정의 → app.js 폴백. -->
+  <script src="vendor/xterm.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
