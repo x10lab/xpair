@@ -307,7 +307,7 @@ class RemoteDesktopPanel {
   }
 
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
-  reveal() {
+  async reveal() {
     if (this.panel) {
       try {
         this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
@@ -320,7 +320,7 @@ class RemoteDesktopPanel {
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       {
         enableScripts: true,
-        retainContextWhenHidden: false,
+        retainContextWhenHidden: true,
         localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
       }
     );
@@ -333,6 +333,7 @@ class RemoteDesktopPanel {
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
 
     panel.onDidChangeViewState(() => {
+      if (!this.panel) return;
       if (panel.visible) {
         this.visible = true;
         this._startStream();
@@ -350,12 +351,19 @@ class RemoteDesktopPanel {
     this.visible = panel.visible;
     this.postInputState();
     // Pin so it behaves like a permanent tab (wireframe: RD is a pinned editor tab).
-    vscode.commands.executeCommand("workbench.action.pinEditor").then(undefined, () => {});
+    // Await so the pin lands on RD before anything else steals editor focus
+    // (e.g. setupLayout opening a terminal tab right after).
+    try {
+      await vscode.commands.executeCommand("workbench.action.pinEditor");
+    } catch (_e) {}
     if (this.visible) this._startStream();
   }
 
   /** Entry point: decide v0 or v1 based on mode setting, then start. */
   async _startStream() {
+    // Guard against double-start (refresh + visibility-restore overlap) which
+    // could otherwise spawn two ssh tunnels on different ports.
+    if (this._v1Active || this.pollTimer) return;
     const mode = getDesktopMode();
     if (mode === "v0") {
       this._startV0();
@@ -485,7 +493,9 @@ class RemoteDesktopPanel {
       log(`v1: webview reported error: ${msg.detail || "unknown"}`);
       if (this._v1Active) {
         const mode = getDesktopMode();
-        if (mode === "auto" || mode === "v0") {
+        // Fall back to v0 in auto AND explicit-v1 modes (in v0 mode v1 never
+        // started, so it can't be reached here). The old "v0" check was dead.
+        if (mode === "auto" || mode === "v1") {
           log(`v1: falling back to v0`);
           this._stopV1();
           this._startV0();
@@ -769,6 +779,30 @@ async function connectHost() {
   );
 }
 
+// --- file access / folder mapping setup ------------------------------------
+
+/**
+ * Open a terminal and stage the interactive `remote-pair onboard` wizard, which
+ * configures host, terminal app, folder mapping, and a doctor check. We do NOT
+ * auto-run it (addNewLine=false) so the user reviews the command first.
+ */
+function setupFileAccess() {
+  let term;
+  try {
+    term = vscode.window.createTerminal("RemotePair Setup");
+    term.show(true);
+    // Stage the command without executing — the user presses Enter to start the
+    // interactive wizard (it prompts for host / mapping / backend).
+    term.sendText("remote-pair onboard", false);
+  } catch (e) {
+    log(`setupFileAccess: ${e && e.message ? e.message : e}`);
+  }
+  vscode.window.showInformationMessage(
+    "RemotePair: review 'remote-pair onboard' in the terminal and press Enter to " +
+      "configure the host, folder mapping, and file-access backend (Syncthing or mount)."
+  );
+}
+
 // --- host notifications poller ---------------------------------------------
 
 class NotificationPoller {
@@ -848,23 +882,20 @@ class NotificationPoller {
 // later manual changes.
 
 async function setupLayout(context, force) {
-  const KEY = "remotepair.layoutInitialized.v2";
+  const KEY = "remotepair.layoutInitialized.v3";
   if (!force && context.globalState.get(KEY)) return;
-  // Move the panel (terminal host) to the left so it forms the left pane.
-  try {
-    await vscode.commands.executeCommand("workbench.action.positionPanelLeft");
-  } catch (e) {
-    log(`setupLayout positionPanelLeft: ${e && e.message ? e.message : e}`);
-  }
-  // Minimality: no right-side (secondary) bar, and no primary sidebar clutter —
-  // the terminal panel (now on the left) is the left pane.
+  // Minimality (wireframe): no right-side bar, no primary sidebar clutter — the
+  // left is just the (text) rail; everything else lives as editor tabs on a
+  // single unified tab strip.
   try {
     await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
   } catch (_e) {}
   try {
     await vscode.commands.executeCommand("workbench.action.closeSidebar");
   } catch (_e) {}
-  // Open a terminal so the left pane shows a terminal with tabs (Tab 1/2/3 + "+").
+  // Open one terminal. With terminal.integrated.defaultLocation=editor it opens
+  // as an editor TAB on the same tab strip as RD and files (iTerm2-style unified
+  // tab line), instead of in a separate panel/side pane.
   try {
     await vscode.commands.executeCommand("workbench.action.terminal.new");
   } catch (e) {
@@ -872,7 +903,9 @@ async function setupLayout(context, force) {
   }
   try {
     await context.globalState.update(KEY, true);
-  } catch (_e) {}
+  } catch (e) {
+    log(`setupLayout: globalState.update failed: ${e && e.message ? e.message : e}`);
+  }
 }
 
 // --- activation -------------------------------------------------------------
@@ -903,6 +936,7 @@ function activate(context) {
       );
     }),
     vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
+    vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),
     vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true))
   );
 
@@ -912,9 +946,12 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => notifier.stop() });
 
   // 5) Open the RD editor tab on startup (Remote Desktop is this client's
-  //    primary surface), then apply the one-time workbench layout.
-  panel.reveal();
-  setupLayout(context, false).catch((e) => log(`setupLayout error: ${e}`));
+  //    primary surface), then apply the one-time workbench layout. Chained so
+  //    the RD pin lands before setupLayout opens the terminal tab.
+  panel
+    .reveal()
+    .then(() => setupLayout(context, false))
+    .catch((e) => log(`setupLayout error: ${e}`));
 
   log("RemotePair activated.");
 }

@@ -47,6 +47,10 @@
         "title": "RemotePair: Install AI Extensions"
       },
       {
+        "command": "remotepair.setupFileAccess",
+        "title": "RemotePair: Set Up File Access (folder mapping / mount)"
+      },
+      {
         "command": "remotepair.setupLayout",
         "title": "RemotePair: Reset Layout (terminal left, RD tab right)"
       }
@@ -73,12 +77,10 @@
     "configurationDefaults": {
       "window.titleBarStyle": "native",
       "workbench.statusBar.visible": true,
-      "workbench.activityBar.location": "default",
       "workbench.editor.showTabs": "multiple",
       "workbench.startupEditor": "none",
-      "workbench.panel.defaultLocation": "left",
-      "terminal.integrated.tabs.enabled": true,
-      "terminal.integrated.tabs.location": "left"
+      "terminal.integrated.defaultLocation": "editor",
+      "terminal.integrated.tabs.enabled": true
     },
     "configuration": {
       "title": "RemotePair",
@@ -108,6 +110,14 @@
             "description": "RemotePair drives a remote macOS host (default REMOTE_HOST from ~/.remote-pair/client.env). Click below to open the host filesystem over SSH.\n[Connect to Host](command:remotepair.connectHost)",
             "media": {
               "markdown": "media/walkthrough-connect.md"
+            }
+          },
+          {
+            "id": "remotepair.setup.fileaccess",
+            "title": "Set up file access",
+            "description": "Choose how this client reaches the host's files: Open Remote - SSH (edit the host directly), folder mapping + sync, or mount. Run the interactive setup to configure the host, folder mapping, and backend.\n[Run setup](command:remotepair.setupFileAccess)",
+            "media": {
+              "markdown": "media/walkthrough-fileaccess.md"
             }
           },
           {
