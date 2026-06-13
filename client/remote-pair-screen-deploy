@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# remote-pair-screen-deploy — deploy the remote-pair-screen sidecar to the host.
+#
+# Usage:  remote-pair-screen-deploy [REMOTE_HOST]
+#
+# If REMOTE_HOST is not given as an argument it is read from the environment
+# variable REMOTE_HOST, then from ~/.remote-pair/client.env.
+# The sidecar binary is taken from:
+#   $SIDECAR_BIN   (env override)
+#   <script-dir>/../native/remote-pair-screen/target/release/remote-pair-screen
+#
+# The script is argv-safe: no shell-string construction from user-controlled
+# values.  All ssh/scp invocations use discrete argument arrays via exec/process
+# substitution; the host is validated against a strict regex before use.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+die()  { echo "ERROR: $*" >&2; exit 1; }
+info() { echo "==> $*"; }
+warn() { echo "WARN: $*" >&2; }
+
+# Validate host: bare hostname / ssh alias only, no shell metacharacters.
+HOST_RE='^[A-Za-z0-9._-]+$'
+validate_host() {
+  local h="$1"
+  if [[ -z "$h" ]]; then
+    die "REMOTE_HOST is empty."
+  fi
+  if ! [[ "$h" =~ $HOST_RE ]]; then
+    die "REMOTE_HOST '$h' contains invalid characters (only A-Z a-z 0-9 . _ - allowed)."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Resolve REMOTE_HOST
+# ---------------------------------------------------------------------------
+
+REMOTE_HOST_ARG="${1:-}"
+
+if [[ -n "$REMOTE_HOST_ARG" ]]; then
+  REMOTE_HOST="$REMOTE_HOST_ARG"
+elif [[ -n "${REMOTE_HOST:-}" ]]; then
+  : # already set in environment
+else
+  # Read from ~/.remote-pair/client.env
+  CLIENT_ENV="$HOME/.remote-pair/client.env"
+  if [[ ! -f "$CLIENT_ENV" ]]; then
+    die "REMOTE_HOST not given and $CLIENT_ENV does not exist."
+  fi
+  REMOTE_HOST=""
+  while IFS= read -r line; do
+    # strip leading/trailing whitespace
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == REMOTE_HOST=* ]]; then
+      val="${line#REMOTE_HOST=}"
+      # strip surrounding quotes
+      val="${val#\'}" ; val="${val%\'}"
+      val="${val#\"}" ; val="${val%\"}"
+      REMOTE_HOST="$val"
+      break
+    fi
+  done < "$CLIENT_ENV"
+  if [[ -z "$REMOTE_HOST" ]]; then
+    die "REMOTE_HOST not found in $CLIENT_ENV."
+  fi
+fi
+
+validate_host "$REMOTE_HOST"
+
+# ---------------------------------------------------------------------------
+# Resolve sidecar binary
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_BIN="$SCRIPT_DIR/../native/remote-pair-screen/target/release/remote-pair-screen"
+SIDECAR_BIN="${SIDECAR_BIN:-$DEFAULT_BIN}"
+
+if [[ ! -f "$SIDECAR_BIN" ]]; then
+  die "Sidecar binary not found at: $SIDECAR_BIN
+Build it first:
+  cd $SCRIPT_DIR/../native/remote-pair-screen
+  cargo build --release"
+fi
+
+info "Sidecar:     $SIDECAR_BIN ($(du -sh "$SIDECAR_BIN" | cut -f1))"
+info "Remote host: $REMOTE_HOST"
+
+# ---------------------------------------------------------------------------
+# Common ssh options (argv-safe; host is the last positional)
+# ---------------------------------------------------------------------------
+
+SSH_OPTS=(
+  -o BatchMode=yes
+  -o ConnectTimeout=10
+  -o StrictHostKeyChecking=accept-new
+  -o ControlMaster=auto
+  -o "ControlPath=/tmp/rp-cm-%C"
+  -o ControlPersist=60
+)
+
+# ---------------------------------------------------------------------------
+# 1. Ensure remote destination directory exists
+# ---------------------------------------------------------------------------
+
+REMOTE_BIN_DIR=".remote-pair/bin"
+REMOTE_BIN_PATH="$REMOTE_BIN_DIR/remote-pair-screen"
+
+info "Creating $REMOTE_BIN_DIR on host…"
+ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "mkdir -p '$REMOTE_BIN_DIR'"
+
+# ---------------------------------------------------------------------------
+# 2. scp the binary (argv-safe: no shell interpolation of host)
+# ---------------------------------------------------------------------------
+
+info "Copying binary to $REMOTE_HOST:~/$REMOTE_BIN_PATH …"
+scp "${SSH_OPTS[@]}" -- "$SIDECAR_BIN" "$REMOTE_HOST:$REMOTE_BIN_PATH"
+
+# ---------------------------------------------------------------------------
+# 3. chmod +x
+# ---------------------------------------------------------------------------
+
+info "Setting executable bit…"
+ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "chmod +x '$REMOTE_BIN_PATH'"
+
+# ---------------------------------------------------------------------------
+# 4. Smoke-test: print version/help (non-fatal)
+# ---------------------------------------------------------------------------
+
+info "Remote binary version check:"
+ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "'$REMOTE_BIN_PATH' --version 2>&1 || true"
+
+# ---------------------------------------------------------------------------
+# 5. Print one-time TCC grant instructions
+# ---------------------------------------------------------------------------
+
+cat <<'INSTRUCTIONS'
+
+===========================================================================
+DEPLOYMENT COMPLETE — ONE-TIME HOST SETUP REQUIRED
+===========================================================================
+
+The sidecar binary has been copied to:
+    ~/.remote-pair/bin/remote-pair-screen
+
+Before the v1 WebSocket stream can capture your screen you MUST grant
+Screen Recording permission to that binary on the HOST machine.
+
+HOW TO GRANT SCREEN RECORDING (macOS):
+
+  Option A — via System Settings (GUI):
+    1. On the HOST Mac open:
+         System Settings > Privacy & Security > Screen Recording
+    2. Click the (+) button.
+    3. Navigate to:
+         ~/.remote-pair/bin/remote-pair-screen
+       (press Cmd+Shift+G in the file picker to type the path)
+    4. Enable the toggle next to remote-pair-screen.
+    5. If prompted, quit and relaunch.
+
+  Option B — via tccutil (Terminal, macOS 12+):
+    This resets the permission and then the GUI step above is still needed
+    the first time the binary runs, but it avoids a stale TCC denial:
+      tccutil reset ScreenCapture
+
+  Note: This is a one-time grant per binary path.  If you redeploy a new
+  binary to the same path the existing grant is usually preserved.
+  If you change the path you must re-grant.
+
+HOW TO START THE SIDECAR ON THE HOST:
+
+  Run in a terminal on the HOST (or add to your login items / launchd):
+
+    ~/.remote-pair/bin/remote-pair-screen serve
+
+  Default: listens on 127.0.0.1:8889, ~10 fps JPEG stream.
+  Options: --port <N>  --fps <N>  (see --help for full list)
+
+  The RemotePair extension on the client will automatically forward the
+  WS port over SSH when the Remote Desktop view opens (v1 mode).
+
+  To verify the stream without the extension:
+    # On the host (local test):
+    wscat -c ws://127.0.0.1:8889
+    # You should see binary JPEG frames arriving.
+
+===========================================================================
+INSTRUCTIONS
+
+info "Done."
