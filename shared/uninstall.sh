@@ -31,6 +31,11 @@ done
 if [ "$PURGE" = 1 ]; then
   say "--purge: $RP_DIR 삭제"; rm -rf "$RP_DIR"
 else
-  say "완료. ($RP_DIR 의 config(common/host/client).env·backups 는 유지 — --purge 로 완전 삭제)"
+  # notify.conf is intentionally preserved here alongside *.env files and backups.
+  # It holds user-edited ENABLED_TYPES and must survive non-purge uninstall/reinstall
+  # cycles (install.sh stash/restore keeps user edits, but the manifest 'create only
+  # if absent' guard means notify.conf is NOT re-recorded on reinstall, so uninstall
+  # would otherwise leak it). Matching this comment to that behavior makes it explicit.
+  say "완료. ($RP_DIR 의 config(common/host/client).env·notify.conf·backups 는 유지 — --purge 로 완전 삭제)"
 fi
 say "(~/.claude/.git 과 사용자 설정은 보존됨)"

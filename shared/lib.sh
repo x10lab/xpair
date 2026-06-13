@@ -81,9 +81,12 @@ manifest_revert() {
                  [ -n "$b" ] && [ -e "$b" ] && rm -f "$b"; echo "  bootout $a" ;;
       GITREMOTE) ( cd "$CLAUDE_DIR" && git remote remove "$a" 2>/dev/null ) && echo "  remote- $a" || true ;;
       # HOOKS: settings.json(기존 사용자 파일)을 in-place 수정한 것 → surgical 제거(우리 엔트리만).
-      #   a=settings.json 경로, b=훅 command(식별자). manage 스크립트는 같은 manifest 의 FILE 로
-      #   설치돼 있고 역순 처리상 이 HOOKS 보다 뒤에 제거되므로, 여기서 아직 존재해 호출 가능.
-      HOOKS)     [ -f "$a" ] && python3 "$RP_DIR/bin/manage-claude-hooks.py" remove "$a" "$b" >/dev/null 2>&1 \
+      #   a=settings.json 경로, b=훅 command(식별자=설치된 hook cmd 경로). manage 스크립트는 같은
+      #   manifest 의 FILE 로 설치돼 있고 역순 처리상 이 HOOKS 보다 뒤에 제거되므로 여기서 호출 가능.
+      #   manage-claude-hooks.py 가 4-arg(remove <settings> <approve_cmd> <notify_cmd>) 로 바뀌어
+      #   같은 경로를 두 위치에 넣어 "그 경로를 포함한 우리 엔트리 전부"를 제거한다(경로별로 고유 →
+      #   approve/notify 각각 한 줄씩 기록된 HOOKS 가 안전하게 자기 것만 지운다).
+      HOOKS)     [ -f "$a" ] && python3 "$RP_DIR/bin/manage-claude-hooks.py" remove "$a" "$b" "$b" >/dev/null 2>&1 \
                    && echo "  hook- $b" || true ;;
       NOTE)      : ;;
     esac
