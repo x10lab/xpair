@@ -194,6 +194,48 @@ remote-pair config set terminal iterm2     # or: terminal
 
 ---
 
+## Web UI (experimental)
+
+`remote-pair web` starts a token-gated localhost web bridge that serves two things in one:
+
+1. **Onboarding wizard** — walks through role selection, permission grants, SSH check, folder mapping, Syncthing health, and doctor in a live browser UI.
+2. **Shell** — after onboarding, the same page becomes a persistent shell with tabs for Terminal, Remote Desktop, Editor, and Notifications.
+
+```bash
+remote-pair web          # opens 127.0.0.1:<port>?token=<run-token> in your browser
+```
+
+The bridge is a thin `python3` adapter (~150 lines, no external dependencies) that shells out to the existing `remote-pair` CLI and reads `status.json`. The `.app` gains no new server — it keeps writing `status.json` every second as usual, and the browser polls `/api/status` every 1.5 s so permission changes reflect within ~2 s without restarting the app.
+
+### Notification forwarding (host → client)
+
+Install the notify hook on the **host** to forward Claude Code Stop/Notification events to the client:
+
+```bash
+# on the host — the bootstrap already does this; manual re-install if needed:
+~/.local/share/remote-pair/host/hooks/manage-claude-hooks.py install
+```
+
+The hook (`host/hooks/remote-pair-notify.sh`) appends events to `~/.remote-pair/notifications/queue.jsonl`. The client bridge polls this file over SSH and surfaces alerts in the Notifications tab. Edit `~/.remote-pair/notify.conf` (see `host/hooks/notify.conf.example`) to choose which event types to forward (`ENABLED_TYPES`).
+
+### Editor tab (requires code-server)
+
+The Editor tab launches `code-server` bound to `127.0.0.1` via `remote-pair-editor start`. If `code-server` is not installed, the tab shows an install prompt instead.
+
+```bash
+remote-pair-editor start [<folder>]   # start code-server on EDITOR_PORT (default 8080)
+remote-pair-editor status             # check whether it is running
+remote-pair-editor stop               # stop it
+```
+
+> **Scaffold note:** The editor tab and code-server launcher are wired up but the in-browser editor layout and Claude Code extension integration are still in progress (spike). Expect rough edges.
+
+### Identity note
+
+The current shipping identity is **`RemotePairHost`** / `com.x10lab.remote-pair-host`. A rename to `RemotePair` / `com.x10lab.remote-pair` (with a one-time TCC re-grant) is planned for **v0.5.0** — not live yet. Do not grant permissions to a `RemotePair.app` unless you have explicitly installed v0.5.0 or later.
+
+---
+
 ## Notes & caveats
 
 > ⚠️ **Security & responsibility — read this.** RemotePair intentionally lowers macOS's safety guardrails on the host: it holds Accessibility + Screen Recording (and, if you enable it, **Full Disk Access**) and keeps an autonomous `claude` agent running *inside* that privileged process subtree, reachable remotely 24/7. In effect, an agent on the host can see the screen, synthesize clicks/keystrokes, and — with Full Disk Access — silently read and write your entire disk (Mail, Messages, browser data, SSH keys, everything). (What actually exercises these grants is the `claude` session running inside RemotePair, not RemotePair's own logic — RemotePair itself never touches the disk except at install.) That is the whole point of the tool, and it is a deliberate trade-off you are opting into. **You are solely responsible for what runs on the host.** Any data loss, leakage, or damage caused by misconfiguration, a careless instruction, a prompt-injection, or an unattended session is entirely the operator's responsibility. Run this only on a personal machine you own, grant the minimum permissions you actually need (prefer a non-protected project root over Full Disk Access), and don't point it at anything you can't afford to lose. The software is provided **as-is, without warranty** (see [LICENSE](LICENSE)).

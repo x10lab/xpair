@@ -196,6 +196,48 @@ remote-pair config set terminal iterm2     # 또는: terminal
 
 ---
 
+## Web UI (실험적)
+
+`remote-pair web`을 실행하면 토큰으로 보호된 localhost 웹 브리지가 기동되며, 두 가지 역할을 함께 수행합니다:
+
+1. **온보딩 마법사** — 역할 선택·권한 부여·SSH 점검·폴더 매핑·Syncthing 헬스·doctor 를 브라우저에서 라이브로 안내합니다.
+2. **셸** — 온보딩 완료 후 같은 페이지가 터미널·Remote Desktop·에디터·알림 탭을 가진 상주 셸로 전환됩니다.
+
+```bash
+remote-pair web          # 브라우저에서 127.0.0.1:<port>?token=<run-token> 를 엽니다
+```
+
+브리지는 외부 의존이 없는 얇은 `python3` 어댑터(~150줄)로, 기존 `remote-pair` CLI에 shell-out하고 `status.json`을 읽을 뿐입니다. `.app`에 새 서버는 없습니다 — 앱은 기존처럼 1초마다 `status.json`을 갱신하고, 브라우저가 `/api/status`를 1.5초마다 폴링해 권한 변경이 앱 재시작 없이 ~2초 내에 반영됩니다.
+
+### 알림 포워딩 (host → client)
+
+**호스트**에 알림 훅을 설치하면 Claude Code의 Stop/Notification 이벤트가 클라이언트로 전달됩니다:
+
+```bash
+# 호스트에서 — bootstrap이 이미 설치; 필요 시 수동 재설치:
+~/.local/share/remote-pair/host/hooks/manage-claude-hooks.py install
+```
+
+훅(`host/hooks/remote-pair-notify.sh`)이 이벤트를 `~/.remote-pair/notifications/queue.jsonl`에 기록합니다. 클라이언트 브리지가 SSH를 통해 이 파일을 폴링하고 알림 탭에 표시합니다. `~/.remote-pair/notify.conf`(`host/hooks/notify.conf.example` 참고)의 `ENABLED_TYPES`로 포워딩할 이벤트 종류를 선택할 수 있습니다.
+
+### 에디터 탭 (code-server 필요)
+
+에디터 탭은 `remote-pair-editor start`를 통해 `code-server`를 `127.0.0.1`에 바인딩해 기동합니다. `code-server`가 설치되어 있지 않으면 탭에 설치 안내 메시지가 표시됩니다.
+
+```bash
+remote-pair-editor start [<folder>]   # EDITOR_PORT(기본 8080)에서 code-server 시작
+remote-pair-editor status             # 실행 중인지 확인
+remote-pair-editor stop               # 중지
+```
+
+> **스캐폴드 주의:** 에디터 탭과 code-server 런처는 연결돼 있지만, 인-브라우저 에디터 레이아웃·Claude Code 익스텐션 통합은 아직 진행 중(스파이크)입니다. 거친 부분이 있을 수 있습니다.
+
+### 정체성 안내
+
+현재 출하 정체성은 **`RemotePairHost`** / `com.x10lab.remote-pair-host`입니다. `RemotePair` / `com.x10lab.remote-pair`로의 리네임(1회 TCC 재grant 필요)은 **v0.5.0**에 예정되어 있으며, 아직 적용되지 않았습니다. v0.5.0 이상을 명시적으로 설치하지 않았다면 `RemotePair.app`에 권한을 부여하지 마세요.
+
+---
+
 ## 참고 및 주의
 
 > ⚠️ **보안과 책임 — 반드시 읽으세요.** RemotePair는 의도적으로 호스트에서 macOS의 안전장치를 낮춥니다: 손쉬운 사용 + 화면 기록(그리고 켰다면 **전체 디스크 접근**)을 쥐고, 자율 `claude` 에이전트를 그 권한 있는 프로세스 하위 트리 *안에서* 24/7 원격 접근 가능한 상태로 돌립니다. 사실상 호스트의 에이전트가 화면을 보고, 클릭·키 입력을 합성하고, 전체 디스크 접근이 있으면 디스크 전체(메일, 메시지, 브라우저 데이터, SSH 키 전부)를 조용히 읽고 쓸 수 있습니다. (이 권한들을 실제로 행사하는 주체는 RemotePair 로직이 아니라 그 안에서 도는 `claude` 세션입니다 — RemotePair 자체는 설치를 제외하면 디스크를 건드리지 않습니다.) 그게 이 도구의 본질이며, 당신이 의도적으로 받아들이는 trade-off입니다. **호스트에서 무엇이 돌아가는지는 전적으로 당신 책임입니다.** 잘못된 설정, 부주의한 지시, 프롬프트 인젝션, 방치된 세션으로 인한 데이터 손실·유출·손상은 전적으로 운영자 책임입니다. 본인 소유의 개인 기기에서만 돌리고, 실제로 필요한 최소 권한만 부여하고(전체 디스크 접근보다 보호되지 않은 프로젝트 루트를 선호), 잃어선 안 되는 것에 연결하지 마세요. 소프트웨어는 **있는 그대로, 어떤 보증도 없이** 제공됩니다([LICENSE](LICENSE) 참고).
