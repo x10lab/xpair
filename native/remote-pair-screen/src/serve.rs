@@ -1,0 +1,245 @@
+//! `serve` — the v1a continuous-capture WebSocket JPEG frame server.
+//!
+//! This is the first real streaming path for RemotePair Remote Desktop. It
+//! replaces the v0 ssh-screenshot polling with a persistent capture loop that
+//! pushes JPEG frames over a WebSocket.
+//!
+//! ## Architecture (synchronous, no async runtime)
+//!
+//! ```text
+//!   main thread:  capture loop  ──(Arc<Vec<u8>> frame)──▶  per-client mpsc
+//!                 (paced @ fps)                            channels (broadcast)
+//!
+//!   accept thread:  TcpListener.accept() ──▶ tungstenite::accept (WS handshake)
+//!                                          ──▶ spawn per-client send thread
+//!
+//!   per-client thread:  recv(frame) ──▶ websocket.send(Binary(jpeg))
+//! ```
+//!
+//! - **Loopback only.** Binds `127.0.0.1:<port>`. No TLS — the client reaches
+//!   the server over an `ssh -L` tunnel, which provides transport encryption.
+//! - **Skip when idle.** If no client is connected the capture loop does not
+//!   capture or encode at all (saves CPU + avoids needless Screen Recording use).
+//! - **Clean connect/disconnect.** Each client owns a thread and an mpsc
+//!   receiver. When a client disconnects (send error, or the bounded channel
+//!   backs up because the client is too slow), its sender is dropped and the
+//!   capture loop prunes it from the broadcast set on the next frame.
+//!
+//! ## NOT in v1a
+//!
+//! No VideoToolbox HW encode, no inter-frame diffing, no webrtc. Those are v1b.
+//! This is the software JPEG path: correct, license-clean, and good enough for
+//! a ~10fps remote desktop over a loopback ssh tunnel.
+
+use std::io::Cursor;
+use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use image::codecs::jpeg::JpegEncoder;
+use tungstenite::protocol::Message;
+
+/// A connected client: the sending half of its frame channel, plus a short
+/// label for logging. The capture loop broadcasts to every live `tx`.
+struct Client {
+    id: u64,
+    tx: SyncSender<Arc<Vec<u8>>>,
+}
+
+/// Shared registry of connected clients. Guarded by a `Mutex`; contention is
+/// trivial (touched once per accepted connection and once per captured frame).
+type Clients = Arc<Mutex<Vec<Client>>>;
+
+/// Entry point for the `serve` subcommand.
+///
+/// Returns `Err` only for fatal startup problems (e.g. the port is taken or no
+/// display is available). Once the accept loop is running this blocks forever in
+/// the capture loop, so a normal return does not happen in practice.
+pub fn run(port: u16, fps: u32, quality: u8) -> Result<(), String> {
+    let fps = fps.clamp(1, 120);
+    let quality = quality.clamp(1, 100);
+    let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);
+
+    // Fail fast if we cannot even see a display — better a clear startup error
+    // than a server that accepts clients and only ever sends nothing.
+    let monitor = crate::primary_monitor()?;
+
+    let addr = format!("127.0.0.1:{port}");
+    let listener = TcpListener::bind(&addr)
+        .map_err(|e| format!("could not bind {addr} (loopback): {e}"))?;
+
+    eprintln!(
+        "remote-pair-screen serve: listening on ws://{addr} \
+         (fps={fps}, jpeg quality={quality}, loopback only)"
+    );
+    eprintln!(
+        "  reach it from a client over:  ssh -L {port}:127.0.0.1:{port} <host>"
+    );
+    eprintln!("  the IDE webview then connects ws://127.0.0.1:{port}");
+
+    let clients: Clients = Arc::new(Mutex::new(Vec::new()));
+
+    // Accept loop on its own thread so the main thread can run the capture loop.
+    {
+        let clients = Arc::clone(&clients);
+        thread::Builder::new()
+            .name("ws-accept".into())
+            .spawn(move || accept_loop(listener, clients))
+            .map_err(|e| format!("could not spawn accept thread: {e}"))?;
+    }
+
+    capture_loop(monitor, clients, frame_interval, quality);
+    Ok(())
+}
+
+/// Accept WebSocket connections forever, registering each as a client.
+fn accept_loop(listener: TcpListener, clients: Clients) {
+    let mut next_id: u64 = 1;
+    for stream in listener.incoming() {
+        let stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("serve: accept error: {e}");
+                continue;
+            }
+        };
+        let id = next_id;
+        next_id += 1;
+        let clients = Arc::clone(&clients);
+        let _ = thread::Builder::new()
+            .name(format!("ws-client-{id}"))
+            .spawn(move || client_thread(id, stream, clients));
+    }
+}
+
+/// Perform the WS handshake for one client, then pump frames to it until it
+/// disconnects. Owns the receiving half of the broadcast channel.
+fn client_thread(id: u64, stream: TcpStream, clients: Clients) {
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "<unknown>".into());
+
+    // Disable Nagle: we send whole JPEG frames and want them out immediately.
+    let _ = stream.set_nodelay(true);
+
+    let mut websocket = match tungstenite::accept(stream) {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("serve: client {id} ({peer}) handshake failed: {e}");
+            return;
+        }
+    };
+
+    // Bounded channel: at most a few frames may queue for a slow client before
+    // we drop frames (and ultimately the client). This bounds memory and keeps
+    // a slow client from making the capture loop block.
+    let (tx, rx) = sync_channel::<Arc<Vec<u8>>>(2);
+
+    clients.lock().unwrap().push(Client { id, tx });
+    eprintln!("serve: client {id} ({peer}) connected");
+
+    // Forward frames until the channel closes (capture loop dropped our tx,
+    // meaning it pruned us) or a send fails (client went away).
+    loop {
+        let frame = match rx.recv() {
+            Ok(f) => f,
+            Err(_) => break, // tx dropped by capture loop -> we were pruned
+        };
+        if websocket
+            .send(Message::Binary(frame.as_ref().clone()))
+            .is_err()
+        {
+            break;
+        }
+        // Best-effort: drain any control frames (e.g. client Close/Ping) without
+        // blocking the send cadence. tungstenite handles Ping->Pong on send/read.
+    }
+
+    remove_client(&clients, id);
+    let _ = websocket.close(None);
+    eprintln!("serve: client {id} ({peer}) disconnected");
+}
+
+/// Remove a client from the registry by id (idempotent).
+fn remove_client(clients: &Clients, id: u64) {
+    let mut guard = clients.lock().unwrap();
+    guard.retain(|c| c.id != id);
+}
+
+/// The capture loop: at the target cadence, capture + JPEG-encode one frame and
+/// broadcast it to every connected client. Skips all work when nobody is
+/// connected. Runs on the main thread (blocks forever).
+fn capture_loop(
+    monitor: xcap::Monitor,
+    clients: Clients,
+    frame_interval: Duration,
+    quality: u8,
+) {
+    let mut warned_capture = false;
+    loop {
+        let cycle_start = Instant::now();
+
+        // Snapshot the live senders. If nobody is connected, skip capture
+        // entirely — no point exercising Screen Recording for zero viewers.
+        let have_clients = !clients.lock().unwrap().is_empty();
+        if !have_clients {
+            thread::sleep(frame_interval);
+            continue;
+        }
+
+        match capture_jpeg(&monitor, quality) {
+            Ok(jpeg) => {
+                warned_capture = false;
+                broadcast(&clients, Arc::new(jpeg));
+            }
+            Err(e) => {
+                if !warned_capture {
+                    eprintln!(
+                        "serve: capture/encode failed (check Screen Recording \
+                         permission for THIS binary): {e}"
+                    );
+                    warned_capture = true;
+                }
+            }
+        }
+
+        // Pace to the target fps, accounting for the time capture+encode took.
+        let elapsed = cycle_start.elapsed();
+        if let Some(remaining) = frame_interval.checked_sub(elapsed) {
+            thread::sleep(remaining);
+        }
+    }
+}
+
+/// Send one encoded frame to every connected client. Drops the frame for any
+/// client whose bounded channel is full (slow client) and prunes any client
+/// whose channel is closed (its thread exited).
+fn broadcast(clients: &Clients, frame: Arc<Vec<u8>>) {
+    let mut guard = clients.lock().unwrap();
+    guard.retain(|c| match c.tx.try_send(Arc::clone(&frame)) {
+        Ok(()) => true,
+        // Slow client: keep it, just skip this frame for it.
+        Err(TrySendError::Full(_)) => true,
+        // Receiver gone: prune it.
+        Err(TrySendError::Disconnected(_)) => false,
+    });
+}
+
+/// Capture the primary display and JPEG-encode it at the given quality.
+fn capture_jpeg(monitor: &xcap::Monitor, quality: u8) -> Result<Vec<u8>, String> {
+    let frame = monitor
+        .capture_image()
+        .map_err(|e| format!("capture_image: {e}"))?;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    {
+        let mut encoder = JpegEncoder::new_with_quality(Cursor::new(&mut buf), quality);
+        encoder
+            .encode_image(&frame)
+            .map_err(|e| format!("jpeg encode: {e}"))?;
+    }
+    Ok(buf)
+}

@@ -3,7 +3,7 @@ name = "remote-pair-screen"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "License-clean screen-capture sidecar for RemotePair Remote Desktop (v1 high-performance path). Capture foundation scaffolded; webrtc transport TODO."
+description = "License-clean screen-capture sidecar for RemotePair Remote Desktop (v1 high-performance path). v1a: continuous-capture WebSocket JPEG frame server; v1b (webrtc + VideoToolbox HW encode) TODO."
 repository = "https://github.com/x10lab/remote-pair"
 publish = false
 
@@ -29,14 +29,22 @@ publish = false
 xcap = "0.9.6"
 # CLI subcommands. MIT/Apache-2.0.
 clap = { version = "4", features = ["derive"] }
-# PNG encode of a captured frame. MIT/Apache-2.0. Pinned to the same minor
-# series xcap re-exports (0.25) to avoid type skew across the boundary.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Frame encode. MIT/Apache-2.0. Pinned to the same minor series xcap
+# re-exports (0.25) to avoid type skew across the boundary.
+#   * png  — single-shot `capture` subcommand.
+#   * jpeg — continuous `serve` subcommand (smaller frames + a quality knob).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# WebSocket transport for the v1a `serve` path. `tungstenite` is the pure-Rust,
+# SYNCHRONOUS WebSocket implementation (MIT). We drive it over std
+# `TcpListener` + threads so we do NOT pull in an async runtime (tokio) for this
+# first cut. No TLS feature (loopback-only bind; ssh -L provides the encryption).
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 
 [features]
-# Placeholder for the v1 transport. webrtc-rs (MIT/Apache-2.0) is the planned
-# transport and will be added behind this feature in a later milestone.
-# It is intentionally NOT wired up in this scaffold.
+# Placeholder for the v1b transport. webrtc-rs (MIT/Apache-2.0) + VideoToolbox
+# HW encode is the planned upgrade and will be added behind this feature in a
+# later milestone. It is intentionally NOT wired up yet — v1a (this) is the
+# WS+JPEG software path.
 webrtc = []
 
 [profile.release]

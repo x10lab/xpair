@@ -30,6 +30,14 @@ allow = [
     "Zlib",
     "MPL-2.0",          # weak-copyleft, file-level; permitted (not viral like GPL)
     "CC0-1.0",          # public-domain dedication, common for small crates
+    # Public-domain-equivalent licenses. They appear in the tree only as an
+    # OR-alternative alongside MIT (e.g. byteorder/memchr/aho-corasick =
+    # "Unlicense OR MIT"; adler2 = "0BSD OR MIT OR Apache-2.0"), pulled in by
+    # the v1a WebSocket stack (`tungstenite`) and `image`. cargo-deny would
+    # already pick the MIT branch, but listing them explicitly removes any
+    # ambiguity and keeps the allow-list a faithful inventory of the tree.
+    "0BSD",             # public-domain-equivalent (adler2)
+    "Unlicense",        # public-domain-equivalent (byteorder, memchr, aho-corasick)
 ]
 # Copyleft licenses are NOT in `allow`, so they are denied by default.
 # We do not need a separate `deny` list for them, but `confidence-threshold`

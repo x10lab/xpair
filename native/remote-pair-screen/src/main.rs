@@ -1,21 +1,31 @@
 //! remote-pair-screen — license-clean screen-capture sidecar for RemotePair
 //! Remote Desktop (the v1 high-performance path).
 //!
-//! STATUS: HONEST SCAFFOLD. The `capture`/`info` paths are real and prove the
+//! STATUS: v1a (WS+JPEG software path). The `capture`/`info` paths prove the
 //! screen-capture foundation works license-clean (no RustDesk/AGPL anywhere in
-//! the dependency tree — see `deny.toml`). The `serve` path is a deliberate stub:
-//! the WebRTC transport (webrtc-rs, MIT/Apache-2.0) is the remaining multi-week
-//! work and is intentionally NOT implemented here. See README.md.
+//! the dependency tree — see `deny.toml`). The `serve` path is now a REAL
+//! continuous-capture WebSocket JPEG frame server: it captures the primary
+//! display at a target fps, JPEG-encodes each frame, and pushes the bytes as
+//! binary WebSocket messages to connected loopback clients. This replaces the
+//! v0 ssh-screenshot polling. The webrtc/VideoToolbox HW-encode path (v1b) is
+//! still future work — see README.md.
 //!
 //! Capture backend: `xcap` (Apache-2.0). `scap` (MIT) was tried first per the
 //! original plan but its ScreenCaptureKit backend invokes `xcodebuild` in its
 //! build script, which fails on this toolchain.
+//!
+//! Transport: `tungstenite` (MIT), the pure-Rust synchronous WebSocket
+//! implementation, driven over std `TcpListener` + threads. No async runtime,
+//! no TLS — the server binds loopback only and relies on the operator's
+//! `ssh -L` tunnel for transport security.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use xcap::Monitor;
+
+mod serve;
 
 /// License-clean screen-capture sidecar for RemotePair Remote Desktop (v1).
 #[derive(Parser, Debug)]
@@ -30,7 +40,7 @@ enum Command {
     /// Capture ONE frame of the primary display, encode to PNG, write to <out>.
     ///
     /// Proves the capture path works license-clean end to end. This is a
-    /// single-shot capture, not the streaming path (that is `serve`, TODO).
+    /// single-shot capture, not the streaming path (that is `serve`).
     Capture {
         /// Output PNG path.
         #[arg(long, value_name = "PATH")]
@@ -38,12 +48,26 @@ enum Command {
     },
     /// Print the dimensions and metadata of every connected display.
     Info,
-    /// (STUB) Start the v1 WebRTC screen-share transport. Not implemented yet.
+    /// Start the v1a WebSocket JPEG frame server (continuous capture).
     ///
-    /// Prints a TODO pointer and exits 0. The streaming/encode/transport path
-    /// (capture -> VideoToolbox HW encode -> webrtc-rs) is the remaining
-    /// multi-week milestone; see README.md.
-    Serve,
+    /// Binds 127.0.0.1:<port> (loopback only). At the target fps it captures
+    /// the primary display, JPEG-encodes the frame, and sends the bytes as a
+    /// binary WebSocket message to every connected client. Intended to be
+    /// reached over an `ssh -L` tunnel; the IDE webview connects
+    /// `ws://127.0.0.1:<localport>` and renders frames into a <canvas>/<img>.
+    ///
+    /// NOTE: the sidecar binary needs its OWN Screen Recording (TCC) grant.
+    Serve {
+        /// TCP port to bind on 127.0.0.1.
+        #[arg(long, default_value_t = 8889)]
+        port: u16,
+        /// Target frames per second for the capture loop.
+        #[arg(long, default_value_t = 10)]
+        fps: u32,
+        /// JPEG quality (1-100). Higher = better image, larger frames.
+        #[arg(long, default_value_t = 60)]
+        quality: u8,
+    },
 }
 
 fn main() -> ExitCode {
@@ -51,7 +75,11 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Capture { out } => cmd_capture(&out),
         Command::Info => cmd_info(),
-        Command::Serve => cmd_serve(),
+        Command::Serve {
+            port,
+            fps,
+            quality,
+        } => serve::run(port, fps, quality),
     };
 
     match result {
@@ -64,7 +92,7 @@ fn main() -> ExitCode {
 }
 
 /// Pick the primary display, falling back to the first available one.
-fn primary_monitor() -> Result<Monitor, String> {
+pub(crate) fn primary_monitor() -> Result<Monitor, String> {
     let monitors = Monitor::all().map_err(|e| format!("could not enumerate displays: {e}"))?;
     if monitors.is_empty() {
         return Err("no displays found (is Screen Recording permission granted?)".to_string());
@@ -95,12 +123,7 @@ fn cmd_capture(out: &PathBuf) -> Result<(), String> {
         .save(out)
         .map_err(|e| format!("failed to write PNG to {}: {e}", out.display()))?;
 
-    println!(
-        "captured {}x{} frame -> {}",
-        width,
-        height,
-        out.display()
-    );
+    println!("captured {}x{} frame -> {}", width, height, out.display());
     Ok(())
 }
 
@@ -123,11 +146,5 @@ fn cmd_info() -> Result<(), String> {
             if primary { " (primary)" } else { "" }
         );
     }
-    Ok(())
-}
-
-/// `serve`: deliberate stub for the v1 WebRTC transport.
-fn cmd_serve() -> Result<(), String> {
-    println!("v1 webrtc transport: TODO (see README)");
     Ok(())
 }
