@@ -470,6 +470,19 @@ class TestApiPermissionsOpen(unittest.TestCase):
         "fda": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
     }
 
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._tmp = pathlib.Path(self._tmpdir.name)
+        # role file intentionally absent → read_role() returns "" → host default
+        self._role = self._tmp / "role"
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _patch_role(self):
+        """Patch ROLE_FILE to a controlled temp path (absent = host default)."""
+        return unittest.mock.patch.object(rpw, "ROLE_FILE", self._role)
+
     def _run_ok(self, cmd, timeout=15):
         return "", "", 0
 
@@ -481,7 +494,7 @@ class TestApiPermissionsOpen(unittest.TestCase):
         def _fake_run(cmd, timeout=15):
             captured["cmd"] = cmd
             return "", "", 0
-        with unittest.mock.patch.object(rpw, "run", _fake_run):
+        with self._patch_role(), unittest.mock.patch.object(rpw, "run", _fake_run):
             result = rpw.api_permissions_open({"pane": "ax"})
         self.assertEqual(result, {"ok": True, "pane": "ax"})
         self.assertIn(self.PANE_URLS["ax"], captured["cmd"])
@@ -491,7 +504,7 @@ class TestApiPermissionsOpen(unittest.TestCase):
         def _fake_run(cmd, timeout=15):
             captured["cmd"] = cmd
             return "", "", 0
-        with unittest.mock.patch.object(rpw, "run", _fake_run):
+        with self._patch_role(), unittest.mock.patch.object(rpw, "run", _fake_run):
             result = rpw.api_permissions_open({"pane": "sr"})
         self.assertEqual(result, {"ok": True, "pane": "sr"})
         self.assertIn(self.PANE_URLS["sr"], captured["cmd"])
@@ -501,13 +514,13 @@ class TestApiPermissionsOpen(unittest.TestCase):
         def _fake_run(cmd, timeout=15):
             captured["cmd"] = cmd
             return "", "", 0
-        with unittest.mock.patch.object(rpw, "run", _fake_run):
+        with self._patch_role(), unittest.mock.patch.object(rpw, "run", _fake_run):
             result = rpw.api_permissions_open({"pane": "fda"})
         self.assertEqual(result, {"ok": True, "pane": "fda"})
         self.assertIn(self.PANE_URLS["fda"], captured["cmd"])
 
     def test_unknown_pane_returns_400(self):
-        with unittest.mock.patch.object(rpw, "run", self._run_ok):
+        with self._patch_role(), unittest.mock.patch.object(rpw, "run", self._run_ok):
             result = rpw.api_permissions_open({"pane": "unknown"})
         # Should return a (dict, 400) tuple
         self.assertIsInstance(result, tuple)
@@ -516,7 +529,7 @@ class TestApiPermissionsOpen(unittest.TestCase):
         self.assertFalse(data["ok"])
 
     def test_empty_pane_returns_400(self):
-        with unittest.mock.patch.object(rpw, "run", self._run_ok):
+        with self._patch_role(), unittest.mock.patch.object(rpw, "run", self._run_ok):
             result = rpw.api_permissions_open({})
         self.assertIsInstance(result, tuple)
         data, status = result
@@ -524,7 +537,7 @@ class TestApiPermissionsOpen(unittest.TestCase):
         self.assertFalse(data["ok"])
 
     def test_open_failure_returns_500(self):
-        with unittest.mock.patch.object(rpw, "run", self._run_fail):
+        with self._patch_role(), unittest.mock.patch.object(rpw, "run", self._run_fail):
             result = rpw.api_permissions_open({"pane": "ax"})
         self.assertIsInstance(result, tuple)
         data, status = result

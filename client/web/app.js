@@ -659,7 +659,7 @@ async function _pollHandshake() {
   try {
     lastHandshake = await apiGet("/api/handshake");
   } catch (e) {
-    lastHandshake = { ok: false, ssh: false, appFresh: false, tmuxAqua: false };
+    lastHandshake = { ok: false, ssh: false, statusFresh: false, tmuxUp: false };
   }
   _renderHandshakeBadges();
   updateNextButton();
@@ -670,9 +670,9 @@ function _renderHandshakeBadges() {
   if (!el) return;
   const h = lastHandshake || {};
   el.innerHTML = `
-    ${badge("SSH",       h.ssh      ?? null)}
-    ${badge("호스트 앱", h.appFresh ?? null)}
-    ${badge("tmux-aqua", h.tmuxAqua ?? null)}
+    ${badge("SSH",       h.ssh         ?? null)}
+    ${badge("호스트 앱", h.statusFresh ?? null)}
+    ${badge("tmux-aqua", h.tmuxUp     ?? null)}
   `;
   const hint = document.getElementById("handshake-hint");
   if (hint) {
@@ -729,8 +729,8 @@ async function loadSSH() {
     try {
       const r = await apiGet("/api/ssh/pubkey");
       if (out) {
-        if (r.ok && r.pubkey) {
-          out.textContent = `경로: ${r.path || "~/.ssh/id_ed25519.pub"}\n\n${r.pubkey}`;
+        if (r.exists && r.pubkey) {
+          out.textContent = `경로: ${r.keyPath || "~/.ssh/id_ed25519.pub"}\n\n${r.pubkey}`;
           out.style.color = "#34c759";
         } else {
           out.textContent = "공개키가 없습니다. Generate Key 버튼으로 생성하세요.";
@@ -767,7 +767,7 @@ async function loadSSH() {
     const disp = document.getElementById("pubkey-display");
     if (disp) {
       apiGet("/api/ssh/pubkey").then(r => {
-        if (r.ok && r.pubkey) disp.textContent = r.pubkey;
+        if (r.exists && r.pubkey) disp.textContent = r.pubkey;
         else disp.textContent = "(공개키 없음 — ① 키 생성 탭에서 Generate Key 를 먼저 실행하세요)";
       }).catch(e => { disp.textContent = `로드 실패: ${e.message}`; });
     }

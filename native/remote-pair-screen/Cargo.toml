@@ -1,0 +1,44 @@
+[package]
+name = "remote-pair-screen"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "License-clean screen-capture sidecar for RemotePair Remote Desktop (v1 high-performance path). Capture foundation scaffolded; webrtc transport TODO."
+repository = "https://github.com/x10lab/remote-pair"
+publish = false
+
+# ---------------------------------------------------------------------------
+# DEPENDENCY LICENSE POLICY: PERMISSIVE ONLY (MIT / Apache-2.0 / BSD / ISC).
+# RemotePair is Apache-2.0. RustDesk is AGPL-3.0 and MUST NOT be a dependency.
+# The AGPL firewall is enforced by deny.toml (cargo-deny check licenses).
+# ---------------------------------------------------------------------------
+[dependencies]
+# macOS screen capture.
+#
+# Capture-crate selection (all permissive — see deny.toml):
+#   * scap (MIT)             — tried first per the original plan, but its
+#                              ScreenCaptureKit backend (cidre) runs `xcodebuild`
+#                              in build.rs, which fails on broken Xcode toolchains.
+#                              It did NOT build cleanly on this machine.
+#   * screencapturekit (MIT) — viable alternative, stream-oriented API.
+#   * xcap (Apache-2.0)      — CHOSEN. Simple synchronous one-shot API
+#                              (`Monitor::all()` -> `monitor.capture_image()`),
+#                              no xcodebuild dependency, built cleanly on
+#                              macOS arm64, and is Apache-2.0 (same as RemotePair).
+# xcap re-exports the `image` crate, so encode/decode versions stay in lockstep.
+xcap = "0.9.6"
+# CLI subcommands. MIT/Apache-2.0.
+clap = { version = "4", features = ["derive"] }
+# PNG encode of a captured frame. MIT/Apache-2.0. Pinned to the same minor
+# series xcap re-exports (0.25) to avoid type skew across the boundary.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[features]
+# Placeholder for the v1 transport. webrtc-rs (MIT/Apache-2.0) is the planned
+# transport and will be added behind this feature in a later milestone.
+# It is intentionally NOT wired up in this scaffold.
+webrtc = []
+
+[profile.release]
+opt-level = 3
+lto = "thin"
