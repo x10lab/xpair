@@ -54,6 +54,9 @@ write_config() {
   _write_env "$COMMON_ENV" "${COMMON_KEYS[@]}"
   if is_host;   then _write_env "$HOST_ENV"   "${HOST_KEYS[@]}"; fi
   if is_client; then _write_env "$CLIENT_ENV" "${CLIENT_KEYS[@]}"; fi
+  # role 마커 — 앱 Installer 가 클라 머신에서 호스트 자기설치를 거부할 때 SSOT 로 읽음.
+  [ -e "$RP_DIR/role" ] || record FILE "$RP_DIR/role"
+  printf '%s\n' "$ROLE" > "$RP_DIR/role"
 }
 
 # ── 0. Input ──

@@ -9,6 +9,8 @@ import Darwin
 let HOME = NSHomeDirectory()
 let RP_DIR = "\(HOME)/.remote-pair"
 let LOG_DIR = "\(RP_DIR)/logs"
+let ROLE_FILE = "\(RP_DIR)/role"            // host|client|both — install.sh 가 기록. 클라에서 호스트 자기설치 차단용.
+let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // 존재 = 이 머신에 client 설치됨
 
 let HELPERS = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path
 func helper(_ name: String, _ fallback: String) -> String {

@@ -30,7 +30,30 @@ enum Installer {
     /// 설치됐지만 버전이 올라갔으면 리소스(skills/rules/tmux-aqua)만 갱신한다 — 앱만 새 버전으로
     /// 바뀌고 ~/.remote-pair·~/.claude 리소스가 옛날로 남는 문제(앱 교체/인앱 업데이트 공통)를 막는다.
     /// grant·LaunchAgent·host.env(사용자 설정)는 건드리지 않는다.
+    /// 호스트 자기설치를 하면 안 되는 머신/실행인가. (gh-mac-m4 사고: 클라 노트북이 build/ 앱을 한 번
+    /// 열어 호스트로 자기설치된 사례 차단.) ① 비설치 위치(repo build/)에서 실행 ② role=client 마커
+    /// ③ client.env 만 있고 host.env 없음(호스트 아닌 클라 설치) → 어느 하나라도 참이면 skip.
+    static func shouldSkipSelfInstall() -> Bool {
+        let p = Bundle.main.bundlePath
+        if !(p.hasPrefix("/Applications/") || p.hasPrefix("\(HOME)/Applications/")) {
+            log("INSTALL: 비설치 위치 실행(\(p)) — 호스트 자기설치 거부(빌드/개발 실행 가드)")
+            return true
+        }
+        let role = (try? String(contentsOfFile: ROLE_FILE, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if role == "client" {
+            log("INSTALL: role=client 마커 — 호스트 자기설치 skip")
+            return true
+        }
+        if role.isEmpty && fm.fileExists(atPath: CLIENT_ENV_FILE) && !fm.fileExists(atPath: HOST_ENV) {
+            log("INSTALL: client.env 존재 + host.env 없음 — 클라로 간주, 호스트 자기설치 skip")
+            return true
+        }
+        return false
+    }
+
     static func ensureInstalled() {
+        if shouldSkipSelfInstall() { return }
         let installed = fm.fileExists(atPath: appPlist) && fm.fileExists(atPath: HOST_ENV)
         let stamped = (try? String(contentsOfFile: versionFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -47,10 +70,18 @@ enum Installer {
     /// host 설치 단계 — shared/install.sh 의 is_host 섹션을 미러링.
     /// refreshResources=true 면 force 가 아니어도 rules.txt 를 새 번들로 갱신(버전 업 시 리소스 따라오게).
     static func install(force: Bool, refreshResources: Bool = false) {
+        // repairInstall 등 직접 호출 경로도 비설치 위치(build/)에서는 거부 — LaunchAgent 가 dev 트리를 가리키지 않게.
+        let bp = Bundle.main.bundlePath
+        if !(bp.hasPrefix("/Applications/") || bp.hasPrefix("\(HOME)/Applications/")) {
+            log("INSTALL: install() 거부 — 비설치 위치 실행(\(bp))")
+            return
+        }
         log("INSTALL: begin (force=\(force) refreshResources=\(refreshResources))")
         ensureDir(RP_DIR)
         ensureDir(LOG_DIR)
         ensureDir("\(RP_DIR)/bin")
+        // role 마커: install.sh 가 안 깔았으면(순수 cask 설치) host 로 기록. 이미 있으면 존중(both/host).
+        if !fm.fileExists(atPath: ROLE_FILE) { try? "host\n".write(toFile: ROLE_FILE, atomically: true, encoding: .utf8) }
 
         // 1. env 파일 (host.env: HOST_KEYS 기본값, common.env: COMMON_KEYS)
         writeEnv(COMMON_ENV, [

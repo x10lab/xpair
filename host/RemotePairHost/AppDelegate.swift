@@ -19,6 +19,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
+        // 단일 인스턴스 가드: 두 인스턴스(LaunchAgent + 수동 open)가 같은 tmux-aqua 소켓의 _keeper 를
+        // 서로 reap 하는 churn(gh-mac-m4 사고) 차단. **더 오래된(낮은 pid) 인스턴스가 있을 때만** 내가 양보·종료한다.
+        // → 둘 다 종료되는 상황 방지 + launchctl kickstart -k 의 죽어가는 이전 인스턴스 레이스에도 최대 1사이클로 수렴.
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        let older = NSRunningApplication.runningApplications(withBundleIdentifier: BUNDLE_ID)
+            .filter { $0.processIdentifier != myPid && $0.processIdentifier < myPid && !$0.isTerminated }
+        if !older.isEmpty {
+            log("launch: 더 오래된 RemotePairHost 인스턴스(pid \(older.map { $0.processIdentifier })) 실행 중 — 중복 종료")
+            NSApp.terminate(nil); return
+        }
         Installer.ensureInstalled()     // 다운로드된 .app 첫 실행 자기설치 (이미 설치돼 있으면 no-op)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Menu-bar icon: monochrome template (auto-adapts to light/dark menu bar).
