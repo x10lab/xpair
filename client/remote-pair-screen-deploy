@@ -7,7 +7,7 @@
 # variable REMOTE_HOST, then from ~/.remote-pair/client.env.
 # The sidecar binary is taken from:
 #   $SIDECAR_BIN   (env override)
-#   <script-dir>/../native/remote-pair-screen/target/release/remote-pair-screen
+#   <script-dir>/../rs/remote-pair-screen/target/release/remote-pair-screen
 #
 # The script is argv-safe: no shell-string construction from user-controlled
 # values.  All ssh/scp invocations use discrete argument arrays via exec/process
@@ -78,13 +78,13 @@ validate_host "$REMOTE_HOST"
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_BIN="$SCRIPT_DIR/../native/remote-pair-screen/target/release/remote-pair-screen"
+DEFAULT_BIN="$SCRIPT_DIR/../rs/remote-pair-screen/target/release/remote-pair-screen"
 SIDECAR_BIN="${SIDECAR_BIN:-$DEFAULT_BIN}"
 
 if [[ ! -f "$SIDECAR_BIN" ]]; then
   die "Sidecar binary not found at: $SIDECAR_BIN
 Build it first:
-  cd $SCRIPT_DIR/../native/remote-pair-screen
+  cd $SCRIPT_DIR/../rs/remote-pair-screen
   cargo build --release"
 fi
 
