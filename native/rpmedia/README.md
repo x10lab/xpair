@@ -29,31 +29,37 @@ hex head: 00 00 00 01 27 42 00 33 ...   (start code + SPS, profile 0x42=Baseline
 
 ## 통합 아키텍처 (다음 청크 — G003)
 
-**Swift↔Rust 정적링킹 회피.** 검증된 인코더를 **독립 헬퍼 바이너리 `rp-vt-encode`**로 만들어
-arm's-length 프로세스 파이프로 연결 (deny-clean, 링킹 리스크 0, screencapture 호출과 동일 패턴):
+**전송은 webrtc-rs(UDP/RTP) 필수.** TCP/WebSocket은 head-of-line blocking으로 화면공유가
+패킷 1개 유실에 멈춰서 안 됨(사용자 hard requirement). 인코더(Swift VT)는 전송과 무관하게
+같은 NAL을 내고, webrtc-rs가 RTP로 패킷화한다. Swift↔Rust 정적링킹은 회피
+(독립 헬퍼 `rp-vt-encode` 프로세스 파이프, deny-clean).
 
 ```
-remote-pair-screen serve-h264:
-  xcap capture (RGBA) ──swizzle→ BGRA raw frame ──stdin──▶ rp-vt-encode (영속 VTCompressionSession)
-                                                              │ 인코드 (inter-frame P/IDR)
-  WS broadcast ◀── length-prefixed Annex-B NAL ──stdout──────┘
-        │
-        ▼  ws://127.0.0.1:port  (기존 serve와 동일 전송, ssh -L)
+remote-pair-screen serve-webrtc (tokio, --features webrtc):
+  xcap capture (RGBA) ──swizzle→ BGRA ──stdin──▶ rp-vt-encode (영속 VTCompressionSession)
+                                                    │ inter-frame P/IDR
+  webrtc-rs ◀── length-prefixed Annex-B NAL ──stdout┘
+    H264 packetizer(FU-A) → TrackLocalStaticRTP::write_rtp → SRTP/DTLS → UDP/ICE(host-only)
+        │  (SDP/ICE 시그널링은 기존 /api/screen 브리지를 ssh 위로)
+        ▼
   webview remote-desktop.js:
-    WebCodecs VideoDecoder({codec:'avc1.42...'}) ── decode ──▶ VideoFrame ──drawImage──▶ canvas
+    RTCPeerConnection (Chromium 네이티브 WebRTC — macOS/Win/Linux 동일, 크로스플랫폼)
+      ontrack → <video> 렌더. (WebCodecs 수동 디코드 불요 — 브라우저 WebRTC가 H264 디코드)
 ```
+
+브라우저 RTCPeerConnection이 디코드를 맡으므로 클라는 NSView/Metal/WebCodecs 전부 불요이고
+모든 OS에서 동일 — 크로스플랫폼 제약 충족. 전송은 UDP라 HoL 없음.
 
 ### 남은 작업 (체크리스트)
-- [ ] `rp-vt-encode.swift`: 스파이크를 stdin(W*H*4 BGRA 루프)→stdout(4바이트 BE 길이 + Annex-B NAL)
-      스트리밍으로 진화. 영속 세션 → P프레임. args: w h fps bitrate.
-- [ ] 빌드: `swiftc -O rp-vt-encode.swift -o rp-vt-encode`, 배포 스크립트(`remote-pair-screen-deploy`)가
-      사이드카와 함께 호스트에 설치.
-- [ ] `native/remote-pair-screen/src/serve_h264.rs`: 캡쳐→BGRA swizzle→인코더 stdin, stdout NAL
-      프레임 읽기 스레드→WS broadcast. 변경감지 프레임스킵 재사용(무변화면 인코더에 안 보냄).
-- [ ] `main.rs`에 `serve-h264` 서브커맨드.
-- [ ] `remotepair-ext/media/remote-desktop.js`: WebCodecs `VideoDecoder` 추가. SPS/PPS로 디코더
-      configure, IDR/P NAL feed, VideoFrame→canvas. 모드 협상(JPEG vs H264, 첫 메시지로 코덱 광고).
-- [ ] computer-use로 RemotePair.app 띄워 H.264 경로 렌더 확인 + 정지화면 대역폭 측정.
+- [x] `rp-vt-encode.swift`: 스트리밍 헬퍼(stdin BGRA→stdout length-prefixed Annex-B), 영속세션 P프레임. ✓
+- [ ] webrtc-rs viability: `cargo run --example webrtc_selftest --features webrtc` PASS (H264 offer). ← 진행중
+- [ ] `serve_webrtc.rs`: 캡쳐→swizzle→인코더 stdin, stdout NAL→H264 packetizer→write_rtp.
+      capture/swizzle/NAL-reader 로직은 검증됨(구 serve_h264 회수). tokio 런타임.
+- [ ] 시그널링: 브리지 `/api/screen/signal/:token`(SDP/ICE 릴레이), 웹뷰 RTCPeerConnection.
+- [ ] `main.rs` `serve-webrtc` 서브커맨드(cfg feature webrtc).
+- [ ] `remotepair-ext`: RTCPeerConnection + <video>로 v2 모드. ssh -L은 시그널링만(미디어는 UDP).
+- [ ] computer-use로 RemotePair.app 띄워 H.264/webrtc 렌더 확인 + 정지화면 대역폭 측정.
+- [ ] 키프레임-on-connect(PLI/force IDR), deny licenses(webrtc 트랜지티브 MIT/Apache 확인).
 
 ### 검증 환경 메모 (G001 하네스)
 - 사이드카 Screen Recording 그랜트됨(release 바이너리 capture 성공).

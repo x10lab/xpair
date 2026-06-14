@@ -84,7 +84,9 @@ guard st == noErr, let sess = sOpt else { die("VTCompressionSessionCreate failed
 VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
 VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
 VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
-VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber)
+// Keyframe every ~2s so a newly-connected WebCodecs decoder can start quickly
+// (each keyframe access unit carries SPS/PPS).
+VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (FPS * 2) as CFNumber)
 VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: BR as CFNumber)
 VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: FPS as CFNumber)
 VTCompressionSessionPrepareToEncodeFrames(sess)

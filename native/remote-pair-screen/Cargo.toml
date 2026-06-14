@@ -39,13 +39,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # `TcpListener` + threads so we do NOT pull in an async runtime (tokio) for this
 # first cut. No TLS feature (loopback-only bind; ssh -L provides the encryption).
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+webrtc = { version = "0.17.1", optional = true }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time"], optional = true }
 
 [features]
-# Placeholder for the v1b transport. webrtc-rs (MIT/Apache-2.0) + VideoToolbox
-# HW encode is the planned upgrade and will be added behind this feature in a
-# later milestone. It is intentionally NOT wired up yet — v1a (this) is the
-# WS+JPEG software path.
-webrtc = []
+# v1b transport: webrtc-rs (MIT/Apache-2.0, UDP/RTP) carrying VideoToolbox H.264.
+# UDP is mandatory — TCP/WebSocket head-of-line blocking stalls a screen stream
+# on any lost packet. Enabling this pulls webrtc + a tokio runtime (the v1a
+# `serve` path stays sync and unaffected).
+webrtc = ["dep:webrtc", "dep:tokio"]
 
 [profile.release]
 opt-level = 3
