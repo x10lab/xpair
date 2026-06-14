@@ -179,7 +179,20 @@ HOW TO START THE SIDECAR ON THE HOST:
     ~/.remote-pair/bin/remote-pair-screen serve
 
   Default: listens on 127.0.0.1:8889, ~10 fps JPEG stream.
-  Options: --port <N>  --fps <N>  (see --help for full list)
+  Performance: a static screen now sends ~0 bytes (change-detection
+    frame-skip); only changed frames are encoded + sent.
+  Options:
+    --port <N>      bind port (default 8889; must match the client tunnel)
+    --fps <N>       capture cadence cap (default 10)
+    --quality <N>   JPEG quality 1-100 (default 60; lower = smaller frames)
+    --scale <F>     downscale factor 0.1-1.0 (default 1.0). On a Retina
+                    host, --scale 0.5 quarters the pixel count → frames
+                    ~70% smaller and faster to encode. Recommended for
+                    Retina/4K hosts or constrained links.
+    (see --help for the full list)
+
+  Example (Retina host, bandwidth-conscious):
+    ~/.remote-pair/bin/remote-pair-screen serve --scale 0.5 --quality 55
 
   The RemotePair extension on the client will automatically forward the
   WS port over SSH when the Remote Desktop view opens (v1 mode).
