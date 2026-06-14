@@ -25,8 +25,10 @@ DispatchQueue.main.asyncAfter(deadline: .now() + waitSec) {
   let key = win.isKeyWindow
   let active = NSApp.isActive
   let fr = (win.firstResponder === tv) || (win.firstResponder is NSText)
-  FileHandle.standardError.write(
-    "TARGET_GOT:[\(got)] isKey=\(key) isActive=\(active) tvFirstResponder=\(fr)\n".data(using: .utf8)!)
+  let line = "TARGET_GOT:[\(got)] isKey=\(key) isActive=\(active) tvFirstResponder=\(fr)\n"
+  // write to a file too (stderr isn't captured when launched via `open`)
+  try? line.data(using: .utf8)!.write(to: URL(fileURLWithPath: "/tmp/rp-target-result.txt"))
+  FileHandle.standardError.write(line.data(using: .utf8)!)
   exit(got.contains("안녕") ? 0 : 1)
 }
 app.run()
