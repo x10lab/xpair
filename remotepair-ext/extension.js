@@ -876,50 +876,70 @@ class NotificationPoller {
 }
 
 // --- one-time workbench layout ---------------------------------------------
-// Wireframe: two INDEPENDENT editor groups —
-//   LEFT  = terminal sessions (shell/claude/codex/gemini CLIs) as editor tabs,
-//           locked so normally-opened files route elsewhere.
-//   RIGHT = files + the pinned RD tab.
-// With terminal.integrated.defaultLocation=editor, terminals open as editor
-// tabs (native horizontal tabs). Locking the LEFT group makes VS Code's native
-// editor-group routing send opened files to the RIGHT (unlocked) group.
+// Native model (wireframe): the LEFT activity-bar rail switches a SINGLE primary
+// sidebar between containers — "Terminal" (the integrated terminal, moved to the
+// Sidebar in terminal.contribution) and "Browser" (the file explorer). Clicking
+// a rail item switches the sidebar (no extra column). The editor area (right)
+// holds files + the pinned RD tab. The sidebar is user-resizable to mid-screen.
 
 async function setupLayout(context, force) {
-  const KEY = "remotepair.layoutInitialized.v4";
+  const KEY = "remotepair.layoutInitialized.v7";
   if (!force && context.globalState.get(KEY)) return;
-  // No right-side (secondary) bar; hide the primary sidebar clutter.
+  // Terminal now lives in a custom "Terminal" SIDEBAR container that embeds an
+  // EditorPart (workbench source component — see plan #3). The extension only
+  // closes the right-side bar; RD is opened in the main editor by activate().
   try {
     await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
   } catch (_e) {}
-  try {
-    await vscode.commands.executeCommand("workbench.action.closeSidebar");
-  } catch (_e) {}
-  // RD is already open (pinned) in the single editor group. Open a terminal —
-  // it opens as an editor tab in the same group.
-  try {
-    await vscode.commands.executeCommand("workbench.action.terminal.new");
-  } catch (e) {
-    log(`setupLayout terminal.new: ${e && e.message ? e.message : e}`);
-  }
-  // Move the active terminal to a NEW group on the left → LEFT = terminal,
-  // RIGHT = RD/files (two independent groups).
-  try {
-    await vscode.commands.executeCommand("workbench.action.moveEditorToLeftGroup");
-  } catch (e) {
-    log(`setupLayout moveEditorToLeftGroup: ${e && e.message ? e.message : e}`);
-  }
-  // Lock the LEFT (terminal) group: native routing then sends opened files to
-  // the RIGHT (unlocked) group instead of the terminal group.
-  try {
-    await vscode.commands.executeCommand("workbench.action.lockEditorGroup");
-  } catch (e) {
-    log(`setupLayout lockEditorGroup: ${e && e.message ? e.message : e}`);
-  }
   try {
     await context.globalState.update(KEY, true);
   } catch (e) {
     log(`setupLayout: globalState.update failed: ${e && e.message ? e.message : e}`);
   }
+}
+
+// --- FOLDER_MAPS parser ----------------------------------------------------
+
+/**
+ * Read FOLDER_MAPS from ~/.remote-pair/client.env.
+ * Format: "clientDir::hostDir" pairs separated by ";".
+ * Returns an array of { clientDir, hostDir } objects (may be empty).
+ */
+function readFolderMaps() {
+  const envPath = path.join(os.homedir(), ".remote-pair", "client.env");
+  let raw;
+  try {
+    raw = fs.readFileSync(envPath, "utf8");
+  } catch (_e) {
+    return [];
+  }
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const eq = t.indexOf("=");
+    if (eq < 0) continue;
+    const key = t.slice(0, eq).trim();
+    if (key !== "FOLDER_MAPS") continue;
+    let val = t.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (!val) return [];
+    return val
+      .split(";")
+      .map((pair) => pair.trim())
+      .filter(Boolean)
+      .map((pair) => {
+        const sep = pair.indexOf("::");
+        if (sep < 0) return null;
+        return { clientDir: pair.slice(0, sep).trim(), hostDir: pair.slice(sep + 2).trim() };
+      })
+      .filter(Boolean);
+  }
+  return [];
 }
 
 // --- activation -------------------------------------------------------------
@@ -936,7 +956,15 @@ function activate(context) {
   //    (NOT a left activity-bar view).
   const panel = new RemoteDesktopPanel(context.extensionUri, state);
 
-  // 3) Commands.
+  // 3) Status bar Host button (always visible, high priority = left-most).
+  const hostBtn = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100000000);
+  hostBtn.text = "$(remote) Host";
+  hostBtn.tooltip = "RemotePair: Connect to host";
+  hostBtn.command = "remotepair.connectHost";
+  hostBtn.show();
+  context.subscriptions.push(hostBtn);
+
+  // 4) Commands.
   context.subscriptions.push(
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
@@ -951,7 +979,36 @@ function activate(context) {
     }),
     vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
     vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),
-    vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true))
+    vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true)),
+    vscode.commands.registerCommand("remotepair.openFileBrowser", () => {
+      const maps = readFolderMaps();
+      if (maps.length > 0) {
+        const clientDir = maps[0].clientDir;
+        log(`openFileBrowser: using FOLDER_MAPS clientDir=${clientDir}`);
+        try {
+          const currentCount = vscode.workspace.workspaceFolders
+            ? vscode.workspace.workspaceFolders.length
+            : 0;
+          vscode.workspace.updateWorkspaceFolders(0, currentCount, {
+            uri: vscode.Uri.file(clientDir),
+          });
+        } catch (e) {
+          log(`openFileBrowser: updateWorkspaceFolders failed: ${e && e.message ? e.message : e}`);
+          setupFileAccess();
+          return;
+        }
+        vscode.commands.executeCommand("workbench.view.explorer").then(
+          () => {},
+          (e) => log(`openFileBrowser: explorer reveal error: ${e && e.message ? e.message : e}`)
+        );
+      } else {
+        log("openFileBrowser: no FOLDER_MAPS found, falling back to setupFileAccess");
+        setupFileAccess();
+      }
+    }),
+    vscode.commands.registerCommand("remotepair.openSettings", () => {
+      vscode.commands.executeCommand("workbench.action.openSettings");
+    })
   );
 
   // 4) Host notifications poller.

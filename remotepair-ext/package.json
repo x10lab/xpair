@@ -53,6 +53,14 @@
       {
         "command": "remotepair.setupLayout",
         "title": "RemotePair: Reset Layout (terminal left, RD tab right)"
+      },
+      {
+        "command": "remotepair.openFileBrowser",
+        "title": "RemotePair: 파일 탐색기 열기 (Open File Browser)"
+      },
+      {
+        "command": "remotepair.openSettings",
+        "title": "RemotePair: 설정 열기 (Open Settings)"
       }
     ],
     "menus": {
@@ -79,7 +87,6 @@
       "workbench.statusBar.visible": true,
       "workbench.editor.showTabs": "multiple",
       "workbench.startupEditor": "none",
-      "terminal.integrated.defaultLocation": "editor",
       "terminal.integrated.tabs.enabled": true
     },
     "configuration": {
