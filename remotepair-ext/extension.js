@@ -43,7 +43,8 @@ const INPUT_THROTTLE_MS = 120; // min gap between forwarded input events
 const SSH_CONNECT_TIMEOUT = 6; // seconds
 
 // v1 WS stream constants
-const SIDECAR_REMOTE_PORT = 8889; // port the sidecar listens on on the host
+const SIDECAR_REMOTE_PORT = 8889; // v1 JPEG sidecar port on the host
+const SIGNAL_REMOTE_PORT = 8890; // v2 WebRTC signaling port (remote-pair-screen serve-webrtc)
 const V1_FIRST_FRAME_TIMEOUT_MS = 4000; // auto-mode: fall back if no frame in this window
 const V1_TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before WS connect
 
@@ -251,9 +252,12 @@ function getFreePort() {
  * Returns { child, port } — child.kill() to teardown.
  * The caller should wait V1_TUNNEL_SETTLE_MS before connecting.
  */
-function spawnTunnel(host, localPort) {
+function spawnTunnel(host, localPort, remotePort) {
   // -fN: go to background, no remote command.  ControlMaster=auto reuses
   // the existing authenticated master so there's no new key prompt.
+  // remotePort defaults to the v1 JPEG sidecar port; v2/WebRTC passes the
+  // signaling port (media itself flows over UDP/ICE, not this TCP tunnel).
+  const rport = remotePort || SIDECAR_REMOTE_PORT;
   const args = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
@@ -262,10 +266,10 @@ function spawnTunnel(host, localPort) {
     "-o", "ControlPath=/tmp/rp-cm-%C",
     "-o", "ControlPersist=300",
     "-fN",
-    "-L", `${localPort}:127.0.0.1:${SIDECAR_REMOTE_PORT}`,
+    "-L", `${localPort}:127.0.0.1:${rport}`,
     host, // validated HOST_RE element
   ];
-  log(`v1 tunnel: ssh -fN -L ${localPort}:127.0.0.1:${SIDECAR_REMOTE_PORT} ${host}`);
+  log(`tunnel: ssh -fN -L ${localPort}:127.0.0.1:${rport} ${host}`);
   const child = cp.spawn("ssh", args, { windowsHide: true, detached: false });
   child.stderr.on("data", (d) => log(`tunnel stderr: ${d.toString().trim()}`));
   child.on("error", (e) => log(`tunnel spawn error: ${e.message}`));
@@ -363,25 +367,78 @@ class RemoteDesktopPanel {
   async _startStream() {
     // Guard against double-start (refresh + visibility-restore overlap) which
     // could otherwise spawn two ssh tunnels on different ports.
-    if (this._v1Active || this.pollTimer) return;
+    if (this._v1Active || this._v2Active || this.pollTimer) return;
     const mode = getDesktopMode();
     if (mode === "v0") {
       this._startV0();
       return;
     }
-    // mode === "v1" or "auto"
     const host = getValidHost();
     if (!host) {
       this.post({ type: "status", state: "no-host" });
       return;
     }
-    await this._startV1(host, mode === "auto");
+    if (mode === "v1") {
+      await this._startV1(host, false);
+      return;
+    }
+    // "v2" or "auto": prefer WebRTC (UDP H.264, lowest latency / highest fps),
+    // fall back to v1 (WS JPEG) then v0 (polling) if it doesn't come up.
+    await this._startV2(host, mode === "auto");
   }
 
-  /** Stop both v0 polling and any v1 tunnel. */
+  /** Stop v0 polling, v1 tunnel, and v2 signaling/peer. */
   _stopAll() {
     this._stopV0();
     this._stopV1();
+    this._stopV2();
+  }
+
+  // --- v2 WebRTC (UDP/RTP H.264) -------------------------------------------
+
+  async _startV2(host, autoFallback) {
+    this._stopV2();
+    let localPort;
+    try {
+      localPort = await getFreePort();
+    } catch (e) {
+      log(`v2: getFreePort error: ${e.message}; trying v1`);
+      this._startV1(host, autoFallback);
+      return;
+    }
+    this._tunnelPort = localPort;
+    // Tunnel forwards the SIGNALING port only (TCP). Media flows over UDP/ICE.
+    this._tunnelChild = spawnTunnel(host, localPort, SIGNAL_REMOTE_PORT);
+    this._v2Active = true;
+
+    const self = this;
+    setTimeout(() => {
+      if (!self._v2Active || !self.panel) return;
+      const signalUrl = `ws://127.0.0.1:${localPort}`;
+      log(`v2: telling webview to connect signaling ${signalUrl}`);
+      self.post({ type: "v2Connect", signalUrl });
+      if (autoFallback) {
+        self._v2FallbackTimer = setTimeout(() => {
+          if (!self._v2Active) return;
+          log(`v2: no media within ${V1_FIRST_FRAME_TIMEOUT_MS}ms — falling back to v1`);
+          self._stopV2();
+          self._startV1(host, true);
+        }, V1_FIRST_FRAME_TIMEOUT_MS);
+      }
+    }, V1_TUNNEL_SETTLE_MS);
+  }
+
+  _stopV2() {
+    this._v2Active = false;
+    if (this._v2FallbackTimer) {
+      clearTimeout(this._v2FallbackTimer);
+      this._v2FallbackTimer = null;
+    }
+    if (this._tunnelChild) {
+      try { this._tunnelChild.kill("SIGTERM"); } catch (_e) {}
+      this._tunnelChild = null;
+    }
+    this._tunnelPort = null;
   }
 
   // --- v0 polling -----------------------------------------------------------
@@ -499,6 +556,28 @@ class RemoteDesktopPanel {
           log(`v1: falling back to v0`);
           this._stopV1();
           this._startV0();
+        }
+      }
+      return;
+    }
+
+    // v2 (WebRTC) feedback from webview
+    if (msg.type === "v2FirstFrame") {
+      log(`v2: media track rendering`);
+      if (this._v2FallbackTimer) {
+        clearTimeout(this._v2FallbackTimer);
+        this._v2FallbackTimer = null;
+      }
+      return;
+    }
+    if (msg.type === "v2Error") {
+      log(`v2: webview reported error: ${msg.detail || "unknown"}`);
+      if (this._v2Active) {
+        const mode = getDesktopMode();
+        if (mode === "auto") {
+          log(`v2: falling back to v1`);
+          this._stopV2();
+          this._startV1(host, true);
         }
       }
       return;
@@ -633,10 +712,13 @@ class RemoteDesktopPanel {
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} data: blob:`,
+      `media-src ${webview.cspSource} blob: mediastream:`,
       `style-src ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
       `font-src ${webview.cspSource}`,
-      `connect-src ws://127.0.0.1:*`,
+      // ws://127.0.0.1:* = v1 JPEG stream AND v2 WebRTC signaling (both loopback,
+      // reached over ssh -L). v2 media itself is UDP/RTP, not subject to CSP.
+      `connect-src ws://127.0.0.1:* ws://localhost:*`,
     ].join("; ");
 
     return `<!DOCTYPE html>
@@ -652,6 +734,7 @@ class RemoteDesktopPanel {
   <div id="stage">
     <img id="screen" alt="Host screen" draggable="false" />
     <canvas id="screen-canvas"></canvas>
+    <video id="screen-video" autoplay muted playsinline></video>
     <div id="overlay" class="hidden">
       <div id="overlay-title">RemotePair</div>
       <div id="overlay-msg">Connecting to host…</div>
@@ -742,14 +825,11 @@ async function ensureExtensions(interactive) {
 
 // --- connect to host --------------------------------------------------------
 
-async function connectHost() {
-  const host = getValidHost();
-  if (!host) {
-    vscode.window.showWarningMessage(
-      "RemotePair: REMOTE_HOST is not set (or invalid) in ~/.remote-pair/client.env."
-    );
-    return;
-  }
+/**
+ * Core connection logic: opens the host filesystem over SSH (open-remote-ssh).
+ * @param {string} host validated host alias
+ */
+async function _doConnectHost(host) {
   // Preferred: open the host filesystem directly via open-remote-ssh's authority,
   // no prompt. Authority format is "ssh-remote+<host>" (from the extension).
   const home = `/Users/${process.env.USER || os.userInfo().username || ""}`.replace(/\/$/, "");
@@ -776,6 +856,72 @@ async function connectHost() {
   // Last resort: instructions.
   vscode.window.showInformationMessage(
     `RemotePair: open the Remote Explorer and connect to "${host}" via Open Remote - SSH.`
+  );
+}
+
+/**
+ * Show a QuickPick listing the configured endpoint(s) (currently REMOTE_HOST from
+ * client.env = one item), then connect to the selected host.
+ */
+async function connectHost() {
+  const host = getValidHost();
+  if (!host) {
+    vscode.window.showWarningMessage(
+      "RemotePair: REMOTE_HOST is not set (or invalid) in ~/.remote-pair/client.env."
+    );
+    return;
+  }
+
+  // Build the list of endpoints. Currently there is exactly one (REMOTE_HOST from
+  // client.env). The QuickPick is kept generic so additional endpoints can be
+  // appended here in the future without changing the selection UI.
+  const items = [
+    {
+      label: `$(remote) ${host}`,
+      description: "REMOTE_HOST (client.env)",
+      detail: `Connect to ${host} via Open Remote - SSH`,
+      host,
+    },
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "RemotePair: Select Host to Connect",
+    placeHolder: "Choose an endpoint…",
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+
+  if (!picked) return; // user cancelled
+  log(`connectHost: user selected ${picked.host}`);
+  await _doConnectHost(picked.host);
+}
+
+// --- launch remote Claude ---------------------------------------------------
+
+/**
+ * Open a terminal and stage the `remote-pair launch` command (addNewLine=false
+ * so the user reviews before pressing Enter).
+ *
+ * `remote-pair launch` is the client-side CLI that opens a mosh+tmux session
+ * on the host and starts Claude Code inside it.  If the exact subcommand name
+ * changes, adjust the sendText argument here; the terminal name makes the
+ * intent clear to the user regardless.
+ */
+function launchRemoteClaude() {
+  let term;
+  try {
+    term = vscode.window.createTerminal("RemotePair — Launch Claude");
+    term.show(true);
+    // Stage without auto-executing so the user can review / edit first.
+    // "remote-pair launch" = mosh → tmux → claude (see remote-pair CLI help).
+    // If the exact subcommand differs on your setup, edit before pressing Enter.
+    term.sendText("remote-pair launch", false);
+  } catch (e) {
+    log(`launchRemoteClaude: ${e && e.message ? e.message : e}`);
+  }
+  vscode.window.showInformationMessage(
+    "RemotePair: review 'remote-pair launch' in the terminal and press Enter to open " +
+      "a mosh+tmux+Claude Code session on the remote host."
   );
 }
 
@@ -891,6 +1037,12 @@ async function setupLayout(context, force) {
   try {
     await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
   } catch (_e) {}
+  // Reveal the custom "Terminal" sidebar (embedded EditorPart, workbench source).
+  try {
+    await vscode.commands.executeCommand("remotepair.terminalSidebar.view.focus");
+  } catch (e) {
+    log(`setupLayout reveal terminal sidebar: ${e && e.message ? e.message : e}`);
+  }
   try {
     await context.globalState.update(KEY, true);
   } catch (e) {
@@ -905,6 +1057,13 @@ async function setupLayout(context, force) {
  * Format: "clientDir::hostDir" pairs separated by ";".
  * Returns an array of { clientDir, hostDir } objects (may be empty).
  */
+/** Expand a leading ~ or ~/ to the user's home dir (env-file paths commonly use ~). */
+function expandHome(p) {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 function readFolderMaps() {
   const envPath = path.join(os.homedir(), ".remote-pair", "client.env");
   let raw;
@@ -935,11 +1094,175 @@ function readFolderMaps() {
       .map((pair) => {
         const sep = pair.indexOf("::");
         if (sep < 0) return null;
-        return { clientDir: pair.slice(0, sep).trim(), hostDir: pair.slice(sep + 2).trim() };
+        return { clientDir: expandHome(pair.slice(0, sep).trim()), hostDir: pair.slice(sep + 2).trim() };
       })
       .filter(Boolean);
   }
   return [];
+}
+
+/**
+ * C1.D4 — Reconcile the Browser's workspace roots so they are EXACTLY the FOLDER_MAPS
+ * client dirs (that exist on disk), in declared order. This drops any non-mapped folder
+ * that leaked in as a launch-arg / workspace folder (the phantom `/tmp/rp-test-folder`)
+ * and adds any mapped dir that is missing — in a single updateWorkspaceFolders replace.
+ *
+ * Returns the resolved clientDirs (may be empty → the Browser shows its empty-state).
+ * The `updateWorkspaceFolders` no-op `false` return is logged but not treated as a hard
+ * failure: when the current set already matches we skip the call entirely.
+ */
+function reconcileBrowserRoots() {
+  const maps = readFolderMaps();
+  const seen = new Set();
+  const clientDirs = [];
+  for (const m of maps) {
+    if (!m.clientDir || seen.has(m.clientDir)) continue;
+    seen.add(m.clientDir);
+    if (!fs.existsSync(m.clientDir)) {
+      log(`reconcileBrowserRoots: skipping missing client dir: ${m.clientDir}`);
+      continue;
+    }
+    clientDirs.push(m.clientDir);
+  }
+
+  const current = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+  // Target == FOLDER_MAPS clientDirs only. Match requires SAME set AND SAME order so a
+  // stray non-mapped folder (phantom root) anywhere in the list forces a replace.
+  const alreadyCorrect =
+    current.length === clientDirs.length &&
+    clientDirs.every((d, i) => current[i] === d);
+  if (alreadyCorrect) {
+    return clientDirs;
+  }
+
+  log(`reconcileBrowserRoots: current=[${current.join(", ")}] target=[${clientDirs.join(", ")}]`);
+  try {
+    // Single replace: delete all current folders, insert the mapped clientDirs in order.
+    // When clientDirs is empty this removes every root (e.g. the phantom launch-arg folder),
+    // leaving zero roots so the Browser renders its empty-state add button.
+    const ok = vscode.workspace.updateWorkspaceFolders(
+      0,
+      current.length,
+      ...clientDirs.map((d) => ({ uri: vscode.Uri.file(d) }))
+    );
+    if (!ok) {
+      // false = no-op or invalid change. This is expected when removing the very last
+      // folder is rejected by the workspace model in some single-folder states; it is NOT
+      // a thrown error, so we log and continue rather than fall back to a setup wizard.
+      log("reconcileBrowserRoots: updateWorkspaceFolders returned false (no-op or invalid)");
+    }
+  } catch (e) {
+    log(`reconcileBrowserRoots: updateWorkspaceFolders threw: ${e && e.message ? e.message : e}`);
+  }
+  return clientDirs;
+}
+
+/**
+ * C1.D3 — Run the client `remote-pair` CLI and capture its stdout/stderr. Spawned through
+ * the user's login shell so PATH resolution finds `remote-pair` wherever it was installed
+ * (~/.local/bin, /opt/homebrew/bin, /usr/local/bin, …) — the extension host does not inherit
+ * an interactive PATH. argv is passed as a single POSIX-quoted command string to `sh -lc`.
+ *
+ * Returns { code, stdout, stderr }. Never throws (spawn errors resolve as code -1).
+ */
+function runRemotePairCli(args, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 120000;
+  const quoted = ["remote-pair", ...args].map(shSingleQuote).join(" ");
+  const shell = process.env.SHELL || "/bin/sh";
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = cp.spawn(shell, ["-lc", quoted], { windowsHide: true });
+    } catch (e) {
+      resolve({ code: -1, stdout: "", stderr: String(e) });
+      return;
+    }
+    const out = [];
+    const err = [];
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout: out.join(""), stderr: err.join("") });
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch (_e) {}
+      finish(-2);
+    }, timeoutMs);
+    child.stdout.on("data", (d) => out.push(d.toString("utf8")));
+    child.stderr.on("data", (d) => err.push(d.toString("utf8")));
+    child.on("error", (e) => { err.push(String(e)); finish(-1); });
+    child.on("close", (code) => finish(code == null ? 0 : code));
+  });
+}
+
+/**
+ * C1.D3 — Mount-first add-root flow for the Browser's "Add Root" affordance.
+ *   1. Prompt for a HOST folder path (v1 = host-path input box).
+ *   2. `remote-pair mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
+ *   3. Parse the printed "Mountpoint: <path>" and register a FOLDER_MAP via
+ *      `remote-pair map add <mountpoint> <hostPath>` (writes <mountpoint>::<hostPath>).
+ *   4. Reconcile roots so the mountpoint appears as a Browser root without restart.
+ */
+async function addRoot() {
+  const hostPath = await vscode.window.showInputBox({
+    title: "RemotePair — Add Root (mount a host folder)",
+    prompt: "Enter the HOST folder path to mount (SMB by default; appears as a Browser root and in Finder).",
+    placeHolder: "/Users/you/Projects/myrepo",
+    ignoreFocusOut: true,
+    validateInput: (v) => {
+      const t = (v || "").trim();
+      if (!t) return "Enter a host folder path.";
+      if (!t.startsWith("/")) return "Host path must be absolute (start with /).";
+      return null;
+    },
+  });
+  if (!hostPath) return; // user cancelled
+  const host = hostPath.trim();
+
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `RemotePair: mounting ${host}…`, cancellable: false },
+    async () => {
+      // Step 2: mount.
+      const mres = await runRemotePairCli(["mount", host], { timeoutMs: 180000 });
+      if (mres.code !== 0) {
+        log(`addRoot: mount failed (code ${mres.code}): ${mres.stderr || mres.stdout}`);
+        const detail = (mres.stderr || mres.stdout || "").trim().split(/\r?\n/).slice(-3).join(" ");
+        vscode.window.showErrorMessage(`RemotePair: 'remote-pair mount ${host}' failed. ${detail}`);
+        return;
+      }
+
+      // Step 3: parse the "Mountpoint: <path>" line (printed to stdout by remote-pair-mount).
+      let mountpoint = "";
+      for (const line of mres.stdout.split(/\r?\n/)) {
+        const m = line.match(/^\s*Mountpoint:\s*(\S.*?)\s*$/);
+        if (m) { mountpoint = m[1]; break; }
+      }
+      if (!mountpoint) {
+        log(`addRoot: could not parse mountpoint from mount output: ${mres.stdout}`);
+        vscode.window.showErrorMessage("RemotePair: mount succeeded but the mountpoint could not be determined.");
+        return;
+      }
+      log(`addRoot: mounted ${host} at ${mountpoint}`);
+
+      // Step 3b: register the FOLDER_MAP (clientDir=mountpoint :: hostDir=host). 'already mapped'
+      // is a benign success (the map exists / is covered) — code 0 in that case.
+      const ares = await runRemotePairCli(["map", "add", mountpoint, host], { timeoutMs: 30000 });
+      if (ares.code !== 0) {
+        log(`addRoot: map add failed (code ${ares.code}): ${ares.stderr || ares.stdout}`);
+        vscode.window.showErrorMessage(`RemotePair: mounted at ${mountpoint} but registering the folder map failed.`);
+        return;
+      }
+
+      // Step 4: reconcile roots so the new mountpoint becomes a Browser root immediately.
+      reconcileBrowserRoots();
+      try {
+        await vscode.commands.executeCommand("workbench.view.explorer");
+      } catch (_e) {}
+      vscode.window.showInformationMessage(`RemotePair: added Browser root ${mountpoint} (mounted ${host}).`);
+    }
+  );
 }
 
 // --- activation -------------------------------------------------------------
@@ -957,17 +1280,65 @@ function activate(context) {
   const panel = new RemoteDesktopPanel(context.extensionUri, state);
 
   // 3) Status bar Host button (always visible, high priority = left-most).
+  //    Shows the configured host NAME + live reachability status instead of the
+  //    generic SSH "$(remote)" glyph: $(vm-active) host when reachable, red
+  //    background + $(vm-outline) when down, $(sync~spin) while probing, and a
+  //    "Set host" affordance when none is configured. Click still opens the
+  //    endpoint quickpick (remotepair.connectHost).
   const hostBtn = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100000000);
-  hostBtn.text = "$(remote) Host";
-  hostBtn.tooltip = "RemotePair: Connect to host";
   hostBtn.command = "remotepair.connectHost";
-  hostBtn.show();
   context.subscriptions.push(hostBtn);
+
+  let hostReachable = null; // null = unknown/probing, true/false = last probe result
+  const renderHostButton = () => {
+    const host = getValidHost();
+    if (!host) {
+      hostBtn.text = "$(gear) Set host";
+      hostBtn.tooltip = "RemotePair: no host configured — click to set up";
+      hostBtn.backgroundColor = undefined;
+    } else if (hostReachable === true) {
+      hostBtn.text = `$(vm-active) ${host}`;
+      hostBtn.tooltip = `RemotePair: ${host} — reachable. Click to connect.`;
+      hostBtn.backgroundColor = undefined;
+    } else if (hostReachable === false) {
+      hostBtn.text = `$(vm-outline) ${host}`;
+      hostBtn.tooltip = `RemotePair: ${host} — unreachable. Click to connect / retry.`;
+      hostBtn.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    } else {
+      hostBtn.text = `$(sync~spin) ${host}`;
+      hostBtn.tooltip = `RemotePair: ${host} — checking reachability…`;
+      hostBtn.backgroundColor = undefined;
+    }
+    hostBtn.show();
+  };
+  renderHostButton();
+
+  // Reachability probe: BatchMode ssh `true` over the persistent ControlMaster
+  // connection (no password prompt; fails fast if unreachable / no agent key).
+  const probeHost = async () => {
+    const host = getValidHost();
+    if (!host) {
+      hostReachable = null;
+      renderHostButton();
+      return;
+    }
+    try {
+      const r = await sshRun(host, "true", { timeoutMs: 6000 });
+      hostReachable = r.code === 0;
+    } catch (_e) {
+      hostReachable = false;
+    }
+    renderHostButton();
+  };
+  probeHost();
+  const hostProbeTimer = setInterval(probeHost, 20000);
+  context.subscriptions.push({ dispose: () => clearInterval(hostProbeTimer) });
 
   // 4) Commands.
   context.subscriptions.push(
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
+    vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.toggleInput", () => {
       state.inputEnabled = !state.inputEnabled;
@@ -981,35 +1352,38 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),
     vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true)),
     vscode.commands.registerCommand("remotepair.openFileBrowser", () => {
-      const maps = readFolderMaps();
-      if (maps.length > 0) {
-        const clientDir = maps[0].clientDir;
-        log(`openFileBrowser: using FOLDER_MAPS clientDir=${clientDir}`);
-        try {
-          const currentCount = vscode.workspace.workspaceFolders
-            ? vscode.workspace.workspaceFolders.length
-            : 0;
-          vscode.workspace.updateWorkspaceFolders(0, currentCount, {
-            uri: vscode.Uri.file(clientDir),
-          });
-        } catch (e) {
-          log(`openFileBrowser: updateWorkspaceFolders failed: ${e && e.message ? e.message : e}`);
-          setupFileAccess();
-          return;
-        }
-        vscode.commands.executeCommand("workbench.view.explorer").then(
-          () => {},
-          (e) => log(`openFileBrowser: explorer reveal error: ${e && e.message ? e.message : e}`)
-        );
+      // Roots == FOLDER_MAPS clientDirs only (C1.D4): reconcile drops any phantom
+      // launch-arg / workspace folder and adds the mapped dirs in declared order.
+      const clientDirs = reconcileBrowserRoots();
+      if (clientDirs.length === 0) {
+        // No mapped roots → reveal the Browser so its empty-state "Add Root" button shows.
+        log("openFileBrowser: no FOLDER_MAPS client dirs, revealing empty-state");
       } else {
-        log("openFileBrowser: no FOLDER_MAPS found, falling back to setupFileAccess");
-        setupFileAccess();
+        log(`openFileBrowser: using FOLDER_MAPS clientDirs=${clientDirs.join(", ")}`);
       }
+      vscode.commands.executeCommand("workbench.view.explorer").then(
+        () => {},
+        (e) => log(`openFileBrowser: explorer reveal error: ${e && e.message ? e.message : e}`)
+      );
     }),
+    vscode.commands.registerCommand("remotepair.browser.addRoot", () =>
+      addRoot().catch((e) => {
+        log(`addRoot: ${e && e.message ? e.message : e}`);
+        vscode.window.showErrorMessage(`RemotePair: Add Root failed. ${e && e.message ? e.message : e}`);
+      })
+    ),
     vscode.commands.registerCommand("remotepair.openSettings", () => {
       vscode.commands.executeCommand("workbench.action.openSettings");
     })
   );
+
+  // C1.D4 — Reconcile Browser roots on activation so a non-mapped launch-arg folder
+  // (the phantom `/tmp/rp-test-folder`) is removed even before the user opens the Browser.
+  try {
+    reconcileBrowserRoots();
+  } catch (e) {
+    log(`activate: reconcileBrowserRoots failed: ${e && e.message ? e.message : e}`);
+  }
 
   // 4) Host notifications poller.
   const notifier = new NotificationPoller();

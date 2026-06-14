@@ -61,6 +61,11 @@
       {
         "command": "remotepair.openSettings",
         "title": "RemotePair: 설정 열기 (Open Settings)"
+      },
+      {
+        "command": "remotepair.launchRemoteClaude",
+        "title": "RemotePair: Launch Remote Claude (mosh+tmux+claude)",
+        "icon": "$(play)"
       }
     ],
     "menus": {
@@ -94,14 +99,15 @@
       "properties": {
         "remotepair.remoteDesktop.mode": {
           "type": "string",
-          "enum": ["auto", "v1", "v0"],
+          "enum": ["auto", "v2", "v1", "v0"],
           "enumDescriptions": [
-            "Try v1 WebSocket stream first; fall back to v0 polling if no frame arrives within ~4s",
-            "Always use v1 WebSocket stream (requires remote-pair-screen serve on host)",
+            "Try v2 WebRTC (H.264/UDP) first, then v1 WebSocket JPEG, then v0 polling",
+            "Always use v2 WebRTC H.264/UDP stream (requires remote-pair-screen serve-webrtc on host) — highest performance",
+            "Always use v1 WebSocket JPEG stream (requires remote-pair-screen serve on host)",
             "Always use v0 SSH screenshot polling (legacy)"
           ],
           "default": "auto",
-          "description": "Remote Desktop streaming mode. v1 uses a WebSocket stream via ssh local-forward for lower latency (~10fps JPEG); v0 uses SSH screenshot polling (~1fps PNG)."
+          "description": "Remote Desktop streaming mode. v2 = WebRTC H.264 over UDP (lowest latency, ~30fps, hardware-encoded); v1 = WebSocket JPEG (~10fps); v0 = SSH screenshot polling (~1fps). 'auto' prefers v2, then v1, then v0."
         }
       }
     },
