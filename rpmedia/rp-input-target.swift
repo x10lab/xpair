@@ -28,17 +28,25 @@ win.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
 win.makeFirstResponder(tv)
 
-// after the injector has had time to type, read back and report
-let waitSec = CommandLine.arguments.count > 1 ? Double(CommandLine.arguments[1]) ?? 3.0 : 3.0
-DispatchQueue.main.asyncAfter(deadline: .now() + waitSec) {
-  let got = tv.string
-  let key = win.isKeyWindow
-  let active = NSApp.isActive
-  let fr = (win.firstResponder === tv) || (win.firstResponder is NSText)
-  let line = "TARGET_GOT:[\(got)] isKey=\(key) isActive=\(active) tvFirstResponder=\(fr)\n"
-  // write to a file too (stderr isn't captured when launched via `open`)
-  try? line.data(using: .utf8)!.write(to: URL(fileURLWithPath: "/tmp/rp-target-result.txt"))
-  FileHandle.standardError.write(line.data(using: .utf8)!)
-  exit(got.contains("안녕") ? 0 : 1)
+import ApplicationServices
+
+// Self-contained injection test: once we are key, inject Korean two ways into
+// the focused element and read back — eliminates external focus races.
+//   method A: AX  -> set kAXSelectedTextAttribute (exact Unicode)
+//   method B: clipboard + CGEvent-free... (paste needs a real shortcut; skip)
+// Passive: stay key for a window; an EXTERNAL trusted rp-input-inject injects.
+// Re-assert key aggressively to beat focus races, then read back.
+var ticks = 0
+Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { t in
+  win.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true); win.makeFirstResponder(tv)
+  ticks += 1
+  if ticks >= 16 {
+    t.invalidate()
+    let got = tv.string
+    let line = "TARGET_GOT:[\(got)] isKey=\(win.isKeyWindow)\n"
+    try? line.data(using: .utf8)!.write(to: URL(fileURLWithPath: "/tmp/rp-target-result.txt"))
+    FileHandle.standardError.write(line.data(using: .utf8)!)
+    exit(got.contains("안녕") ? 0 : 1)
+  }
 }
 app.run()

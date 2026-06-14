@@ -38,3 +38,22 @@
 - 클립보드+cmd+V paste: RPTarget에 Edit메뉴 추가했으나 하네스에서 미발화(타이밍/포커스 플레이키) —
   실앱(Edit메뉴 보유)에서 재검증 필요. System Events keystroke 도달은 확정.
 - 결론 불변: 키보드 주입 백엔드 = **System Events/AX**. 한글 = 클립보드 paste 또는 AX insert(실앱 검증).
+
+## 해결 (3차 — AX 텍스트 insert가 정답)
+**`AXUIElementSetAttributeValue(focusedElement, kAXSelectedTextAttribute, text)`가 한글을
+정확히 NSTextView에 넣는다.** 실증: RPTarget self-insert → `TARGET_GOT:[안녕하세요 AX 123]
+rc=0`. CGEvent(미도달)·System Events(한글깨짐)와 달리 **정확 Unicode landing**.
+
+→ `rp-input-inject.swift`의 `injectText`를 AX insert로 교체함(구현 완료).
+
+**전제 2가지(실호스트는 자연 충족, 자동화 테스트만 미충족):**
+1. 주입 바이너리가 **AX-trusted** — same-process AX는 신뢰 불요지만 cross-process는 필요.
+   부모 프로세스에서 상속(iTerm 신뢰→helper 신뢰; 미신뢰 앱이 spawn하면 미신뢰). 프로덕션은
+   헬퍼를 Accessibility grant(기존 InputServer/RemotePairHost처럼).
+2. **타깃이 진짜 frontmost-active** — system-wide kAXFocusedUIElement는 그 순간 active 앱의
+   포커스 요소를 줌. 실호스트는 사용자가 쓰는 앱이 active라 충족. 자동화 테스트는 throwaway
+   창을 active로 못 만들어(에이전트/터미널이 frontmost 뺏음) cross-process 미검증.
+
+**남은 검증(실호스트/2대):** granted 헬퍼 + 실제 포커스된 앱(TextEdit/브라우저)에 AX insert →
+한글 landing. 메커니즘은 same-process로 증명됨. 단축키(cmd+s 등)는 별도 — CGEvent 미도달이라
+System Events keystroke(modifier) 경로 필요. 마우스는 CGEvent 검증 별도.
