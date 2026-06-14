@@ -35,19 +35,13 @@ import ApplicationServices
 // the focused element and read back — eliminates external focus races.
 //   method A: AX  -> set kAXSelectedTextAttribute (exact Unicode)
 //   method B: clipboard + CGEvent-free... (paste needs a real shortcut; skip)
-// Passive: stay key for a window; an EXTERNAL trusted rp-input-inject injects.
-// Re-assert key aggressively to beat focus races, then read back.
-var ticks = 0
-Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { t in
-  win.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true); win.makeFirstResponder(tv)
-  ticks += 1
-  if ticks >= 16 {
-    t.invalidate()
-    let got = tv.string
-    let line = "TARGET_GOT:[\(got)] isKey=\(win.isKeyWindow)\n"
-    try? line.data(using: .utf8)!.write(to: URL(fileURLWithPath: "/tmp/rp-target-result.txt"))
-    FileHandle.standardError.write(line.data(using: .utf8)!)
-    exit(got.contains("안녕") ? 0 : 1)
-  }
+// Passive sink: stay alive indefinitely (until killed), re-assert key, and keep
+// writing the current textview contents to a file so an external reader can see
+// what landed at any time. Lives long enough for a full live chain to deliver.
+Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+  win.makeKeyAndOrderFront(nil); win.makeFirstResponder(tv)
+  let got = tv.string
+  try? "TARGET_GOT:[\(got)] isKey=\(win.isKeyWindow)\n".data(using: .utf8)!
+    .write(to: URL(fileURLWithPath: "/tmp/rp-target-result.txt"))
 }
 app.run()

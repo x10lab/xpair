@@ -44,19 +44,39 @@ func injectKey(_ code: CGKeyCode, _ flags: CGEventFlags) {
   let d = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true); d?.flags = flags; d?.post(tap: .cghidEventTap)
   let u = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false); u?.flags = flags; u?.post(tap: .cghidEventTap)
 }
-func injectText(_ s: String) {
-  // Text (incl. Korean) via Accessibility: set the focused element's selected
-  // text → inserts exact Unicode at the cursor. CGEvent keyboardSetUnicodeString
-  // does NOT reach Cocoa/most apps (verified: empty in a real NSTextView even
-  // when key+focused+trusted); System Events keystroke reaches but MANGLES Hangul
-  // syllables. AX kAXSelectedTextAttribute is the only path that lands exact
-  // Korean (verified: "안녕하세요" intact in NSTextView, rc=0). See INPUT-FINDINGS.md.
+// Find a focused/text element: production = system-wide focused element (whatever
+// app the host user is in). RP_INPUT_TARGET_PID (test only) = target a specific
+// app's text area by pid, bypassing the frontmost-active requirement (used by the
+// live full-chain harness where the automated env can't make a window active).
+func textTargetElement() -> AXUIElement? {
+  if let pidStr = ProcessInfo.processInfo.environment["RP_INPUT_TARGET_PID"], let pid = Int32(pidStr) {
+    func find(_ e: AXUIElement, _ d: Int) -> AXUIElement? {
+      if d > 14 { return nil }
+      var r: CFTypeRef?; AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
+      if (r as? String) == "AXTextArea" { return e }
+      var k: CFTypeRef?
+      if AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &k) == .success, let a = k as? [AXUIElement] {
+        for c in a { if let f = find(c, d + 1) { return f } }
+      }
+      return nil
+    }
+    return find(AXUIElementCreateApplication(pid), 0)
+  }
   let sys = AXUIElementCreateSystemWide()
   var f: CFTypeRef?
-  guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &f) == .success,
-        let el = f else { log("injectText: no focused element"); return }
-  let r = AXUIElementSetAttributeValue(el as! AXUIElement, kAXSelectedTextAttribute as CFString, s as CFString)
-  if r != .success { log("injectText: AXSetSelectedText rc=\(r.rawValue)") }
+  if AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &f) == .success { return (f as! AXUIElement) }
+  return nil
+}
+
+func injectText(_ s: String) {
+  // Text (incl. Korean) via Accessibility — insert exact Unicode. CGEvent
+  // keyboardSetUnicodeString does NOT reach Cocoa/most apps; System Events
+  // mangles Hangul. AX kAXSelectedTextAttribute lands exact Korean. See FINDINGS.
+  guard let el = textTargetElement() else { log("injectText: no target element"); return }
+  // prefer selected-text (insert at cursor); fall back to value (replace) for elements that reject it
+  var r = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, s as CFString)
+  if r != .success { r = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, s as CFString) }
+  if r != .success { log("injectText: AX set rc=\(r.rawValue)") }
 }
 
 func handle(_ j: [String: Any]) {
