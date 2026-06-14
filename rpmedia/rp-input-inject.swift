@@ -40,9 +40,43 @@ func injectClick(_ p: CGPoint, right: Bool) {
   CGEvent(mouseEventSource: src, mouseType: down, mouseCursorPosition: p, mouseButton: btn)?.post(tap: .cghidEventTap)
   CGEvent(mouseEventSource: src, mouseType: up, mouseCursorPosition: p, mouseButton: btn)?.post(tap: .cghidEventTap)
 }
-func injectKey(_ code: CGKeyCode, _ flags: CGEventFlags) {
-  let d = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true); d?.flags = flags; d?.post(tap: .cghidEventTap)
-  let u = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false); u?.flags = flags; u?.post(tap: .cghidEventTap)
+func axDeleteLast() {
+  guard let el = textTargetElement() else { return }
+  var v: CFTypeRef?
+  if AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success,
+     var s = v as? String, !s.isEmpty {
+    s.removeLast()
+    AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, s as CFString)
+  }
+}
+
+func injectKey(_ code: Int, _ flags: UInt64) {
+  // Text-producing keys with no modifier → AX text path (reliable + targetable),
+  // matching the AX text injection used for typed characters:
+  //   Return(36)→"\n", Tab(48)→"\t", Delete/Backspace(51)→delete last char.
+  if flags == 0 {
+    switch code {
+    case 36: injectText("\n"); return
+    case 48: injectText("\t"); return
+    case 51: axDeleteLast(); return
+    default: break
+    }
+  }
+  // True shortcuts (cmd/ctrl/... + key) and other keys → System Events `key code`.
+  // CGEvent keyboard does NOT reach apps (verified); System Events does. Targets
+  // the FRONTMOST app (a real host's focused app); layout-independent.
+  var mods: [String] = []
+  if flags & 0x100000 != 0 { mods.append("command down") }
+  if flags & 0x020000 != 0 { mods.append("shift down") }
+  if flags & 0x040000 != 0 { mods.append("control down") }
+  if flags & 0x080000 != 0 { mods.append("option down") }
+  let using = mods.isEmpty ? "" : " using {\(mods.joined(separator: ", "))}"
+  let script = "tell application \"System Events\" to key code \(code)\(using)"
+  let p = Process()
+  p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+  p.arguments = ["-e", script]
+  p.standardError = FileHandle.nullDevice
+  try? p.run(); p.waitUntilExit()
 }
 // Find a focused/text element: production = system-wide focused element (whatever
 // app the host user is in). RP_INPUT_TARGET_PID (test only) = target a specific
@@ -85,7 +119,7 @@ func handle(_ j: [String: Any]) {
   switch t {
   case "m": if let rx = j["rx"] as? Double, let ry = j["ry"] as? Double { injectMove(point(rx, ry)) }
   case "c": if let rx = j["rx"] as? Double, let ry = j["ry"] as? Double { injectClick(point(rx, ry), right: (j["btn"] as? String) == "r") }
-  case "k": if let code = j["code"] as? Int { injectKey(CGKeyCode(code), CGEventFlags(rawValue: UInt64(j["flags"] as? Int ?? 0))) }
+  case "k": if let code = j["code"] as? Int { injectKey(code, UInt64(j["flags"] as? Int ?? 0)) }
   case "x": if let s = j["s"] as? String { injectText(s) }
   default: break
   }

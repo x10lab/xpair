@@ -39,4 +39,5 @@ ws.onmessage=async ev=>{const m=JSON.parse(ev.data);
   else if(m.type==='candidate'){try{await pc.addIceCandidate({candidate:m.candidate,sdpMid:m.sdpMid,sdpMLineIndex:m.sdpMLineIndex});}catch(_e){}}};
 // test hook: fire a Korean compositionend (real IME hard to script)
 window.fireKorean=s=>{cap.focus();cap.dispatchEvent(new CompositionEvent('compositionend',{data:s}));};
+window.fireKeyRaw=(code,flags)=>{if(ctlDC&&ctlDC.readyState==='open')ctlDC.send(JSON.stringify({t:'k',code,flags:flags||0,seq:++seq}));};
 </script></body></html>
