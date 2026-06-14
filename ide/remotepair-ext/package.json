@@ -1,0 +1,156 @@
+{
+  "publisher": "x10lab",
+  "name": "remotepair",
+  "displayName": "RemotePair",
+  "description": "Turns the RemotePair IDE into a remote-pair client: live Remote Desktop of the host, input forwarding, one-click SSH connect, and host-side notifications.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/x10lab/remotepair-ide.git"
+  },
+  "icon": "media/icon-128.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "remotepair.openRemoteDesktop",
+        "title": "RemotePair: Open Remote Desktop",
+        "icon": "$(device-desktop)"
+      },
+      {
+        "command": "remotepair.connectHost",
+        "title": "RemotePair: Connect to Host",
+        "icon": "$(remote)"
+      },
+      {
+        "command": "remotepair.remoteDesktop.refresh",
+        "title": "RemotePair: Refresh Remote Desktop",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "remotepair.remoteDesktop.toggleInput",
+        "title": "RemotePair: Toggle Input Forwarding",
+        "icon": "$(record-keys)"
+      },
+      {
+        "command": "remotepair.ensureExtensions",
+        "title": "RemotePair: Install AI Extensions"
+      },
+      {
+        "command": "remotepair.setupFileAccess",
+        "title": "RemotePair: Set Up File Access (folder mapping / mount)"
+      },
+      {
+        "command": "remotepair.setupLayout",
+        "title": "RemotePair: Reset Layout (terminal left, RD tab right)"
+      },
+      {
+        "command": "remotepair.openFileBrowser",
+        "title": "RemotePair: 파일 탐색기 열기 (Open File Browser)"
+      },
+      {
+        "command": "remotepair.openSettings",
+        "title": "RemotePair: 설정 열기 (Open Settings)"
+      },
+      {
+        "command": "remotepair.launchRemoteClaude",
+        "title": "RemotePair: Launch Remote Claude (mosh+tmux+claude)",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "remotepair.remoteDesktop.refresh",
+          "when": "activeWebviewPanelId == 'remotepair.remoteDesktop'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "remotepair.remoteDesktop.toggleInput",
+          "when": "activeWebviewPanelId == 'remotepair.remoteDesktop'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "remotepair.connectHost",
+          "when": "activeWebviewPanelId == 'remotepair.remoteDesktop'",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "window.titleBarStyle": "native",
+      "workbench.statusBar.visible": true,
+      "workbench.editor.showTabs": "multiple",
+      "workbench.startupEditor": "none",
+      "terminal.integrated.tabs.enabled": true
+    },
+    "configuration": {
+      "title": "RemotePair",
+      "properties": {
+        "remotepair.remoteDesktop.mode": {
+          "type": "string",
+          "enum": ["auto", "v2", "v1", "v0"],
+          "enumDescriptions": [
+            "Try v2 WebRTC (H.264/UDP) first, then v1 WebSocket JPEG, then v0 polling",
+            "Always use v2 WebRTC H.264/UDP stream (requires remote-pair-screen serve-webrtc on host) — highest performance",
+            "Always use v1 WebSocket JPEG stream (requires remote-pair-screen serve on host)",
+            "Always use v0 SSH screenshot polling (legacy)"
+          ],
+          "default": "auto",
+          "description": "Remote Desktop streaming mode. v2 = WebRTC H.264 over UDP (lowest latency, ~30fps, hardware-encoded); v1 = WebSocket JPEG (~10fps); v0 = SSH screenshot polling (~1fps). 'auto' prefers v2, then v1, then v0."
+        }
+      }
+    },
+    "walkthroughs": [
+      {
+        "id": "remotepair.setup",
+        "title": "RemotePair setup",
+        "description": "Connect to your host, understand the host-side permission model, and install the AI extensions.",
+        "steps": [
+          {
+            "id": "remotepair.setup.connect",
+            "title": "Connect to your host",
+            "description": "RemotePair drives a remote macOS host (default REMOTE_HOST from ~/.remote-pair/client.env). Click below to open the host filesystem over SSH.\n[Connect to Host](command:remotepair.connectHost)",
+            "media": {
+              "markdown": "media/walkthrough-connect.md"
+            }
+          },
+          {
+            "id": "remotepair.setup.fileaccess",
+            "title": "Set up file access",
+            "description": "Choose how this client reaches the host's files: Open Remote - SSH (edit the host directly), folder mapping + sync, or mount. Run the interactive setup to configure the host, folder mapping, and backend.\n[Run setup](command:remotepair.setupFileAccess)",
+            "media": {
+              "markdown": "media/walkthrough-fileaccess.md"
+            }
+          },
+          {
+            "id": "remotepair.setup.permissions",
+            "title": "Permissions are host-side",
+            "description": "Screen recording, accessibility (clicks/keys) and folder access are granted on the HOST machine (RemotePairHost.app), not on this client. If the Remote Desktop is blank, check the host's System Settings > Privacy & Security.",
+            "media": {
+              "markdown": "media/walkthrough-permissions.md"
+            }
+          },
+          {
+            "id": "remotepair.setup.extensions",
+            "title": "Install the AI extensions",
+            "description": "RemotePair bundles Claude Code, ChatGPT, and Open Remote - SSH. They are installed automatically on first run; you can re-run it anytime.\n[Install AI Extensions](command:remotepair.ensureExtensions)",
+            "media": {
+              "markdown": "media/walkthrough-extensions.md"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

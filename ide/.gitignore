@@ -1,0 +1,6 @@
+/vscode/
+/VSCode-darwin-*/
+*.dmg
+*.vsix
+**/node_modules/
+**/target/
