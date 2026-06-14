@@ -26,6 +26,8 @@ use clap::{Parser, Subcommand};
 use xcap::Monitor;
 
 mod serve;
+#[cfg(feature = "webrtc")]
+mod serve_webrtc;
 
 /// License-clean screen-capture sidecar for RemotePair Remote Desktop (v1).
 #[derive(Parser, Debug)]
@@ -74,6 +76,27 @@ enum Command {
         #[arg(long, default_value_t = 1.0)]
         scale: f32,
     },
+    /// Start the v1b WebRTC (UDP/RTP) H.264 screen server (requires the
+    /// `webrtc` build feature + the `rp-vt-encode` helper on the host).
+    ///
+    /// Signaling is a WebSocket on 127.0.0.1:<port>; media flows P2P over
+    /// UDP/ICE. The IDE webview connects via RTCPeerConnection and renders the
+    /// H.264 track into a <video>.
+    #[cfg(feature = "webrtc")]
+    ServeWebrtc {
+        /// TCP port for the signaling WebSocket (bound on 127.0.0.1).
+        #[arg(long, default_value_t = 8890)]
+        port: u16,
+        /// Target frames per second.
+        #[arg(long, default_value_t = 30)]
+        fps: u32,
+        /// Target H.264 bitrate in bits/sec.
+        #[arg(long, default_value_t = 4_000_000)]
+        bitrate: u32,
+        /// Downscale factor (0.1-1.0); applied only to changed frames.
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+    },
 }
 
 fn main() -> ExitCode {
@@ -87,6 +110,13 @@ fn main() -> ExitCode {
             quality,
             scale,
         } => serve::run(port, fps, quality, scale),
+        #[cfg(feature = "webrtc")]
+        Command::ServeWebrtc {
+            port,
+            fps,
+            bitrate,
+            scale,
+        } => serve_webrtc::run(port, fps, bitrate, scale),
     };
 
     match result {
