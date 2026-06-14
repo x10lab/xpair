@@ -67,6 +67,12 @@ enum Command {
         /// JPEG quality (1-100). Higher = better image, larger frames.
         #[arg(long, default_value_t = 60)]
         quality: u8,
+        /// Downscale factor for captured frames (0.1-1.0). 1.0 = native
+        /// resolution. On a Retina display (e.g. 2560x1600) a scale of 0.5
+        /// quarters the pixel count — much smaller frames and faster encode —
+        /// at the cost of some text sharpness. Applied only to changed frames.
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
     },
 }
 
@@ -79,7 +85,8 @@ fn main() -> ExitCode {
             port,
             fps,
             quality,
-        } => serve::run(port, fps, quality),
+            scale,
+        } => serve::run(port, fps, quality, scale),
     };
 
     match result {

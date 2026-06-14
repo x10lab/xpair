@@ -17,3 +17,6 @@ assets/icon/*.iconset/
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# 참고용 외부 레퍼런스(비교 분석용, 커밋 금지)
+context/
