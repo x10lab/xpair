@@ -1,7 +1,0 @@
-{
-  "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair/.playwright-mcp/rp-webrtc-render.png\"}",
-  "error": "File does not exist. Note: your current working directory is /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair/native/rpmedia.",
-  "timestamp": "2026-06-14T15:58:55.233Z",
-  "retry_count": 1
-}
