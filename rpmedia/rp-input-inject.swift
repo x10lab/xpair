@@ -12,10 +12,15 @@
 // Needs Accessibility (TCC). Korean text uses keyboardSetUnicodeString (layout-independent).
 import Foundation
 import CoreGraphics
+import ApplicationServices
 
 let src = CGEventSource(stateID: .hidSystemState)
 let err = FileHandle.standardError
 func log(_ s: String) { err.write((s + "\n").data(using: .utf8)!) }
+// Cross-process CGEvent delivery to OTHER apps requires THIS binary to be
+// Accessibility-trusted. (A same-process CGEventTap can capture posted events
+// even when untrusted — which is why earlier tap-based tests gave false pass.)
+log("rp-input-inject: AXIsProcessTrusted=\(AXIsProcessTrusted())")
 
 // display logical bounds for relative→point mapping (queried once)
 let mainBounds = CGDisplayBounds(CGMainDisplayID())

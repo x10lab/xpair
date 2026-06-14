@@ -7,6 +7,16 @@ import Cocoa
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
+// Edit menu so cmd+V / cmd+C / cmd+X route to the first responder (paste:, etc.)
+let mainMenu = NSMenu()
+let editTop = NSMenuItem(); mainMenu.addItem(editTop)
+let editMenu = NSMenu(title: "Edit")
+editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+editTop.submenu = editMenu
+app.mainMenu = mainMenu
+
 let win = NSWindow(contentRect: NSMakeRect(300, 300, 600, 240),
                    styleMask: [.titled], backing: .buffered, defer: false)
 win.title = "rp-input-target"

@@ -30,3 +30,11 @@
 ## 검증된 부분(유효)
 전송 체인(클라 IME캡쳐→DataChannel→호스트 stdin)·좌표·throttle·seq는 그대로 유효.
 바뀌는 건 stdin 이후 **주입 백엔드**뿐(JSON 와이어 계약 불변).
+
+## 추가 확정 (2차 검증)
+- rp-input-inject `AXIsProcessTrusted=true` — **신뢰됨인데도** CGEvent 미도달. 권한 문제 아님.
+- CGEvent **평범한 keycode**(code 0/1/2, modifier 없음)도 NSTextView 빈 값 → unicode경로만이 아니라
+  **CGEvent 키보드 전달 자체가 NSTextView에 안 됨**(이유 불명이나 재현 일관).
+- 클립보드+cmd+V paste: RPTarget에 Edit메뉴 추가했으나 하네스에서 미발화(타이밍/포커스 플레이키) —
+  실앱(Edit메뉴 보유)에서 재검증 필요. System Events keystroke 도달은 확정.
+- 결론 불변: 키보드 주입 백엔드 = **System Events/AX**. 한글 = 클립보드 paste 또는 AX insert(실앱 검증).
