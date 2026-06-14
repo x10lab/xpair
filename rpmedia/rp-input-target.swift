@@ -27,6 +27,7 @@ win.contentView!.addSubview(tv)
 win.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
 win.makeFirstResponder(tv)
+try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: "/tmp/rptarget.pid", atomically: true, encoding: .utf8)
 
 import ApplicationServices
 

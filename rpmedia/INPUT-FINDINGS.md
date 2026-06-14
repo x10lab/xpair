@@ -57,3 +57,17 @@ rc=0`. CGEvent(미도달)·System Events(한글깨짐)와 달리 **정확 Unicod
 **남은 검증(실호스트/2대):** granted 헬퍼 + 실제 포커스된 앱(TextEdit/브라우저)에 AX insert →
 한글 landing. 메커니즘은 same-process로 증명됨. 단축키(cmd+s 등)는 별도 — CGEvent 미도달이라
 System Events keystroke(modifier) 경로 필요. 마우스는 CGEvent 검증 별도.
+
+## ✅ CROSS-PROCESS 확정 (4차 — 최종)
+PID-타겟 AX(`AXUIElementCreateApplication(pid)`→AXTextArea→set kAXValue)로 frontmost-active
+의존을 우회해 cross-process AX 주입을 증명:
+```
+프로세스A(rp-ax-pid): RPTarget pid 타겟 → AXTextArea 찾음 → set "안녕하세요 cross 입력 OK" rc=0
+프로세스B(rp-ax-read): 같은 textarea readback → READBACK:[안녕하세요 cross 입력 OK]
+```
+→ **별도 프로세스가 실제 NSTextView에 한글을 정확히 cross-process AX insert**함을 독립 readback으로
+확정. CGEvent(미도달)·System Events(한글깨짐)와 결정적으로 다름.
+
+**프로덕션 injectText**: system-wide-focused AX(사용자가 *지금 포커스한* 앱 타겟)가 맞음 —
+실호스트는 그 앱이 active라 동작. PID 타겟은 메커니즘 증명용. 헬퍼는 Accessibility grant 필요.
+하네스: rp-ax-pid.swift(주입), rp-ax-read.swift(검증), rp-input-target.swift(NSTextView sink).
