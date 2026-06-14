@@ -16,7 +16,7 @@ import CoreVideo
 func die(_ m: String) -> Never { FileHandle.standardError.write((m+"\n").data(using:.utf8)!); exit(1) }
 
 let a = CommandLine.arguments
-guard a.count >= 4, let FPS = Int(a[1]), let BR = Int(a[2]), let SCALE = Double(a[3]) else {
+guard a.count >= 4, let argFps = Int(a[1]), let argBr = Int(a[2]), let argScale = Double(a[3]) else {
   die("usage: rp-screencap <fps> <bitrate_bps> <scale 0.1..1.0>")
 }
 let stdoutFH = FileHandle.standardOutput
@@ -24,8 +24,11 @@ let startCode = Data([0,0,0,1])
 
 // ---- VT encoder (created once we know dimensions) ----
 final class Enc {
+  let fps: Int
+  let bitrate: Int
   var session: VTCompressionSession?
   var au = Data()
+  init(fps: Int, bitrate: Int) { self.fps = fps; self.bitrate = bitrate }
   func ensure(_ w: Int, _ h: Int) {
     if session != nil { return }
     var s: VTCompressionSession?
@@ -39,14 +42,14 @@ final class Enc {
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
-    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (FPS * 2) as CFNumber)
-    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: BR as CFNumber)
-    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: FPS as CFNumber)
+    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (self.fps * 2) as CFNumber)
+    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: self.bitrate as CFNumber)
+    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: self.fps as CFNumber)
     VTCompressionSessionPrepareToEncodeFrames(sess)
     session = sess
   }
 }
-let enc = Enc()
+let enc = Enc(fps: argFps, bitrate: argBr)
 
 func appendParamSets(_ fmt: CMFormatDescription) {
   var count = 0
@@ -114,9 +117,9 @@ SCShareableContent.getWithCompletionHandler { content, err in
   }
   let filter = SCContentFilter(display: display, excludingWindows: [])
   let cfg = SCStreamConfiguration()
-  cfg.width = max(2, Int(Double(display.width) * SCALE)) & ~1
-  cfg.height = max(2, Int(Double(display.height) * SCALE)) & ~1
-  cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(FPS))
+  cfg.width = max(2, Int(Double(display.width) * argScale)) & ~1
+  cfg.height = max(2, Int(Double(display.height) * argScale)) & ~1
+  cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(argFps))
   cfg.pixelFormat = kCVPixelFormatType_32BGRA
   cfg.queueDepth = 5
   cfg.showsCursor = true
@@ -125,7 +128,7 @@ SCShareableContent.getWithCompletionHandler { content, err in
     try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: DispatchQueue(label: "rp.sck"))
     stream.startCapture { e in
       if let e = e { die("startCapture failed (Screen Recording grant?): \(e)") }
-      FileHandle.standardError.write("rp-screencap: SCK \(cfg.width)x\(cfg.height) @\(FPS)fps capturing\n".data(using:.utf8)!)
+      FileHandle.standardError.write("rp-screencap: SCK \(cfg.width)x\(cfg.height) @\(argFps)fps capturing\n".data(using:.utf8)!)
     }
   } catch { die("addStreamOutput/start failed: \(error)") }
   theStream = stream

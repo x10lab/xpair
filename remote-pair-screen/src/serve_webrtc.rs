@@ -14,7 +14,7 @@
 //! Client = browser/webview `RTCPeerConnection` (Chromium native WebRTC, decodes
 //! H.264 on macOS/Windows/Linux → cross-platform) rendering into a `<video>`.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,16 +36,18 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
-fn encoder_path() -> String {
-    if let Ok(p) = std::env::var("RP_VT_ENCODE") {
+/// Resolve the SCK capture+encode helper (`rp-screencap`). It self-captures via
+/// ScreenCaptureKit and encodes H.264 — no raw-frame pipe, no Rust-side capture.
+fn screencap_path() -> String {
+    if let Ok(p) = std::env::var("RP_SCREENCAP") {
         return p;
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    let deployed = format!("{home}/.remote-pair/bin/rp-vt-encode");
+    let deployed = format!("{home}/.remote-pair/bin/rp-screencap");
     if std::path::Path::new(&deployed).exists() {
         return deployed;
     }
-    "rp-vt-encode".to_string()
+    "rp-screencap".to_string()
 }
 
 pub fn run(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), String> {
@@ -155,7 +157,7 @@ async fn handle_session(
 
     // --- encoder pipeline (spawned once we know dimensions) ---
     let (au_tx, mut au_rx) = mpsc::channel::<Vec<u8>>(16);
-    let cap_handle = spawn_capture_encoder(fps, bitrate, scale, au_tx)?;
+    let cap_handle = spawn_screencap(fps, bitrate, scale, au_tx)?;
 
     // rtp task: forward access units to the track as H264 samples
     let track_w = track.clone();
@@ -228,115 +230,46 @@ async fn handle_session(
     Ok(())
 }
 
-/// Handle to stop the capture/encoder threads.
+/// Handle to stop the capture/encode helper process.
 struct CaptureHandle {
-    stop: Arc<std::sync::atomic::AtomicBool>,
+    child: std::sync::Mutex<std::process::Child>,
 }
 impl CaptureHandle {
     fn stop(&self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut c) = self.child.lock() {
+            let _ = c.kill();
+        }
     }
 }
 
-/// Spawn the encoder process + capture thread (feeds raw BGRA) + reader thread
-/// (emits Annex-B access units to `au_tx`).
-fn spawn_capture_encoder(
+/// Spawn `rp-screencap` (ScreenCaptureKit capture + VideoToolbox H.264 in ONE
+/// process: IOSurface zero-copy, GPU-scaled, on-change — no raw-frame pipe, no
+/// Rust-side capture/swizzle) and stream its Annex-B access units to `au_tx`.
+fn spawn_screencap(
     fps: u32,
     bitrate: u32,
     scale: f32,
     au_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<CaptureHandle, String> {
-    let monitor = crate::primary_monitor()?;
-    let first = monitor
-        .capture_image()
-        .map_err(|e| format!("initial capture (Screen Recording grant?): {e}"))?;
-    let (cap_w, cap_h) = (first.width(), first.height());
-    let enc_w = ((cap_w as f32 * scale) as u32).max(2) & !1;
-    let enc_h = ((cap_h as f32 * scale) as u32).max(2) & !1;
-
-    let enc_bin = encoder_path();
-    eprintln!("serve-webrtc: encoder '{enc_bin}' {enc_w}x{enc_h} @ {fps}fps {bitrate}bps");
-    let mut child = Command::new(&enc_bin)
-        .arg(enc_w.to_string())
-        .arg(enc_h.to_string())
+    let bin = screencap_path();
+    eprintln!("serve-webrtc: capture+encode '{bin}' @ {fps}fps {bitrate}bps scale={scale}");
+    let mut child = Command::new(&bin)
         .arg(fps.to_string())
         .arg(bitrate.to_string())
-        .stdin(Stdio::piped())
+        .arg(format!("{scale}"))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("spawn encoder '{enc_bin}': {e}"))?;
-    let mut enc_stdin = child.stdin.take().ok_or("no encoder stdin")?;
-    let mut enc_stdout = child.stdout.take().ok_or("no encoder stdout")?;
+        .map_err(|e| format!("spawn '{bin}': {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("no helper stdout")?;
 
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);
-
-    // capture thread: xcap -> swizzle BGRA -> encoder stdin
-    {
-        let stop = stop.clone();
-        std::thread::Builder::new()
-            .name("rtp-capture".into())
-            .spawn(move || {
-                let mut prev: Vec<u8> = Vec::new();
-                let mut bgra: Vec<u8> = Vec::with_capacity((enc_w * enc_h * 4) as usize);
-                let mut frame = Some(first);
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let t0 = std::time::Instant::now();
-                    let img = match frame.take() {
-                        Some(f) => f,
-                        None => match monitor.capture_image() {
-                            Ok(f) => f,
-                            Err(_) => {
-                                std::thread::sleep(frame_interval);
-                                continue;
-                            }
-                        },
-                    };
-                    let raw = img.as_raw();
-                    if !prev.is_empty() && prev.as_slice() == raw.as_slice() {
-                        if let Some(r) = frame_interval.checked_sub(t0.elapsed()) {
-                            std::thread::sleep(r);
-                        }
-                        continue;
-                    }
-                    prev.clear();
-                    prev.extend_from_slice(raw);
-                    let src: std::borrow::Cow<xcap::image::RgbaImage> = if scale < 1.0 {
-                        std::borrow::Cow::Owned(xcap::image::imageops::resize(
-                            &img,
-                            enc_w,
-                            enc_h,
-                            xcap::image::imageops::FilterType::Triangle,
-                        ))
-                    } else {
-                        std::borrow::Cow::Borrowed(&img)
-                    };
-                    bgra.clear();
-                    for px in src.as_raw().chunks_exact(4) {
-                        bgra.push(px[2]);
-                        bgra.push(px[1]);
-                        bgra.push(px[0]);
-                        bgra.push(px[3]);
-                    }
-                    if enc_stdin.write_all(&bgra).is_err() {
-                        break;
-                    }
-                    if let Some(r) = frame_interval.checked_sub(t0.elapsed()) {
-                        std::thread::sleep(r);
-                    }
-                }
-            })
-            .map_err(|e| format!("spawn capture thread: {e}"))?;
-    }
-
-    // reader thread: encoder stdout -> au_tx
+    // reader thread: helper stdout (length-prefixed Annex-B AUs) -> au_tx
     std::thread::Builder::new()
         .name("rtp-reader".into())
         .spawn(move || {
             let mut len_buf = [0u8; 4];
             loop {
-                if enc_stdout.read_exact(&mut len_buf).is_err() {
+                if stdout.read_exact(&mut len_buf).is_err() {
                     break;
                 }
                 let len = u32::from_be_bytes(len_buf) as usize;
@@ -344,16 +277,17 @@ fn spawn_capture_encoder(
                     break;
                 }
                 let mut au = vec![0u8; len];
-                if enc_stdout.read_exact(&mut au).is_err() {
+                if stdout.read_exact(&mut au).is_err() {
                     break;
                 }
                 if au_tx.blocking_send(au).is_err() {
                     break;
                 }
             }
-            let _ = child.kill();
         })
         .map_err(|e| format!("spawn reader thread: {e}"))?;
 
-    Ok(CaptureHandle { stop })
+    Ok(CaptureHandle {
+        child: std::sync::Mutex::new(child),
+    })
 }
