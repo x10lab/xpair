@@ -876,30 +876,44 @@ class NotificationPoller {
 }
 
 // --- one-time workbench layout ---------------------------------------------
-// Wireframe: LEFT pane = terminal (the panel, moved to the left), RIGHT pane =
-// the editor area (where the RD tab + file tabs live), no right-side bar.
-// This rearranges the workbench once per profile so we don't fight the user's
-// later manual changes.
+// Wireframe: two INDEPENDENT editor groups —
+//   LEFT  = terminal sessions (shell/claude/codex/gemini CLIs) as editor tabs,
+//           locked so normally-opened files route elsewhere.
+//   RIGHT = files + the pinned RD tab.
+// With terminal.integrated.defaultLocation=editor, terminals open as editor
+// tabs (native horizontal tabs). Locking the LEFT group makes VS Code's native
+// editor-group routing send opened files to the RIGHT (unlocked) group.
 
 async function setupLayout(context, force) {
-  const KEY = "remotepair.layoutInitialized.v3";
+  const KEY = "remotepair.layoutInitialized.v4";
   if (!force && context.globalState.get(KEY)) return;
-  // Minimality (wireframe): no right-side bar, no primary sidebar clutter — the
-  // left is just the (text) rail; everything else lives as editor tabs on a
-  // single unified tab strip.
+  // No right-side (secondary) bar; hide the primary sidebar clutter.
   try {
     await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
   } catch (_e) {}
   try {
     await vscode.commands.executeCommand("workbench.action.closeSidebar");
   } catch (_e) {}
-  // Open one terminal. With terminal.integrated.defaultLocation=editor it opens
-  // as an editor TAB on the same tab strip as RD and files (iTerm2-style unified
-  // tab line), instead of in a separate panel/side pane.
+  // RD is already open (pinned) in the single editor group. Open a terminal —
+  // it opens as an editor tab in the same group.
   try {
     await vscode.commands.executeCommand("workbench.action.terminal.new");
   } catch (e) {
     log(`setupLayout terminal.new: ${e && e.message ? e.message : e}`);
+  }
+  // Move the active terminal to a NEW group on the left → LEFT = terminal,
+  // RIGHT = RD/files (two independent groups).
+  try {
+    await vscode.commands.executeCommand("workbench.action.moveEditorToLeftGroup");
+  } catch (e) {
+    log(`setupLayout moveEditorToLeftGroup: ${e && e.message ? e.message : e}`);
+  }
+  // Lock the LEFT (terminal) group: native routing then sends opened files to
+  // the RIGHT (unlocked) group instead of the terminal group.
+  try {
+    await vscode.commands.executeCommand("workbench.action.lockEditorGroup");
+  } catch (e) {
+    log(`setupLayout lockEditorGroup: ${e && e.message ? e.message : e}`);
   }
   try {
     await context.globalState.update(KEY, true);
