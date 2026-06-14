@@ -798,10 +798,10 @@ index 0f75b632..a70c75f9 100644
 +}
 diff --git a/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
 new file mode 100644
-index 00000000..11e30e13
+index 00000000..9eff0ae7
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,374 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (G005): top-of-Browser actions and per-folder session creation.
 + *
@@ -846,6 +846,7 @@ index 00000000..11e30e13
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { IViewsRegistry, Extensions as ViewExtensions, ViewContentGroups } from '../../../common/views.js';
 +import { EmptyView } from './views/emptyView.js';
++import { WorkbenchStateContext } from '../../../common/contextkeys.js';
 +
 +/**
 + * Browser title-bar (Row-1) action: Explorer → route the Browser inner content back to the
@@ -999,19 +1000,33 @@ index 00000000..11e30e13
 +});
 +
 +/**
-+ * C1 empty-state "Add Root" button. When there are no FOLDER_MAPS roots the Browser shows the
-+ * explorer EmptyView; this viewsWelcome entry renders a single button that runs the mount-first
-+ * `remotepair.browser.addRoot` command (registered in the RemotePair extension). It is the same
-+ * entry point as the populated below-list footer (explorerView.ts append-hook). Shown
-+ * unconditionally on EmptyView (RemotePair owns this welcome content) so a fresh client with zero
-+ * mappings gets the add affordance without any phantom roots. The command-link uses the rocket
-+ * codicon ($(rocket)) so it is visibly distinct from the native New Folder icon (AC6).
++ * C1 empty-state "Add Root" button. When there are no FOLDER_MAPS roots the Browser removes all
++ * workspace roots (extension reconcileBrowserRoots), leaving zero folders → the workbench enters
++ * the 'empty' state and the explorer EmptyView shows. This viewsWelcome entry renders a single
++ * button that runs the mount-first `remotepair.browser.addRoot` command (registered in the
++ * RemotePair extension). It is the same entry point as the populated below-list footer
++ * (explorerView.ts append-hook). The command-link uses the rocket codicon ($(rocket)) so it is
++ * visibly distinct from the native New Folder icon (AC6).
++ *
++ * `when`: gated to the 'empty' workbench state (zero workspace folders, no .code-workspace open) —
++ * the exact state a RemotePair client lands in with zero FOLDER_MAPS roots (the extension manages
++ * roots via updateWorkspaceFolders on a plain window, never a .code-workspace). WITHOUT this gate
++ * the welcome had no `when`, so it was ALWAYS visible and STACKED on top of every native EmptyView
++ * welcome (explorerViewlet.ts:301-373): the viewsWelcome panel renders EVERY descriptor whose
++ * `when` matches (viewPane.ts onDidChangeViewWelcomeContent), so an un-gated entry duplicated
++ * content in the 'workspace'/'folder' states too — exactly where it never belonged (e.g. when a
++ * client HAS folders). Gating to 'empty' confines it to the no-roots Browser and removes the
++ * stacking on the 'workspace'-gated native welcomes (#1/#2, explorerViewlet.ts:301/314). The
++ * remaining native local-empty welcomes (#4/#5, gated on notWorkspace + remoteName=='') are
++ * core-owned and cannot be suppressed from here without editing core; this gate is the maximal
++ * de-stacking achievable in a RemotePair-owned file.
 + */
 +Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeContent(EmptyView.ID, {
 +	content: localize(
 +		{ key: 'remotepairAddRootWelcome', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
 +		"No mapped folders yet.\n[$(rocket) Add Root](command:remotepair.browser.addRoot)\nMounts a host folder and adds it as a Browser root."
 +	),
++	when: WorkbenchStateContext.isEqualTo('empty'),
 +	group: ViewContentGroups.Open,
 +	order: 1
 +});
@@ -1043,6 +1058,12 @@ index 00000000..11e30e13
 +	private readonly starEl: HTMLElement;
 +	private readonly addEl: HTMLElement;
 +	private currentResource: URI | undefined;
++	// True once we have subscribed to the C2 store's onDidChangeFavorites. The store is created
++	// eagerly at startup, but this row template may (in principle) be constructed before that
++	// contribution runs — in which case favoritesStore() is undefined in the ctor and the
++	// subscription would never be made. We therefore (re)try the subscription lazily in
++	// setResource so the star auto-updates as soon as a store exists.
++	private favoritesSubscribed = false;
 +
 +	constructor(
 +		container: HTMLElement,
@@ -1064,32 +1085,67 @@ index 00000000..11e30e13
 +		this.addEl.title = localize('remotepairFolderRowNewSession', "New Session Here");
 +		this.addEl.setAttribute('role', 'button');
 +
-+		// Clicks dispatch the Action2 commands with the row uri; stopPropagation so the tree row's
-+		// own click (open / expand) does not also fire.
++		// Dispatch on MOUSE_DOWN (not CLICK). The explorer tree changes list focus/selection on the
++		// row's native `click` (listWidget MouseController.onViewPointer), and that focus change
++		// re-renders the row template — which calls our setResource(undefined)/setResource(other),
++		// clearing this.currentResource BEFORE a CLICK handler would read it. Result: on a not-yet
++		// list-focused row the command saw an undefined uri and getResourceForCommand fell through to
++		// the (empty) focus branch, so nothing happened until the row was selected first. mousedown
++		// fires before that focus change, while this.currentResource is still the live row uri, and
++		// stopPropagation here keeps the tree from focusing/re-rendering the row out from under us.
++		// We snapshot the uri locally so the value passed to the command is exactly the row's uri.
++		this._register(addDisposableListener(this.starEl, EventType.MOUSE_DOWN, (e: MouseEvent) => {
++			e.stopPropagation();
++			e.preventDefault();
++			const resource = this.currentResource;
++			if (resource) {
++				this.commandService.executeCommand('remotepair.browser.toggleFavorite', resource);
++			}
++		}));
++		this._register(addDisposableListener(this.addEl, EventType.MOUSE_DOWN, (e: MouseEvent) => {
++			e.stopPropagation();
++			e.preventDefault();
++			const resource = this.currentResource;
++			if (resource) {
++				this.commandService.executeCommand('remotepair.browser.newSessionInFolder', resource);
++			}
++		}));
++		// Also swallow the trailing CLICK so a stray click (e.g. synthetic, or if mousedown was
++		// missed) never reaches the tree row and triggers open/expand. No command runs here.
 +		this._register(addDisposableListener(this.starEl, EventType.CLICK, (e: MouseEvent) => {
 +			e.stopPropagation();
 +			e.preventDefault();
-+			if (this.currentResource) {
-+				this.commandService.executeCommand('remotepair.browser.toggleFavorite', this.currentResource);
-+			}
 +		}));
 +		this._register(addDisposableListener(this.addEl, EventType.CLICK, (e: MouseEvent) => {
 +			e.stopPropagation();
 +			e.preventDefault();
-+			if (this.currentResource) {
-+				this.commandService.executeCommand('remotepair.browser.newSessionInFolder', this.currentResource);
-+			}
 +		}));
 +
-+		// Keep the star icon in sync with the C2 store while a folder row is shown.
++		// Keep the star icon in sync with the C2 store while a folder row is shown. Subscribe now if
++		// the store already exists; otherwise setResource will retry (lazy late-binding).
++		this.ensureFavoritesSubscription();
++	}
++
++	/**
++	 * Subscribe (once) to the C2 store's onDidChangeFavorites so the star auto-updates when
++	 * favorites change elsewhere. Idempotent and leak-free: the subscription is registered with
++	 * this row (disposed with it), and the guard prevents re-subscribing on every setResource.
++	 */
++	private ensureFavoritesSubscription(): void {
++		if (this.favoritesSubscribed) {
++			return;
++		}
 +		const store = favoritesStore();
 +		if (store) {
++			this.favoritesSubscribed = true;
 +			this._register(store.onDidChangeFavorites(() => this.updateStarIcon()));
 +		}
 +	}
 +
 +	/** Called by the FilesRenderer on every row render (and with undefined to clear). */
 +	setResource(resource: URI | undefined): void {
++		// Late-bind the favorites subscription in case the store was not yet created at ctor time.
++		this.ensureFavoritesSubscription();
 +		// DR-6: hide on unresolved/cleared rows. Confirm folder-ness via the explorer model;
 +		// findClosest === null (not yet populated) OR a non-directory (file) → hide.
 +		const item = resource ? this.explorerService.findClosest(resource) : null;
@@ -1300,10 +1356,10 @@ index 00000000..b2710f71
 +}
 diff --git a/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
 new file mode 100644
-index 00000000..b7abe7eb
+index 00000000..c825d684
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,350 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (C2): Favorites store + Favorites view at the bottom of the Browser container.
 + *
@@ -1351,6 +1407,7 @@ index 00000000..b7abe7eb
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
 +import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, Extensions as ViewContainerExtensions } from '../../../common/views.js';
++import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 +import { VIEW_CONTAINER } from './explorerViewlet.js';
 +
 +// --- store ------------------------------------------------------------------
@@ -1369,11 +1426,24 @@ index 00000000..b7abe7eb
 +	private readonly _onDidChangeFavorites = this._register(new Emitter<void>());
 +	readonly onDidChangeFavorites: Event<void> = this._onDidChangeFavorites.event;
 +
++	// >0 while THIS store is performing its own multi-scope write (add/removeFavorite). storage's
++	// onDidChangeValue fires synchronously on same-window writes, so without this guard a single
++	// toggle that writes WORKSPACE+PROFILE would fire onDidChangeFavorites up to 3x (one per scope
++	// write + one explicit). We suppress the storage-listener fires during our own writes and emit
++	// exactly once at the end; cross-window storage changes (flag === 0) still fire normally.
++	private _selfWriteDepth = 0;
++
 +	constructor(private readonly storageService: IStorageService) {
 +		super();
 +		// React to writes made in another window/scope so the view stays in sync.
-+		this._register(this.storageService.onDidChangeValue(StorageScope.WORKSPACE, FAVORITES_STORAGE_KEY, this._store)(() => this._onDidChangeFavorites.fire()));
-+		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, FAVORITES_STORAGE_KEY, this._store)(() => this._onDidChangeFavorites.fire()));
++		// RemotePair: `this._store` is the protected DisposableStore inherited from Disposable
++		// (lifecycle.ts) — the same store this._register() adds to. It is the required 3rd
++		// `disposable` arg of onDidChangeValue (it scopes the Event.filter wrapper); the listener
++		// subscription itself is scoped via this._register(...). This matches the canonical
++		// onDidChangeValue usage elsewhere in the workbench (e.g. agentSessionsFilter.ts).
++		const onStorageChange = () => { if (this._selfWriteDepth === 0) { this._onDidChangeFavorites.fire(); } };
++		this._register(this.storageService.onDidChangeValue(StorageScope.WORKSPACE, FAVORITES_STORAGE_KEY, this._store)(onStorageChange));
++		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, FAVORITES_STORAGE_KEY, this._store)(onStorageChange));
 +	}
 +
 +	private readScope(scope: StorageScope.WORKSPACE | StorageScope.PROFILE): string[] {
@@ -1419,13 +1489,19 @@ index 00000000..b7abe7eb
 +	addFavorite(uri: URI): void {
 +		const key = uri.toString();
 +		let changed = false;
-+		for (const scope of [StorageScope.WORKSPACE, StorageScope.PROFILE] as const) {
-+			const list = this.readScope(scope);
-+			if (!list.includes(key)) {
-+				list.push(key);
-+				this.writeScope(scope, list);
-+				changed = true;
++		// Suppress the synchronous per-scope storage-change fires; emit once below (see _selfWriteDepth).
++		this._selfWriteDepth++;
++		try {
++			for (const scope of [StorageScope.WORKSPACE, StorageScope.PROFILE] as const) {
++				const list = this.readScope(scope);
++				if (!list.includes(key)) {
++					list.push(key);
++					this.writeScope(scope, list);
++					changed = true;
++				}
 +			}
++		} finally {
++			this._selfWriteDepth--;
 +		}
 +		if (changed) {
 +			this._onDidChangeFavorites.fire();
@@ -1435,13 +1511,19 @@ index 00000000..b7abe7eb
 +	removeFavorite(uri: URI): void {
 +		const key = uri.toString();
 +		let changed = false;
-+		for (const scope of [StorageScope.WORKSPACE, StorageScope.PROFILE] as const) {
-+			const list = this.readScope(scope);
-+			const next = list.filter(s => s !== key);
-+			if (next.length !== list.length) {
-+				this.writeScope(scope, next);
-+				changed = true;
++		// Suppress the synchronous per-scope storage-change fires; emit once below (see _selfWriteDepth).
++		this._selfWriteDepth++;
++		try {
++			for (const scope of [StorageScope.WORKSPACE, StorageScope.PROFILE] as const) {
++				const list = this.readScope(scope);
++				const next = list.filter(s => s !== key);
++				if (next.length !== list.length) {
++					this.writeScope(scope, next);
++					changed = true;
++				}
 +			}
++		} finally {
++			this._selfWriteDepth--;
 +		}
 +		if (changed) {
 +			this._onDidChangeFavorites.fire();
@@ -1461,11 +1543,35 @@ index 00000000..b7abe7eb
 +
 +let _store: RemotePairFavoritesStore | undefined;
 +
-+/** Register the singleton store (set by the view on first construction). */
++/** Register the singleton store (set eagerly by the workbench contribution below). */
 +export function setFavoritesStore(store: RemotePairFavoritesStore): void { _store = store; }
 +
 +/** Accessor for C3's per-folder star (toggleFavorite / isFavorite) — no hard import cycle. */
 +export function favoritesStore(): RemotePairFavoritesStore | undefined { return _store; }
++
++// --- eager store lifecycle --------------------------------------------------
++//
++// The store USED to be created in RemotePairFavoritesView's constructor. But that view is
++// registered with `collapsed: true` and is constructed lazily (only when first rendered/expanded),
++// so on a session where the user never opens Favorites, favoritesStore() stayed undefined — making
++// the C3 per-folder star a silent no-op (toggleFavorite()?. short-circuits) and the icon never
++// reflecting favorite state. We now create the store EAGERLY in a tiny IWorkbenchContribution at
++// startup and publish it via setFavoritesStore; the Favorites view USES this singleton rather than
++// owning it. Both the star and the view share one store instance.
++
++/**
++ * Eagerly creates the singleton RemotePairFavoritesStore at workbench startup and publishes it via
++ * setFavoritesStore, so C3's per-folder star can toggle/read favorites even if the (collapsed)
++ * Favorites view is never opened. Registered with registerWorkbenchContribution2 below.
++ */
++export class RemotePairFavoritesStoreContribution extends Disposable {
++	static readonly ID = 'workbench.contrib.remotePairFavoritesStore';
++
++	constructor(@IStorageService storageService: IStorageService) {
++		super();
++		setFavoritesStore(this._register(new RemotePairFavoritesStore(storageService)));
++	}
++}
 +
 +// --- view -------------------------------------------------------------------
 +
@@ -1498,9 +1604,15 @@ index 00000000..b7abe7eb
 +		@ICommandService private readonly commandService: ICommandService
 +	) {
 +		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
-+		this.store = this._register(new RemotePairFavoritesStore(storageService));
-+		// Publish the store so C3's per-folder star can toggle favorites without an import cycle.
-+		setFavoritesStore(this.store);
++		// USE the eagerly-created singleton store (RemotePairFavoritesStoreContribution) so the view
++		// and C3's per-folder star share one instance. Fall back to creating + publishing one only if
++		// the contribution somehow has not run yet (defensive; should not happen in practice).
++		let store = favoritesStore();
++		if (!store) {
++			store = this._register(new RemotePairFavoritesStore(storageService));
++			setFavoritesStore(store);
++		}
++		this.store = store;
 +	}
 +
 +	protected override renderBody(container: HTMLElement): void {
@@ -1594,6 +1706,10 @@ index 00000000..b7abe7eb
 +};
 +
 +viewsRegistry.registerViews([favoritesViewDescriptor], VIEW_CONTAINER);
++
++// Create the Favorites store eagerly at startup so the C3 per-folder star works even when the
++// collapsed Favorites view is never opened (BlockStartup: before any view is constructed).
++registerWorkbenchContribution2(RemotePairFavoritesStoreContribution.ID, RemotePairFavoritesStoreContribution, WorkbenchPhase.BlockStartup);
 diff --git a/src/vs/workbench/contrib/files/browser/views/explorerView.ts b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
 index d276b5c9..2ed4089c 100644
 --- a/src/vs/workbench/contrib/files/browser/views/explorerView.ts
