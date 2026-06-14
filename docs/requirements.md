@@ -153,13 +153,89 @@
 
 ### Web 셸 + 에디터 (M3·M4)
 - **M3 — Web 셸 + 터미널**: 브라우저에서 호스트 세션을 다룬다. **code-server**를 임베드해 통합 터미널이 `tmux-aqua attach`로 호스트 세션에 붙고, Detach/Attach 탭 UX를 제공한다.
-- **M4 — 에디터**: code-server에 **Claude Code 익스텐션**을 얹는다. 마켓플레이스는 **Open VSX** 사용(code-server는 MS 마켓 미사용).
-- **code-server 전략(중요)**: from-scratch가 아니다. code-server 레포를 **포크·vendoring**한 뒤 — ① 확장/웹뷰/레이아웃을 **설정으로** 먼저 해결하고, ② 설정으로 안 되는 것만 워크벤치 소스를 **surgical 패치**(점진적, Cursor식). 패치 표면을 최소화해 업스트림 추종 비용을 낮춘다.
+- **M4 — IDE 프론트엔드(RemotePair IDE)**: code-server 경로를 **피벗**해 **VSCodium 포크**(`remotepair-ide`, `~/Spaces/Work/Devs/Lang-Swift/remotepair-ide`)로 전환. 이유: Claude Code / Codex 익스텐션 호환성(마켓플레이스·Node API)을 위해 실제 VS Code / Electron 엔진이 필요했고, code-server의 web-only 환경으로는 불가. 백엔드(M1–M6 tmux-aqua·approve·sync·onboarding)는 재사용.
+  - 번들 id: `com.x10lab.remotepair-ide`(앱 id 통합은 향후 deferred).
+  - 전략: **"코드 유지, UI 숨김"** — upstream rebase 비용을 낮추기 위해 기여 코드를 unregister하지 않고 composite-bar 허용목록 + `when: ContextKeyExpr.false()` 패턴으로만 숨긴다.
+  - dev-watch: `nvm node 22.22.1`, `buildConfig.useEsbuildTranspile=true`(dev 전용); `tsc --noEmit -p src/tsconfig.json --max-old-space-size=8192`가 타입 검증 기준.
 - 왜 웹 셸: GUI 시임(§0.3)을 그대로 재사용 — 웹 마법사가 쓰는 JSON API/127.0.0.1 패턴 위에 셸·에디터를 얹어, 나중에 네이티브 껍데기로 포팅할 때 프론트가 불변.
 
-> **구현 상태(2026-06-13)**:
+> **구현 상태(2026-06-14)**:
 > - **M3 터미널 탭**: 구현됨. `client/web/`(xterm.js SPA)이 `/api/term/*`을 통해 SSH 경유 `capture-pane`/`send-keys`로 tmux-aqua 세션에 연결. alt-screen 한계(vim·htop 등 full-screen 앱은 그대로 캡처 안 됨)는 알려진 제약. → architecture.md §10-2.
-> - **M4 에디터**: 스캐폴드. `client/remote-pair-editor`(start/status/stop), 브리지 `/api/editor/{status,start}` 완성. 포크(`ghyeongl/code-server`) Electron 레이아웃 패치·Claude Code 익스텐션 통합은 스파이크 진행 중. code-server 미설치 시 안내 메시지만 표시. → architecture.md §10-4.
+> - **M4 IDE 프론트엔드**: **G001–G008 전부 구현·검증 완료**. VSCodium 포크(`remotepair-ide`)로 피벗. dev-CDP + 브랜드 빌드(m4, 7회) + 원격 E2E(gh-mac-m1 aqua tmux 소켓 → REMOTEPAIR_E2E_OK) 검증 완료. 남은 작업은 `vscode/src` 변경의 `patches/` 캡처(rebase-safety)뿐. 상세는 §1 IDE Frontend 참조. → `.omc/ultragoal/`
+
+### IDE Frontend (RemotePair IDE) — M4 세부 사양
+
+**포크 레포**: `~/Spaces/Work/Devs/Lang-Swift/remotepair-ide` (VSCodium 베이스).  
+**번들 id**: `com.x10lab.remotepair-ide` (앱 id 통합은 deferred).  
+**원칙**: 코드 보존(rebase 용이) + UI 숨김 전용(composite-bar 허용목록 / `when=false`). 코어 터미널 동작 코드는 **불변 — 절대 수정 금지**. 에지케이스 지뢰밭.
+
+#### 구현 완료 (G001–G008 — dev-CDP + 브랜드 빌드 + 원격 E2E 검증)
+
+**좌측 레일 (Text-only)**
+- 컨테이너: Browser / Sessions / Settings 세 개만 허용(native 컨테이너들은 prune되어 코드는 유지, 레일에서 제거).
+- 구현: `activitybarPart.ts`의 `ActivityBarCompositeBar.isRailAllowedContainer` 패턴 + 허용목록.
+
+**Sessions 사이드바**
+- 임베드된 `EditorPart`에 **네이티브 VS Code 수평 탭**으로 세션 표시(초기 iTerm2 둥근 pill → 사용자 피드백으로 네이티브 flat 탭으로 변경; `multiEditorTabsControl.css`의 pill override 블록 제거, 반응형 가로 스크롤 블록은 유지).
+- **"+" 버튼**: Sessions 뷰 헤더 DOM에 직접 삽입한 커스텀 버튼(ViewTitle action이 이 컨테이너에 렌더되지 않아 DOM 직접 삽입으로 해결). 클릭 → 탭 내 세션 유형 picker 열림.
+- **in-tab New Session picker**: `SessionPickerInput`(EditorInput) + `SessionPickerPane`(EditorPane)으로 구현. 탭 안에 4개 카드(Claude / Shell / Codex / Gemini) 렌더. 카드 선택 → 해당 세션 실행 → picker 탭 닫힘.
+  - Shell: `terminalInstanceService.createInstance({}, TerminalLocation.Editor)`.
+  - Claude: 임베드 그룹에 터미널 열고 `remote-pair launch` sendText.
+  - Codex / Gemini: 터미널 + 각 CLI sendText.
+- 터미널 포커스/입력: 호스팅 레이어의 `focus()` override로 해결. 코어 터미널 동작 미수정.
+- 임베드 그룹 툴바(`+ ⌄ ⊟ ⋯`) CSS로 숨김(커스텀 "+" 와 중복 방지).
+
+**숨겨진 네이티브 UI (코드 보존)**
+- 하단 패널: Problems / Output / Debug / Terminal / Ports — `RemotePairPanelCompositeBar` 허용목록으로 숨김(`remotepair*` 컨테이너만 통과). 코드는 등록 유지(rebase-safe).
+- CHAT / Build-with-Agent(Auxiliary Bar): `RemotePairAuxBarCompositeBar` 허용목록으로 숨김.
+- Outline, Timeline: `when: ContextKeyExpr.false()` — 뷰 디스크립터에만 적용, 코드 유지.
+
+**하단 Session Manager 패널**
+- **세 개의 Panel 컨테이너 탭**(`remotepair.sessions.attached` / `.detached` / `.history`) — 네이티브 Problems/Output/Terminal처럼 하단 가로 탭으로 표시(라벨이 곧 카테고리; "세션 매니저" 단일 라벨 폐기). 공간 절약 위해 패널 기본 높이를 낮게(`layout.ts` `PANEL_SIZE`=90px + `panelPart` `preferredHeight`/`minimumHeight`).
+- G003 허용목록(`remotepair*`)을 통과하는 유일한 패널 그룹.
+  - Attached: 임베드 세션들이 `ITerminalService.instances`를 우회(Editor 위치 생성)하므로 `AttachedSessionsProvider`를 별도 구현해 sidebar가 직접 추적. 카드에 **활성 세션 outline 하이라이트**(`.remotepair-session-card-active`) + **닫기 X 버튼**(`.remotepair-session-card-close`; `AttachedSessionsProvider.close?`/`getActiveId?`).
+  - Detached: `remote-pair ls` 기반 tmux-aqua 세션 목록(dev 환경 = 빈 상태). 클릭 → reattach: 임베드 그룹에 터미널 열고 `remote-pair attach <name>` sendText.
+  - History: IStorageService(workspace scope)로 지난 세션명 유지.
+
+#### 완료 (G005–G008, 브랜드 빌드)
+
+| 항목 | 상태 | 비고 |
+|---|---|---|
+| G005 Browser 멀티루트 | ✅ 완료 | FOLDER_MAPS 모든 clientDir 멀티루트; per-folder "+"; [Add Mapping]; Search/Extensions 진입점 (`~` 확장·`existsSync`·`updateWorkspaceFolders` 반환 처리 포함) |
+| G006 Host 버튼 | ✅ 완료 | status bar 좌측: 호스트명 + 도달성 아이콘; 클릭 → quickpick. 네이티브 "><" SSH 인디케이터 제거. 패키지앱(CDP :9444)에서 실제 호스트 `gh-mac-m1` 표시 검증 |
+| G008 functional-test gate | ✅ 완료 | 36개 기능 인벤토리(`G008-functional-test-inventory.md`) 클릭 테스트 통과 |
+| 브랜드 빌드 검증 | ✅ 완료 | m4에서 branded build 7회; 패키지앱 + 원격 E2E(gh-mac-m1 aqua tmux 소켓 → REMOTEPAIR_E2E_OK) 검증 |
+
+#### future / deferred
+
+| 항목 | 상태 | 비고 |
+|---|---|---|
+| patches/ 캡처 (rebase-safety) | ✅ 캡처·검증 완료 | `vscode/src` 변경(G001–G008, 23파일 +1747/−42)을 `patches/zz-remotepair-ide-frontend.patch`로 캡처. 별도 worktree에 base+42 재구성→git diff로 추출(undo_telemetry·announcement 노이즈 제외). **gold 검증**: 실제 prepare_vscode 순서(json→root패치(zz 마지막)→osx→announcement→telemetry)로 적용 시 작업트리와 0 diff. top repo(remotepair-ide master) 커밋만 남음 |
+| RustDesk-protocol 사이드카 | future/low-priority | §1 Remote Desktop 참조 |
+| 앱 id 통합 | deferred | `com.x10lab.remotepair-ide` → `com.x10lab.remote-pair` 통합은 후속 마일스톤 |
+
+#### G009 — Browser UX 개편 (신규, in-progress, 2026-06-14)
+
+권위 스펙: `remotepair-ide/.omc/specs/deep-interview-browser-multiroot-favorites-ux.md`. 네 컴포넌트:
+
+- **C1 — 루트/매핑 추가 UX (mount-first)**: Browser 폴더 리스트 *아래* 오프셋 버튼 "Add Root/Mapping"(맵 없으면 빈 공간에 동일 버튼, new-folder와 구분되는 아이콘). 클릭 → 호스트 폴더 지정 → **mount-first**: `remote-pair mount`(SMB 기본=맥 내장·커널확장 불필요; SSHFS 옵션 — `docs/m-mount.md`, 런처 `client/remote-pair-mount` 완성)로 마운트 → 마운트포인트(`~/.remote-pair/mounts/...`)를 FOLDER_MAP으로 가리켜 루트 추가. SMB/SSHFS는 실제 OS 마운트라 **Finder에도 자동 노출**. Syncthing 복사동기화는 **legacy**(`SYNC_BACKEND` 기본을 syncthing→mount). row-1 타이틀의 'Add Mapping' 제거(단일 진입점). Browser 루트 = FOLDER_MAPS clientDir만(실행 인자로 열린 비-매핑 워크스페이스 폴더는 표시 안 함).
+- **C2 — Favorites 뷰**: Browser 컨테이너 하단에 별도 뷰(기존 Explorer의 OUTLINE/TIMELINE처럼). 폴더 별표 → Favorites 등록(workspace+global 영속). 항목/'+' 클릭 → 그 폴더에서 **새 Sessions 터미널 시작**(`openSessionInFolder` 재사용) = 빠른 세션 런처.
+- **C3 — 폴더행 인라인 컨트롤**: 모든 폴더 행(루트+모든 하위폴더) 우측에 **호버 시** 별표(Favorite 토글) + '+'(여기서 새 세션). 파일 행엔 없음. `MenuId.ExplorerContext` group:'inline' + `ExplorerFolderContext`.
+- **C4 — Browser = 메타-컨테이너 + 2행 헤더**: Browser는 Sessions와 동일한 *상위* 컨테이너로 하위 컨테이너(Explorer/Search/Extensions/…)를 담는다. **Row-1 버튼 = 하위 컨테이너 라우터**: 클릭 시 Browser 내부 콘텐츠만 교체(현행처럼 전체 창을 덮는 글로벌 뷰렛 이동 ❌, 같은 Browser 프레임 유지). Row-2 = 활성 하위 컨테이너 컨트롤(Explorer면 동적 루트-라벨[클릭한 하위폴더가 속한 루트] + 네이티브 새파일/새폴더/새로고침/접기). **최대 난도 항목** — Explorer/Search/Extensions를 한 컨테이너의 내부-라우팅 하위뷰로 중첩하는 방법을 아키텍트가 확정(후보: View로 등록 후 가시성 토글 / 커스텀 라우터로 각 뷰렛 pane을 Browser body에 호스팅[Sessions 임베드 EditorPart 패턴] / 통합 프레임 유지 composite-swap).
+
+병행 수정(적용·dev 검증 완료, 다음 브랜드 빌드 대기):
+- **터미널 키 입력/포커스**: `RemotePairTerminalSidebarView.focus()`가 `super.focus()`로 컨테이너에 포커스를 뺏던 것 제거 → xterm textarea 직접 포커스 + microtask 재확정(코어 터미널 불변).
+- **우측 사이드바(secondary side bar) 레이아웃 제거**: `layout.ts setAuxiliaryBarHidden`에서 hidden 강제(그리드 공간 0, 코드·노드 보존).
+- **Sessions '+' 중복 제거**: row-1 ViewTitle 액션만 유지, body 커스텀 버튼 제거.
+
+**구현 상태 (2026-06-15):** C1–C4 전부 소스 구현·tsc 0 errors. C4는 dev CDP **스파이크 PASS** — Browser 메타-컨테이너 Row-1(Explorer/Search/Extensions) + 2행헤더 + Explorer↔Search 인-프레임 라우팅(호스팅 SearchView, 활성=Browser 유지, 에러 0). C4 라우터 메커니즘은 plan의 `moveViewsToContainer`(영속화·canToggleVisibility:false 블로커)를 피해, Browser 컨테이너에 RemotePair 소유 뷰(`remotepair.browser.search`)로 네이티브 SearchView를 비영속 호스팅(`remotePairBrowserRouter.ts`). Extensions in-frame은 v1 제외(스파이크 #2). 코어 수정은 explorerView.ts의 마킹된 below-list 푸터(C1)+Row-2 라벨(C4.2)뿐. 남은 것: 패키지 빌드 라이브 검증(C1 mount 풀흐름·C3 호버) + patches/ 재캡처.
+
+#### IDE 프론트엔드 불변식
+1. **코어 터미널 동작 코드 불변**: `xterm`, `TerminalInstance`, `TerminalProcessManager` 등 코어 파일은 절대 수정하지 않는다. 호스팅/임베딩 레이어와 새 contributor 파일만 건드린다.
+2. **"코드 유지, UI 숨김"**: native 컨테이너 unregister 금지. composite-bar 허용목록 + `when=false`만 사용해 upstream rebase를 쉽게 유지한다.
+3. **단일 열기 계약**: 모든 세션 오픈은 `openSession({kind, cmd, hostDir, sessionName})`을 통해 임베드된 `part.activeGroup`으로만, global editorService 우회 금지.
+4. **tsc 클린**: 모든 커밋 전 `tsc --noEmit -p src/tsconfig.json --max-old-space-size=8192` (nvm node 22.22.1) 0 errors.
+5. **dev-watch**: `buildConfig.useEsbuildTranspile=true`는 dev 전용 — production 빌드에 이 설정을 쓰지 않는다.
 
 ### README / 문서
 - 아키텍처 다이어그램, 문제기반 Features, 설치 중심 구성, 깊은 TCC 내부는 본문에서 제거.
@@ -212,8 +288,11 @@
 - **(2026-06-13) 서명 cert 전환을 리네임과 한 릴리스(v0.5.0)에 묶음** — 33849F → 898E32. bundle id 변경 + cert 변경이 동시이므로 designated requirement(identifier+leaf)가 한 번에 무효화되어, **재grant 1회**로 끝난다. 기존의 "릴리스는 m4(33849F)에서만 서명" 항목을 대체한다(CI 서명, p12는 gh secret). 이후 릴리스는 898E32로 일관 서명.
 - **(2026-06-13) GUI는 웹 우선** — localhost 웹 마법사로 시작 → 나중에 네이티브 껍데기(WKWebView/Electron)로 포팅. 프론트는 끝까지 웹, JSON API가 교체 가능한 시임. 앱엔 네트워크 서버를 넣지 않음.
 - **(2026-06-13) 에디터는 code-server 포크 vendoring** — 설정 우선, 안 되는 것만 surgical 패치(점진적, Cursor식). from-scratch 아님. Claude Code 익스텐션은 Open VSX.
+- **(2026-06-14) M4 에디터를 VSCodium 포크(RemotePair IDE)로 피벗** — code-server 경로 폐기. Claude Code / Codex 익스텐션 호환성(Node API·마켓플레이스)이 실제 VS Code / Electron 엔진을 요구함. 백엔드(M1–M6)는 재사용. 전략: "코드 유지, UI 숨김"(composite-bar 허용목록 + `when=false`); 코어 터미널 동작 코드 불변(에지케이스 지뢰밭). 번들 id `com.x10lab.remotepair-ide`(앱 id 통합 deferred). dev-watch: nvm node 22.22.1 + `buildConfig.useEsbuildTranspile=true`(dev 전용).
 - **(2026-06-13) 온보딩 마법사를 M1 첫 마일스톤으로** — 역할→권한→재grant→SSH→매핑→Syncthing→검증. 브리지는 얇은 HTTP↔CLI 어댑터(설치 로직 재구현 금지).
 - **(2026-06-13) 올인원은 오케스트레이션만** — 베스트 OSS를 설치·구성·실행만. RustDesk(AGPL)는 arm's-length 별도 프로세스 또는 macOS VNC/WebRTC로 대체(전염 차단). 상용 배포 전 법률 확인.
+- **(2026-06-14) 파일 접근 기본을 mount-first로 전환** — Browser 루트/매핑 추가는 기본적으로 호스트 폴더를 **마운트**(`remote-pair mount`, SMB 기본=맥 내장, SSHFS 옵션; `docs/m-mount.md`)하고 마운트포인트를 FOLDER_MAP으로 가리킨다. 단일 source-of-truth·무충돌·Finder 자동 노출. Syncthing 복사동기화는 **legacy**로 유지(`SYNC_BACKEND` 기본 syncthing→mount). 런처는 완성, config/wizard/doctor wiring은 follow-up. RustDesk 사이드카(§1)는 사용자 직접 진행으로 본 스코프 제외.
+- **(2026-06-14) Browser는 메타-컨테이너** — Sessions와 대칭. Browser는 하위 컨테이너(Explorer/Search/Extensions/…)를 담는 상위 컨테이너이고 2행 헤더 Row-1이 하위뷰 라우터. 클릭 시 전체 창을 덮는 글로벌 뷰렛 이동이 아니라 Browser 내부 콘텐츠만 교체. 중첩 메커니즘은 아키텍트 확정(§1 G009).
 - **(2026-06-13) Remote Desktop 보류** — v0 screencapture 채널/VNC, v1 WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring 추가).
 - 버전 정책: pre-1.0 유지. 리네임·cert 전환은 v0.5.0 마이너 bump로 처리, 이후 패치 +0.0.1.
 
@@ -253,6 +332,6 @@
 | **M1** | 온보딩 마법사 + 정체성 통일(리네임·bundle id·cask·cert, v0.5.0) | 마법사 구현됨; 리네임·cert 전환은 v0.5.0 예정(현재 정체성 `-host` 유지) | `remote-pair web` 마법사가 역할→권한→재grant→SSH→매핑→Syncthing→검증을 끝까지 안내. 재grant 1회 후 `status` = AX✓ SR✓. dual-id 프로빙 동작. | §1 온보딩·리네임, architecture.md §9 |
 | **M2** | 알림 포워딩 | 구현됨 | host의 완료/Stop/질문/approve 알림이 client로 전달, 종류 토글. 신규 Notification/Stop 훅이 `doctor`에서 점검됨. | §1 알림 포워딩, architecture.md §10-3 |
 | **M3** | Web 셸 + 터미널 | 구현됨(alt-screen 한계 있음) | xterm.js 터미널이 `capture-pane`/`send-keys` SSH 경유로 tmux-aqua 세션에 연결. Detach/Attach 탭. JSON API 시임 재사용. | §1 Web 셸, architecture.md §10-2 |
-| **M4** | 에디터 | 스캐폴드(포크 레이아웃 패치 WIP) | code-server에 Claude Code 익스텐션(Open VSX). 런처·브리지 완성, Electron 패치 진행 중. | §1 Web 셸/에디터, architecture.md §10-4 |
+| **M4** | IDE 프론트엔드 (RemotePair IDE — VSCodium 포크) | **G001–G008 완료 + 브랜드 빌드·원격 E2E 검증** | 레일(Browser/Sessions/Settings), Sessions 임베드 EditorPart + 네이티브 탭 + in-tab picker(Claude/Shell/Codex/Gemini), 탭형 Session Manager(Attached/Detached/History, 활성 하이라이트+X), Host 버튼. 남은 작업: `patches/` 캡처(rebase-safety). | §1 IDE Frontend, `.omc/ultragoal/` |
 | **M5** | Remote Desktop | 스캐폴드(VNC launcher 구현, WebRTC는 스파이크) | v0: macOS Screen Sharing arm's-length 런처. v1: WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring). RustDesk 쓰면 arm's-length. | §1 Remote Desktop·올인원, architecture.md §10-5 |
 | **M6** | host hot-update | 설계 확정, AX 상속 스파이크 대기 | 무중단 앱 업데이트(L1 glue 핫스왑 + L2 네이티브 재실행). **⚠️ 선행 스파이크 필수**: 앱 재시작 시 tmux 부모가 launchd로 바뀌어 AX 상속이 깨지는지 먼저 검증. | §4 hot-update 스파이크, architecture.md §11 |

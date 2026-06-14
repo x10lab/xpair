@@ -20,3 +20,9 @@ __pycache__/
 
 # 참고용 외부 레퍼런스(비교 분석용, 커밋 금지)
 context/
+
+# 디버그 렌더/스크린샷 (커밋 금지)
+/rp-*.png
+
+# MCP 브라우저 산출물
+.playwright-mcp/
