@@ -1,8 +1,21 @@
 diff --git a/src/vs/workbench/browser/layout.ts b/src/vs/workbench/browser/layout.ts
-index 3480283a..9d83fc3b 100644
+index 3480283a..1978a469 100644
 --- a/src/vs/workbench/browser/layout.ts
 +++ b/src/vs/workbench/browser/layout.ts
-@@ -2980,7 +2980,10 @@ class LayoutStateModel extends Disposable {
+@@ -2224,6 +2224,12 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
+ 	}
+ 
+ 	private setAuxiliaryBarHidden(hidden: boolean, skipLayout?: boolean): void {
++		// RemotePair: the secondary side bar (auxiliary bar / right side bar) is removed from
++		// the layout entirely — the RemotePair user has no use for the CHAT / "Build with Agent"
++		// surface. Force it permanently hidden so it never reserves grid space and cannot be
++		// shown by ANY caller (openViewContainer, session restore, toggle command, drag). The
++		// part and its grid node stay in code (rebase-safety); a hidden grid view takes 0 width.
++		hidden = true;
+ 		if (hidden && this.setAuxiliaryBarMaximized(false) && !this.isVisible(Parts.AUXILIARYBAR_PART)) {
+ 			return; // return: leaving maximised auxiliary bar made this part hidden
+ 		}
+@@ -2980,7 +2986,10 @@ class LayoutStateModel extends Disposable {
  					return false;
  			}
  		})();
@@ -586,10 +599,43 @@ index 00000000..c83d707e
 +	return isRemotePairOwned(container.id);
 +}
 diff --git a/src/vs/workbench/contrib/files/browser/explorerViewlet.ts b/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
-index ecc6af48..2e233b80 100644
+index ecc6af48..e80ad65c 100644
 --- a/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
 +++ b/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
-@@ -256,7 +256,7 @@ const viewContainerRegistry = Registry.as<IViewContainersRegistry>(Extensions.Vi
+@@ -144,7 +144,13 @@ export class ExplorerViewletViewsContribution extends Disposable implements IWor
+ 			ctorDescriptor: new SyncDescriptor(ExplorerView),
+ 			order: 1,
+ 			canMoveView: true,
+-			canToggleVisibility: false,
++			// RemotePair (C4.3): make the Explorer file-tree view toggleable so the Explorer<->Search
++			// inner router can hide it (viewContainerModel.updateViewDescriptorItemVisibility no-ops
++			// when canToggleVisibility is false — viewContainerModel.ts:431). Hiding the primary view
++			// is safe: the container stays alive because hideIfEmpty gates on ACTIVE (not visible)
++			// view descriptors. The view remains non-collapsible-away by default; the router drives
++			// visibility programmatically via IViewDescriptorService.getViewContainerModel(...).setVisible.
++			canToggleVisibility: true,
+ 			focusCommand: {
+ 				id: 'workbench.explorer.fileView.focus'
+ 			}
+@@ -171,7 +177,16 @@ export class ExplorerViewPaneContainer extends ViewPaneContainer {
+ 		@ILogService logService: ILogService,
+ 	) {
+ 
+-		super(VIEWLET_ID, { mergeViewWithContainerWhenSingleView: true }, instantiationService, configurationService, layoutService, contextMenuService, telemetryService, extensionService, themeService, storageService, contextService, viewDescriptorService, logService);
++		// RemotePair (C4): force the Browser container into a 2-row header (container-title Row-1 +
++		// active-view-title Row-2), symmetric to the Sessions container. With the single-view merge
++		// enabled the container collapses to ONE row whenever only one view is active (the
++		// isViewMergedWithContainer() `paneItems.length === 1` guard at viewPaneContainer.ts:1102).
++		// C2 added a Favorites view so there are usually >=2 views, but Favorites is
++		// canToggleVisibility:true and the Explorer<->Search router (C4.3) deliberately hides views,
++		// so the active-view count can drop to 1 and re-merge — collapsing back to a single row.
++		// Disabling the merge unconditionally guarantees the 2-row header is stable across every
++		// router state (Explorer-only, Search-only, with/without Favorites). See ADR-3 / AC14/AC20.
++		super(VIEWLET_ID, { mergeViewWithContainerWhenSingleView: false }, instantiationService, configurationService, layoutService, contextMenuService, telemetryService, extensionService, themeService, storageService, contextService, viewDescriptorService, logService);
+ 
+ 		this.viewletVisibleContextKey = ExplorerViewletVisibleContext.bindTo(contextKeyService);
+ 		this._register(this.contextService.onDidChangeWorkspaceName(e => this.updateTitleArea()));
+@@ -256,7 +271,7 @@ const viewContainerRegistry = Registry.as<IViewContainersRegistry>(Extensions.Vi
   */
  export const VIEW_CONTAINER: ViewContainer = viewContainerRegistry.registerViewContainer({
  	id: VIEWLET_ID,
@@ -599,48 +645,240 @@ index ecc6af48..2e233b80 100644
  	storageId: 'workbench.explorer.views.state',
  	icon: explorerViewIcon,
 diff --git a/src/vs/workbench/contrib/files/browser/files.contribution.ts b/src/vs/workbench/contrib/files/browser/files.contribution.ts
-index 574c2d8e..e889c98b 100644
+index 574c2d8e..60ac1f4c 100644
 --- a/src/vs/workbench/contrib/files/browser/files.contribution.ts
 +++ b/src/vs/workbench/contrib/files/browser/files.contribution.ts
-@@ -19,6 +19,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
+@@ -19,6 +19,9 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
  import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
  import { isNative, isWeb, isWindows } from '../../../../base/common/platform.js';
  import { ExplorerViewletViewsContribution } from './explorerViewlet.js';
 +import './remotePairBrowserActions.js'; // RemotePair (G005): Browser title actions + per-folder session creation
++import './remotePairFavorites.js'; // RemotePair (C2): Favorites store + bottom-of-Browser Favorites view
++import './remotePairBrowserRouter.js'; // RemotePair (C4.3): Explorer<->Search inner router + hosted Search view
  import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../browser/editor.js';
  import { ILabelService } from '../../../../platform/label/common/label.js';
  import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+diff --git a/src/vs/workbench/contrib/files/browser/media/explorerviewlet.css b/src/vs/workbench/contrib/files/browser/media/explorerviewlet.css
+index 0f75b632..a70c75f9 100644
+--- a/src/vs/workbench/contrib/files/browser/media/explorerviewlet.css
++++ b/src/vs/workbench/contrib/files/browser/media/explorerviewlet.css
+@@ -128,4 +128,131 @@
+ .monaco-workbench .part.sidebar .explorer-folders-view .explorer-item .monaco-inputbox input[type="text"], .monaco-workbench .part.auxiliarybar .explorer-folders-view .explorer-item .monaco-inputbox input[type="text"] {
+     outline-width: calc(var(--vscode-workbench-sidebar-font-size) * 0.076923);
+     outline-offset: calc(var(--vscode-workbench-sidebar-font-size) * -0.076923)
+-}
+\ No newline at end of file
++}
++/* --- RemotePair (C1): below-list "Add Root" footer --- */
++/* The explorer pane body becomes a flex column so the folder list (flex:1) and the
++   Add Root footer (fixed) stack; the tree height is reserved in layoutBody so the
++   footer is always visible ~20px below the list. */
++.rp-explorer-body {
++    display: flex;
++    flex-direction: column;
++    height: 100%;
++}
++.rp-explorer-body > .explorer-folders-view {
++    flex: 1 1 auto;
++    min-height: 0;
++}
++.rp-add-root-footer {
++    flex: 0 0 auto;
++    display: flex;
++    margin-top: 20px;
++    padding: 0 8px 8px;
++}
++.rp-add-root-button {
++    display: flex;
++    align-items: center;
++    gap: 6px;
++    cursor: pointer;
++    padding: 2px 4px;
++    border-radius: 4px;
++    color: var(--vscode-textLink-foreground);
++    user-select: none;
++}
++.rp-add-root-button:hover {
++    color: var(--vscode-textLink-activeForeground);
++    text-decoration: underline;
++}
++.rp-add-root-button:focus {
++    outline: 1px solid var(--vscode-focusBorder);
++    outline-offset: 2px;
++}
++.rp-add-root-icon {
++    flex: 0 0 auto;
++}
++/* --- RemotePair (C2): Favorites view (bottom of Browser container) --- */
++.monaco-workbench .remotepair-favorites .remotepair-favorites-list {
++    display: flex;
++    flex-direction: column;
++    padding: 2px 0;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-empty {
++    padding: 6px 12px;
++    opacity: 0.6;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-row {
++    display: flex;
++    align-items: center;
++    height: 22px;
++    padding: 0 8px 0 12px;
++    cursor: pointer;
++    user-select: none;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-row:hover,
++.monaco-workbench .remotepair-favorites .remotepair-favorites-row:focus {
++    background: var(--vscode-list-hoverBackground);
++    outline: none;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-label {
++    flex: 1 1 auto;
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
++}
++/* Inline actions ('+' / 'X'): right-aligned, revealed on row hover/focus. */
++.monaco-workbench .remotepair-favorites .remotepair-favorites-actions {
++    flex: 0 0 auto;
++    display: flex;
++    align-items: center;
++    gap: 2px;
++    margin-left: 6px;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-action {
++    opacity: 0;
++    cursor: pointer;
++    padding: 2px;
++    border-radius: 4px;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-row:hover .remotepair-favorites-action,
++.monaco-workbench .remotepair-favorites .remotepair-favorites-row:focus .remotepair-favorites-action {
++    opacity: 0.8;
++}
++.monaco-workbench .remotepair-favorites .remotepair-favorites-action:hover {
++    opacity: 1;
++    background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
++}
++
++/* --- RemotePair (C3): per-folder-row hover controls (star + '+') --- */
++/* Rendered by the IExplorerFileContribution into each row's contents container; absolute,
++   right-aligned, revealed on row hover/focus/selection (like native explorer inline actions).
++   Only present on folder rows (the contribution hides itself on files/unresolved rows — DR-6). */
++.monaco-workbench .explorer-folders-view .remotepair-folder-row-actions {
++    position: absolute;
++    right: 4px;
++    top: 0;
++    height: 100%;
++    display: flex;
++    align-items: center;
++    gap: 2px;
++    z-index: 12;
++}
++.monaco-workbench .explorer-folders-view .remotepair-folder-row-action {
++    opacity: 0;
++    cursor: pointer;
++    padding: 2px;
++    border-radius: 4px;
++    font-size: 14px;
++}
++/* Keep the star visible (dimmed) when the folder is already favorited, even without hover, so
++   the favorite state is discoverable; the '+' stays hover-only. */
++.monaco-workbench .explorer-folders-view .remotepair-folder-row-action.remotepair-folder-row-action-active {
++    opacity: 0.65;
++}
++.monaco-workbench .explorer-folders-view .monaco-list-row:hover .remotepair-folder-row-action,
++.monaco-workbench .explorer-folders-view .monaco-list-row.focused .remotepair-folder-row-action,
++.monaco-workbench .explorer-folders-view .monaco-list-row.selected .remotepair-folder-row-action {
++    opacity: 0.8;
++}
++.monaco-workbench .explorer-folders-view .remotepair-folder-row-action:hover {
++    opacity: 1;
++    background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
++}
 diff --git a/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
 new file mode 100644
-index 00000000..3aff7113
+index 00000000..11e30e13
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,318 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (G005): top-of-Browser actions and per-folder session creation.
 + *
 + *  The "Browser" is the relabeled Explorer view container (VIEWLET_ID). This file owns the
 + *  action contributions so they stay out of core explorer files:
-+ *    - Browser title bar: Search / Extensions / Add Mapping (MenuId.ViewContainerTitle).
++ *    - Browser title bar: Search / Extensions (MenuId.ViewContainerTitle). The row-1
++ *      "Add Mapping" action was removed (C1): the sole add entry point is now the
++ *      below-list / empty-state "Add Root" affordance which runs the mount-first
++ *      `remotepair.browser.addRoot` command (registered in the RemotePair extension).
++ *    - Empty-state "Add Root" button: a viewsWelcome entry on the explorer EmptyView.
 + *    - Per-folder inline "+": creates a Sessions terminal rooted at that folder.
++ *    - Per-folder inline star (C3): toggles the folder in the C2 Favorites store.
++ *    - Per-folder-row hover controls (C3): a star + '+' rendered on EVERY folder row (roots and
++ *      subfolders, never files) via the native IExplorerFileContribution mechanism — the
++ *      explorer file tree wires MenuId.ExplorerContext only to its right-click context menu
++ *      (explorerView.ts:701 showContextMenu), so group:'inline' there does NOT produce inline
++ *      hover icons on tree rows. The renderer instead invokes registered file contributions
++ *      (explorerViewer.ts:896/1015 contr.setResource(uri)) per row, which is the supported
++ *      inline-row hook. The contributions just dispatch the two Action2 commands below.
 + *  All work goes through public services / the existing Sessions helpers; core terminal,
-+ *  explorer-tree, and EditorPart behavior is untouched.
++ *  explorer-tree, and EditorPart behavior is untouched (the file-contribution registry is a
++ *  public extension point — no core file is edited).
 + *--------------------------------------------------------------------------------------------*/
 +
-+import { localize2 } from '../../../../nls.js';
++import { localize, localize2 } from '../../../../nls.js';
 +import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 +import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
++import { ServicesAccessor, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 +import { ICommandService } from '../../../../platform/commands/common/commands.js';
 +import { IListService } from '../../../../platform/list/browser/listService.js';
 +import { Codicon } from '../../../../base/common/codicons.js';
++import { URI } from '../../../../base/common/uri.js';
++import { Disposable } from '../../../../base/common/lifecycle.js';
++import { $, append, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
 +import { IEditorService } from '../../../services/editor/common/editorService.js';
 +import { VIEWLET_ID } from '../common/files.js';
 +import { ExplorerFolderContext } from '../common/files.js';
-+import { getResourceForCommand } from './files.js';
++import { getResourceForCommand, IExplorerService } from './files.js';
++import { IExplorerFileContribution, explorerFileContribRegistry } from './explorerFileContrib.js';
++import { favoritesStore } from './remotePairFavorites.js';
++import { routeToExplorer, routeToSearch } from './remotePairBrowserRouter.js'; // RemotePair (C4.3): Explorer<->Search inner router
++import { Registry } from '../../../../platform/registry/common/platform.js';
++import { IViewsRegistry, Extensions as ViewExtensions, ViewContentGroups } from '../../../common/views.js';
++import { EmptyView } from './views/emptyView.js';
 +
 +/**
-+ * Browser title-bar action: Search → opens the global Find in Files panel.
++ * Browser title-bar (Row-1) action: Explorer → route the Browser inner content back to the
++ * Explorer file tree (C4.3 inner router). Stays within the Browser frame — does NOT navigate to a
++ * different viewlet. Ordered before Search so the pair reads "Explorer | Search".
++ */
++registerAction2(class extends Action2 {
++	constructor() {
++		super({
++			id: 'remotepair.browser.routeExplorer',
++			title: localize2('remotepairBrowserExplorer', "Explorer"),
++			icon: Codicon.files,
++			f1: false,
++			menu: [{
++				id: MenuId.ViewContainerTitle,
++				when: ContextKeyExpr.equals('viewContainer', VIEWLET_ID),
++				group: 'navigation',
++				order: 9
++			}]
++		});
++	}
++	run(accessor: ServicesAccessor): void {
++		// RemotePair (C4.3): inner-route to Explorer (no global-viewlet navigation).
++		routeToExplorer(accessor);
++	}
++});
++
++/**
++ * Browser title-bar (Row-1) action: Search → route the Browser inner content to the hosted Search
++ * view (C4.3 inner router), swapping it in WITHIN the Browser frame. This replaces the previous
++ * `workbench.action.findInFiles` call, which navigated to the global Search viewlet covering the
++ * sidebar — the AC19 bug. The router keeps the active viewlet = Browser and escalates (logs) rather
++ * than ever falling back to that global navigation.
 + */
 +registerAction2(class extends Action2 {
 +	constructor() {
@@ -658,7 +896,8 @@ index 00000000..3aff7113
 +		});
 +	}
 +	run(accessor: ServicesAccessor): void {
-+		accessor.get(ICommandService).executeCommand('workbench.action.findInFiles');
++		// RemotePair (C4.3): inner-route to Search (no global-viewlet navigation).
++		routeToSearch(accessor);
 +	}
 +});
 +
@@ -686,31 +925,6 @@ index 00000000..3aff7113
 +});
 +
 +/**
-+ * Browser title-bar action: Add Mapping → stages `remote-pair map add ` in a Sessions
-+ * terminal (no newline) so the user can complete the arguments. Delegates to the Sessions
-+ * command which makes the sidebar visible first.
-+ */
-+registerAction2(class extends Action2 {
-+	constructor() {
-+		super({
-+			id: 'remotepair.browser.addMappingTitle',
-+			title: localize2('remotepairBrowserAddMapping', "Add Mapping"),
-+			icon: Codicon.newFolder,
-+			f1: false,
-+			menu: [{
-+				id: MenuId.ViewContainerTitle,
-+				when: ContextKeyExpr.equals('viewContainer', VIEWLET_ID),
-+				group: 'navigation',
-+				order: 12
-+			}]
-+		});
-+	}
-+	run(accessor: ServicesAccessor): void {
-+		accessor.get(ICommandService).executeCommand('remotepair.browser.addMapping');
-+	}
-+});
-+
-+/**
 + * Per-folder "New Session Here": on Explorer folders, create a Sessions terminal rooted at
 + * that folder. Contributed to MenuId.ExplorerContext (the file explorer's right-click menu —
 + * the same menu New File/New Folder use); the generic MenuId.ViewItemContext is NOT honored by
@@ -724,12 +938,24 @@ index 00000000..3aff7113
 +			title: localize2('remotepairBrowserNewSessionInFolder', "New Session Here"),
 +			icon: Codicon.add,
 +			f1: false,
-+			menu: [{
-+				id: MenuId.ExplorerContext,
-+				when: ExplorerFolderContext,
-+				group: 'navigation',
-+				order: 5
-+			}]
++			menu: [
++				// Right-click context menu entry.
++				{
++					id: MenuId.ExplorerContext,
++					when: ExplorerFolderContext,
++					group: 'navigation',
++					order: 5
++				},
++				// Inline (hover) entry on folder rows. The explorer tree's right-click menu honors
++				// group:'inline', and the C3 per-folder-row contribution below dispatches this same
++				// command so the '+' appears as a hover icon on the row itself.
++				{
++					id: MenuId.ExplorerContext,
++					when: ExplorerFolderContext,
++					group: 'inline',
++					order: 20
++				}
++			]
 +		});
 +	}
 +	run(accessor: ServicesAccessor, resource?: unknown): void {
@@ -739,6 +965,738 @@ index 00000000..3aff7113
 +		accessor.get(ICommandService).executeCommand('remotepair.terminalSidebar.openSessionInFolder', uri);
 +	}
 +});
++
++/**
++ * C3 — Per-folder "Toggle Favorite" (the star). Resolves the folder uri (getResourceForCommand)
++ * and toggles it in the C2 Favorites store via the module-level accessor (favoritesStore()), so
++ * there is no hard import of the store class and no import cycle. Contributed to the explorer
++ * right-click menu (group:'inline') and dispatched inline by the per-folder-row contribution
++ * below. Folder-only via ExplorerFolderContext (AC13 / DR-6 primary gate).
++ */
++registerAction2(class extends Action2 {
++	constructor() {
++		super({
++			id: 'remotepair.browser.toggleFavorite',
++			title: localize2('remotepairBrowserToggleFavorite', "Toggle Favorite"),
++			icon: Codicon.star,
++			f1: false,
++			menu: [{
++				id: MenuId.ExplorerContext,
++				when: ExplorerFolderContext,
++				group: 'inline',
++				order: 21
++			}]
++		});
++	}
++	run(accessor: ServicesAccessor, resource?: unknown): void {
++		const editorService = accessor.get(IEditorService);
++		const listService = accessor.get(IListService);
++		const uri = getResourceForCommand(resource, editorService, listService);
++		if (uri) {
++			favoritesStore()?.toggleFavorite(uri);
++		}
++	}
++});
++
++/**
++ * C1 empty-state "Add Root" button. When there are no FOLDER_MAPS roots the Browser shows the
++ * explorer EmptyView; this viewsWelcome entry renders a single button that runs the mount-first
++ * `remotepair.browser.addRoot` command (registered in the RemotePair extension). It is the same
++ * entry point as the populated below-list footer (explorerView.ts append-hook). Shown
++ * unconditionally on EmptyView (RemotePair owns this welcome content) so a fresh client with zero
++ * mappings gets the add affordance without any phantom roots. The command-link uses the rocket
++ * codicon ($(rocket)) so it is visibly distinct from the native New Folder icon (AC6).
++ */
++Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeContent(EmptyView.ID, {
++	content: localize(
++		{ key: 'remotepairAddRootWelcome', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
++		"No mapped folders yet.\n[$(rocket) Add Root](command:remotepair.browser.addRoot)\nMounts a host folder and adds it as a Browser root."
++	),
++	group: ViewContentGroups.Open,
++	order: 1
++});
++
++/*---------------------------------------------------------------------------------------------
++ *  C3 — Per-folder-row hover controls (star + '+').
++ *
++ *  The native, supported way to put inline controls on EVERY explorer tree row is an
++ *  IExplorerFileContribution: the FilesRenderer instantiates one per row template and calls
++ *  setResource(uri) on every render (explorerViewer.ts:896/1015), including rapid scroll, and
++ *  setResource(undefined) to clear (explorerViewer.ts:924/991). We render a star + '+' anchored
++ *  to the right of the row, revealed on hover via CSS.
++ *
++ *  Folder-ness / DR-6 flicker guard: each row may be a file, a folder, or an unresolved row
++ *  during async model population. We confirm folder-ness with IExplorerService.findClosest(uri)
++ *  and render ONLY when it resolves to a directory. When findClosest(uri) is null (not yet in the
++ *  model) OR resolves to a file, the controls are HIDDEN — re-evaluated on the next setResource.
++ *  This prevents star/'+' flicker on files and unresolved rows during initial paint.
++ *
++ *  The star reflects live favorite state from the C2 store (favoritesStore()): filled star when
++ *  favorited, outline star otherwise; clicking it dispatches remotepair.browser.toggleFavorite and
++ *  the store's onDidChangeFavorites repaints the icon. The '+' dispatches
++ *  remotepair.browser.newSessionInFolder (single open contract). Both commands resolve the uri via
++ *  getResourceForCommand(uri) and we pass the row uri explicitly.
++ *--------------------------------------------------------------------------------------------*/
++class RemotePairFolderRowActions extends Disposable implements IExplorerFileContribution {
++
++	private readonly actions: HTMLElement;
++	private readonly starEl: HTMLElement;
++	private readonly addEl: HTMLElement;
++	private currentResource: URI | undefined;
++
++	constructor(
++		container: HTMLElement,
++		@IExplorerService private readonly explorerService: IExplorerService,
++		@ICommandService private readonly commandService: ICommandService
++	) {
++		super();
++
++		this.actions = append(container, $('.remotepair-folder-row-actions'));
++		this.actions.style.display = 'none';
++
++		// Base classes only; the filled/outline star codicon class is set by updateStarIcon so the
++		// two glyphs never stack.
++		this.starEl = append(this.actions, $('.remotepair-folder-row-action.codicon'));
++		this.starEl.title = localize('remotepairFolderRowFavorite', "Toggle Favorite");
++		this.starEl.setAttribute('role', 'button');
++
++		this.addEl = append(this.actions, $('.remotepair-folder-row-action.codicon.codicon-' + Codicon.add.id));
++		this.addEl.title = localize('remotepairFolderRowNewSession', "New Session Here");
++		this.addEl.setAttribute('role', 'button');
++
++		// Clicks dispatch the Action2 commands with the row uri; stopPropagation so the tree row's
++		// own click (open / expand) does not also fire.
++		this._register(addDisposableListener(this.starEl, EventType.CLICK, (e: MouseEvent) => {
++			e.stopPropagation();
++			e.preventDefault();
++			if (this.currentResource) {
++				this.commandService.executeCommand('remotepair.browser.toggleFavorite', this.currentResource);
++			}
++		}));
++		this._register(addDisposableListener(this.addEl, EventType.CLICK, (e: MouseEvent) => {
++			e.stopPropagation();
++			e.preventDefault();
++			if (this.currentResource) {
++				this.commandService.executeCommand('remotepair.browser.newSessionInFolder', this.currentResource);
++			}
++		}));
++
++		// Keep the star icon in sync with the C2 store while a folder row is shown.
++		const store = favoritesStore();
++		if (store) {
++			this._register(store.onDidChangeFavorites(() => this.updateStarIcon()));
++		}
++	}
++
++	/** Called by the FilesRenderer on every row render (and with undefined to clear). */
++	setResource(resource: URI | undefined): void {
++		// DR-6: hide on unresolved/cleared rows. Confirm folder-ness via the explorer model;
++		// findClosest === null (not yet populated) OR a non-directory (file) → hide.
++		const item = resource ? this.explorerService.findClosest(resource) : null;
++		if (!resource || !item || !item.isDirectory) {
++			this.currentResource = undefined;
++			this.actions.style.display = 'none';
++			return;
++		}
++		this.currentResource = resource;
++		this.actions.style.display = '';
++		this.updateStarIcon();
++	}
++
++	private updateStarIcon(): void {
++		const favorited = !!this.currentResource && !!favoritesStore()?.isFavorite(this.currentResource);
++		// Toggle between the filled (favorited) and outline (not favorited) star codicons.
++		this.starEl.classList.toggle('codicon-' + Codicon.starFull.id, favorited);
++		this.starEl.classList.toggle('codicon-' + Codicon.starEmpty.id, !favorited);
++		this.starEl.classList.toggle('remotepair-folder-row-action-active', favorited);
++	}
++}
++
++// Register the per-folder-row contribution on the public explorer file-contribution registry
++// (no core explorer file is edited — the FilesRenderer already instantiates registered
++// contributions per row).
++explorerFileContribRegistry.register({
++	create(insta: IInstantiationService, container: HTMLElement): IExplorerFileContribution {
++		return insta.createInstance(RemotePairFolderRowActions, container);
++	}
++});
+diff --git a/src/vs/workbench/contrib/files/browser/remotePairBrowserRouter.ts b/src/vs/workbench/contrib/files/browser/remotePairBrowserRouter.ts
+new file mode 100644
+index 00000000..b2710f71
+--- /dev/null
++++ b/src/vs/workbench/contrib/files/browser/remotePairBrowserRouter.ts
+@@ -0,0 +1,172 @@
++/*---------------------------------------------------------------------------------------------
++ *  RemotePair (C4.3): Explorer <-> Search inner ROUTER inside the Browser VIEW_CONTAINER.
++ *
++ *  GOAL (AC19/AC20): the Row-1 "Explorer" / "Search" buttons swap the inner content WITHIN the
++ *  Browser frame. The active viewlet/composite stays = Browser the entire time — we do NOT
++ *  navigate to a global Search viewlet (that navigation is the AC19 bug). The Browser 2-row
++ *  header persists across switches; Favorites (C2) stays registered at the bottom.
++ *
++ *  MECHANISM (deviation from the plan's literal wording — see the note below):
++ *    The plan (ADR-1 / Step C4.3) said "relocate the Search VIEW into the Browser container via
++ *    viewDescriptorService.moveViewsToContainer(...) + per-view visibility toggle". Grounding that
++ *    in the actual code surfaced TWO hard blockers that make the literal mechanism unsafe:
++ *      1. moveViewsToContainer() PERSISTS the relocation (viewDescriptorService.ts:411 ->
++ *         saveViewCustomizations -> views.customizations in PROFILE storage). Combined with the
++ *         search container's hideIfEmpty:true, this yanks Search out of its OWN viewlet
++ *         PERMANENTLY across reloads — a real footgun, not a transient state.
++ *      2. Both the Explorer file-tree view (explorerViewlet.ts) and the core Search view
++ *         (search.contribution.ts:67) are registered canToggleVisibility:false, so
++ *         viewContainerModel.setVisible() NO-OPS for them (viewContainerModel.ts:431). Visibility
++ *         routing is dead on arrival unless they are toggleable.
++ *
++ *    Faithful-to-intent fix (Option A spirit: HOST the Search view inside the Browser container,
++ *    keep active viewlet = Browser, no global navigation), but NON-PERSISTENT and without mutating
++ *    any core descriptor:
++ *      - Register a RemotePair-OWNED view descriptor (REMOTEPAIR_SEARCH_VIEW_ID) directly INTO the
++ *        Browser VIEW_CONTAINER whose ctorDescriptor instantiates the native SearchView class
++ *        (search browser/searchView.ts). Because its DEFAULT container is the Browser container,
++ *        viewDescriptorService never writes a customization for it (saveViewCustomizations skips
++ *        views already at their default location, viewDescriptorService.ts:686) — nothing persists,
++ *        and the native global Search viewlet is left fully intact.
++ *      - canToggleVisibility:true on OUR descriptor + the C4.3 edit making the Explorer file-tree
++ *        view canToggleVisibility:true (explorerViewlet.ts) let the router flip per-view visibility.
++ *      - Explorer C4.1 already disabled the single-view merge, so hiding either view never collapses
++ *        the 2-row header.
++ *
++ *  ROUTER:
++ *      showExplorer(): show Explorer file-tree view, hide the hosted Search view.
++ *      showSearch():   show the hosted Search view, hide the Explorer file-tree view.
++ *    Both via IViewDescriptorService.getViewContainerModel(BROWSER_CONTAINER).setVisible(id, vis).
++ *
++ *  DEFENSIVE / ESCALATION (mandated): every operation that could fail to resolve the container or
++ *  the view is wrapped. On failure we LOG a clear escalation marker and DO NOTHING further — we
++ *  NEVER silently fall back to opening the global Search viewlet (that would be the AC19 bug).
++ *
++ *  RUNTIME UNCERTAINTY (flagged for the orchestrator's CDP spike — NOT verifiable by tsc):
++ *    SearchView consumes a SINGLETON search model (ISearchViewModelWorkbenchService.searchModel,
++ *    searchView.ts:297) and binds GLOBAL search context keys in its ctor (searchView.ts:249-265).
++ *    Hosting a SECOND SearchView instance (ours, under a new id) alongside the native one MAY:
++ *      (a) share/contend on the one search model, and
++ *      (b) double-bind global search context keys / mis-target search keybindings bound to the
++ *          native VIEW_ID 'workbench.view.search'.
++ *    This is the #1 thing to validate at runtime via CDP. If the hosted Search view fails to
++ *    render or the singleton coupling breaks behavior, ESCALATE for redesign (e.g. host only the
++ *    Search WIDGET, or gate the native instance) — do NOT fall back to the global viewlet.
++ *--------------------------------------------------------------------------------------------*/
++
++import { localize2 } from '../../../../nls.js';
++import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
++import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { Registry } from '../../../../platform/registry/common/platform.js';
++import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, Extensions as ViewContainerExtensions } from '../../../common/views.js';
++import { IViewsService } from '../../../services/views/common/viewsService.js';
++import { SearchView } from '../../search/browser/searchView.js';
++import { VIEW_ID as EXPLORER_FILE_VIEW_ID } from '../common/files.js';
++import { VIEW_CONTAINER } from './explorerViewlet.js';
++
++/** Distinct id (NOT the native 'workbench.view.search') for the Browser-hosted Search instance. */
++export const REMOTEPAIR_SEARCH_VIEW_ID = 'remotepair.browser.search';
++
++const RP_ROUTER_LOG_PREFIX = 'RemotePair C4:';
++const RP_ROUTER_ESCALATION = 'RemotePair C4: Search relocation failed — needs redesign';
++
++// --- hosted Search view descriptor (registered into the Browser container, non-persistent) ------
++
++/** localize2 first arg MUST be a static string literal. */
++const remotePairSearchViewDescriptor: IViewDescriptor = {
++	id: REMOTEPAIR_SEARCH_VIEW_ID,
++	name: localize2('remotepairBrowserSearch', "Search"),
++	// Host the native SearchView class under our own id, directly in the Browser container, so the
++	// global Search viewlet is untouched and no view-location customization is persisted.
++	ctorDescriptor: new SyncDescriptor(SearchView),
++	// Order between the file tree (order:1) and Favorites (order:100). It is hidden by default and
++	// only revealed by the router when the user clicks Row-1 "Search".
++	order: 2,
++	canToggleVisibility: true,
++	canMoveView: false,
++	hideByDefault: true,
++	collapsed: false,
++};
++
++try {
++	Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry).registerViews([remotePairSearchViewDescriptor], VIEW_CONTAINER);
++} catch (err) {
++	// Registration failure must not crash workbench startup; the router below degrades to a no-op
++	// (showSearch logs the escalation marker). Do NOT fall back to the global viewlet.
++	// eslint-disable-next-line no-console
++	console.error(`${RP_ROUTER_ESCALATION} (descriptor registration threw)`, err);
++}
++
++// --- router ----------------------------------------------------------------------------------
++
++/**
++ * Toggle per-view visibility inside the Browser container. Resolves the Browser container + its
++ * model defensively; on any failure logs the escalation marker and returns false (the caller then
++ * does nothing — never navigates to the global viewlet).
++ */
++function setBrowserViewVisible(accessor: ServicesAccessor, viewId: string, visible: boolean): boolean {
++	const viewDescriptorService = accessor.get(IViewDescriptorService);
++	const logService = accessor.get(ILogService);
++	try {
++		const container = viewDescriptorService.getViewContainerById(VIEW_CONTAINER.id);
++		if (!container) {
++			logService.error(`${RP_ROUTER_ESCALATION} (Browser container ${VIEW_CONTAINER.id} not resolved)`);
++			return false;
++		}
++		const model = viewDescriptorService.getViewContainerModel(container);
++		if (!model) {
++			logService.error(`${RP_ROUTER_ESCALATION} (no view container model for ${VIEW_CONTAINER.id})`);
++			return false;
++		}
++		if (!model.activeViewDescriptors.some(v => v.id === viewId)) {
++			// The target view is not active in the container — for the hosted Search view this means
++			// its registration failed above. Escalate; never silently open the global viewlet.
++			logService.error(`${RP_ROUTER_ESCALATION} (view ${viewId} not active in Browser container)`);
++			return false;
++		}
++		model.setVisible(viewId, visible);
++		return true;
++	} catch (err) {
++		logService.error(`${RP_ROUTER_ESCALATION} (setVisible ${viewId}=${visible} threw)`, err);
++		return false;
++	}
++}
++
++/**
++ * Route to the Explorer file tree: show Explorer, hide the hosted Search view. Keeps the active
++ * viewlet = Browser (we only flip inner view visibility; we never call openViewContainer for a
++ * different viewlet). Ensures the Browser container itself is open/focused.
++ */
++export function routeToExplorer(accessor: ServicesAccessor): void {
++	const logService = accessor.get(ILogService);
++	const viewsService = accessor.get(IViewsService);
++	logService.trace(`${RP_ROUTER_LOG_PREFIX} routeToExplorer`);
++	// Hide Search first, then show Explorer (order avoids a transient 0-visible-views flicker).
++	setBrowserViewVisible(accessor, REMOTEPAIR_SEARCH_VIEW_ID, false);
++	const shown = setBrowserViewVisible(accessor, EXPLORER_FILE_VIEW_ID, true);
++	if (shown) {
++		// Reveal the Explorer view inside the (already-active) Browser container — openView focuses
++		// the view WITHOUT switching the active viewlet away from Browser.
++		viewsService.openView(EXPLORER_FILE_VIEW_ID, true).catch(err => logService.error(`${RP_ROUTER_LOG_PREFIX} openView(explorer) failed`, err));
++	}
++}
++
++/**
++ * Route to Search: show the hosted Search view, hide the Explorer file tree. Active viewlet stays
++ * = Browser. On any failure the escalation marker is logged and we do NOTHING (no global-viewlet
++ * fallback — that is the AC19 bug we exist to avoid).
++ */
++export function routeToSearch(accessor: ServicesAccessor): void {
++	const logService = accessor.get(ILogService);
++	const viewsService = accessor.get(IViewsService);
++	logService.trace(`${RP_ROUTER_LOG_PREFIX} routeToSearch`);
++	const shown = setBrowserViewVisible(accessor, REMOTEPAIR_SEARCH_VIEW_ID, true);
++	if (!shown) {
++		// Escalation already logged by setBrowserViewVisible. Do NOT open the global Search viewlet.
++		return;
++	}
++	// Only hide Explorer once Search is confirmed visible, so the container is never 0-visible.
++	setBrowserViewVisible(accessor, EXPLORER_FILE_VIEW_ID, false);
++	viewsService.openView(REMOTEPAIR_SEARCH_VIEW_ID, true).catch(err => logService.error(`${RP_ROUTER_LOG_PREFIX} openView(search) failed`, err));
++}
+diff --git a/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
+new file mode 100644
+index 00000000..b7abe7eb
+--- /dev/null
++++ b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
+@@ -0,0 +1,290 @@
++/*---------------------------------------------------------------------------------------------
++ *  RemotePair (C2): Favorites store + Favorites view at the bottom of the Browser container.
++ *
++ *  The "Browser" is the relabeled Explorer view container (VIEWLET_ID / VIEW_CONTAINER). This
++ *  file owns:
++ *    - RemotePairFavoritesStore: a tiny store persisting favorite folder URIs via
++ *      IStorageService. Reads = union of WORKSPACE + PROFILE (global) scopes so favorites
++ *      survive across workspaces; writes update BOTH scopes (default write through workspace,
++ *      mirrored to global). Exposes onDidChangeFavorites + a small API.
++ *    - A module-level accessor (setFavoritesStore / favoritesStore) mirroring the
++ *      setSessionLauncher / setAttachedSessionsProvider injection pattern in the terminal
++ *      sidebar, so C3's per-folder star can call toggleFavorite/isFavorite without a hard
++ *      import cycle.
++ *    - RemotePairFavoritesView (extends ViewPane): renders the favorites as a simple list.
++ *      Clicking a row or its inline '+' starts a new Sessions terminal rooted at that folder
++ *      via the existing `remotepair.terminalSidebar.openSessionInFolder` command (single open
++ *      contract — never creates terminals directly). Each row also has an inline remove (X).
++ *    - Registration of the Favorites view into the Browser VIEW_CONTAINER, ordered AFTER the
++ *      file tree (mirroring how Outline/Timeline register as sibling views).
++ *
++ *  All logic stays in this RemotePair-owned file (rebase-safety); the only touch elsewhere is
++ *  the single import from files.contribution.ts so this module loads.
++ *--------------------------------------------------------------------------------------------*/
++
++import { localize, localize2 } from '../../../../nls.js';
++import { $, append, clearNode, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
++import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
++import { KeyCode } from '../../../../base/common/keyCodes.js';
++import { Emitter, Event } from '../../../../base/common/event.js';
++import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
++import { URI } from '../../../../base/common/uri.js';
++import { basename } from '../../../../base/common/resources.js';
++import { Codicon } from '../../../../base/common/codicons.js';
++import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
++import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { IThemeService } from '../../../../platform/theme/common/themeService.js';
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
++import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
++import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
++import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
++import { IOpenerService } from '../../../../platform/opener/common/opener.js';
++import { IHoverService } from '../../../../platform/hover/browser/hover.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { Registry } from '../../../../platform/registry/common/platform.js';
++import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
++import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, Extensions as ViewContainerExtensions } from '../../../common/views.js';
++import { VIEW_CONTAINER } from './explorerViewlet.js';
++
++// --- store ------------------------------------------------------------------
++
++const FAVORITES_STORAGE_KEY = 'remotepair.browser.favorites';
++export const REMOTEPAIR_FAVORITES_VIEW_ID = 'remotepair.browser.favorites';
++
++/**
++ * Persists favorite folder URIs via IStorageService across BOTH the WORKSPACE and PROFILE
++ * (global) scopes. `getFavorites()` returns the de-duplicated union of both scopes so a folder
++ * favorited in any workspace is visible everywhere; writes update both scopes so the entry both
++ * survives reload in this workspace and follows the user across workspaces.
++ */
++export class RemotePairFavoritesStore extends Disposable {
++
++	private readonly _onDidChangeFavorites = this._register(new Emitter<void>());
++	readonly onDidChangeFavorites: Event<void> = this._onDidChangeFavorites.event;
++
++	constructor(private readonly storageService: IStorageService) {
++		super();
++		// React to writes made in another window/scope so the view stays in sync.
++		this._register(this.storageService.onDidChangeValue(StorageScope.WORKSPACE, FAVORITES_STORAGE_KEY, this._store)(() => this._onDidChangeFavorites.fire()));
++		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, FAVORITES_STORAGE_KEY, this._store)(() => this._onDidChangeFavorites.fire()));
++	}
++
++	private readScope(scope: StorageScope.WORKSPACE | StorageScope.PROFILE): string[] {
++		const raw = this.storageService.get(FAVORITES_STORAGE_KEY, scope);
++		if (!raw) {
++			return [];
++		}
++		try {
++			const parsed = JSON.parse(raw);
++			return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
++		} catch {
++			return [];
++		}
++	}
++
++	private writeScope(scope: StorageScope.WORKSPACE | StorageScope.PROFILE, list: string[]): void {
++		this.storageService.store(FAVORITES_STORAGE_KEY, JSON.stringify(list), scope, StorageTarget.USER);
++	}
++
++	/** De-duplicated union of WORKSPACE + PROFILE favorites, in stable (workspace-first) order. */
++	getFavorites(): URI[] {
++		const seen = new Set<string>();
++		const out: URI[] = [];
++		for (const s of [...this.readScope(StorageScope.WORKSPACE), ...this.readScope(StorageScope.PROFILE)]) {
++			if (seen.has(s)) {
++				continue;
++			}
++			seen.add(s);
++			try {
++				out.push(URI.parse(s));
++			} catch {
++				// skip malformed persisted entries
++			}
++		}
++		return out;
++	}
++
++	isFavorite(uri: URI): boolean {
++		const key = uri.toString();
++		return this.getFavorites().some(f => f.toString() === key);
++	}
++
++	addFavorite(uri: URI): void {
++		const key = uri.toString();
++		let changed = false;
++		for (const scope of [StorageScope.WORKSPACE, StorageScope.PROFILE] as const) {
++			const list = this.readScope(scope);
++			if (!list.includes(key)) {
++				list.push(key);
++				this.writeScope(scope, list);
++				changed = true;
++			}
++		}
++		if (changed) {
++			this._onDidChangeFavorites.fire();
++		}
++	}
++
++	removeFavorite(uri: URI): void {
++		const key = uri.toString();
++		let changed = false;
++		for (const scope of [StorageScope.WORKSPACE, StorageScope.PROFILE] as const) {
++			const list = this.readScope(scope);
++			const next = list.filter(s => s !== key);
++			if (next.length !== list.length) {
++				this.writeScope(scope, next);
++				changed = true;
++			}
++		}
++		if (changed) {
++			this._onDidChangeFavorites.fire();
++		}
++	}
++
++	toggleFavorite(uri: URI): void {
++		if (this.isFavorite(uri)) {
++			this.removeFavorite(uri);
++		} else {
++			this.addFavorite(uri);
++		}
++	}
++}
++
++// --- module-level accessor (mirrors setSessionLauncher / setAttachedSessionsProvider) --------
++
++let _store: RemotePairFavoritesStore | undefined;
++
++/** Register the singleton store (set by the view on first construction). */
++export function setFavoritesStore(store: RemotePairFavoritesStore): void { _store = store; }
++
++/** Accessor for C3's per-folder star (toggleFavorite / isFavorite) — no hard import cycle. */
++export function favoritesStore(): RemotePairFavoritesStore | undefined { return _store; }
++
++// --- view -------------------------------------------------------------------
++
++/**
++ * Favorites ViewPane: renders favorite folders as a simple list. Each row is label + an inline
++ * '+' (start a new Sessions terminal rooted there) + an inline remove (X / unfavorite). Clicking
++ * the row itself also starts a session. Sessions are opened ONLY through the existing
++ * `remotepair.terminalSidebar.openSessionInFolder` command (single open contract).
++ */
++export class RemotePairFavoritesView extends ViewPane {
++
++	private list: HTMLElement | undefined;
++	private readonly store: RemotePairFavoritesStore;
++	// Per-render row listener store, cleared at the top of each render so listeners do not
++	// accumulate across re-renders.
++	private readonly rowDisposables = this._register(new DisposableStore());
++
++	constructor(
++		options: IViewPaneOptions,
++		@IKeybindingService keybindingService: IKeybindingService,
++		@IContextMenuService contextMenuService: IContextMenuService,
++		@IConfigurationService configurationService: IConfigurationService,
++		@IContextKeyService contextKeyService: IContextKeyService,
++		@IViewDescriptorService viewDescriptorService: IViewDescriptorService,
++		@IInstantiationService instantiationService: IInstantiationService,
++		@IOpenerService openerService: IOpenerService,
++		@IThemeService themeService: IThemeService,
++		@IHoverService hoverService: IHoverService,
++		@IStorageService storageService: IStorageService,
++		@ICommandService private readonly commandService: ICommandService
++	) {
++		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
++		this.store = this._register(new RemotePairFavoritesStore(storageService));
++		// Publish the store so C3's per-folder star can toggle favorites without an import cycle.
++		setFavoritesStore(this.store);
++	}
++
++	protected override renderBody(container: HTMLElement): void {
++		super.renderBody(container);
++		container.classList.add('remotepair-favorites');
++		this.list = append(container, $('.remotepair-favorites-list'));
++		this._register(this.store.onDidChangeFavorites(() => this.refresh()));
++		this.refresh();
++	}
++
++	private refresh(): void {
++		const list = this.list;
++		if (!list) {
++			return;
++		}
++		this.rowDisposables.clear();
++		clearNode(list);
++
++		const favorites = this.store.getFavorites();
++		if (favorites.length === 0) {
++			const empty = append(list, $('.remotepair-favorites-empty'));
++			empty.textContent = localize('remotepairFavoritesEmpty', "Star a folder to add it here.");
++			return;
++		}
++
++		for (const uri of favorites) {
++			this.addRow(uri);
++		}
++	}
++
++	/** Append one favorite row: label + inline '+' (new session) + inline remove (X). */
++	private addRow(uri: URI): void {
++		const list = this.list!;
++		const row = append(list, $('.remotepair-favorites-row'));
++		const text = basename(uri) || uri.fsPath || uri.toString();
++		row.title = uri.fsPath || uri.toString();
++		row.setAttribute('role', 'button');
++		row.setAttribute('tabindex', '0');
++
++		const label = append(row, $('.remotepair-favorites-label'));
++		label.textContent = text;
++
++		const actions = append(row, $('.remotepair-favorites-actions'));
++
++		const add = append(actions, $('.remotepair-favorites-action.codicon.codicon-' + Codicon.add.id));
++		add.title = localize('remotepairFavoritesNewSession', "New Session Here");
++		add.setAttribute('role', 'button');
++		add.setAttribute('tabindex', '0');
++
++		const remove = append(actions, $('.remotepair-favorites-action.codicon.codicon-' + Codicon.close.id));
++		remove.title = localize('remotepairFavoritesRemove', "Remove from Favorites");
++		remove.setAttribute('role', 'button');
++		remove.setAttribute('tabindex', '0');
++
++		const openSession = () => this.commandService.executeCommand('remotepair.terminalSidebar.openSessionInFolder', uri);
++
++		// Clicking the row or '+' starts a new Sessions terminal rooted at this folder.
++		this.rowDisposables.add(addDisposableListener(row, EventType.CLICK, openSession));
++		this.rowDisposables.add(addDisposableListener(row, EventType.KEY_DOWN, (e) => {
++			const k = new StandardKeyboardEvent(e as KeyboardEvent);
++			if (k.equals(KeyCode.Enter) || k.equals(KeyCode.Space)) { k.preventDefault(); openSession(); }
++		}));
++		// '+' opens a new session via the same single open contract.
++		this.rowDisposables.add(addDisposableListener(add, EventType.CLICK, (e) => {
++			e.stopPropagation();
++			openSession();
++		}));
++		// 'X' unfavorites; stopPropagation so it does not also fire the row's open-session click.
++		this.rowDisposables.add(addDisposableListener(remove, EventType.CLICK, (e) => {
++			e.stopPropagation();
++			this.store.removeFavorite(uri);
++		}));
++	}
++}
++
++// --- registration: Favorites view at the bottom of the Browser VIEW_CONTAINER ----------------
++
++const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
++
++/** localize2 first arg MUST be a static string literal (dynamic NLS keys break the prod build). */
++const favoritesViewDescriptor: IViewDescriptor = {
++	id: REMOTEPAIR_FAVORITES_VIEW_ID,
++	name: localize2('remotepairFavorites', "Favorites"),
++	ctorDescriptor: new SyncDescriptor(RemotePairFavoritesView),
++	// Order AFTER the file tree (VIEW_ID order:1, OpenEditors order:0) so it sits at the bottom
++	// like Outline/Timeline.
++	order: 100,
++	canToggleVisibility: true,
++	canMoveView: true,
++	collapsed: true,
++};
++
++viewsRegistry.registerViews([favoritesViewDescriptor], VIEW_CONTAINER);
+diff --git a/src/vs/workbench/contrib/files/browser/views/explorerView.ts b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+index d276b5c9..2ed4089c 100644
+--- a/src/vs/workbench/contrib/files/browser/views/explorerView.ts
++++ b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+@@ -49,6 +49,7 @@ import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/
+ import { EditorResourceAccessor, SideBySideEditor } from '../../../../common/editor.js';
+ import { IExplorerService, IExplorerView } from '../files.js';
+ import { Codicon } from '../../../../../base/common/codicons.js';
++import { ThemeIcon } from '../../../../../base/common/themables.js'; // RemotePair (C1): below-list Add Root footer icon
+ import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+ import { IEditorResolverService } from '../../../../services/editor/common/editorResolverService.js';
+ import { EditorOpenSource } from '../../../../../platform/editor/common/editor.js';
+@@ -171,6 +172,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 
+ 	private treeContainer!: HTMLElement;
+ 	private container!: HTMLElement;
++	private rpAddRootFooter: HTMLElement | undefined; // RemotePair (C1): below-list Add Root footer
+ 	private compressedFocusContext: IContextKey<boolean>;
+ 	private compressedFocusFirstContext: IContextKey<boolean>;
+ 	private compressedFocusLastContext: IContextKey<boolean>;
+@@ -296,7 +298,10 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 
+ 	protected override layoutBody(height: number, width: number): void {
+ 		super.layoutBody(height, width);
+-		this.tree.layout(height, width);
++		// RemotePair (C1): reserve space for the below-list "Add Root" footer so it is always
++		// visible under the folder list (the tree otherwise fills 100% of the body height).
++		const rpFooterHeight = this.rpAddRootFooter ? this.rpAddRootFooter.clientHeight || 44 : 0;
++		this.tree.layout(Math.max(0, height - rpFooterHeight), width);
+ 	}
+ 
+ 	protected override renderBody(container: HTMLElement): void {
+@@ -307,6 +312,31 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 
+ 		this.createTree(this.treeContainer);
+ 
++		// RemotePair (C1): below-list "Add Root" footer. Appended into the renderBody container
++		// AFTER the tree (later sibling) so it sits ~20px below the folder list (see
++		// .rp-add-root-footer in explorerviewlet.css). Runs the mount-first
++		// `remotepair.browser.addRoot` command (registered in the RemotePair extension). The
++		// icon is Codicon.rootFolderOpened — visibly distinct from Codicon.newFolder (AC6). This
++		// is the single accepted marked core edit per the rebase-safety invariant.
++		container.classList.add('rp-explorer-body');
++		const rpFooter = DOM.append(container, DOM.$('.rp-add-root-footer'));
++		this.rpAddRootFooter = rpFooter;
++		const rpButton = DOM.append(rpFooter, DOM.$('a.rp-add-root-button'));
++		rpButton.setAttribute('role', 'button');
++		rpButton.setAttribute('tabindex', '0');
++		rpButton.title = nls.localize('remotepairAddRootTooltip', "Mount a host folder and add it as a Browser root");
++		const rpIcon = DOM.append(rpButton, DOM.$('span.rp-add-root-icon'));
++		rpIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.rootFolderOpened));
++		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Root");
++		const rpRun = () => this.commandService.executeCommand('remotepair.browser.addRoot');
++		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.CLICK, rpRun));
++		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
++			if (e.key === 'Enter' || e.key === ' ') {
++				e.preventDefault();
++				rpRun();
++			}
++		}));
++
+ 		this._register(this.labelService.onDidChangeFormatters(() => {
+ 			this._onDidChangeTitleArea.fire();
+ 		}));
+@@ -629,6 +659,24 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 		}
+ 	}
+ 
++	/**
++	 * RemotePair (C4.2): set the Row-2 dynamic root label from the focused explorer item. The label
++	 * is the name of the root that owns the focused resource (IExplorerService.findClosestRoot). It
++	 * is rendered as the ViewPane title description (the `span.description` after the view title), so
++	 * the native new-file/new-folder/refresh/collapse actions stay untouched in Row-2. Cleared when
++	 * nothing is focused or there is only a single root (the label would be redundant with the view
++	 * title). AC16/AC17.
++	 */
++	private rpUpdateRootLabel(stat: ExplorerItem | undefined): void {
++		// With 0/1 roots the root name adds no information beyond the view title — clear the label.
++		if (!stat || this.explorerService.roots.length <= 1) {
++			this.updateTitleDescription(undefined);
++			return;
++		}
++		const root = this.explorerService.findClosestRoot(stat.resource);
++		this.updateTitleDescription(root ? root.name : undefined);
++	}
++
+ 	private async onContextMenu(e: ITreeContextMenuEvent<ExplorerItem>): Promise<void> {
+ 		if (DOM.isEditableElement(e.browserEvent.target as HTMLElement)) {
+ 			return;
+@@ -687,6 +735,13 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 		const stat = elements.at(0);
+ 		this.setContextKeys(stat);
+ 
++		// RemotePair (C4.2): drive the Row-2 dynamic label from the explorer selection. On every
++		// focus/selection change compute the root that owns the focused resource via
++		// IExplorerService.findClosestRoot and render its name as the view's title description (the
++		// `span.description` next to the view title — ViewPane.updateTitleDescription). When nothing
++		// is focused, or with <=1 root (label adds no info), clear it. AC16/AC17.
++		this.rpUpdateRootLabel(stat);
++
+ 		if (stat) {
+ 			const enableTrash = Boolean(this.configurationService.getValue<IFilesConfiguration>().files?.enableTrash);
+ 			const hasCapability = this.fileService.hasCapability(stat.resource, FileSystemProviderCapabilities.Trash);
 diff --git a/src/vs/workbench/contrib/outline/browser/outline.contribution.ts b/src/vs/workbench/contrib/outline/browser/outline.contribution.ts
 index bb8dd656..7f83843c 100644
 --- a/src/vs/workbench/contrib/outline/browser/outline.contribution.ts
@@ -1490,10 +2448,10 @@ index 00000000..7580cf40
 +}
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
 new file mode 100644
-index 00000000..d3406dbd
+index 00000000..6e0c2012
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,617 @@
+@@ -0,0 +1,641 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -1508,9 +2466,7 @@ index 00000000..d3406dbd
 +import { localize, localize2 } from '../../../../nls.js';
 +import { URI } from '../../../../base/common/uri.js';
 +import { mainWindow } from '../../../../base/browser/window.js';
-+import { getWindow, scheduleAtNextAnimationFrame, $, append, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
-+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
-+import { KeyCode } from '../../../../base/common/keyCodes.js';
++import { getWindow, scheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
 +import { DisposableStore, MutableDisposable, IDisposable } from '../../../../base/common/lifecycle.js';
 +import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 +import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -1907,18 +2863,11 @@ index 00000000..d3406dbd
 +
 +		container.classList.add('remotepair-terminal-sidebar');
 +
-+		// G002: "+" New Session button (top-right of the Sessions body). The embedded
-+		// EditorPart occupies the view title-action area, so a MenuId.ViewTitle action does
-+		// not render here; we own this button instead and call openSessionPicker().
-+		const addBtn = append(container, $('.remotepair-sessions-add', undefined, '+'));
-+		addBtn.title = localize('remotepairNewSessionTitle', "New Session");
-+		addBtn.setAttribute('role', 'button');
-+		addBtn.setAttribute('tabindex', '0');
-+		this._register(addDisposableListener(addBtn, EventType.CLICK, () => this.openSessionPicker()));
-+		this._register(addDisposableListener(addBtn, EventType.KEY_DOWN, (e) => {
-+			const k = new StandardKeyboardEvent(e as KeyboardEvent);
-+			if (k.equals(KeyCode.Enter) || k.equals(KeyCode.Space)) { k.preventDefault(); this.openSessionPicker(); }
-+		}));
++		// G002: New Session "+" lives ONLY in the view title (row 1) via the MenuId.ViewTitle
++		// action `remotepair.terminalSidebar.newSession`, which DOES render in this container's
++		// merged composite title. The earlier in-body custom "+" button (row 2) was a duplicate
++		// (its original "ViewTitle does not render here" assumption is no longer true) and was
++		// removed per user feedback — the single row-1 "+" is sufficient.
 +
 +		// Defer the embedded EditorPart creation OUT of the synchronous composite-open
 +		// path. renderBody runs inside compositePart.doOpenComposite → createComposite;
@@ -2004,16 +2953,49 @@ index 00000000..d3406dbd
 +		this.editorPart?.layout(width, height, 0, 0);
 +	}
 +
++	/** The live terminal instance in the embedded part's active group, if any. */
++	private activeTerminalInstance(): ITerminalInstance | undefined {
++		const input = this.editorPart?.activeGroup?.activeEditor;
++		return input instanceof TerminalEditorInput ? input.terminalInstance : undefined;
++	}
++
 +	/**
-+	 * Route focus into the embedded editor's active group so that focusing the
-+	 * Sessions view (rail click, Cmd+focus, view activation) lands keyboard focus
-+	 * on the active session editor (e.g. the terminal) instead of an empty pane
-+	 * container. Hosting-layer only — delegates to the group's own focus(); does
-+	 * not touch core terminal behavior.
++	 * Move keyboard focus onto the active terminal's xterm textarea — the ONLY element that
++	 * receives keystrokes. `instance.focus(true)` restores xterm's internal focus state but
++	 * does not reliably move DOM focus onto `.xterm-helper-textarea`; we therefore also focus
++	 * the textarea explicitly on a microtask (after any pending layout/visibility work). The
++	 * textarea is a descendant of this view's element, so its focus is picked up by the
++	 * ViewPane FocusTracker (onDidFocus) — keeping the workbench's focused-view tracking
++	 * correct so focus is not "fallen back" to the main editor. Hosting-layer only; uses the
++	 * terminal's public API and does not touch core terminal behavior.
++	 */
++	private focusActiveTerminal(): boolean {
++		const instance = this.activeTerminalInstance();
++		if (!instance) {
++			return false;
++		}
++		instance.focus(true);
++		queueMicrotask(() => {
++			if (this.activeTerminalInstance() === instance) {
++				instance.xterm?.raw.textarea?.focus();
++			}
++		});
++		return true;
++	}
++
++	/**
++	 * Route focus into the embedded terminal. We focus the xterm textarea DIRECTLY and
++	 * deliberately do NOT call `super.focus()` first: `ViewPane.focus()` runs
++	 * `this.element.focus()`, which moves DOM focus to the view *container* and steals it
++	 * from the xterm textarea — the root cause of unreliable terminal key input and the
++	 * focus "fallback". Only when there is no live terminal do we fall back to the default
++	 * ViewPane focus + group delegation. Hosting-layer only — core terminal behavior untouched.
 +	 */
 +	override focus(): void {
-+		super.focus();
-+		this.editorPart?.activeGroup?.focus();
++		if (!this.focusActiveTerminal()) {
++			super.focus();
++			this.editorPart?.activeGroup?.focus();
++		}
 +	}
 +
 +	override dispose(): void {
