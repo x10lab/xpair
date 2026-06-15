@@ -1,49 +1,49 @@
-# shared/screen-protocol — 화면 프로토콜 단일 소스(SoT)
+# shared/screen-protocol — Screen Protocol Single Source of Truth (SoT)
 
-RemotePair Remote Desktop의 **호스트↔IDE 와이어 계약**을 한 곳에서 선언한다.
-구현은 두 곳에 나뉘어 있고(rs = 호스트 엔진, ide = 클라이언트 웹뷰), 이 SoT가
-둘이 합의해야 하는 상수·포맷을 고정한다. drift는 `check-screen-protocol.sh`가 잡는다.
+Declares the **Host↔IDE wire contract** for RemotePair Remote Desktop in one place.
+The implementation is split across two locations (rs = host engine, ide = client webview), and this SoT
+fixes the constants and formats the two must agree on. Drift is caught by `check-screen-protocol.sh`.
 
-## 데이터 흐름
+## Data Flow
 ```
-[host/rd/ 호스트]                          [client/ide/ 클라이언트(웹뷰)]
+[host/rd/ host]                          [client/ide/ client (webview)]
 screen serve  ──JPEG──▶   remote-desktop.js
   ws 127.0.0.1:8889        (binary)   WS→Blob(jpeg)→createImageBitmap→canvas
-        ▲ ssh -L 8889 터널
+        ▲ ssh -L 8889 tunnel
 serve-webrtc :8890 (v2)   ──H.264──▶  v2 peer connection (WebRTC)
 
-[입력 업채널은 별도 — WS 아님]
+[the input up-channel is separate — not WS]
 webview {type:click,rx,ry / key,combo}  ──postMessage──▶  extension.js
-extension → host InputServer 파일채널: /tmp/remote-pair.input-req|-res
-  click\t<x>\t<y> (host 픽셀) · key\t<combo> · shot\t<path>(v0)
+extension → host InputServer file channel: /tmp/remote-pair.input-req|-res
+  click\t<x>\t<y> (host pixels) · key\t<combo> · shot\t<path>(v0)
 ```
 
-## 계약 (`constants.json`)
-| 영역 | 값 |
+## Contract (`constants.json`)
+| Area | Value |
 |------|-----|
-| v1a 프레임 | `ws://127.0.0.1:8889`, binary whole-frame JPEG, `ssh -L` 터널 |
+| v1a frame | `ws://127.0.0.1:8889`, binary whole-frame JPEG, `ssh -L` tunnel |
 | v2 WebRTC | signaling `127.0.0.1:8890`, H.264/WebRTC |
-| v0 폴백 | ssh 스크린샷 폴링, auto에서 ~4s 무프레임 시 전환 |
-| 캡처 파라미터 | fps 1–120 · quality 1–100 · scale 0.1–1.0 |
-| 입력 채널 | InputServer `/tmp/remote-pair.input-req`/`-res`, `<verb>\t<args>` |
-| 입력 verb | `shot` · `click\t<x>\t<y>`(픽셀) · `key\t<combo>`, throttle 120ms |
-| 좌표 | webview 상대 0..1 → extension이 픽셀 변환 |
-| webview→ext 메시지 | click·key·ready·v1Dimensions·v1Error·v1FirstFrame·v2Error·v2FirstFrame |
+| v0 fallback | ssh screenshot polling, switches in auto after ~4s with no frame |
+| Capture parameters | fps 1–120 · quality 1–100 · scale 0.1–1.0 |
+| Input channel | InputServer `/tmp/remote-pair.input-req`/`-res`, `<verb>\t<args>` |
+| Input verb | `shot` · `click\t<x>\t<y>`(pixels) · `key\t<combo>`, throttle 120ms |
+| Coordinates | webview-relative 0..1 → extension converts to pixels |
+| webview→ext message | click·key·ready·v1Dimensions·v1Error·v1FirstFrame·v2Error·v2FirstFrame |
 
-## 소비자
-| 소비자 | 구현 |
+## Consumers
+| Consumer | Implementation |
 |--------|------|
-| `host/rd/screen/src/serve.rs` | v1a WS+JPEG 서버 (port 8889 default) |
+| `host/rd/screen/src/serve.rs` | v1a WS+JPEG server (port 8889 default) |
 | `host/rd/screen/src/serve_webrtc.rs` | v2 WebRTC (signaling 8890) |
-| `client/ide/remotepair-ext/extension.js` | 터널·InputServer 전달·포트 상수(SIDECAR/SIGNAL) |
-| `client/ide/remotepair-ext/media/remote-desktop.js` | 웹뷰 렌더·입력 캡처·메시지 어휘 |
+| `client/ide/remotepair-ext/extension.js` | tunnel · InputServer forwarding · port constants (SIDECAR/SIGNAL) |
+| `client/ide/remotepair-ext/media/remote-desktop.js` | webview rendering · input capture · message vocabulary |
 
-## 사용
+## Usage
 ```bash
-shared/screen-protocol/check-screen-protocol.sh   # rs↔ide 정합 검증
+shared/screen-protocol/check-screen-protocol.sh   # verify rs↔ide consistency
 ```
-포트·verb·throттл을 바꿀 땐 여기를 먼저 고치고 양쪽 소비자를 맞춘다.
+When changing ports, verbs, or throttles, fix this file first, then align both consumers.
 
-## 향후
-build-time codegen으로 이 상수를 rs(Rust const) / ext(JS const)에 **생성 주입**하면
-선언-검증을 넘어 진짜 단일 소스가 된다 (G004 IdeSelfContainment에서 다룸).
+## Future
+Using build-time codegen to **generate and inject** these constants into rs (Rust const) / ext (JS const)
+would go beyond declare-and-verify and make this a true single source (covered in G004 IdeSelfContainment).

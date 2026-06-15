@@ -4,7 +4,7 @@
 
 <h1 align="center">RemotePair</h1>
 
-<p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><b>English</b> · <a href="README.ko.md">Korean</a></p>
 
 Run Claude Code on an always-on Mac, with full macOS **computer-use** (screenshot, click, type), and attach to it from your laptop or phone — over mosh/SSH.
 
@@ -280,6 +280,6 @@ Repo layout: `host/` (app, build scripts, approve router, skills), `client/` (CL
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE). (Commercial/dual licensing 문의 가능)
+AGPL-3.0-or-later. See [LICENSE](LICENSE). (Commercial/dual licensing inquiries welcome)
 
 Personal tool, tested on macOS (Apple Silicon). Not endorsed by Apple. Contributions welcome — please open an issue before large changes.

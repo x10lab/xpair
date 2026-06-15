@@ -1,21 +1,21 @@
-# notify.conf.example — remote-pair 알림 설정 예시.
-# 실제 파일 위치: ~/.remote-pair/notify.conf
-# 이 파일을 복사해서 사용하세요: cp notify.conf.example ~/.remote-pair/notify.conf
+# notify.conf.example — remote-pair notification configuration example.
+# Actual file location: ~/.remote-pair/notify.conf
+# Copy this file to use it: cp notify.conf.example ~/.remote-pair/notify.conf
 
-# ENABLED_TYPES: 어떤 이벤트 타입을 큐에 기록하고 클라이언트에 전달할지 지정.
-# 쉼표로 구분. 공백 없이 작성.
+# ENABLED_TYPES: specifies which event types to record to the queue and deliver to the client.
+# Comma-separated. Write without spaces.
 #
-# 가능한 타입:
-#   Stop          — Claude Code 세션이 정상 종료될 때
-#   Notification  — 모델이 사용자에게 보내는 알림 메시지
-#   SubagentStop  — 서브에이전트가 종료될 때
-#   approve       — PermissionDenied / PostToolUseFailure (GUI 승인 대기 상황)
+# Possible types:
+#   Stop          — when a Claude Code session terminates normally
+#   Notification  — notification messages the model sends to the user
+#   SubagentStop  — when a subagent terminates
+#   approve       — PermissionDenied / PostToolUseFailure (awaiting GUI approval)
 #
-# 기본값 (이 줄을 주석 처리하거나 파일이 없으면 모두 켜짐):
+# Default (all enabled if this line is commented out or the file is missing):
 ENABLED_TYPES=Stop,Notification,SubagentStop,approve
 
-# 예) Stop 과 approve 만 알림받고 싶을 때:
+# e.g. when you only want notifications for Stop and approve:
 # ENABLED_TYPES=Stop,approve
 
-# 예) 모든 알림 끄기 (빈 값):
+# e.g. turn off all notifications (empty value):
 # ENABLED_TYPES=

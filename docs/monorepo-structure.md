@@ -1,77 +1,82 @@
-# RemotePair 모노레포 구조 (현행)
+# RemotePair Monorepo Structure (Current)
 
-> **이 문서가 현행 구조의 단일 진실(SoT)이다.** `docs/ide-merge-*.md`는 통합 *전* 계획이며,
-> 본 문서는 실제 실행 결과를 반영한다.
-> 브랜치: `refactor/monorepo` · 대상: `remote-pair`(코어) · `remotepair-ide`(IDE) · `remotepair-rs`(엔진).
-> 화면공유는 순수 자체 엔진(`host/rd/screen`). 외부 임베드 실험은 별개 레포(본 레포 대상 아님).
+> **This document is the single source of truth (SoT) for the current structure.** `docs/ide-merge-*.md` is the *pre*-integration plan, whereas
+> this document reflects the actual execution result.
+> Branch: `refactor/monorepo` · Targets: `remote-pair` (core) · `remotepair-ide` (IDE) · `remotepair-rs` (engine).
+> Screen sharing is a pure in-house engine (`host/rd/screen`). External embed experiments live in a separate repo (out of scope for this repo).
 
-## 1. 구성 — 3 형제 레포 → 단일 모노레포
+## 1. Composition — 3 Sibling Repos → Single Monorepo
 
 ```
-remote-pair/                  (단일 git 모노레포 — host/client × 컴포넌트)
-├─ host/                      ◀ 호스트 머신에서 실행
-│   ├─ app/                   RemotePairHost.app 소스 (메뉴바·캡처·입력·grant 소유)
-│   ├─ rd/                    ◀ 원격데스크톱 엔진 서브트리 (remotepair-rs)
+remote-pair/                  (single git monorepo — host/client × components)
+├─ host/                      ◀ runs on the host machine
+│   ├─ app/                   RemotePairHost.app source (owns menu bar·capture·input·grant)
+│   ├─ rd/                    ◀ remote-desktop engine subtree (remotepair-rs)
 │   │   ├─ screen/  Rust: serve.rs(WS+JPEG)·serve_webrtc.rs(WebRTC)
-│   │   └─ rpmedia/             Swift: 캡처·VT인코드·입력주입(AX)
-│   ├─ hooks/  skills/        claude 호스트 연동
-│   └─ build-host·approve-router·rules·ocr-find   빌드/데몬 글루
-├─ client/                    ◀ 클라이언트 머신에서 실행
-│   ├─ cli/                   remote-pair* CLI + web/ 온보딩(role-aware) + hangul-romanize
-│   └─ ide/                   ◀ VSCodium 기반 IDE (Vendor 분리 / Option C)
-│       ├─ remotepair/        RemotePair 소유 전부 (ext+generated/·patches/zz·product.overlay·dev-build.sh·REMOTEPAIR.md)
-│       └─ vendor/vscodium/   순정 VSCodium 빌드레시피 (git subtree ← VSCodium/vscodium, 불가침)
-├─ shared/                    ◀ SoT (아래 §2)
+│   │   └─ rpmedia/             Swift: capture·VT encode·input injection(AX)
+│   ├─ hooks/  skills/        claude host integration
+│   └─ build-host·approve-router·rules·ocr-find   build/daemon glue
+├─ client/                    ◀ runs on the client machine
+│   ├─ cli/                   remote-pair* CLI + hangul-romanize (onboarding to be implemented as two Electron windows — see §2)
+│   └─ ide/                   ◀ VSCodium-based IDE (Vendor separation / Option C)
+│       ├─ remotepair/        everything RemotePair owns (ext+generated/·patches/zz·product.overlay·dev-build.sh·REMOTEPAIR.md)
+│       └─ vendor/vscodium/   pristine VSCodium build recipe (git subtree ← VSCodium/vscodium, inviolable)
+├─ shared/                    ◀ SoT (see §2 below)
 ├─ docs/  tests/  assets/  Casks/
 ```
-> 역할×위치 재배치: `rs`("rust"라 의미불명) → **`host/rd`**(remote-desktop=화면+입력, 호스트측), `ide` → **`client/ide`**, `client/*` → **`client/cli`**, `host/RemotePairHost` → **`host/app`**.
-> 구 `native/`(화면엔진 사본)는 제거 — `host/rd`로 통일. 검증: swiftc(host/app) + 전체 tests + SoT 체크 green.
-> `client/ide/vendor/vscodium/vscode/`·`*.dmg` 등 6.9G 빌드산출물은 `.gitignore`가 자동 무시.
+> Role×location rearrangement: `rs` ("rust" is ambiguous) → **`host/rd`** (remote-desktop = screen+input, host side), `ide` → **`client/ide`**, `client/*` → **`client/cli`**, `host/RemotePairHost` → **`host/app`**.
+> The old `native/` (a copy of the screen engine) was removed — unified into `host/rd`. Verification: swiftc(host/app) + full tests + SoT check green.
+> Build artifacts totaling 6.9G such as `client/ide/vendor/vscodium/vscode/`·`*.dmg` are automatically ignored by `.gitignore`.
 
-## 2. shared/ — 단일 소스(SoT)
+## 2. shared/ — Single Source (SoT)
 
-| 디렉터리 | 계약 | 소비자 | 체크 |
+| Directory | Contract | Consumers | Check |
 |----------|------|--------|------|
-| `shared/identity/` | 브랜드·컴포넌트 식별자·버전(독립) | Casks·client/ide/remotepair/product.overlay.json·host/rd Cargo·host/app Config | `check-identity.sh` |
-| `shared/screen-protocol/` | WS/WebRTC 포트·프레임·입력채널·메시지 어휘 | host/rd(serve*.rs)·client/ide(extension·remote-desktop.js) | `check-screen-protocol.sh` |
-| `shared/onboarding/` | role-aware 단계모델 | 웹 마법사·IDE walkthroughs | `check-onboarding.sh` |
+| `shared/identity/` | brand·component identifiers·version (independent) | Casks·client/ide/remotepair/product.overlay.json·host/rd Cargo·host/app Config | `check-identity.sh` |
+| `shared/screen-protocol/` | WS/WebRTC ports·frames·input channel·message vocabulary | host/rd(serve*.rs)·client/ide(extension·remote-desktop.js) | `check-screen-protocol.sh` |
+| onboarding (to be implemented) | role-aware step model | host Electron window (RemotePairHost)·client Electron window (RemotePair IDE) | — |
 
-**build-time codegen:** `client/ide/remotepair/ext/generate-contracts.mjs`가 `shared/`를 읽어
-`client/ide/remotepair/ext/generated/contracts.json`을 생성(커밋). `remotepair/ext`는 이 생성물만
-소비 → **client/ide self-contained**(빌드가 부모 `shared/` 불필요, subtree pull 안전).
-검증: `shared/check-ide-selfcontained.sh`.
+> **Onboarding (redesign, not yet built):** the onboarding requirement survives, but the prior browser-based web wizard
+> (vanilla SPA + python HTTP bridge + `remote-pair web` subcommand + `shared/onboarding/` step model) was **removed** as a
+> failed pre-VSCodium attempt. Onboarding is being redesigned from scratch as **two separate Electron onboarding windows** —
+> one embedded in **RemotePairHost** (the host Swift app) and one in **RemotePair** (the client VSCodium/Electron IDE) — shown
+> on first install, based on a React/shadcn mockup. None of it is built yet.
 
-## 3. 실행된 리팩터
+**build-time codegen:** `client/ide/remotepair/ext/generate-contracts.mjs` reads `shared/` and
+generates `client/ide/remotepair/ext/generated/contracts.json` (committed). `remotepair/ext` consumes only
+this generated artifact → **client/ide self-contained** (the build does not need the parent `shared/`, making subtree pull safe).
+Verification: `shared/check-ide-selfcontained.sh`.
 
-| 단계 | 내용 |
+## 3. Executed Refactor
+
+| Stage | Content |
 |------|------|
-| 조립 | `git subtree add` → `ide/`(unshallow 후)·`rs/`; native/ 제거 |
-| G001 identity SoT | `shared/identity/` + 정합 체크(14 consumers) |
-| G002 screen-protocol SoT | `shared/screen-protocol/` + 체크(rs↔ide 19항목) |
-| G003 onboarding SoT | `shared/onboarding/` + 체크(웹+IDE 18항목) |
-| G004 ide self-containment | generate-contracts.mjs + generated/ + extension.js 배선 |
+| Assembly | `git subtree add` → `ide/`(after unshallow)·`rs/`; remove native/ |
+| G001 identity SoT | `shared/identity/` + consistency check(14 consumers) |
+| G002 screen-protocol SoT | `shared/screen-protocol/` + check(rs↔ide 19 items) |
+| ~~G003 onboarding SoT~~ | *removed* — the `shared/onboarding/` step model and web wizard were retired; onboarding is being redesigned as two Electron windows (see §2) |
+| G004 ide self-containment | generate-contracts.mjs + generated/ + extension.js wiring |
 
-## 4. 전체 검증
+## 4. Full Verification
 ```bash
 shared/identity/check-identity.sh
 shared/screen-protocol/check-screen-protocol.sh
-shared/onboarding/check-onboarding.sh
 shared/check-ide-selfcontained.sh
 ```
 
-## 5. 알려진 갭 (IDE 미완성 / 후속)
-- **remotepair/ext 번들링 미배선**: `vendor/vscodium` 빌드의 builtInExtensions에 안 묶임(현재 `.vsix`/dev만).
-  IDE 완성 시 inject 단계(build.sh 래퍼)에 generate-contracts + ext 번들 등록 필요.
-- **rs/ self-containment 미적용**: rs는 아직 shared 직접 미참조(리터럴 유지, 체크로 정합만). 향후 Rust codegen 가능.
-- **버전 정합 정책**: 컴포넌트 독립 버전 유지(host 0.4.12 / ide·rs 0.1.0) — 통일 강제 안 함.
+## 5. Known Gaps (IDE incomplete / follow-up)
+- **remotepair/ext bundling not wired**: not bound into the builtInExtensions of the `vendor/vscodium` build (currently `.vsix`/dev only).
+  When the IDE is complete, the inject stage (build.sh wrapper) needs to register generate-contracts + the ext bundle.
+- **rs/ self-containment not applied**: rs still does not reference shared directly (literals are kept, consistency only enforced by check). Rust codegen possible in the future.
+- **version consistency policy**: components keep independent versions (host 0.4.12 / ide·rs 0.1.0) — unification is not enforced.
 
-## 6. upstream 동기화 (Vendor 분리 / Option C)
-`client/ide/vendor/vscodium/`가 **순정 VSCodium**(github.com/VSCodium/vscodium, 리모트 `vscodium`)을
-git subtree로 직접 추적. RemotePair 파일은 `remotepair/`에만 있고 추적 서브트리에 들어가지 않으므로
-pull이 **구조적으로 충돌 0**:
+## 6. upstream Sync (Vendor separation / Option C)
+`client/ide/vendor/vscodium/` directly tracks **pristine VSCodium** (github.com/VSCodium/vscodium, remote `vscodium`)
+via git subtree. RemotePair files live only in `remotepair/` and do not enter the tracked subtree, so
+pull has **structurally zero conflicts**:
 ```bash
 git subtree pull --prefix=client/ide/vendor/vscodium vscodium <tag> --squash
 ```
-현재 앵커: VSCodium `1.121.03429` (VS Code 1.121.0, MS commit `987c9597…`).
-> 구 standalone `remotepair-ide` 레포(레시피 안에 RemotePair 파일이 섞인 포크)는 **은퇴**. 이전의
-> `git subtree pull --prefix=ide` 경로는 폐기됨.
+Current anchor: VSCodium `1.121.03429` (VS Code 1.121.0, MS commit `987c9597…`).
+> The old standalone `remotepair-ide` repo (a fork with RemotePair files mixed into the recipe) is **retired**. The previous
+> `git subtree pull --prefix=ide` path is deprecated.

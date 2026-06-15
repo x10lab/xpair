@@ -54,7 +54,7 @@ write_config() {
   _write_env "$COMMON_ENV" "${COMMON_KEYS[@]}"
   if is_host;   then _write_env "$HOST_ENV"   "${HOST_KEYS[@]}"; fi
   if is_client; then _write_env "$CLIENT_ENV" "${CLIENT_KEYS[@]}"; fi
-  # role 마커 — 앱 Installer 가 클라 머신에서 호스트 자기설치를 거부할 때 SSOT 로 읽음.
+  # role marker — read as the SSOT when the app Installer refuses host self-install on a client machine.
   [ -e "$RP_DIR/role" ] || record FILE "$RP_DIR/role"
   printf '%s\n' "$ROLE" > "$RP_DIR/role"
 }
@@ -67,9 +67,9 @@ fi
 [ -n "${REMOTE_HOST:-}" ] && say "Remote host = $REMOTE_HOST" || say "REMOTE_HOST not set (local-only mode)"
 
 # ── Revert existing install before re-installing (idempotent) ──
-# notify.conf 는 사용자 편집(ENABLED_TYPES)을 담을 수 있는 설정파일이다. 첫 설치 때 우리가
-# FILE 로 기록했으므로 revert 가 지워버려 재설치 시 기본값으로 되돌아간다 → 사용자 편집 유실.
-# revert 직전 임시 보관했다가 직후 복원해, 아래 "없을 때만 생성" 가드가 보존본을 보게 한다.
+# notify.conf is a config file that may hold user edits (ENABLED_TYPES). Since we recorded it as
+# FILE on first install, a revert would delete it and reinstall would reset to defaults → user edits lost.
+# Stash it just before revert and restore it right after, so the "create only if absent" guard below sees the preserved copy.
 _RP_NOTIFY_STASH=""
 if [ -f "$MANIFEST" ]; then
   say "Existing install detected — reverting before reinstall"
@@ -101,28 +101,28 @@ if is_host; then
     done < <(find "$HOST_DIR/skills" -type f)
   fi
 
-  # notify 훅 → ~/.remote-pair/bin/remote-pair-notify.sh (Claude Code 이벤트 → 큐 append).
-  # approve 훅과 함께 manage-claude-hooks.py(4-arg) 가 settings.json 에 멱등 머지한다.
-  # notify.conf 기본값은 첫 설치 때만 깔고(사용자 편집 보존), manifest 로 가역 기록.
+  # notify hook → ~/.remote-pair/bin/remote-pair-notify.sh (Claude Code events → append to queue).
+  # Together with the approve hook, manage-claude-hooks.py (4-arg) idempotently merges it into settings.json.
+  # notify.conf defaults are laid down only on first install (preserving user edits), and recorded reversibly in the manifest.
   notify_cmd="$RP_DIR/bin/remote-pair-notify.sh"
   if [ -f "$HOST_DIR/hooks/remote-pair-notify.sh" ]; then
-    say "[host] notify 훅 → $notify_cmd"
+    say "[host] notify hook → $notify_cmd"
     install_file "$HOST_DIR/hooks/remote-pair-notify.sh" "$notify_cmd" 755
-    # notify.conf — 첫 실행 기본값(없을 때만 생성, 사용자 편집 보존). 생성 시 manifest-record.
+    # notify.conf — first-run defaults (create only if absent, preserving user edits). manifest-record on creation.
     if [ ! -e "$RP_DIR/notify.conf" ] && [ -f "$HOST_DIR/hooks/notify.conf.example" ]; then
       mk_dir "$RP_DIR"; record FILE "$RP_DIR/notify.conf"
       cp "$HOST_DIR/hooks/notify.conf.example" "$RP_DIR/notify.conf"
-      say "  notify.conf 기본값 생성 (편집 가능: $RP_DIR/notify.conf)"
+      say "  notify.conf defaults created (editable: $RP_DIR/notify.conf)"
     fi
   else
     warn "host/hooks/remote-pair-notify.sh not found — skipping notify hook (notifications unavailable)"
   fi
 
-  # approve 리마인더 훅 → ~/.claude/settings.json (PermissionDenied/PostToolUseFailure).
-  # 헤드리스 호스트에서 GUI 승인창(Chrome 권한·1Password·시스템 프롬프트)에 막혀 도구가 거부되면
-  # 모델에게 approve 스킬을 결정적으로 상기시킨다(스킬 설명에만 의존하지 않게). 멱등 머지 — 기존 훅 보존.
-  # manage-claude-hooks.py 는 4-arg: add <settings> <approve_cmd> <notify_cmd>. approve+notify 를
-  # 한 번에 머지하므로 위에서 notify 훅 파일을 먼저 깐 뒤 호출한다.
+  # approve reminder hook → ~/.claude/settings.json (PermissionDenied/PostToolUseFailure).
+  # When a tool is denied on a headless host because it's blocked by a GUI approval dialog (Chrome permissions, 1Password, system prompts),
+  # deterministically remind the model of the approve skill (instead of relying on the skill description alone). Idempotent merge — preserves existing hooks.
+  # manage-claude-hooks.py is 4-arg: add <settings> <approve_cmd> <notify_cmd>. It merges approve+notify
+  # in one pass, so the notify hook file is laid down above before this call.
   if [ -f "$HOST_DIR/hooks/approve-reminder.sh" ] && [ -f "$HOST_DIR/hooks/manage-claude-hooks.py" ]; then
     if command -v python3 >/dev/null 2>&1; then
       install_file "$HOST_DIR/hooks/manage-claude-hooks.py" "$RP_DIR/bin/manage-claude-hooks.py" 755
@@ -130,17 +130,17 @@ if is_host; then
       settings="$CLAUDE_DIR/settings.json"
       approve_cmd='$HOME/.claude/hooks/remote-pair-approve-reminder.sh'
       existed=0; [ -f "$settings" ] && existed=1
-      say "[host] approve+notify 훅 → $settings (멱등 머지)"
-      python3 "$RP_DIR/bin/manage-claude-hooks.py" add "$settings" "$approve_cmd" "$notify_cmd" || warn "approve/notify 훅 머지 실패 — 수동 확인 필요"
-      # HOOKS 원복은 approve_cmd / notify_cmd 두 식별자를 각각 제거해야 함 → 두 줄 기록.
+      say "[host] approve+notify hook → $settings (idempotent merge)"
+      python3 "$RP_DIR/bin/manage-claude-hooks.py" add "$settings" "$approve_cmd" "$notify_cmd" || warn "approve/notify hook merge failed — manual check required"
+      # HOOKS rollback must remove both the approve_cmd and notify_cmd identifiers separately → record two lines.
       if [ "$existed" = 1 ]; then
-        record HOOKS "$settings" "$approve_cmd"   # 기존 파일 → surgical 제거로 원복(approve)
-        record HOOKS "$settings" "$notify_cmd"    # 기존 파일 → surgical 제거로 원복(notify)
+        record HOOKS "$settings" "$approve_cmd"   # pre-existing file → roll back via surgical removal (approve)
+        record HOOKS "$settings" "$notify_cmd"    # pre-existing file → roll back via surgical removal (notify)
       else
-        record FILE "$settings"                   # 우리가 새로 만든 파일 → 통째 삭제로 원복
+        record FILE "$settings"                   # file we newly created → roll back via full deletion
       fi
     else
-      warn "python3 없음 — approve/notify 훅 설치 건너뜀(스킬은 설치됨). CLT 설치 후 install.sh --role host 재실행 권장"
+      warn "python3 not found — skipping approve/notify hook install (skill is installed). After installing the CLT, re-running install.sh --role host is recommended"
     fi
   fi
 
@@ -218,24 +218,7 @@ if is_client; then
   [ -f "$CLIENT_DIR/hangul-romanize" ] && install_file "$CLIENT_DIR/hangul-romanize" "$RP_DIR/bin/hangul-romanize" 755
   install_file "$CLIENT_DIR/remote-pair-launch" "$LAUNCHER" 755
 
-  # ── Web onboarding wizard: bridge → PATH, static SPA → $WEB_DIR. Both manifest-recorded → uninstall 가역. ──
-  if [ -f "$CLIENT_DIR/remote-pair-web" ]; then
-    say "[client] web bridge → $LOCAL_BIN/remote-pair-web"
-    install_file "$CLIENT_DIR/remote-pair-web" "$LOCAL_BIN/remote-pair-web" 755
-  else
-    warn "client/cli/remote-pair-web not found — skipping web bridge install ('remote-pair web' unavailable)"
-  fi
-  if [ -d "$CLIENT_DIR/web" ]; then
-    say "[client] web assets → $WEB_DIR"
-    mk_dir "$WEB_DIR"
-    while IFS= read -r src; do
-      rel="${src#"$CLIENT_DIR/web/"}"; install_file "$src" "$WEB_DIR/$rel"
-    done < <(find "$CLIENT_DIR/web" -type f)
-  else
-    warn "client/cli/web not found — skipping web assets install (wizard UI unavailable)"
-  fi
-
-  # ── Web-tab launchers: editor (M4 code-server) + desktop (M5 Screen Sharing). manifest-recorded → 가역. ──
+  # ── Web-tab launchers: editor (M4 code-server) + desktop (M5 Screen Sharing). manifest-recorded → reversible. ──
   if [ -f "$CLIENT_DIR/remote-pair-editor" ]; then
     say "[client] editor launcher → $LOCAL_BIN/remote-pair-editor"
     install_file "$CLIENT_DIR/remote-pair-editor" "$LOCAL_BIN/remote-pair-editor" 755
@@ -248,7 +231,7 @@ if is_client; then
   else
     warn "client/cli/remote-pair-desktop not found — skipping ('remote-pair desktop' unavailable)"
   fi
-  # ── Mount-based file access (alternative to Syncthing — see docs/m-mount.md). manifest-recorded → 가역. ──
+  # ── Mount-based file access (alternative to Syncthing — see docs/m-mount.md). manifest-recorded → reversible. ──
   if [ -f "$CLIENT_DIR/remote-pair-mount" ]; then
     say "[client] mount launcher → $LOCAL_BIN/remote-pair-mount"
     install_file "$CLIENT_DIR/remote-pair-mount" "$LOCAL_BIN/remote-pair-mount" 755

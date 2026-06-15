@@ -1,90 +1,89 @@
-# 입력 주입 — 중대 발견 (2026-06-15, 실앱 readback 검증)
+# Input Injection — Critical Findings (2026-06-15, verified by real-app readback)
 
 ## TL;DR
-**CGEvent 키보드 주입(rp-input-inject)이 실제 Cocoa 앱에 텍스트를 전달하지 못한다.**
-이전 검증(rp-input-selftest / rp-input-pipetest)은 **CGEventTap이 이벤트를 *캡쳐*** 하는 것만
-확인했을 뿐, 앱이 *insert* 하는지는 검증하지 못했다(평가자 맹점). 실앱(NSTextView) readback으로
-검증하니 실제로는 안 들어간다.
+**CGEvent keyboard injection (rp-input-inject) fails to deliver text to real Cocoa apps.**
+The earlier verifications (rp-input-selftest / rp-input-pipetest) only confirmed that **CGEventTap *captures* the event**;
+they never verified whether the app actually *inserts* it (evaluator blind spot). Verifying with a real-app (NSTextView) readback shows it does not actually go in.
 
-## 검증 (RPTarget.app = NSTextView 창, isKey/isActive/firstResponder 진단 + 내용 readback)
-| 주입 방법 | 창 상태 | NSTextView 수신 |
+## Verification (RPTarget.app = NSTextView window, isKey/isActive/firstResponder diagnostics + content readback)
+| Injection method | Window state | NSTextView received |
 |---|---|---|
-| rp-input-inject CGEvent unicode("안녕") | isKey=true active=true fr=true | **[] 빈 값** |
-| rp-input-inject CGEvent cmd+V(keycode9+cmd) | key=true | **[] 빈 값** |
-| System Events `keystroke "안녕하세요 rp"` | key=true | **[ㅁㅁㅁㅁㅁ rp]** — 닿지만 한글 깨짐 |
-| System Events cmd+V(클립보드=한글) | key=true | [] (paste 미발화/레이스, 미확정) |
+| rp-input-inject CGEvent unicode(Hangul "annyeong") | isKey=true active=true fr=true | **[] empty** |
+| rp-input-inject CGEvent cmd+V(keycode9+cmd) | key=true | **[] empty** |
+| System Events `keystroke "<Hangul 'annyeonghaseyo'> rp"` | key=true | **[5 garbled Hangul glyphs + " rp"]** — reaches it, but Hangul is garbled |
+| System Events cmd+V(clipboard=Hangul) | key=true | [] (paste did not fire / race, inconclusive) |
 
-→ **CGEvent는 앱에 키보드 전달 X. System Events(Accessibility 경로)는 전달 O.**
-기존 `host/RemotePairHost/InputServer.swift`가 키 입력에 osascript System Events를 쓴 이유가
-바로 이것(코멘트: 합성 CGEvent 키가 일부 웹UI에 안 먹힘 — 실제론 더 광범위).
+→ **CGEvent does NOT deliver keyboard input to the app. System Events (the Accessibility path) DOES deliver it.**
+This is exactly why the existing `host/RemotePairHost/InputServer.swift` uses osascript System Events for key input
+(comment: synthetic CGEvent keys don't work in some web UIs — in reality the scope is much broader).
 
-## 수정 방향 (다음)
-- 호스트 주입을 **CGEvent → Accessibility/System Events 기반**으로 전환(마우스는 CGEvent 가능성,
-  키보드는 AX/System Events).
-- **한글**: keystroke가 음절을 깨뜨리므로 **클립보드 + cmd+V**(정확 Unicode 보존) 또는
-  **AXUIElement 텍스트 insert**(`kAXSelectedTextAttribute` 설정)로. cmd+V paste 경로를 RPTarget로
-  재검증 필요(이번 1회는 미발화).
-- **평가자 교체**: tap 캡쳐(거짓 pass) → **RPTarget 실앱 readback**(rp-input-target.swift)을 표준
-  평가자로. autoresearch native-input-injection 미션의 evaluator를 이걸로 갱신.
+## Fix Direction (next)
+- Switch host injection from **CGEvent → Accessibility/System Events based** (mouse may still work via CGEvent,
+  keyboard via AX/System Events).
+- **Hangul**: since keystroke garbles syllables, use **clipboard + cmd+V** (preserves exact Unicode) or
+  **AXUIElement text insert** (setting `kAXSelectedTextAttribute`). The cmd+V paste path needs to be
+  re-verified against RPTarget (it did not fire on this one run).
+- **Replace the evaluator**: tap capture (false pass) → **RPTarget real-app readback** (rp-input-target.swift) as the standard
+  evaluator. Update the evaluator of the autoresearch native-input-injection mission to use this.
 
-## 검증된 부분(유효)
-전송 체인(클라 IME캡쳐→DataChannel→호스트 stdin)·좌표·throttle·seq는 그대로 유효.
-바뀌는 건 stdin 이후 **주입 백엔드**뿐(JSON 와이어 계약 불변).
+## Verified Portions (still valid)
+The transport chain (client IME capture → DataChannel → host stdin), coordinates, throttle, and seq remain valid as-is.
+The only thing that changes is the **injection backend** after stdin (the JSON wire contract is unchanged).
 
-## 추가 확정 (2차 검증)
-- rp-input-inject `AXIsProcessTrusted=true` — **신뢰됨인데도** CGEvent 미도달. 권한 문제 아님.
-- CGEvent **평범한 keycode**(code 0/1/2, modifier 없음)도 NSTextView 빈 값 → unicode경로만이 아니라
-  **CGEvent 키보드 전달 자체가 NSTextView에 안 됨**(이유 불명이나 재현 일관).
-- 클립보드+cmd+V paste: RPTarget에 Edit메뉴 추가했으나 하네스에서 미발화(타이밍/포커스 플레이키) —
-  실앱(Edit메뉴 보유)에서 재검증 필요. System Events keystroke 도달은 확정.
-- 결론 불변: 키보드 주입 백엔드 = **System Events/AX**. 한글 = 클립보드 paste 또는 AX insert(실앱 검증).
+## Additional Confirmations (2nd verification)
+- rp-input-inject `AXIsProcessTrusted=true` — **even though trusted**, CGEvent does not reach. Not a permissions problem.
+- CGEvent with **plain keycodes** (code 0/1/2, no modifier) also yields an empty NSTextView → so it's not just the unicode path;
+  **CGEvent keyboard delivery itself does not reach NSTextView** (reason unknown, but consistently reproducible).
+- clipboard+cmd+V paste: added an Edit menu to RPTarget, but it did not fire in the harness (timing/focus flaky) —
+  needs re-verification in a real app (one that has an Edit menu). System Events keystroke delivery is confirmed.
+- Conclusion unchanged: keyboard injection backend = **System Events/AX**. Hangul = clipboard paste or AX insert (verify in a real app).
 
-## 해결 (3차 — AX 텍스트 insert가 정답)
-**`AXUIElementSetAttributeValue(focusedElement, kAXSelectedTextAttribute, text)`가 한글을
-정확히 NSTextView에 넣는다.** 실증: RPTarget self-insert → `TARGET_GOT:[안녕하세요 AX 123]
-rc=0`. CGEvent(미도달)·System Events(한글깨짐)와 달리 **정확 Unicode landing**.
+## Resolution (3rd — AX text insert is the answer)
+**`AXUIElementSetAttributeValue(focusedElement, kAXSelectedTextAttribute, text)` puts Hangul
+into NSTextView exactly.** Proof: RPTarget self-insert → `TARGET_GOT:[<Hangul 'annyeonghaseyo'> AX 123]
+rc=0`. Unlike CGEvent (does not reach) and System Events (garbles Hangul), this achieves **exact Unicode landing**.
 
-→ `rp-input-inject.swift`의 `injectText`를 AX insert로 교체함(구현 완료).
+→ Replaced `injectText` in `rp-input-inject.swift` with AX insert (implementation done).
 
-**전제 2가지(실호스트는 자연 충족, 자동화 테스트만 미충족):**
-1. 주입 바이너리가 **AX-trusted** — same-process AX는 신뢰 불요지만 cross-process는 필요.
-   부모 프로세스에서 상속(iTerm 신뢰→helper 신뢰; 미신뢰 앱이 spawn하면 미신뢰). 프로덕션은
-   헬퍼를 Accessibility grant(기존 InputServer/RemotePairHost처럼).
-2. **타깃이 진짜 frontmost-active** — system-wide kAXFocusedUIElement는 그 순간 active 앱의
-   포커스 요소를 줌. 실호스트는 사용자가 쓰는 앱이 active라 충족. 자동화 테스트는 throwaway
-   창을 active로 못 만들어(에이전트/터미널이 frontmost 뺏음) cross-process 미검증.
+**Two preconditions (naturally met on a real host, only unmet in automated tests):**
+1. The injection binary must be **AX-trusted** — same-process AX needs no trust, but cross-process does.
+   It's inherited from the parent process (iTerm trusted → helper trusted; if an untrusted app spawns it, it's untrusted). Production
+   grants the helper Accessibility (like the existing InputServer/RemotePairHost).
+2. The **target must genuinely be frontmost-active** — system-wide kAXFocusedUIElement returns the focused
+   element of whichever app is active at that moment. On a real host this is met because the app the user is using is active. Automated tests
+   cannot make a throwaway window active (the agent/terminal steals frontmost), so cross-process is unverified.
 
-**남은 검증(실호스트/2대):** granted 헬퍼 + 실제 포커스된 앱(TextEdit/브라우저)에 AX insert →
-한글 landing. 메커니즘은 same-process로 증명됨. 단축키(cmd+s 등)는 별도 — CGEvent 미도달이라
-System Events keystroke(modifier) 경로 필요. 마우스는 CGEvent 검증 별도.
+**Remaining verification (real host / 2 machines):** granted helper + an actually-focused app (TextEdit/browser) AX insert →
+Hangul landing. The mechanism is proven via same-process. Shortcuts (cmd+s, etc.) are separate — since CGEvent does not reach,
+they need the System Events keystroke (modifier) path. Mouse is a separate CGEvent verification.
 
-## ✅ CROSS-PROCESS 확정 (4차 — 최종)
-PID-타겟 AX(`AXUIElementCreateApplication(pid)`→AXTextArea→set kAXValue)로 frontmost-active
-의존을 우회해 cross-process AX 주입을 증명:
+## ✅ CROSS-PROCESS Confirmed (4th — final)
+Using PID-targeted AX (`AXUIElementCreateApplication(pid)` → AXTextArea → set kAXValue) to bypass the frontmost-active
+dependency, cross-process AX injection is proven:
 ```
-프로세스A(rp-ax-pid): RPTarget pid 타겟 → AXTextArea 찾음 → set "안녕하세요 cross 입력 OK" rc=0
-프로세스B(rp-ax-read): 같은 textarea readback → READBACK:[안녕하세요 cross 입력 OK]
+ProcessA (rp-ax-pid): target RPTarget pid → found AXTextArea → set "<Hangul 'annyeonghaseyo'> cross <Hangul 'ipryeok'> OK" rc=0
+ProcessB (rp-ax-read): readback of the same textarea → READBACK:[<Hangul 'annyeonghaseyo'> cross <Hangul 'ipryeok'> OK]
 ```
-→ **별도 프로세스가 실제 NSTextView에 한글을 정확히 cross-process AX insert**함을 독립 readback으로
-확정. CGEvent(미도달)·System Events(한글깨짐)와 결정적으로 다름.
+→ Confirmed by independent readback that **a separate process can cross-process AX insert Hangul into a real NSTextView exactly**.
+Decisively different from CGEvent (does not reach) and System Events (garbles Hangul).
 
-**프로덕션 injectText**: system-wide-focused AX(사용자가 *지금 포커스한* 앱 타겟)가 맞음 —
-실호스트는 그 앱이 active라 동작. PID 타겟은 메커니즘 증명용. 헬퍼는 Accessibility grant 필요.
-하네스: rp-ax-pid.swift(주입), rp-ax-read.swift(검증), rp-input-target.swift(NSTextView sink).
+**Production injectText**: system-wide-focused AX (targeting the app the user has focused *right now*) is correct —
+on a real host it works because that app is active. PID targeting is for proving the mechanism. The helper needs an Accessibility grant.
+Harness: rp-ax-pid.swift (injection), rp-ax-read.swift (verification), rp-input-target.swift (NSTextView sink).
 
-## ✅✅ 라이브 풀체인 동작 (5차 — 최종, integrated end-to-end)
-브라우저→IME캡쳐→DataChannel→serve-webrtc→rp-input-inject stdin→AX insert→실 NSTextView
-를 **한 번에 통합 실행**, 한글 landing 확정:
+## ✅✅ Live Full-Chain Working (5th — final, integrated end-to-end)
+The browser → IME capture → DataChannel → serve-webrtc → rp-input-inject stdin → AX insert → real NSTextView path
+was **run integrated in one shot**, and Hangul landing is confirmed:
 ```
-playwright fireKorean("안녕하세요 라이브풀체인 OK")
+playwright fireKorean("<Hangul 'annyeonghaseyo'> <Hangul 'live full-chain'> OK")
  → rp-input-e2e.html compositionend → DataChannel rp-ctl {t:x,s:...}
- → serve-webrtc on_message → 헬퍼 stdin (log: RPIN seq=1 t=x)
+ → serve-webrtc on_message → helper stdin (log: RPIN seq=1 t=x)
  → rp-input-inject injectText (AX, RP_INPUT_TARGET_PID)
  → RPTarget NSTextView
-결과: TARGET_GOT:[안녕하세요 라이브풀체인 OK]  + 독립 rp-ax-read READBACK 동일
+result: TARGET_GOT:[<Hangul 'annyeonghaseyo'> <Hangul 'live full-chain'> OK]  + independent rp-ax-read READBACK identical
 ```
-RP_INPUT_TARGET_PID는 test-only(자동화 환경이 throwaway 창을 frontmost-active로 못 만들어
-system-wide-focused가 안 잡히는 것 우회). **프로덕션은 system-wide-focused AX**(사용자 포커스
-앱 타겟) — 같은 AX 메커니즘, 실호스트는 그 앱이 active라 동작. 헬퍼 Accessibility grant 필요.
+RP_INPUT_TARGET_PID is test-only (a workaround for the automation environment not being able to make a throwaway window
+frontmost-active, so system-wide-focused isn't caught). **Production uses system-wide-focused AX** (targeting the user's focused
+app) — the same AX mechanism; on a real host it works because that app is active. The helper needs an Accessibility grant.
 
-남은 배선: 단축키=System Events keystroke+modifier, 마우스=CGEvent landing 검증(텍스트와 별개).
+Remaining wiring: shortcuts = System Events keystroke+modifier, mouse = CGEvent landing verification (separate from text).

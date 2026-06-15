@@ -56,11 +56,11 @@
       },
       {
         "command": "remotepair.openFileBrowser",
-        "title": "RemotePair: 파일 탐색기 열기 (Open File Browser)"
+        "title": "RemotePair: Open File Browser"
       },
       {
         "command": "remotepair.openSettings",
-        "title": "RemotePair: 설정 열기 (Open Settings)"
+        "title": "RemotePair: Open Settings"
       },
       {
         "command": "remotepair.launchRemoteClaude",

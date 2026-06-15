@@ -1,8 +1,8 @@
-// AppDelegate.swift — 메뉴바(NSStatusItem) + 동적 세션 목록 + 권한/설정/업데이트/About 라우팅.
+// AppDelegate.swift — menu bar (NSStatusItem) + dynamic session list + permissions/settings/update/About routing.
 //
-// 책임 분리: tmux host=HostManager, approve=ApproveManager, 세션조회/제어=Sessions,
-//            권한=Permissions, 업데이트=Updater, 설정창=SettingsWindowController.
-// 메뉴는 NSMenuDelegate.menuNeedsUpdate 로 매 오픈마다 세션 목록을 새로 그린다.
+// Separation of responsibilities: tmux host=HostManager, approve=ApproveManager, session query/control=Sessions,
+//            permissions=Permissions, updates=Updater, settings window=SettingsWindowController.
+// The menu redraws the session list on every open via NSMenuDelegate.menuNeedsUpdate.
 
 import Cocoa
 
@@ -17,17 +17,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
-        // 단일 인스턴스 가드: 두 인스턴스(LaunchAgent + 수동 open)가 같은 tmux-aqua 소켓의 _keeper 를
-        // 서로 reap 하는 churn(gh-mac-m4 사고) 차단. **더 오래된(낮은 pid) 인스턴스가 있을 때만** 내가 양보·종료한다.
-        // → 둘 다 종료되는 상황 방지 + launchctl kickstart -k 의 죽어가는 이전 인스턴스 레이스에도 최대 1사이클로 수렴.
+        // Single-instance guard: prevent the churn (the gh-mac-m4 incident) where two instances
+        // (LaunchAgent + manual open) reap each other's _keeper on the same tmux-aqua socket.
+        // I yield and terminate **only when an older (lower-pid) instance exists**.
+        // → Prevents both instances terminating + converges within at most one cycle even in the
+        //   dying-previous-instance race of launchctl kickstart -k.
         let myPid = ProcessInfo.processInfo.processIdentifier
         let older = NSRunningApplication.runningApplications(withBundleIdentifier: BUNDLE_ID)
             .filter { $0.processIdentifier != myPid && $0.processIdentifier < myPid && !$0.isTerminated }
         if !older.isEmpty {
-            log("launch: 더 오래된 RemotePairHost 인스턴스(pid \(older.map { $0.processIdentifier })) 실행 중 — 중복 종료")
+            log("launch: an older RemotePairHost instance (pid \(older.map { $0.processIdentifier })) is running — terminating duplicate")
             NSApp.terminate(nil); return
         }
-        Installer.ensureInstalled()     // 다운로드된 .app 첫 실행 자기설치 (이미 설치돼 있으면 no-op)
+        Installer.ensureInstalled()     // self-install on first run of a downloaded .app (no-op if already installed)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Menu-bar icon: monochrome template (auto-adapts to light/dark menu bar).
         // Loaded by name from Resources (menubar.png + menubar@2x.png). Falls back to text glyph.
@@ -40,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu = NSMenu()
-        menu.delegate = self           // menuNeedsUpdate 로 매번 재구성
+        menu.delegate = self           // rebuilt each time via menuNeedsUpdate
         statusItem.menu = menu
         rebuildMenu()
 
@@ -48,15 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         host.ensureServer()
         hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.host.ensureServer() }
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
-        // (구 v0 InputServer 0.1초 메인스레드 폴링 제거됨 — screencapture 동기 블로킹이 메뉴바를 freeze 시켰음.
-        //  화면공유·입력은 v1/v2(remote-pair-screen serve-webrtc + rp-input-inject)가 대체.)
+        // (legacy v0 InputServer 0.1s main-thread polling removed — screencapture's synchronous blocking froze the menu bar.
+        //  Screen sharing/input are replaced by v1/v2 (remote-pair-screen serve-webrtc + rp-input-inject).)
 
         if UserDefaults.standard.bool(forKey: SettingsWindowController.autoUpdateKey) {
             Updater.checkForUpdates(interactive: false)
         }
     }
 
-    // ── 동적 메뉴 ──
+    // ── dynamic menu ──
     func menuNeedsUpdate(_ menu: NSMenu) { rebuildMenu() }
 
     private func rebuildMenu() {
@@ -67,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
 
-        // 권한 상태 + 부여 (CLIENT = access-only: 상태만 표시, Grant 항목은 호스트/both 에서만)
+        // permission status + grant (CLIENT = access-only: status only, Grant item shown on host/both only)
         let perm = NSMenuItem(title: Permissions.summary(), action: nil, keyEquivalent: "")
         perm.isEnabled = false
         menu.addItem(perm)
@@ -76,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        // 세션 목록 (서버 상태 + 각 세션 → 클릭 시 모달)
+        // session list (server status + each session → modal on click)
         let serverUp = Sessions.serverUp()
         let sessions = serverUp ? Sessions.list() : []
         let shdr = NSMenuItem(title: serverUp ? "Sessions (\(sessions.count))" : "tmux host: down",
@@ -84,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shdr.isEnabled = false
         menu.addItem(shdr)
         if sessions.isEmpty {
-            let none = NSMenuItem(title: serverUp ? "  (활성 세션 없음)" : "  (서버 미기동)",
+            let none = NSMenuItem(title: serverUp ? "  (no active sessions)" : "  (server not running)",
                                   action: nil, keyEquivalent: "")
             none.isEnabled = false
             menu.addItem(none)
@@ -109,18 +111,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 
-    // ── 세션 클릭 → 모달 (Detach all / Kill / Cancel) ──
+    // ── session click → modal (Detach all / Kill / Cancel) ──
     @objc private func sessionClicked(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         let list = Sessions.list()
         guard let s = list.first(where: { $0.name == name }) else { return }
 
         let a = NSAlert()
-        a.messageText = "세션: \(s.name)"
-        var detail = "경로: \(s.path.isEmpty ? "?" : s.path)\nattached: \(s.attached)  windows: \(s.windows)"
+        a.messageText = "Session: \(s.name)"
+        var detail = "Path: \(s.path.isEmpty ? "?" : s.path)\nattached: \(s.attached)  windows: \(s.windows)"
         if let c = s.created {
             let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"
-            detail += "\n생성: \(f.string(from: c))"
+            detail += "\nCreated: \(f.string(from: c))"
         }
         a.informativeText = detail
         a.addButton(withTitle: "Detach all")     // .alertFirstButtonReturn
@@ -132,8 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Sessions.detachAll(s.name)
         case .alertSecondButtonReturn:
             let c = NSAlert()
-            c.messageText = "세션 '\(s.name)' 종료?"
-            c.informativeText = "이 세션 안의 프로세스(claude 등)가 정리됩니다. 되돌릴 수 없습니다."
+            c.messageText = "Kill session '\(s.name)'?"
+            c.informativeText = "The processes inside this session (claude, etc.) will be cleaned up. This cannot be undone."
             c.addButton(withTitle: "Kill"); c.addButton(withTitle: "Cancel")
             c.alertStyle = .warning
             bringToFront()
@@ -143,10 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // ── 평소 루프: heartbeat + status(ground truth) + 트리거 확인 (모두 가벼움) ──
+    // ── steady-state loop: heartbeat + status (ground truth) + trigger check (all lightweight) ──
     @objc func poll() {
         try? "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8)
-        writeStatus()   // 앱 생존 + AX/SR/FDA grant 사실을 status.json 에 — 에이전트가 추측 없이 읽도록
+        writeStatus()   // write app liveness + AX/SR/FDA grant facts to status.json — so the agent reads them without guessing
         if FileManager.default.fileExists(atPath: TRIGGER) {
             try? FileManager.default.removeItem(atPath: TRIGGER)
             log("APPROVE: trigger → router")
@@ -157,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func grantPermissions() { Permissions.requestAndOpen() }
     @objc func approveNow() { approve.run() }
     @objc func restartHost() {
-        // 진짜 재시작(서버+세션 reap 후 재기동) — 활성 세션 있으면 끊김 경고 후 진행.
+        // true restart (reap server+sessions, then relaunch) — if there are active sessions, warn about disconnection before proceeding.
         let n = Sessions.serverUp() ? Sessions.list().count : 0
         if n > 0 {
             let a = NSAlert()
@@ -174,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func checkUpdates() { Updater.checkForUpdates(interactive: true) }
 
     @objc func repairInstall() {
-        Installer.install(force: false)   // 누락 조각 재적용 (안전: 기존 파일/실행 중 인스턴스 보존)
+        Installer.install(force: false)   // reapply missing pieces (safe: preserves existing files / running instance)
         rebuildMenu()
     }
 
@@ -187,17 +189,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let a = NSAlert()
         a.messageText = "\(APP_NAME)  v\(APP_VERSION)"
         a.informativeText = """
-        원격 맥에서 tmux 데몬을 호스팅해, 원격(mosh/ssh) attach 한 claude 가 \
-        macOS computer-use(스크린샷·클릭·타이핑)를 쓸 수 있게 한다.
+        Hosts a tmux daemon on a remote Mac so that a claude attached remotely (mosh/ssh) \
+        can use macOS computer-use (screenshots, clicks, typing).
 
-        • patched tmux-aqua 서버를 앱 자식으로 붙들어 AX·SR 권한 상속
-        • 승인 다이얼로그 자동 클릭(approve 라우터)
-        • 클라이언트는 'remote-pair' CLI + Finder Service 로 접속
+        • Holds the patched tmux-aqua server as a child of the app to inherit AX/SR permissions
+        • Auto-clicks approval dialogs (approve router)
+        • Clients connect via the 'remote-pair' CLI + Finder Service
 
         repo: github.com/\(GH_REPO)
         """
-        a.addButton(withTitle: "GitHub 열기")
-        a.addButton(withTitle: "확인")
+        a.addButton(withTitle: "Open GitHub")
+        a.addButton(withTitle: "OK")
         bringToFront()
         if a.runModal() == .alertFirstButtonReturn,
            let u = URL(string: "https://github.com/\(GH_REPO)") {

@@ -14,14 +14,13 @@
 #   remote-pair approve [--for "<what>"] [--type "key:..|ocr:.."] [--timeout S]   Handle a blocked approval dialog
 #                              --for: which dialog (alias-tolerant)  ·  --type: how to approve — agent decides (key:<combo>|ocr:<label>)
 #   remote-pair status         Host server, app, heartbeat status
-#   remote-pair web            Launch the localhost onboarding wizard (bridge auto-generates a token + opens the 127.0.0.1 URL)
 #   remote-pair editor [start|status|stop] [<dir>]   Launch/inspect the code-server editor (loopback EDITOR_PORT, default 8080)
 #   remote-pair desktop [open|check]    Open the host screen via macOS Screen Sharing (vnc://REMOTE_HOST), or check reachability
 #   remote-pair mount [mount|unmount|status|help] ...   Mount a host folder directly (Syncthing alternative; backends smb|sshfs — see docs/m-mount.md)
 #   remote-pair notify [-n N]  Pull recent host notifications (Stop/Notification/SubagentStop/approve), filtered by ~/.remote-pair/notify.conf
 #   remote-pair logs [--host] [-f] [-n N]   Tail logs (local launcher/app; --host = host logs over ssh; -f = follow)
 #   remote-pair self-update    Update client (launcher/CLI/romanize) to latest from GitHub (keep in sync with host)
-#   remote-pair update [--check] [--ref <git-ref>]   HOT-SWAP the glue/web layer (CLI/launchers/web/approve/host-hooks) without touching the .app/tmux (M6 Level-1). Native .app changes → Level-2 (app Updater).
+#   remote-pair update [--check] [--ref <git-ref>]   HOT-SWAP the glue layer (CLI/launchers/approve/host-hooks) without touching the .app/tmux (M6 Level-1). Native .app changes → Level-2 (app Updater).
 #   remote-pair host           Ensure the tmux-aqua host server is up (when the app is local)
 #   remote-pair help
 #
@@ -590,17 +589,8 @@ cmd_doctor() {
   printf '%-22s %s\n' "mosh (local)" "$(command -v mosh >/dev/null && echo OK || echo "missing (ssh fallback)")"
   printf '%-22s %s\n' "folder mappings" "$([ -n "$FOLDER_MAPS" ] && echo "$(printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c .) entries" || echo "none (registered on first launch)")"
 
-  # ── Informational rows (US-006): web wizard, file-access backend, notify hook. ──
+  # ── Informational rows (US-006): file-access backend, notify hook. ──
   # These never affect the verdict (no fail=1) — they help users see what's wired.
-  # (a) web bridge + SPA assets present → 'remote-pair web' availability.
-  local _web_dir="${WEB_DIR:-$RP_DIR/web}"
-  if [ -x "$LOCAL_BIN/remote-pair-web" ] && [ -f "$_web_dir/index.html" ]; then
-    printf '%-22s %s\n' "web wizard" "OK ('remote-pair web' available)"
-  elif [ -x "$LOCAL_BIN/remote-pair-web" ]; then
-    printf '%-22s %s\n' "web wizard" "bridge OK, assets missing ($_web_dir/index.html) — reinstall client"
-  else
-    printf '%-22s %s\n' "web wizard" "not installed (install.sh --role client for 'remote-pair web')"
-  fi
   # (b) file-access backend: mount → check active mount; syncthing → best-effort local daemon probe.
   local _sync_backend="${SYNC_BACKEND:-syncthing}"
   if [ "$_sync_backend" = mount ]; then
@@ -653,16 +643,16 @@ EOF
   printf '%-22s %s\n' "host tmux-aqua" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -x $rb ]" 2>/dev/null && echo OK || { echo "missing — run install.sh --role host on the host"; fail=1; })"
   printf '%-22s %s\n' "host app" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -d ~/Applications/$APP_NAME.app ]" 2>/dev/null && echo "OK ($APP_NAME.app)" || { echo "missing"; fail=1; })"
   printf '%-22s %s\n' "host server" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "$rb -S '$AQUA_SOCK' has-session" 2>/dev/null && echo "up" || echo "down (check app launch/permissions)")"
-  # approve 경로(스킬+훅) — 헤드리스 호스트에서 GUI 승인창 통과의 핵심. 둘 다 install.sh --role host 가 깖.
+  # approve path (skill + hook) — the key to clearing GUI approval dialogs on a headless host. Both are installed by install.sh --role host.
   printf '%-22s %s\n' "host approve skill" "$(ssh -o BatchMode=yes "$REMOTE_HOST" '[ -f ~/.claude/skills/approve/SKILL.md ]' 2>/dev/null && echo OK || { echo "missing — install.sh --role host"; fail=1; })"
   printf '%-22s %s\n' "host approve hook" "$(ssh -o BatchMode=yes "$REMOTE_HOST" 'grep -q remote-pair-approve-reminder ~/.claude/settings.json 2>/dev/null' 2>/dev/null && echo OK || { echo "missing — install.sh --role host (or python3 absent)"; fail=1; })"
-  # AX/SR grant — computer-use(=approve 클릭/스샷)의 실제 게이트. status.json(ground truth)에서 읽음.
+  # AX/SR grant — the real gate for computer-use (= approve clicks/screenshots). Read from status.json (ground truth).
   local sj; sj="$(ssh -o BatchMode=yes "$REMOTE_HOST" 'cat ~/.remote-pair/logs/status.json 2>/dev/null' 2>/dev/null)"
   if [ -n "$sj" ]; then
     local ax sr; ax="$(_jget "$sj" ax)"; sr="$(_jget "$sj" sr)"
-    printf '%-22s %s\n' "host AX+SR grant" "$([ "$ax" = true ] && [ "$sr" = true ] && echo "OK (AX✓ SR✓)" || { echo "NOT granted (AX $(_mark "$ax") SR $(_mark "$sr")) — System Settings 에서 켜야 computer-use/approve 동작"; fail=1; })"
+    printf '%-22s %s\n' "host AX+SR grant" "$([ "$ax" = true ] && [ "$sr" = true ] && echo "OK (AX✓ SR✓)" || { echo "NOT granted (AX $(_mark "$ax") SR $(_mark "$sr")) — turn these ON in System Settings for computer-use/approve to work"; fail=1; })"
   else
-    printf '%-22s %s\n' "host AX+SR grant" "unknown (status.json 없음 — 호스트 앱 최신화 필요)"
+    printf '%-22s %s\n' "host AX+SR grant" "unknown (status.json absent — update the host app)"
   fi
   [ "$fail" = 0 ] && ok "all good — remote-pair launch ready" || warn "check the items above"
   return "$fail"
@@ -671,8 +661,8 @@ EOF
 cmd_approve() {
   local forhint="" type="" timeout=22     # longer than the router's adaptive polling (~18s default)
   while [ $# -gt 0 ]; do case "$1" in
-    --for|--label|--expect) forhint="${2:-}"; shift 2 ;;   # 어떤 승인창인지 힌트(룰 id/자유문구; 별칭 관대)
-    --type) type="${2:-}"; shift 2 ;;                       # 어떻게 승인할지 — key:<combo> | ocr:<라벨> (에이전트가 방식 지정)
+    --for|--label|--expect) forhint="${2:-}"; shift 2 ;;   # hint for which approval dialog (rule id/free text; alias-tolerant)
+    --type) type="${2:-}"; shift 2 ;;                       # how to approve — key:<combo> | ocr:<label> (the agent picks the method)
     --timeout) timeout="${2:-22}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; return 2 ;;
   esac; done
@@ -737,50 +727,25 @@ cmd_logs() {
   else tail -n "$n" $files 2>/dev/null || echo "(no local logs at $RP_DIR/logs)"; fi
 }
 
-# 클라이언트(launcher/CLI/romanize)를 GitHub 최신으로 자가 갱신 — 호스트 앱과 버전 어긋남(예: --type 미인식) 방지.
+# Self-update the client (launcher/CLI/romanize) to the latest from GitHub — prevents version drift with the host app (e.g. unrecognized --type).
 cmd_self_update() {
   local repo="${GH_REPO:-ghyeongl/remote-pair}" ref="${1:-main}"
   local base="https://raw.githubusercontent.com/$repo/$ref/client"
   c "self-update ← $repo@$ref"
-  local tmp; tmp="$(mktemp -d)" || { warn "mktemp 실패"; return 1; }
+  local tmp; tmp="$(mktemp -d)" || { warn "mktemp failed"; return 1; }
   local got=0 f
   for f in remote-pair remote-pair-launch hangul-romanize; do
     curl -fsSL "$base/$f" -o "$tmp/$f" 2>/dev/null && [ -s "$tmp/$f" ] && got=$((got+1))
   done
-  [ "$got" -ge 2 ] || { warn "다운로드 실패(got=$got) — 네트워크/repo 확인"; rm -rf "$tmp"; return 1; }
+  [ "$got" -ge 2 ] || { warn "download failed (got=$got) — check network/repo"; rm -rf "$tmp"; return 1; }
   [ -s "$tmp/remote-pair" ]        && { chmod +x "$tmp/remote-pair";        mv "$tmp/remote-pair" "$SELF_CLI" && ok "CLI → $SELF_CLI"; }
   [ -s "$tmp/remote-pair-launch" ] && { chmod +x "$tmp/remote-pair-launch"; mkdir -p "$(dirname "$LAUNCHER")"; mv "$tmp/remote-pair-launch" "$LAUNCHER" && ok "launcher → $LAUNCHER"; }
   [ -s "$tmp/hangul-romanize" ]    && { chmod +x "$tmp/hangul-romanize";    mkdir -p "$RP_DIR/bin"; mv "$tmp/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; }
-  rm -rf "$tmp"; ok "self-update 완료 — 다음 실행부터 적용"
-}
-
-# Launch the localhost onboarding wizard. The bridge (remote-pair-web) owns the SSOT:
-# it generates a per-run token, binds 127.0.0.1 + ephemeral port, serves the SPA, shells out to
-# THIS CLI for installer logic, and prints + opens the tokenized URL. We never pass the token on
-# argv (shell-history leak). We only resolve + exec the bridge here.
-cmd_web() {
-  # The bridge is a python3-shebang script — fail clearly here instead of exec'ing into an
-  # obscure "bad interpreter" error if python3 is absent (US-006: graceful precheck).
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 required for the web wizard/shell; install Xcode CLT (xcode-select --install) or python3" >&2
-    return 1
-  fi
-  local bridge=""
-  # Prefer an installed bridge (PATH → LOCAL_BIN → ~/.remote-pair/bin), then the repo copy as a dev fallback.
-  if command -v remote-pair-web >/dev/null 2>&1; then bridge="$(command -v remote-pair-web)"
-  elif [ -x "$LOCAL_BIN/remote-pair-web" ]; then bridge="$LOCAL_BIN/remote-pair-web"
-  elif [ -x "$RP_DIR/bin/remote-pair-web" ]; then bridge="$RP_DIR/bin/remote-pair-web"
-  else
-    # dev/repo layout: this CLI lives in <repo>/client alongside the bridge source.
-    local _repo_bridge; _repo_bridge="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/remote-pair-web"
-    [ -x "$_repo_bridge" ] && bridge="$_repo_bridge"
-  fi
-  [ -n "$bridge" ] || { echo "remote-pair-web bridge not found (install client, or run from the repo)" >&2; return 1; }
-  exec "$bridge" "$@"
+  rm -rf "$tmp"; ok "self-update complete — applies from the next invocation"
 }
 
 # Resolve a sibling client tool (installed → LOCAL_BIN/~/.remote-pair/bin → repo copy).
-# Echoes the path, or returns 1. Used by editor/desktop to mirror cmd_web's resolution.
+# Echoes the path, or returns 1. Used by editor/desktop to resolve their launcher.
 _resolve_client_tool() {
   local name="$1" p=""
   if command -v "$name" >/dev/null 2>&1; then p="$(command -v "$name")"
@@ -885,10 +850,10 @@ for ev in rows:
   return 0
 }
 
-# remote-pair update — M6 LEVEL-1: CodePush-style HOT-SWAP of the glue/web layer ONLY.
+# remote-pair update — M6 LEVEL-1: CodePush-style HOT-SWAP of the glue layer ONLY.
 #
 # 2-level update model:
-#   Level-1 (this command): re-install the *glue/web* layer (CLI, launchers, web bridge + assets,
+#   Level-1 (this command): re-install the *glue* layer (CLI, launchers,
 #     approve rules/skills, host hooks) from the repo/source WITHOUT touching the running .app or the
 #     tmux-aqua server. No relaunch. This is hot-swappable because it's all interpreted scripts/assets.
 #   Level-2 (NOT here): the native .app binary itself. If the repo's app version differs from the
@@ -925,7 +890,7 @@ cmd_update() {
     repo_ver="$(sed -n 's/^[[:space:]]*version "\([0-9.]*\)".*/\1/p' "$repo_root"/Casks/*.rb 2>/dev/null | head -1)"
   fi
 
-  c "remote-pair update (M6 Level-1 glue/web hot-swap)"
+  c "remote-pair update (M6 Level-1 glue hot-swap)"
   printf '  %-16s %s\n' "running app" "${running_ver:-unknown (status.json absent — app may be down)}"
   printf '  %-16s %s\n' "repo/source" "${repo_ver:-unknown}"
 
@@ -952,7 +917,7 @@ cmd_update() {
    gates on the current session + user consent:
      • Host menubar: $APP_NAME → "Check for updates…"   (or the app auto-checks GitHub Releases)
      • The Updater downloads ${APP_NAME}.zip, prompts, and swaps the binary safely.
-   After the native update lands, re-run 'remote-pair update' to refresh the glue/web layer too.
+   After the native update lands, re-run 'remote-pair update' to refresh the glue layer too.
 EOF
     return 12
   fi
@@ -961,16 +926,16 @@ EOF
   #    repo installer scoped to client glue (local repo path). Neither relaunches the .app/tmux. ──
   if [ -n "$repo_root" ] && [ -f "$repo_root/shared/install.sh" ]; then
     c "glue hot-swap ← local repo ($repo_root) — re-installing client glue (--no-native, no relaunch)"
-    # --no-native keeps the app/LaunchAgent untouched; install.sh re-installs CLI/launchers/web/etc.
+    # --no-native keeps the app/LaunchAgent untouched; install.sh re-installs CLI/launchers/etc.
     if RP_YES=1 bash "$repo_root/shared/install.sh" --role client --no-native --no-sync; then
-      ok "glue/web layer hot-swapped (app + tmux untouched). New code applies on next invocation."
+      ok "glue layer hot-swapped (app + tmux untouched). New code applies on next invocation."
     else
       warn "repo installer failed — falling back to network self-update"; cmd_self_update "$ref"
     fi
   else
     c "no local repo — glue hot-swap via network self-update (GitHub @$ref)"
     cmd_self_update "$ref"
-    warn "network self-update covers CLI/launcher/romanize only. For the full glue/web layer (web bridge, approve rules/skills, host hooks), run from a repo checkout or re-run host install."
+    warn "network self-update covers CLI/launcher/romanize only. For the full glue layer (approve rules/skills, host hooks), run from a repo checkout or re-run host install."
   fi
 }
 
@@ -985,7 +950,6 @@ case "${1:-help}" in
   doctor)  cmd_doctor ;;
   approve) shift; cmd_approve "$@" ;;
   status)  cmd_status ;;
-  web)     shift; cmd_web "$@" ;;
   editor)  shift; cmd_editor "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   mount)   shift; cmd_mount "$@" ;;

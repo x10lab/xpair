@@ -2,9 +2,9 @@
 build/
 host/app/RemotePairHost
 *.o
-# OMC 런타임 상태 (기기 로컬)
+# OMC runtime state (device-local)
 .omc/
-# 서명 키/인증서는 절대 커밋 금지 (백업은 ~/Library/Application Support/RemotePair/)
+# Never commit signing keys/certificates (back them up under ~/Library/Application Support/RemotePair/)
 *.p12
 *.pem
 *.key
@@ -18,11 +18,11 @@ assets/icon/*.iconset/
 __pycache__/
 *.pyc
 
-# 참고용 외부 레퍼런스(비교 분석용, 커밋 금지)
+# External references for reference only (comparison/analysis, do not commit)
 context/
 
-# 디버그 렌더/스크린샷 (커밋 금지)
+# Debug renders/screenshots (do not commit)
 /rp-*.png
 
-# MCP 브라우저 산출물
+# MCP browser artifacts
 .playwright-mcp/

@@ -7,7 +7,7 @@
 //   {"t":"m","seq":N,"rx":0..1,"ry":0..1}                 mouse move
 //   {"t":"c","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r"}   click (move+down+up)
 //   {"t":"k","seq":N,"code":<mac vk>,"flags":<CGEventFlags raw>}  key (down+up)
-//   {"t":"x","seq":N,"s":"완성 텍스트"}                     text via Unicode (Korean-safe)
+//   {"t":"x","seq":N,"s":"composed text"}                 text via Unicode (Korean-safe)
 // Echoes one line per command to stderr: RPIN seq=<N> t=<t> ...  (for the B5 cross-check).
 // Needs Accessibility (TCC). Korean text uses keyboardSetUnicodeString (layout-independent).
 import Foundation

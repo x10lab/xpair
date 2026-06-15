@@ -1,9 +1,9 @@
-// Permissions.swift — Accessibility(AX) + Screen Recording(SR) + Full Disk Access(FDA) 권한 상태 점검 + System Settings 열기.
+// Permissions.swift — Check Accessibility(AX) + Screen Recording(SR) + Full Disk Access(FDA) permission status + open System Settings.
 //
-// computer-use 2-게이트(필수):  AX(합성입력) = AXIsProcessTrusted(),  SR(스크린샷) = CGPreflightScreenCaptureAccess().
-// FDA(권장): 헤드리스 호스트에선 macOS TCC 폴더 프롬프트를 원격에서 누를 수 없어 세션이 멈춘다.
-//   FDA 를 켜면 그 프롬프트 자체가 사라진다. 대신 모든 세션이 디스크 전체를 조용히 읽을 수 있으니(메일/메시지/브라우저 포함) 트레이드오프를 감수하는 선택.
-// SIP+non-MDM 이라 토글은 사용자만 — 우리는 상태 표시 + 올바른 설정 창을 열어줄 뿐.
+// computer-use 2 gates (required):  AX(synthetic input) = AXIsProcessTrusted(),  SR(screenshot) = CGPreflightScreenCaptureAccess().
+// FDA(recommended): on a headless host, the macOS TCC folder prompt cannot be clicked remotely, so the session stalls.
+//   Enabling FDA makes that prompt disappear entirely. The trade-off, in exchange, is that every session can silently read the whole disk (including Mail/Messages/browser).
+// Since this is SIP+non-MDM, only the user can toggle — we just show the status + open the correct settings pane.
 
 import Cocoa
 import ApplicationServices
@@ -13,7 +13,7 @@ enum Permissions {
     static func axTrusted() -> Bool { AXIsProcessTrusted() }
     static func srGranted() -> Bool { CGPreflightScreenCaptureAccess() }
 
-    /// FDA 는 공개 preflight API 가 없다 → FDA 가 있어야만 열 수 있는 TCC 보호 파일(TCC.db)을 실제로 읽어 추정.
+    /// FDA has no public preflight API → infer it by actually reading a TCC-protected file (TCC.db) that can only be opened with FDA.
     static func fdaGranted() -> Bool {
         let probe = (NSHomeDirectory() as NSString)
             .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db")
@@ -22,32 +22,32 @@ enum Permissions {
         return ((try? fh.read(upToCount: 1)) ?? nil) != nil
     }
 
-    /// 메뉴 상태줄용 한 줄 요약. 예: "권한: 손쉬운사용 ✓  화면기록 ✗  전체디스크 ✗"
+    /// One-line summary for the menu bar status. e.g. "Permissions: Accessibility ✓  Screen Recording ✗  Full Disk ✗"
     static func summary() -> String {
-        "권한: 손쉬운사용 \(axTrusted() ? "✓" : "✗")  화면기록 \(srGranted() ? "✓" : "✗")  전체디스크 \(fdaGranted() ? "✓" : "✗")"
+        "Permissions: Accessibility \(axTrusted() ? "✓" : "✗")  Screen Recording \(srGranted() ? "✓" : "✗")  Full Disk \(fdaGranted() ? "✓" : "✗")"
     }
 
-    /// computer-use 의 필수 게이트만 본다(FDA 는 권장이라 게이트에 넣지 않음).
+    /// Only checks computer-use's required gates (FDA is recommended, so it's not a gate).
     static func allGranted() -> Bool { axTrusted() && srGranted() }
 
-    /// 권한 요청 프롬프트 유도 + 해당 설정창 열기 + 안내.
+    /// Trigger the permission prompts + open the relevant settings pane + show guidance.
     static func requestAndOpen() {
-        // CLIENT = ACCESS-ONLY: AX/SR 시스템 프롬프트를 절대 띄우지 않는다(이 머신은 권한 경계가 아님).
-        // 두 prompt API(AXIsProcessTrustedWithOptions / CGRequestScreenCaptureAccess) 호출 전에 조기 반환.
+        // CLIENT = ACCESS-ONLY: never raise the AX/SR system prompts (this machine is not a permission boundary).
+        // Return early before calling either prompt API (AXIsProcessTrustedWithOptions / CGRequestScreenCaptureAccess).
         if isClientRole {
             let a = NSAlert()
-            a.messageText = "이 머신은 client (access-only)"
+            a.messageText = "This machine is client (access-only)"
             a.informativeText = """
-            client 머신은 권한(손쉬운 사용·화면 기록)을 요청하지 않습니다.
-            computer-use 권한은 호스트(host/both) 머신에서만 부여합니다.
-            이 머신은 'remote-pair' CLI 로 호스트에 접속해 세션을 씁니다.
+            A client machine does not request permissions (Accessibility / Screen Recording).
+            computer-use permissions are granted only on host (host/both) machines.
+            This machine connects to a host via the 'remote-pair' CLI and uses its sessions.
             """
-            a.addButton(withTitle: "확인")
+            a.addButton(withTitle: "OK")
             bringToFront()
             a.runModal()
             return
         }
-        // 시스템 프롬프트 유도(처음이면 다이얼로그, 이미 결정됐으면 no-op).
+        // Trigger the system prompts (a dialog on first run, no-op once already decided).
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)
         if !srGranted() { CGRequestScreenCaptureAccess() }
@@ -60,23 +60,23 @@ enum Permissions {
         for u in panes { if let url = URL(string: u) { NSWorkspace.shared.open(url) } }
 
         let a = NSAlert()
-        a.messageText = "권한 부여 (1회)"
+        a.messageText = "Grant permissions (one time)"
         a.informativeText = """
-        System Settings → 개인정보 보호 및 보안 에서 \(APP_NAME) 를 켜라:
-          • 손쉬운 사용 (Accessibility)  [필수]  : \(axTrusted() ? "✓ 이미 켜짐" : "OFF — 켜기")
-          • 화면 기록 (Screen Recording) [필수]  : \(srGranted() ? "✓ 이미 켜짐" : "OFF — 켜기")
-          • 전체 디스크 접근 (Full Disk)  [권장]  : \(fdaGranted() ? "✓ 이미 켜짐" : "OFF — 헤드리스면 켜기")
-        목록에 없으면 + 로 /Applications/\(APP_NAME).app 추가.
-        전체 디스크 접근은 원격에서 누를 수 없는 폴더 프롬프트를 없애주지만, 모든 세션이 디스크 전체를 읽게 된다(트레이드오프).
-        토글 후 메뉴의 'Restart tmux host' 로 grant 픽업.
+        In System Settings → Privacy & Security, turn on \(APP_NAME):
+          • Accessibility               [required]    : \(axTrusted() ? "✓ already on" : "OFF — turn on")
+          • Screen Recording            [required]    : \(srGranted() ? "✓ already on" : "OFF — turn on")
+          • Full Disk Access            [recommended] : \(fdaGranted() ? "✓ already on" : "OFF — turn on if headless")
+        If it's not in the list, add /Applications/\(APP_NAME).app with +.
+        Full Disk Access removes the folder prompts that can't be clicked remotely, but lets every session read the whole disk (trade-off).
+        After toggling, use 'Restart tmux host' from the menu to pick up the grant.
         """
-        a.addButton(withTitle: "확인")
+        a.addButton(withTitle: "OK")
         bringToFront()
         a.runModal()
     }
 }
 
-/// accessory(LSUIElement) 앱이라 모달/창을 전면으로 끌어올리려면 명시 activate 필요.
+/// This is an accessory(LSUIElement) app, so an explicit activate is needed to bring modals/windows to the front.
 func bringToFront() {
     NSApp.activate(ignoringOtherApps: true)
 }

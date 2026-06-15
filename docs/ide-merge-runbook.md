@@ -1,140 +1,140 @@
-# RemotePair × IDE 통합 실행 런북 (Stage 2)
+# RemotePair × IDE Integration Execution Runbook (Stage 2)
 
-> ✅ **실행됨** — 현행 구조는 [`docs/monorepo-structure.md`](monorepo-structure.md) 참조. 이 런북은 통합 *전* 계획이며, 실제 실행은 ultragoal `monorepo-refactor`로 진행됨(rs/ 포함).
+> ✅ **Executed** — for the current structure, see [`docs/monorepo-structure.md`](monorepo-structure.md). This runbook is the *pre*-integration plan; the actual execution proceeded via the ultragoal `monorepo-refactor` (including rs/).
 
-> **전제:** `docs/ide-merge-architecture.md`(Stage 1) 승인됨.
-> **역할:** 코드 리팩터는 **사용자가 수행**. 본 런북은 정확한 **순서 · git 메커닉 · 구조 작업 목록 · 검증 체크리스트**를 제공한다(그대로 따라 실행 가능).
-> **브랜치:** `feat/integrate-remotepair-ide`
-> **불변식:** 어느 단계에서도 (a) 양측 독립 빌드 가능, (b) `ide/`는 self-contained(부모 경로 의존 0).
+> **Precondition:** `docs/ide-merge-architecture.md` (Stage 1) approved.
+> **Roles:** The code refactor is **performed by the user**. This runbook provides the precise **ordering · git mechanics · structural task list · verification checklist** (executable as-is).
+> **Branch:** `feat/integrate-remotepair-ide`
+> **Invariants:** At every stage, (a) both sides build independently, and (b) `ide/` is self-contained (zero dependency on parent paths).
 
-핵심 경로:
-- 코어: `/Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair`
+Key paths:
+- Core: `/Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair`
 - IDE : `/Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remotepair-ide`
 
 ---
 
-## Phase 0 — 사전 점검 (안전망)
+## Phase 0 — Pre-checks (safety net)
 
 ```bash
-# 0.1 현재 상태 태그 (롤백 지점)
+# 0.1 Tag current state (rollback point)
 cd /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair
 git tag pre-ide-merge
 
-# 0.2 IDE 레포 unshallow — subtree add/pull 안정화에 필수
-#     (현재 shallow라 fetch가 'shallow roots' 로 거부됨)
+# 0.2 Unshallow the IDE repo — essential for stable subtree add/pull
+#     (currently shallow, so fetch is rejected with 'shallow roots')
 cd /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remotepair-ide
-git rev-parse --is-shallow-repository      # true 면 아래 실행
+git rev-parse --is-shallow-repository      # if true, run the below
 git fetch --unshallow origin
-git fetch upstream --no-tags               # VSCodium 이력도 확보(staging용)
-git rev-parse --is-shallow-repository      # false 확인
+git fetch upstream --no-tags               # also secure VSCodium history (for staging)
+git rev-parse --is-shallow-repository      # confirm false
 ```
 
-- [ ] `pre-ide-merge` 태그 생성
-- [ ] `remotepair-ide` unshallow 완료(`is-shallow` = false)
+- [ ] `pre-ide-merge` tag created
+- [ ] `remotepair-ide` unshallow complete (`is-shallow` = false)
 
 ---
 
-## Phase 1 — in-place 리팩터 (머지 *전*, 각 레포에서) ← 사용자 코드 작업
+## Phase 1 — in-place refactor (*before* merge, in each repo) ← user code work
 
-> 목표: 머지 시점에 경계가 이미 깔끔하도록 양쪽을 먼저 정리. **이 Phase 전체가 코드 작업** — 런북은 *무엇을 어디로* 만 규정한다.
+> Goal: clean up both sides first so the boundary is already clean at merge time. **This entire Phase is code work** — the runbook only specifies *what goes where*.
 
-### 1A. `remote-pair`: `shared/` SoT 추출
+### 1A. `remote-pair`: extract `shared/` SoT
 
-| 새 위치 | SoT 내용 | 추출 출처 | 소비자 참조 변경 |
+| New location | SoT content | Extraction source | Consumer reference change |
 |---------|----------|-----------|------------------|
-| `shared/screen-protocol/` | WS 경로·바인딩(`127.0.0.1:<port>`)·JPEG 프레이밍·입력 이벤트(상대좌표 0..1/키) 상수·타입 | `rs/screen/src/serve.rs` 주석 프로토콜 | 사이드카(serve.rs)가 상수 참조 / 입력 역전송 포맷 단일화 |
-| `shared/onboarding/` | role-aware 스텝 모델(host 8 / client 6 스텝의 id·순서·조건) | `client/cli/web/app.js` `buildSteps(role)` | `client/cli/web`는 모델을 읽어 렌더만 |
-| `shared/identity/` | 브랜드명 + **단일 버전 소스** | `Casks/remote-pair-host.rb`(0.4.12) ↔ `product.json`(0.1.0) | Casks·README·product.json이 이 소스 참조 |
+| `shared/screen-protocol/` | WS path · binding (`127.0.0.1:<port>`) · JPEG framing · input event (relative coords 0..1 / keys) constants · types | protocol comments in `rs/screen/src/serve.rs` | sidecar (serve.rs) references the constants / unify the input back-channel format |
+| `shared/identity/` | brand name + **single version source** | `Casks/remote-pair-host.rb` (0.4.12) ↔ `product.json` (0.1.0) | Casks · README · product.json reference this source |
 
-- [ ] `shared/screen-protocol/` 추출 + 사이드카가 참조하도록 변경
-- [ ] `shared/onboarding/` 스텝 모델 추출 + `client/cli/web` 렌더 분리
-- [ ] `shared/identity/` 단일 버전/브랜드 소스 + 소비자 연결
-- [ ] `remote-pair` 단독 빌드/테스트 통과
+> **Onboarding note:** The role-aware onboarding feature survives, but is being **redesigned from scratch** as two separate Electron onboarding windows — one embedded in **RemotePairHost** (the host Swift app) and one in **RemotePair** (the client VSCodium/Electron IDE) — shown on first install, based on the React/shadcn mockup (`context/remotepair-onboarding`). It is **not yet built**; the prior browser-based web onboarding wizard has been removed. There is therefore no `shared/onboarding/` step model to extract at this time — onboarding is out of scope for the Phase 1A `shared/` extraction until the new Electron windows exist.
 
-### 1B. `remotepair-ide`: `remotepair-ext` self-contained화
+- [ ] Extract `shared/screen-protocol/` + change the sidecar to reference it
+- [ ] `shared/identity/` single version/brand source + wire up consumers
+- [ ] `remote-pair` standalone build/test passes
 
-> 원칙: ext는 `shared/`를 **직접 import 하지 않는다**. 대신 `shared/`에서 **생성된 계약 파일**을 소비한다. 그리고 그 **생성물을 `remotepair-ext`에 커밋**해 둔다 → standalone 레포만으로도 빌드 가능(self-contained).
+### 1B. `remotepair-ide`: make `remotepair-ext` self-contained
 
-- 생성 스텝(모노레포에서 실행) 개념:
+> Principle: ext does **not import `shared/` directly**. Instead it consumes the **contract files generated from `shared/`**. And those **generated artifacts are committed into `remotepair-ext`** → buildable from the standalone repo alone (self-contained).
+
+- Generation step (run in the monorepo) concept:
   ```
-  shared/{screen-protocol,onboarding,identity}  ──generate──▶  ide/remotepair-ext/generated/*
-                                                  (커밋됨 → subtree로 함께 이동)
+  shared/{screen-protocol,identity}  ──generate──▶  ide/remotepair-ext/generated/*
+                                                  (committed → moves along via subtree)
   ```
-- 빌드 훅: `build.sh`/`prepare_vscode.sh` 직전에 `generate-contracts` 단계 추가(모노레포 컨텍스트에서만 갱신, 출력은 커밋).
-- [ ] `remotepair-ext`가 `generated/` 계약만 소비하도록 정리(외부 경로 참조 0)
-- [ ] 생성 스텝(모노레포 전용) 작성 + 출력 커밋
-- [ ] `remotepair-ide` 단독 빌드(`build.sh`) 통과
+- Build hook: add a `generate-contracts` step right before `build.sh`/`prepare_vscode.sh` (refreshed only in the monorepo context; output is committed).
+- [ ] Clean up `remotepair-ext` so it consumes only the `generated/` contracts (zero external path references)
+- [ ] Write the generation step (monorepo-only) + commit the output
+- [ ] `remotepair-ide` standalone build (`build.sh`) passes
 
 ---
 
-## Phase 2 — subtree 머지 (코어 레포에서)
+## Phase 2 — subtree merge (in the core repo)
 
 ```bash
 cd /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair
 
-# 2.1 IDE 레포를 remote로 (이미 있으면 재사용). unshallow 후엔 fetch 성공.
+# 2.1 Add the IDE repo as a remote (reuse if it already exists). After unshallow, fetch succeeds.
 git remote add ide /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remotepair-ide 2>/dev/null || true
 git fetch ide
 
-# 2.2 ide/ 로 서브트리 진입 (추적 415파일만 — vscode/ 등은 ide/.gitignore가 무시)
+# 2.2 Enter the subtree at ide/ (only the 415 tracked files — vscode/ etc. are ignored by ide/.gitignore)
 git subtree add --prefix=ide ide master
 
-# 2.3 확인: 6.9G 산출물이 안 들어왔는지
-du -sh .git                          # 수 MB 증가만 정상
+# 2.3 Verify: that the 6.9G artifacts did not come in
+du -sh .git                          # only a few-MB increase is normal
 git ls-files ide | wc -l             # ~415
 git check-ignore ide/vscode 2>/dev/null && echo "vscode/ ignored ✓"
 ```
 
-> **gitignore 메모:** `remotepair-ide/.gitignore`(→ `ide/.gitignore`)가 `/vscode/` `/VSCode-darwin-*/` `*.dmg` `*.vsix` `**/node_modules/` `**/target/`를 **이미** 무시한다(중첩 .gitignore = ide/ 기준 앵커). 루트 `.gitignore` 수정은 원칙적으로 불필요. 안전을 원하면 루트에 `ide/vscode/` 등 명시 추가도 무방.
+> **gitignore note:** `remotepair-ide/.gitignore` (→ `ide/.gitignore`) **already** ignores `/vscode/` `/VSCode-darwin-*/` `*.dmg` `*.vsix` `**/node_modules/` `**/target/` (nested .gitignore = anchored relative to ide/). Modifying the root `.gitignore` is in principle unnecessary. If you want to be safe, explicitly adding entries like `ide/vscode/` to the root is also fine.
 
-- [ ] `git subtree add --prefix=ide` 성공
-- [ ] `.git` 용량 정상(수 MB 증가), `ide/vscode` 등 미추적 확인
-- [ ] 모노레포에서 `generate-contracts` → `ide/` 빌드 통과
+- [ ] `git subtree add --prefix=ide` succeeds
+- [ ] `.git` size normal (few-MB increase), `ide/vscode` etc. confirmed untracked
+- [ ] In the monorepo, `generate-contracts` → `ide/` build passes
 
 ---
 
-## Phase 3 — staging 배선 (VSCodium 추적 존속)
+## Phase 3 — staging wiring (VSCodium tracking persists)
 
-`remotepair-ide` 레포는 폐기하지 않고 **VSCodium 업데이트 흡수 staging**으로 유지한다.
+The `remotepair-ide` repo is not discarded; it is kept as the **staging point for absorbing VSCodium updates**.
 
 ```bash
-# (미래 VSCodium 갱신 시 워크플로)
-# 3.1 staging 레포에서 VSCodium 흡수
+# (workflow for future VSCodium updates)
+# 3.1 Absorb VSCodium in the staging repo
 cd /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remotepair-ide
-./get_repo.sh          # 또는 update_upstream.sh — 핀된 vscode 갱신
-git merge upstream/master   # 패치 충돌은 여기서 해소
+./get_repo.sh          # or update_upstream.sh — refresh pinned vscode
+git merge upstream/master   # resolve patch conflicts here
 git push origin master
 
-# 3.2 모노레포로 당겨오기
+# 3.2 Pull into the monorepo
 cd /Users/ghyeong/Spaces/Work/Devs/Lang-Swift/remote-pair
 git subtree pull --prefix=ide ide master
 ```
 
-- [ ] staging 워크플로 1회 리허설(소규모 변경으로 pull 왕복 검증)
-- [ ] 충돌 해소는 staging 레포에서 먼저 → 그다음 subtree pull
+- [ ] Rehearse the staging workflow once (verify the pull round-trip with a small change)
+- [ ] Conflict resolution first in the staging repo → then subtree pull
 
 ---
 
-## Phase 4 — 통합 검증 체크리스트
+## Phase 4 — Integration verification checklist
 
-- [ ] `remote-pair` 코어 빌드/테스트 통과 (`tests/`)
-- [ ] `ide/` 빌드(`cd ide && build.sh`)로 RemotePair IDE 산출
-- [ ] `shared/` 계약 단일화 확인: 사이드카·웹·host·ext가 **같은 소스** 참조
-- [ ] 버전 정합: `shared/identity/`가 Casks·README·product.json을 한 값으로
-- [ ] `ide/`가 self-contained: `ide/` 안에서 부모 경로(`../shared`) 참조 0 (`grep -rn "\.\./\.\./shared" ide/ || echo clean`)
-- [ ] `git subtree pull` 왕복 정상
-- [ ] 6.9G 산출물 미추적 유지
+- [ ] `remote-pair` core build/test passes (`tests/`)
+- [ ] `ide/` build (`cd ide && build.sh`) produces RemotePair IDE
+- [ ] Confirm `shared/` contract unification: sidecar · host · ext reference the **same source**
+- [ ] Version consistency: `shared/identity/` makes Casks · README · product.json a single value
+- [ ] `ide/` is self-contained: zero parent-path (`../shared`) references inside `ide/` (`grep -rn "\.\./\.\./shared" ide/ || echo clean`)
+- [ ] `git subtree pull` round-trip works
+- [ ] 6.9G artifacts remain untracked
 
 ---
 
-## 명령 시퀀스 요약 (복붙용)
+## Command sequence summary (for copy-paste)
 
 ```bash
 # Phase 0
 cd .../remote-pair && git tag pre-ide-merge
 cd .../remotepair-ide && git fetch --unshallow origin && git fetch upstream --no-tags
 
-# Phase 1 = 코드 작업 (shared/ 추출 + ext self-contained). 각 레포 단독 빌드 통과까지.
+# Phase 1 = code work (extract shared/ + make ext self-contained). Until each repo's standalone build passes.
 
 # Phase 2
 cd .../remote-pair
@@ -143,20 +143,20 @@ git fetch ide
 git subtree add --prefix=ide ide master
 du -sh .git && git ls-files ide | wc -l
 
-# Phase 3 (미래 VSCodium 갱신마다)
-# staging에서: get_repo.sh → merge upstream → push
-# 모노레포에서: git subtree pull --prefix=ide ide master
+# Phase 3 (for each future VSCodium update)
+# in staging: get_repo.sh → merge upstream → push
+# in monorepo: git subtree pull --prefix=ide ide master
 ```
 
 ---
 
-## 미해결 → 진행 중 결정할 것
+## Open → to be decided in progress
 
-| 항목 | 결정 시점 |
+| Item | Decision point |
 |------|-----------|
-| 버전 정합 정책(0.4.12 통일 vs IDE 독립) | Phase 1A `shared/identity` 설계 시 |
-| 온보딩 SoT 범위(스텝모델 어디까지 공유) | Phase 1A `shared/onboarding` 설계 시 |
-| 화면 프로토콜 v1a/v1b 확장 형태 | Phase 1A `shared/screen-protocol` 설계 시 |
-| `generate-contracts` 훅 위치(build.sh vs 별도) | Phase 1B |
+| Version consistency policy (unify on 0.4.12 vs IDE independent) | When designing `shared/identity` in Phase 1A |
+| Onboarding scope (whether the new Electron onboarding windows share any model) | Deferred until the two Electron onboarding windows (host + client IDE) are built from the mockup |
+| Screen protocol v1a/v1b extension shape | When designing `shared/screen-protocol` in Phase 1A |
+| `generate-contracts` hook location (build.sh vs separate) | Phase 1B |
 
-> 코드 리팩터(Phase 1)는 **사용자**가 수행. 각 Phase 완료 시 알려주면 다음 단계(검증·머지 메커닉)를 함께 진행한다.
+> The code refactor (Phase 1) is performed by the **user**. Let me know when each Phase is complete, and we'll proceed together with the next step (verification · merge mechanics).

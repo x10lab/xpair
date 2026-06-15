@@ -1,5 +1,5 @@
 {
-  "$comment": "RemotePair Remote Desktop 화면 프로토콜 단일 소스(SoT). host/rd/(serve.rs·serve_webrtc.rs)와 client/ide/(remote-desktop.js·extension.js)가 이 계약을 구현하며 check-screen-protocol.sh로 정합 검증한다.",
+  "$comment": "Single source of truth (SoT) for the RemotePair Remote Desktop screen protocol. host/rd/(serve.rs·serve_webrtc.rs) and client/ide/(remote-desktop.js·extension.js) implement this contract, and check-screen-protocol.sh verifies consistency.",
   "transport": {
     "v1a_jpeg": {
       "scheme": "ws",
@@ -27,7 +27,7 @@
     "resFile": "/tmp/remote-pair.input-res",
     "wireFormat": "<verb>\\t<args...>",
     "throttleMs": 120,
-    "webviewCoords": "relative 0..1 (rx,ry); extension이 프레임 dimensions로 host 픽셀 변환",
+    "webviewCoords": "relative 0..1 (rx,ry); the extension converts to host pixels using the frame dimensions",
     "verbs": {
       "click": "click\\t<x>\\t<y>  ->  click at host display PIXELS",
       "key": "key\\t<combo>  ->  key combo"

@@ -222,9 +222,11 @@ ensure_local_host() {
   # The computer-use (aqua-tmux) path is HOST-only. A client has no granted RemotePairHost,
   # so local sessions there must use plain tmux — one tmux per machine, no socket fragmentation.
   # (Mirrors the reference's `AQUA="" on non-host`, but role-based instead of hostname-hardcoded.)
-  # 이 머신이 *실제 호스트 역할*(role host|both)일 때만 로컬 aqua 경로 허용. 클라에 stray host.env 가
-  # 있어도 로컬로 새지 않게(gh-mac-m4 사고: 로컬 라우팅 후 호스트 churn 에 reap). role 마커가 SSOT;
-  # 구설치(마커 없음)는 host.env + (원격 미설정 or 이 머신이 그 원격)으로 폴백 — both 회귀 방지.
+  # Allow the local aqua path only when this machine is in an *actual host role* (role host|both).
+  # Prevents leaking to local even if a stray host.env exists on a client (the gh-mac-m4 incident:
+  # routed locally, then got reaped by host churn). The role marker is the SSOT; old installs
+  # (no marker) fall back to host.env + (remote unset, or this machine IS that remote) — guards against
+  # a 'both' regression.
   local _role; _role="$(cat "$RP_DIR/role" 2>/dev/null | tr -d '[:space:]')"
   case "$_role" in
     host|both) [ -f "$RP_DIR/host.env" ] || return 1 ;;

@@ -1,7 +1,7 @@
-// Config.swift — RemotePairHost 공통 상수/경로 + 로깅. (여러 .swift 가 같이 컴파일됨)
+// Config.swift — RemotePairHost shared constants/paths + logging. (multiple .swift files are compiled together)
 //
-// 모든 런타임 상태는 ~/.remote-pair 아래 — ~/.claude 동기화에 의존하지 않는다.
-// host 헬퍼(tmux-aqua·router·ocr-find)는 앱 번들 Contents/Helpers 에 동봉; 없으면 외부경로 폴백.
+// All runtime state lives under ~/.remote-pair — it does not depend on ~/.claude syncing.
+// host helpers (tmux-aqua, router, ocr-find) are bundled in the app's Contents/Helpers; falls back to an external path if absent.
 
 import Cocoa
 import Darwin
@@ -9,24 +9,24 @@ import Darwin
 let HOME = NSHomeDirectory()
 let RP_DIR = "\(HOME)/.remote-pair"
 let LOG_DIR = "\(RP_DIR)/logs"
-let ROLE_FILE = "\(RP_DIR)/role"            // host|client|both — install.sh 가 기록. 클라에서 호스트 자기설치 차단용.
-let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // 존재 = 이 머신에 client 설치됨
+let ROLE_FILE = "\(RP_DIR)/role"            // host|client|both — written by install.sh. Used to block host self-install on a client.
+let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // present = client installed on this machine
 
-/// 이 머신의 역할. ROLE_FILE 트림 후 그대로(host|client|both), 없거나 비면 "" (= 기본 host).
-/// 파싱은 Installer.shouldSkipSelfInstall(Installer.swift:50-55)과 동일하게 맞춘다.
+/// This machine's role. ROLE_FILE trimmed and used as-is (host|client|both); "" if absent or empty (= default host).
+/// Parsing is kept consistent with Installer.shouldSkipSelfInstall(Installer.swift:50-55).
 func currentRole() -> String {
     (try? String(contentsOfFile: ROLE_FILE, encoding: .utf8))?
         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 }
 
-/// 호스트로 동작하는가. host / both / 빈값(미설정=기본 host) → true.  client 만 false.
-/// HOST/both 는 오늘과 동일한 grant 플로우, client 는 ACCESS-ONLY(AX/SR 프롬프트 금지).
+/// Does this machine act as a host? host / both / empty (unset = default host) → true.  Only client is false.
+/// HOST/both use the same grant flow as today; client is ACCESS-ONLY (no AX/SR prompts).
 var isHostRole: Bool {
     let role = currentRole()
     return role == "host" || role == "both" || role.isEmpty
 }
 
-/// client(ACCESS-ONLY) 머신인가. role == "client" 일 때만 true.
+/// Is this a client (ACCESS-ONLY) machine? true only when role == "client".
 var isClientRole: Bool { currentRole() == "client" }
 
 let HELPERS = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path
@@ -35,18 +35,18 @@ func helper(_ name: String, _ fallback: String) -> String {
     return FileManager.default.fileExists(atPath: bundled) ? bundled : fallback
 }
 
-let TMUX = helper("tmux-aqua", "\(HOME)/.local/bin/tmux-aqua")        // daemon→setsid 패치된 tmux
-let SOCKET = "/tmp/aqua-tmux.sock"                                    // host tmux 서버 소켓
+let TMUX = helper("tmux-aqua", "\(HOME)/.local/bin/tmux-aqua")        // tmux patched with daemon→setsid
+let SOCKET = "/tmp/aqua-tmux.sock"                                    // host tmux server socket
 let ROUTER = helper("remote-pair-approve-router.sh", "\(RP_DIR)/bin/remote-pair-approve-router.sh")
 let LOGP = "\(LOG_DIR)/remote-pair.log"
-let HEARTBEAT = "\(LOG_DIR)/remote-pair.heartbeat"                    // watchdog 가 읽음
-let STATUS_FILE = "\(LOG_DIR)/status.json"                            // 에이전트가 읽는 ground truth: 앱 생존 + AX/SR/FDA grant
-let RULES_FILE = "\(RP_DIR)/rules.txt"                                // approve 라우터 룰
-let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy) /approve 스킬 touch → 구 라우터 폴백
-// (구 v0 InputServer 파일채널 INPUT_REQ/INPUT_RES 제거됨 — 0.1초 메인스레드 폴링이 메뉴바를 freeze
-//  시켰음. 화면공유·입력은 v1/v2: remote-pair(screen) serve-webrtc + rp-input-inject 가 대체.)
+let HEARTBEAT = "\(LOG_DIR)/remote-pair.heartbeat"                    // read by the watchdog
+let STATUS_FILE = "\(LOG_DIR)/status.json"                            // ground truth read by the agent: app alive + AX/SR/FDA grant
+let RULES_FILE = "\(RP_DIR)/rules.txt"                                // approve router rules
+let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy) /approve skill touch → old router fallback
+// (legacy v0 InputServer file channel INPUT_REQ/INPUT_RES removed — its 0.1s main-thread polling froze
+//  the menu bar. Screen sharing and input are replaced by v1/v2: remote-pair(screen) serve-webrtc + rp-input-inject.)
 
-// 표시용 버전 + 업데이트 대상 (Info.plist 단일 출처; build-host.sh 가 채움)
+// Display version + update target (Info.plist is the single source; populated by build-host.sh)
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 let GH_REPO = (Bundle.main.infoDictionary?["RPGitHubRepo"] as? String) ?? "ghyeongl/remote-pair"
 let APP_NAME = (Bundle.main.infoDictionary?["CFBundleName"] as? String) ?? "RemotePairHost"
@@ -56,8 +56,8 @@ func ensureDirs() {
     try? FileManager.default.createDirectory(atPath: LOG_DIR, withIntermediateDirectories: true)
 }
 
-/// 에이전트(remote-pair status/doctor)가 읽는 단일 ground truth. 앱이 살아있고 grant 됐는지를
-/// 추측(pgrep 등)이 아니라 사실로 알 수 있게 한다. 매 tick(1s) 갱신 → ts 신선도로 생존 판단.
+/// The single ground truth read by the agent (remote-pair status/doctor). Lets it know whether the app
+/// is alive and granted as fact, not by guessing (pgrep, etc.). Refreshed every tick (1s) → liveness judged from ts freshness.
 func writeStatus() {
     ensureDirs()
     let ts = Int(Date().timeIntervalSince1970)
@@ -88,7 +88,7 @@ func log(_ s: String) {
     else { try? line.write(toFile: LOGP, atomically: false, encoding: .utf8) }
 }
 
-// 짧은 동기 실행 헬퍼 — stdout 캡처(좌표/세션목록 등). 무거운 작업엔 쓰지 말 것.
+// Short synchronous run helper — captures stdout (coordinates, session lists, etc.). Don't use it for heavy work.
 @discardableResult
 func runCapture(_ launchPath: String, _ args: [String], env: [String: String]? = nil) -> (out: String, status: Int32) {
     let p = Process()

@@ -3,5 +3,5 @@ target/
 *.h264
 context/
 
-# OMC 런타임 상태
+# OMC runtime state
 .omc/

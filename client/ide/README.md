@@ -1,4 +1,4 @@
-# RemotePair IDE (VSCodium fork — Vendor 분리 / Option C)
+# RemotePair IDE (VSCodium fork — Vendor separation / Option C)
 
 `client/ide/` is RemotePair's VSCodium-based IDE, restructured so RemotePair-owned code is
 cleanly separated from the **pristine** VSCodium build recipe.

@@ -29,26 +29,26 @@ done
 
 # ── Host identity (org-level defaults, no personal values) ──
 #
-# ## 0.5 RELEASE FLIP (번들 id 통일)
-# v0.5.0에서 호스트 앱 정체성을 -host 접미사 없는 통일 id로 바꾼다.
-# 이 블록의 두 줄만 아래처럼 바꾸는 것이 핵심 한-스텝이다:
+# ## 0.5 RELEASE FLIP (unify the bundle id)
+# In v0.5.0 we change the host app identity to a unified id without the -host suffix.
+# The core single step is changing just these two lines in this block as follows:
 #     BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair}"
 #     APP_NAME="${APP_NAME:-RemotePair}"
-# 단, config.sh 단독 변경으로는 부족하다. 다음이 반드시 함께 flip 되어야 한다:
-#   1) shared/install.sh  : legacy-label bootout 목록 + /Applications/RemotePairHost.app 처리
-#                           (구 id를 LIVE가 아니라 legacy 로 내려서 정리) + migrate_host_env 재도입
+# However, changing config.sh alone is not enough. The following must be flipped together:
+#   1) shared/install.sh  : legacy-label bootout list + handling of /Applications/RemotePairHost.app
+#                           (demote the old id from LIVE to legacy for cleanup) + reintroduce migrate_host_env
 #   2) Casks/*.rb         : cask token (remote-pair-host → remote-pair), app "RemotePair.app", version
-#   3) .github/workflows/release.yml : 릴리스 에셋 이름(RemotePairHost* → RemotePair*)
-#   4) Swift fallbacks    : host/app/*.swift 의 bundle-id/앱이름 fallback
-#   5) client/cli/remote-pair : APP_NAME/BUNDLE_PREFIX fallback (현재는 dual-id 프로브로 양쪽 다 인식)
-# 전체 레시피는 docs/future.md(올인원 섹션) / docs/requirements.md 참조.
+#   3) .github/workflows/release.yml : release asset names (RemotePairHost* → RemotePair*)
+#   4) Swift fallbacks    : bundle-id/app-name fallback in host/app/*.swift
+#   5) client/cli/remote-pair : APP_NAME/BUNDLE_PREFIX fallback (currently a dual-id probe recognizes both)
+# See docs/future.md (all-in-one section) / docs/requirements.md for the full recipe.
 RP_ORG="${RP_ORG:-com.x10lab}"
 BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair-host}"
 APP_NAME="${APP_NAME:-RemotePairHost}"
 SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"
 GH_REPO="${GH_REPO:-ghyeongl/remote-pair}"             # Updater (GitHub Releases) target owner/repo
 APP_LABEL="$BUNDLE_PREFIX"; WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
-APP_PATH="/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"   # Homebrew cask 기본 위치(/Applications)에 맞춤
+APP_PATH="/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"   # aligned to the Homebrew cask default location (/Applications)
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/remote-pair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$LOG_DIR/remote-pair.heartbeat}"
@@ -67,11 +67,7 @@ LAUNCHER="${LAUNCHER:-$RP_DIR/bin/remote-pair-launch}"
 # Derived default: iterm2 if iTerm.app is installed, otherwise terminal.
 TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 || echo terminal )}"
 
-# ── Web onboarding wizard (localhost bridge — remote-pair web) ──
-WEB_DIR="${WEB_DIR:-$RP_DIR/web}"        # static SPA assets (served by the local bridge)
-WEB_BIND="${WEB_BIND:-127.0.0.1}"        # loopback only — never expose
-WEB_PORT="${WEB_PORT:-0}"                # 0 = ephemeral (bridge picks a free port)
-EDITOR_PORT="${EDITOR_PORT:-8080}"       # code-server (remote-pair editor / M4) loopback port — matches the bridge default
+EDITOR_PORT="${EDITOR_PORT:-8080}"       # code-server (remote-pair editor / M4) loopback port
 
 # ── File-access backend (Syncthing vs Mount — see docs/m-mount.md) ──
 # How the client sees host files: syncthing (local synced copy, default) or mount (single
@@ -94,4 +90,4 @@ HOST_DIR="$REPO_ROOT/host"       # computer-use machine: app sources, build scri
 # Per-role persistence key groups (install writes only to its own file)
 COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)
 HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN GH_REPO APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE RULES_FILE)
-CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP WEB_DIR WEB_BIND WEB_PORT EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND)
+CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND)

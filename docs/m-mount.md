@@ -141,17 +141,20 @@ mount|unmount) exec "$LOCAL_BIN/remote-pair-mount" "$@" ;;
 
 So `remote-pair mount ...` and `remote-pair unmount ...` delegate to the launcher.
 
-### (d) Onboarding wizard (`client/cli/web` + `remote-pair-web`)
+### (d) Onboarding
 
-In the folder-mapping / Syncthing step, add a "File access method" choice:
+Onboarding is to be implemented as two Electron windows (host in RemotePairHost, client in the
+RemotePair IDE), based on the mockup — not yet built; the prior browser-based web wizard was
+removed. The folder-mapping / Syncthing step of that onboarding should add a "File access method"
+choice:
 
 - **Syncthing** (default) — installs Syncthing, configures folder sync, existing flow.
 - **Mount** — skips Syncthing install; calls `remote-pair-mount mount <hostPath>` for each
   configured folder; writes `SYNC_BACKEND=mount` + `MOUNT_BACKEND=smb|sshfs` to `client.env`;
   shows SMB/SSHFS prerequisite instructions (host File Sharing or macFUSE) inline.
 
-The web bridge (`POST /api/mount`) should run `remote-pair-mount mount <hostPath> [mountpoint]`
-and return the resolved mountpoint path to the SPA.
+Whatever onboarding surface drives this should run `remote-pair-mount mount <hostPath> [mountpoint]`
+and surface the resolved mountpoint path to the user.
 
 ### (e) Doctor check (`remote-pair doctor`)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RemotePair IDE — upstream sync (Vendor 분리 / Option C).
+# RemotePair IDE — upstream sync (Vendor separation / Option C).
 #
 # vendor/vscodium/ is a git subtree tracking PRISTINE VSCodium (github.com/VSCodium/vscodium,
 # remote 'vscodium'). RemotePair-owned files live in remotepair/ and NEVER enter the tracked

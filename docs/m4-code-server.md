@@ -3,8 +3,8 @@
 ## Status (as of scaffold delivery)
 
 **What is working now:** `client/cli/remote-pair-editor` launches an unmodified
-`code-server` process if it is already installed. The RemotePair web bridge can
-iframe `http://127.0.0.1:${EDITOR_PORT}` to show the editor tab.
+`code-server` process if it is already installed. A host shell can load
+`http://127.0.0.1:${EDITOR_PORT}` to show the editor tab.
 
 **What is future work:** the full custom fork (layout patches, branded shell,
 bundled extensions, Electron packaging) is a multi-week effort. This document
@@ -180,7 +180,8 @@ Neither is implemented in this scaffold.
 
 ## Integration points for ORCH / wiring pass
 
-1. **`shared/install.sh`** — add after the `remote-pair-web` install block:
+1. **`shared/install.sh`** — add a client-side install block for the editor
+   launcher:
    ```bash
    if [ -f "$CLIENT_DIR/remote-pair-editor" ]; then
      say "[client] editor launcher → $LOCAL_BIN/remote-pair-editor"
@@ -202,7 +203,7 @@ Neither is implemented in this scaffold.
    Add `EDITOR_PORT` to `CLIENT_KEYS` array so `install.sh` writes it to
    `~/.remote-pair/client.env`.
 
-4. **Web bridge (`client/cli/remote-pair-web`)** — the editor tab iframe should
-   point to `http://127.0.0.1:${EDITOR_PORT}`. The bridge should call
-   `remote-pair-editor start <folder>` before serving the iframe URL, and
-   proxy the status check to `remote-pair-editor status`.
+4. **Host shell editor tab** — whatever surface hosts the editor tab should
+   point to `http://127.0.0.1:${EDITOR_PORT}`. It should call
+   `remote-pair-editor start <folder>` before loading the editor URL, and
+   surface the status check from `remote-pair-editor status`.

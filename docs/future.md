@@ -1,87 +1,81 @@
-# Future — 추후 피쳐 / 미뤄둔 작업
+# Future — Upcoming Features / Deferred Work
 
-이번 세션(2026-06-12~13)에서 논의됐지만 뒤로 미룬 항목들. 우선순위 대략순.
+Items that were discussed in this session (2026-06-12~13) but pushed back. Roughly in priority order.
 
-## 1. `remote-pair config` — role 전환 + interactive
-- 현재 role(host/client/both)은 설치 시 `install.sh --role` 로만 정해지고, 사후 변경 수단이 없다.
-- `remote-pair config` 서브커맨드로:
-  - role 을 host ↔ client ↔ both 로 전환(재설치/원복을 manifest 기반으로 안전하게).
-  - `REMOTE_HOST`, 폴더 매핑 등 주요 설정을 **interactive 메뉴**로 편집(현재는 env 파일 직접 수정).
-- 비대화(`--role host` 등)와 대화 모드 둘 다 제공.
+## 1. `remote-pair config` — role switching (interactive)
+- Implemented: `remote-pair config get/set host|terminal`, `config maps` (view/edit client config), `remote-pair map` (folder mapping).
+- **Not implemented (the core of this item)**: role (host/client/both) is decided only at install time via `install.sh --role`, and there is **no way to switch it afterward**. Add a subcommand to `remote-pair config` that switches role between host ↔ client ↔ both via **manifest-based safe reinstall/rollback**. An **interactive menu** that ties `REMOTE_HOST` and folder mapping into a single flow (currently it's per-key `config set`). Provide both non-interactive (`--role host`) and interactive modes.
 
-## 2. install.sh 에 Releases zip 다운로드 폴백 (brew 의존 제거)
-- 지금 `install.sh --role host` 는 로컬에 빌드된 `build/RemotePairHost.app` 이 있어야만 앱을 깐다(없으면 스킵).
-  그래서 빌드 툴체인 없는 호스트는 **brew cask** 로만 앱을 받을 수 있다 → "왜 brew 를 따로 치지?" 어색함.
-- install.sh 에 "로컬 빌드 없으면 GitHub Releases 의 서명 zip 다운로드 → quarantine 제거 → 설치" 폴백 추가.
-- 효과: 툴체인 없는 호스트도 `install.sh --role host` 한 번으로 앱+approve 원샷, brew 는 순수 선택지로.
-  같은 서명 zip 이라 TCC grant 유지.
+## 2. Releases zip download fallback in install.sh (remove brew dependency)
+- Right now `install.sh --role host` only installs the app if a locally built `build/RemotePairHost.app` exists (it skips otherwise).
+  So a host without a build toolchain can only obtain the app via **brew cask** → "why do I have to run brew separately?" is awkward.
+- Add a fallback to install.sh: "if there's no local build, download the signed zip from GitHub Releases → remove quarantine → install".
+- Effect: a host without a toolchain can also get app + approve in one shot with a single `install.sh --role host`, making brew a pure option.
+  Since it's the same signed zip, the TCC grant is preserved.
 
-## 3. glue(skill/hook) 자동 업데이트 트리거
-- 현재: cask 가 .app 만 자동 업데이트. approve 스킬·훅(=glue)은 `bootstrap`/`install.sh --role host`
-  **재실행** 해야 갱신된다(재실행 시 manifest revert→재설치라 갱신은 정확히 됨).
-- 앱이 cask 로 자동 업데이트될 때 glue 도 따라오게 하려면 별도 설계 필요:
-  - (a) 앱 self-install(Installer.swift)이 버전업 시 glue 까지 refresh — 단 cask-only 호스트엔 repo 가 없어
-    스킬/훅 소스가 없다는 문제(번들에 동봉해야 함).
-  - (b) cask postflight 에서 bootstrap 호출.
-- 결정 필요: glue 소스를 .app 번들에 넣을지(결합도↑) vs repo 재실행 모델 유지(수동 트리거).
+## 3. glue auto-update trigger (design finalized — requirements §0.4)
+- **Design finalized**: "permission boundary = bundle boundary" (requirements §0.4). glue (CLI, approve rules, skill, hooks, IDE ext = permission 0) is **not bundled** into the .app bundle; instead `remote-pair update` **fetches it from GitHub and hot-swaps** (the goal is for cask-only hosts to update without a repo too). Only the `screen` sidecar, which needs permissions, is bundled into the signed .app bundle.
+- Implemented: `remote-pair update` (cmd_update, L1 hot-swap) and `remote-pair self-update` (GitHub network path) — applied instantly by replacing files on disk.
+- **Not implemented (remaining work)**:
+  - ① **Auto-trigger glue on app launch** — have `Updater` call `remote-pair update` (L1) after updating L2 (the app) (permission 0, so independent of the sidecar). Currently `Updater` only does L2 and glue doesn't follow.
+  - ② **Complete network glue fetch** — the current `self-update` network path covers **only CLI/launcher/romanize**, while the full glue (approve rules/skills, host hooks) still requires a repo checkout (the warning in `cmd_update`). Extend it so cask-only hosts can receive the full glue without a repo.
+  - ③ **Bundle the sidecar into the signed bundle** — put `screen` into the signed .app for SR grant survival + cask auto-update (requirements §0.4, §4).
 
-## 4. approve 훅 노이즈 튜닝 (필요 시)
-- 현재 matcher = `mcp__claude-in-chrome__.*|mcp__computer-use__.*|Bash`, 게이트 = `denied|permission|timed out|timeout`.
-- `--dangerously-skip-permissions` 호스트는 승인 막힘이 대부분 hang→timeout 이라 timeout 을 주 신호로 넣음.
-- 부작용: approval 과 무관한 Bash timeout(느린 빌드·행 걸린 테스트)에도 리마인더가 뜰 수 있음.
-- 너무 시끄러우면: matcher 에서 Bash 제외(chrome/computer-use 만) 하거나, 게이트에 ssh/git/scp 등
-  '인증 동반 명령' 조건을 AND 로 추가.
+## 4. approve hook noise tuning (if needed)
+- Currently matcher = `mcp__claude-in-chrome__.*|mcp__computer-use__.*|Bash`, gate = `denied|permission|timed out|timeout`.
+- On a `--dangerously-skip-permissions` host, approval blockages are mostly hang→timeout, so timeout is included as the main signal.
+- Side effect: the reminder may also fire on Bash timeouts unrelated to approval (slow builds, hung tests).
+- If it's too noisy: either exclude Bash from the matcher (chrome/computer-use only), or AND in a condition for
+  'authentication-bearing commands' such as ssh/git/scp on the gate.
 
-## 5. cask UX — 설치 후 첫 실행 안내/자동화
-- cask 는 .app 만 배치하고 **앱을 자동 실행하지 않음** → 사용자가 한 번 열어야 self-install(LaunchAgent·
-  tmux-aqua 링크)이 돈다. 현재 caveats 엔 권한 grant 안내만 있고 "한 번 여세요" 가 빠져 있음.
-- caveats 에 "설치 후 앱을 한 번 여세요" 추가, 또는 postflight 에서 `open -a` 로 첫 실행 트리거.
+## 5. cask UX — post-install first-run guidance/automation
+- cask only places the .app and **does not auto-launch the app** → the user has to open it once for self-install (LaunchAgent,
+  tmux-aqua link) to run. The current caveats only have permission-grant guidance and is missing "open it once".
+- Add "open the app once after install" to caveats, or trigger the first run with `open -a` in postflight.
 
-## 6. 서명 cert 전환(33849F → 898E32) 마무리 + 번들 id 통일 — **v0.5.0 계획/예정**
+## 6. Client (IDE) bare identity migration + cert CI consolidation
 
-- cert 전환(33849F → 898E32)과 **번들 id 통일(`com.x10lab.remote-pair-host` → `com.x10lab.remote-pair`) + 앱 리네임(`RemotePairHost` → `RemotePair`)** 을 한 릴리스(v0.5.0)에 묶어 처리 **예정**. (M1 작업 트리에 준비됨 — `shared/config.sh` "0.5 RELEASE FLIP" 주석 + 본 문서 올인원 레시피가 한-스텝 플립 가이드. 현재 출하 정체성은 -host 접미사를 유지.)
-- 기존 호스트는 이 버전으로 업그레이드할 때 **AX/SR 재grant 1회**만 필요(cert + bundle id 변경이 동시 — 이후 grant 유지). README와 cask caveats에 명시 예정.
-- cask 토큰도 `remote-pair-host` → `remote-pair`로 전환 예정. 사용자 액션(0.5 출하 시): `brew uninstall --cask remote-pair-host && brew install --cask remote-pair`.
+> **Identity unification → re-decided as separation** (2026-06-15, requirements §Identity Separation, §3). The two apps are too different in nature (Host = headless permission daemon, Client = IDE GUI), so they're separated rather than unified. Host keeps `-host` permanently — below is only the Client-side migration and cert.
 
-## 7-1. 올인원 "지휘자" — Syncthing(e2e) + Tailscale/WireGuard + 자체 화면엔진
-RemotePair를 베스트 OSS들을 *오케스트레이션*하는 단일 셋업으로. 기존 저결합 철학(앱=권한데몬, CLI=두뇌, sync는 Syncthing에 위임) 그대로 — RemotePair는 컴포넌트를 **설치·구성·실행**만 시키고 소스는 안 건드린다.
+- **Client bare migration**: move the IDE to a bare identity — `shared/identity/identity.json` ide.darwinBundleIdentifier and IDE product.json `com.x10lab.remotepair-ide` → `com.x10lab.remote-pair`, display name `RemotePair`, **new Client cask `remote-pair`** (when the IDE ships). A separate cask from Host (`remote-pair-host`). The `shared/config.sh` "0.5 RELEASE FLIP" (host→bare) comment is **canceled/removed**.
+- **cert CI consolidation**: release signing only via CI (898E32, p12 gh secret), no manual maintainer signing (33849F contamination). The host bundle id doesn't change, so the designated requirement changes only when the cert actually changes → **one AX/SR re-grant** (an independent event, stated in README and cask caveats).
 
-- **Syncthing e2e 매핑**: 현재는 사용자가 Syncthing 폴더를 수동 구성. → RemotePair가 **양쪽(host/client) Syncthing REST API로 폴더를 자동 추가 + `.stignore`(.git, .claude/projects 제외) 주입**해서 폴더 매핑을 e2e로 셋업. 선택적으로 `~/.claude` 동기화도 같은 메커니즘으로(현재 git 백본 opt-in 대체/보완). `.git`·기기-로컬 상태 제외 규칙은 유지([[syncthing-git-exclude]] 원칙).
-- **Tailscale/WireGuard 연결**: host↔client zero-config 도달성(수동 SSH/포트포워딩 제거). 온보딩 마법사가 Tailscale 설치/로그인 + 노드 확인까지 안내. (BSD-3/MIT — 자유 번들)
-- **Remote Desktop(자체 `host/rd/screen` 엔진)**: M5와 연결.
+## 7-1. All-in-one "conductor" — Syncthing (e2e) + Tailscale/WireGuard + in-house screen engine
+RemotePair as a single setup that *orchestrates* the best OSS. The existing low-coupling philosophy stays as-is (app = permission daemon, CLI = brain, sync delegated to Syncthing) — RemotePair only **installs, configures, and runs** the components and never touches their source.
 
-**라이선스**: RemotePair는 **AGPL-3.0-or-later**(순수 자체코드). 오케스트레이션으로 consume하는 OSS는 허용형/약카피레프트(Syncthing=MPL-2.0, Tailscale=BSD-3, WireGuard=MIT — 번들 OK). 화면공유는 외부 스택 대신 자체 `host/rd/screen` 엔진(허용형 deps만). 상용 배포 전 법률 확인 권장.
+- **Syncthing e2e mapping**: currently the user configures Syncthing folders manually. → RemotePair **auto-adds folders via both sides' (host/client) Syncthing REST API + injects `.stignore`** (excluding .git, .claude/projects) to set up folder mapping e2e. Optionally `~/.claude` sync via the same mechanism (replacing/complementing the current git-backbone opt-in). The `.git` and device-local state exclusion rules stay ([[syncthing-git-exclude]] principle).
+- **Tailscale/WireGuard connectivity**: host↔client zero-config reachability (removing manual SSH/port forwarding). Onboarding guides Tailscale install/login + node verification. Onboarding is to be implemented as two Electron windows (host in RemotePairHost, client in RemotePair IDE), based on the mockup — not yet built; the prior browser-based web wizard was removed. (BSD-3/MIT — free to bundle)
+- **Remote Desktop (in-house `host/rd/screen` engine)**: connected to M5.
 
-## 8. M6 — 2-레벨 hot-update + AX 상속 스파이크 (⚠️ 스파이크 선행 필수)
+**License**: RemotePair is **AGPL-3.0-or-later** (pure in-house code). The OSS consumed via orchestration is permissive/weak-copyleft (Syncthing = MPL-2.0, Tailscale = BSD-3, WireGuard = MIT — OK to bundle). Screen sharing uses the in-house `host/rd/screen` engine (permissive deps only) instead of an external stack. Legal review recommended before commercial distribution.
 
-M6 구현 전에 반드시 먼저 검증해야 할 열린 항목.
+## 8. M6 — 2-level hot-update + AX inheritance spike (⚠️ spike must come first)
 
-### 8-1. AX 권한 상속 스파이크
+Open items that must be verified before implementing M6.
 
-앱을 `launchctl kickstart -k`로 재기동하면 `tmux-aqua` 프로세스의 부모가 launchd로 reparent되어 AX 상속 체인이 끊길 수 있다. `tmux-aqua`의 패치(`daemon→setsid`만 하고 reparent하지 않음)가 앱 교체 과정에서도 유지되는지 먼저 스파이크로 확인해야 한다. 확인 전 L2(네이티브 재실행) 구현은 진행하지 않는다.
+### 8-1. AX permission inheritance spike
 
-**스파이크 체크리스트**:
-1. 앱 재기동 전후 `tmux-aqua`의 PPID 기록 비교.
-2. 재기동 후 `claude` 세션에서 `screencapture`·`cliclick`이 동작하는지(AX/SR 상속 확인).
-3. 상속이 깨지면: `HostManager.spawn()` 재호출로 tmux 서버를 앱 자식으로 재spawn하는 방안 검토.
+Restarting the app with `launchctl kickstart -k` reparents the `tmux-aqua` process's parent to launchd, which may break the AX inheritance chain. We need to spike first to confirm that the `tmux-aqua` patch (only `daemon→setsid`, no reparenting) is preserved across the app-replacement process. Do not proceed with the L2 (native restart) implementation before confirming this.
 
-### 8-2. 2-레벨 update 설계 (architecture.md §11 참조)
+**Spike checklist**:
+1. Compare the recorded PPID of `tmux-aqua` before and after the app restart.
+2. Whether `screencapture` and `cliclick` work in a `claude` session after the restart (verify AX/SR inheritance).
+3. If inheritance breaks: consider re-spawning the tmux server as an app child by re-calling `HostManager.spawn()`.
 
-- **L1 glue 핫스왑**: `remote-pair-web`, `remote-pair-editor`, `remote-pair-notify.sh`, approve 스킬·훅 등 파일 교체만으로 즉시 반영. 재시작 불필요(CodePush-style).
-- **L2 네이티브 재실행**: 세션 수 확인 + 사용자 동의 → `launchctl kickstart -k`. AX 상속 스파이크(§8-1) 통과 후 구현.
+### 8-2. 2-level update design (see architecture.md §11)
 
-## 9. M4 code-server 포크 유지보수 (`ghyeongl/code-server`)
+- **L1 glue hot-swap**: `remote-pair-editor`, `remote-pair-notify.sh`, approve skills/hooks, etc. are applied instantly by just replacing files. No restart needed (CodePush-style). The model is finalized via the permission boundary (§0.4) — see §3 for the app-launch auto-trigger and network-fetch completion.
+- **L2 native restart**: confirm session count + user consent → `launchctl kickstart -k`. Implemented in `Updater.swift` (checkForUpdates L2). Passing the AX inheritance spike (§8-1) is the prerequisite for zero downtime.
 
-- 포크 레포: `ghyeongl/code-server`. 업스트림 `cdr/code-server` 추종 비용 최소화를 위해 **설정 우선·surgical 최소 패치** 전략.
-- **Electron 레이아웃 패치**: 워크벤치 레이아웃을 RemotePair 셸 UX(왼쪽 터미널 / 오른쪽 에디터 탭)에 맞게 조정하는 패치. 현재 WIP(스파이크).
-- **Claude Code 익스텐션 통합**: Open VSX를 통해 설치. MS 마켓플레이스 경로는 사용하지 않음.
-- 유지보수 전략: 패치가 upstream PR로 흡수되는 항목은 포크에서 revert → 업스트림 추종으로 전환. 패치 표면을 지속 축소.
+## 9. M4 IDE — VSCodium fork (`remotepair-ide`) upstream tracking
 
-## 10. doctor 확장 여지
-- 이번에 host approve 스킬·훅 존재 + AX/SR grant 를 healthy 판정에 포함시킴.
-- 추가 여지: cliclick/ocr-find 등 나머지 헬퍼 존재, 훅이 settings.json 에서 실제 등록됐는지(`claude /hooks`
-  수준), tmux-aqua self-contained 여부(otool) 점검.
+> The code-server path is **abandoned** (2026-06-14 pivot to the VSCodium fork — requirements M4, decision record). Below is future maintenance of the new fork.
 
----
-완료된 관련 작업(참고): 세션 0 근본수정(tmux-aqua 번들 누락 HARD-FAIL + 좀비 감지),
-0.4.11/0.4.12 재배포, approve 훅 레포화(install/update/uninstall/doctor 일원화, chrome+computer-use+Bash 커버).
+- Fork base: VSCodium (`client/ide`). Strategy "keep the code, hide the UI" (composite-bar allowlist + `when=false`) to minimize upstream rebase cost.
+- **patches/ tracking**: capture `vscode/src` changes (G001–G009) as `patches/` and reapply them on VSCodium upstream bumps. Revert upstream-absorbed parts in the fork to continuously shrink the patch surface.
+- **Claude Code / Codex extensions**: install via the Open VSX path (not the MS Marketplace).
+
+## 10. doctor expansion room
+- This time we included host approve skill/hook presence + AX/SR grant in the healthy determination.
+- Room to add: presence of the remaining helpers like cliclick/ocr-find, whether hooks are actually registered in settings.json (`claude /hooks`
+  level), checking whether tmux-aqua is self-contained (otool).

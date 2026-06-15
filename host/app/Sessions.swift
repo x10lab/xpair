@@ -1,13 +1,13 @@
-// Sessions.swift — tmux-aqua 서버의 세션 조회/제어 (메뉴바 동적 목록 + 모달 액션).
+// Sessions.swift — Session query/control for the tmux-aqua server (menu-bar dynamic list + modal actions).
 
 import Foundation
 
 struct TmuxSession {
     let name: String
     let created: Date?
-    let attached: Int       // 붙어있는 client 수
+    let attached: Int       // number of attached clients
     let windows: Int
-    let path: String        // 첫 윈도우 cwd (#{pane_current_path})
+    let path: String        // cwd of the first window (#{pane_current_path})
 }
 
 enum Sessions {
@@ -16,7 +16,7 @@ enum Sessions {
                           env: ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": HOME])
     }
 
-    /// _keeper(내부 유지용)를 제외한 사용자 세션 목록. 생성시각 내림차순.
+    /// List of user sessions excluding _keeper (internal-keepalive). Sorted by creation time, descending.
     static func list() -> [TmuxSession] {
         let fmt = "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}\t#{pane_current_path}"
         let r = tmux(["list-sessions", "-F", fmt])
@@ -38,19 +38,20 @@ enum Sessions {
         return out.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
     }
 
-    /// 서버(=_keeper) 가 살아있는지.
+    /// Whether the server (=_keeper) is alive.
     static func serverUp() -> Bool { tmux(["has-session"]).status == 0 }
 
-    // ── M6 (LEVEL-2 native relaunch) 게이트용 헬퍼 ────────────────────────────
-    // 인앱 Updater 가 .app 바이너리를 교체·재기동하기 전에 "지금 끊기면 안 되는 실제 작업이
-    // 돌고 있는가"를 사실로 알아야 한다. list() 가 이미 _keeper(내부 유지 더미)를 제외하므로
-    // 그 결과가 곧 "사용자 세션"이다. attached(붙어있는) + detached(떨어졌지만 살아있는) 모두
-    // 포함한다 — detached 라도 claude 세션이 그 안에서 계속 돌고 있을 수 있기 때문(재기동 시 손실 위험).
+    // ── Helpers for the M6 (LEVEL-2 native relaunch) gate ─────────────────────
+    // Before the in-app Updater swaps the .app binary and relaunches, it must factually know
+    // "is there real work running that must not be interrupted right now?". Since list() already
+    // excludes _keeper (the internal-keepalive dummy), its result is exactly the "user sessions".
+    // It includes both attached and detached (dropped but still alive) sessions — because even a
+    // detached session may still have a claude session running inside it (risk of loss on relaunch).
 
-    /// _keeper 제외, attached/detached 무관 실제 사용자 세션 목록. (list() 의 의미를 명시적 이름으로 노출)
+    /// List of real user sessions excluding _keeper, regardless of attached/detached. (Exposes list()'s meaning under an explicit name.)
     static func listReal() -> [TmuxSession] { list() }
 
-    /// LEVEL-2 게이트 판단용 카운트 — attached + detached 합. 0 이면 무중단 재기동 안전.
+    /// Count for the LEVEL-2 gate decision — sum of attached + detached. 0 means an uninterrupted relaunch is safe.
     static func liveSessionCount() -> Int { listReal().count }
 
     @discardableResult

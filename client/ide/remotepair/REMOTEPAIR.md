@@ -1,4 +1,4 @@
-# RemotePair surface manifest — `client/ide/` (VSCodium fork, Vendor 분리 / Option C)
+# RemotePair surface manifest — `client/ide/` (VSCodium fork, Vendor separation / Option C)
 
 > **What this is:** `client/ide/` is a VSCodium-based IDE split into two halves:
 > - `remotepair/` — **everything RemotePair owns** (this directory). The only files we author/maintain.

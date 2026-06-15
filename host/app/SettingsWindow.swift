@@ -1,6 +1,6 @@
-// SettingsWindow.swift — 호스트 설정/현황 창 (네이티브, nib 없이 코드로 구성).
+// SettingsWindow.swift — host settings/status window (native, built in code without a nib).
 //
-// 호스트에 의미있는 항목만: 버전·소켓·repo·권한 상태·자동 업데이트 토글·활성 세션 cwd 목록 + 액션 버튼.
+// Only items meaningful to the host: version, socket, repo, permission status, auto-update toggle, active session cwd list, and action buttons.
 
 import Cocoa
 
@@ -13,7 +13,7 @@ final class SettingsWindowController: NSWindowController {
     convenience init() {
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        win.title = "\(APP_NAME) 설정"
+        win.title = "\(APP_NAME) Settings"
         self.init(window: win)
         build()
     }
@@ -47,18 +47,18 @@ final class SettingsWindowController: NSWindowController {
         infoLabel.widthAnchor.constraint(equalToConstant: 424).isActive = true
         stack.addArrangedSubview(infoLabel)
 
-        autoUpdate = NSButton(checkboxWithTitle: "시작 시 업데이트 자동 확인", target: self, action: #selector(toggleAuto))
+        autoUpdate = NSButton(checkboxWithTitle: "Automatically check for updates on launch", target: self, action: #selector(toggleAuto))
         autoUpdate.state = UserDefaults.standard.bool(forKey: Self.autoUpdateKey) ? .on : .off
         stack.addArrangedSubview(autoUpdate)
 
         let row = NSStackView()
         row.orientation = .horizontal; row.spacing = 8
-        // CLIENT = access-only: '권한 부여' 버튼 생략(호스트/both 에서만). 나머지는 동일.
+        // CLIENT = access-only: omit the 'Grant Permissions' button (host/both only). The rest are identical.
         var buttons: [(String, Selector)] = []
-        if isHostRole { buttons.append(("권한 부여…", #selector(grant))) }
-        buttons += [("업데이트 확인…", #selector(update)),
-                    ("폴더 열기", #selector(openDir)),
-                    ("새로고침", #selector(refresh))]
+        if isHostRole { buttons.append(("Grant Permissions…", #selector(grant))) }
+        buttons += [("Check for Updates…", #selector(update)),
+                    ("Open Folder", #selector(openDir)),
+                    ("Refresh", #selector(refresh))]
         for (t, sel) in buttons {
             let b = NSButton(title: t, target: self, action: sel)
             b.bezelStyle = .rounded
@@ -82,13 +82,13 @@ final class SettingsWindowController: NSWindowController {
     @objc private func refresh() {
         let sessions = Sessions.list()
         var s = ""
-        s += "소켓:        \(SOCKET)  (\(Sessions.serverUp() ? "up" : "down"))\n"
-        s += "릴리스 repo:  \(GH_REPO)\n"
-        s += "네임스페이스: \(RP_DIR)\n"
+        s += "Socket:       \(SOCKET)  (\(Sessions.serverUp() ? "up" : "down"))\n"
+        s += "Release repo: \(GH_REPO)\n"
+        s += "Namespace:    \(RP_DIR)\n"
         s += "\(Permissions.summary())\n"
-        s += "\n활성 세션 (\(sessions.count)):\n"
+        s += "\nActive sessions (\(sessions.count)):\n"
         if sessions.isEmpty {
-            s += "  (없음)\n"
+            s += "  (none)\n"
         } else {
             for ses in sessions {
                 s += "  • \(ses.name)  [attached \(ses.attached), win \(ses.windows)]\n      \(ses.path)\n"

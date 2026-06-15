@@ -1,36 +1,37 @@
-# shared/identity — 브랜드·버전 단일 소스(SoT)
+# shared/identity — Single Source of Truth (SoT) for Brand and Version
 
-RemotePair 모노레포(`remote-pair` 코어 · `client/ide/` VSCodium 포크 · `host/rd/` 네이티브 엔진)의
-**브랜드 식별자와 버전을 한 곳에서 선언**한다. 소비자가 이종(Ruby·JSON·Swift·Cargo)이라
-값을 직접 주입하는 대신 **선언 + 정합 체크**로 단일성을 강제한다.
+Declares the **brand identifiers and versions in one place** for the RemotePair monorepo
+(`remote-pair` core · `client/ide/` VSCodium fork · `host/rd/` native engine).
+Because consumers are heterogeneous (Ruby · JSON · Swift · Cargo), instead of injecting values
+directly, singularity is enforced through **declaration + consistency checks**.
 
-## 파일
-| 파일 | 역할 |
+## Files
+| File | Role |
 |------|------|
-| `identity.json` | 제품명·org·urlProtocol·서명 CN + 컴포넌트별 식별자(bundleId, applicationName 등) |
-| `versions.json` | 컴포넌트별 버전 레지스트리 (host/ide/screen-engine — **독립 버전**, 강제 동일화 안 함) |
-| `check-identity.sh` | 소비자가 SoT와 일치하는지 검증, drift면 비0 종료 |
+| `identity.json` | Product name · org · urlProtocol · signing CN + per-component identifiers (bundleId, applicationName, etc.) |
+| `versions.json` | Per-component version registry (host/ide/screen-engine — **independent versions**, not forced to be identical) |
+| `check-identity.sh` | Verifies that consumers match the SoT; exits non-zero on drift |
 
-## 소비자 매핑
-| 소비자 | 검증 항목 |
+## Consumer Mapping
+| Consumer | Verified Items |
 |--------|-----------|
-| `client/ide/product.json` | nameShort/Long·applicationName·dataFolderName·darwinBundleIdentifier·urlProtocol·server*·win32* |
-| `client/ide/remotepair-ext/package.json` | `version` == `versions.ide` (product.json엔 version 없음 — 앱 버전은 빌드시 RELEASE_VERSION 주입) |
+| `client/ide/product.json` | nameShort/Long · applicationName · dataFolderName · darwinBundleIdentifier · urlProtocol · server* · win32* |
+| `client/ide/remotepair-ext/package.json` | `version` == `versions.ide` (product.json has no version — the app version is injected as RELEASE_VERSION at build time) |
 | `Casks/remote-pair-host.rb` | `version` == `versions.host` |
 | `host/rd/screen/Cargo.toml` | `version` == `versions.screen-engine` |
-| `host/app/Config.swift` | `BUNDLE_ID` 기본값에 `components.host.bundleId` 존재 |
+| `host/app/Config.swift` | `components.host.bundleId` is present in the `BUNDLE_ID` default value |
 
-## 사용
+## Usage
 ```bash
-shared/identity/check-identity.sh      # 정합 검증 (CI/릴리스 전)
+shared/identity/check-identity.sh      # consistency check (before CI/release)
 ```
 
-값을 바꿀 땐 **여기(identity.json/versions.json)를 먼저 고치고** 소비자를 맞춘 뒤 체크를 통과시킨다.
+When changing a value, **fix it here first (identity.json/versions.json)**, then align the consumers and make the check pass.
 
-## 버전 정책
-컴포넌트는 성숙도가 달라 독립적으로 버전이 오른다(host 0.4.x = 성숙, client/ide/rs 0.1.0 = 초기).
-`versions.json`은 "현재 버전을 한 곳에서 읽는" 지점일 뿐, 동일 버전을 강제하지 않는다.
+## Version Policy
+Components mature at different rates, so their versions are bumped independently (host 0.4.x = mature, client/ide/rs 0.1.0 = early).
+`versions.json` is merely the point where you "read the current version from one place"; it does not force versions to be identical.
 
-## 향후
-`docs/ide-merge-architecture.md`의 build-time codegen 방향대로, prepare 단계가 이 SoT에서
-소비자 값을 **생성/주입**하도록 확장 가능(특히 `client/ide/` self-containment 시 — 별도 스토리).
+## Future
+Following the build-time codegen direction in `docs/ide-merge-architecture.md`, the prepare step can be extended
+to **generate/inject** consumer values from this SoT (especially during `client/ide/` self-containment — a separate story).

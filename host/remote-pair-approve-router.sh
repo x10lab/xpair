@@ -1,20 +1,20 @@
 #!/bin/bash
-# remote-pair-approve-router.sh — 떠있는(또는 곧 뜰) 승인창을 감지 → 허용 → 닫혔는지 검증.
+# remote-pair-approve-router.sh — detect an approval dialog that is up (or about to appear) → allow it → verify it closed.
 #
-# RemotePairHost(메뉴바앱, AX+화면기록+PostEvent granted)가 트리거 시 자식으로 호출 → 권한 상속.
-# claude/스킬은 "막히면 트리거"만 하고, 어떤 창을 어떻게 허용할지는 전부 여기가 라우팅.
+# RemotePairHost (menu-bar app, AX+screen-recording+PostEvent granted) invokes this as a child on trigger → permissions inherited.
+# claude/skills only "trigger when blocked"; which dialog to allow and how is entirely routed here.
 #
-# 개선점(v3):
-#   1) 적응형 폴링 — 트리거 직후 창이 아직 없어도(에이전트가 수 초 뒤 띄움) WAIT 동안 기다린다.
-#   2) 검증 루프 — 클릭/키 후 재캡처해 "마커가 사라졌나" 확인. 안 닫혔으면 재시도. exit 0=성공 / 1=실패.
-#   3) 하이브리드 비전 — OCR 룰 우선(빠름). 미스 시 haiku 가 "어떤 알려진 창인가"만 분류(좌표는 못 줌).
-#        분류 결과를 룰 action(OCR 버튼텍스트→좌표 / 키)으로 실행. UNKNOWN 이면 일반 승인 라벨로 폴백.
+# Improvements (v3):
+#   1) Adaptive polling — even if the dialog isn't up yet right after the trigger (the agent raises it a few seconds later), wait during WAIT.
+#   2) Verification loop — re-capture after a click/key to confirm "the marker is gone." If not closed, retry. exit 0=success / 1=failure.
+#   3) Hybrid vision — OCR rules first (fast). On a miss, haiku only classifies "which known dialog is this" (it can't give coordinates).
+#        Execute the classification result via the rule's action (OCR button text→coordinates / key). On UNKNOWN, fall back to generic approve labels.
 #
-# rules.txt v2 (탭 구분):  id <TAB> marker <TAB> action
-#   marker = 감지/검증용 OCR 텍스트(부분일치, 소문자무관) — haiku 분류 시 설명으로도 쓰임
-#   action = ocr:<라벨|라벨..> (버튼텍스트 찾아 클릭) | key:<콤보> (cmd+return, return, esc …)
+# rules.txt v2 (tab-separated):  id <TAB> marker <TAB> action
+#   marker = OCR text for detection/verification (substring match, case-insensitive) — also used as the description for haiku classification
+#   action = ocr:<label|label..> (find the button text and click) | key:<combo> (cmd+return, return, esc …)
 set -u
-# claude·screencapture·cliclick 가 PATH 에 있도록 (앱이 직접 스폰하는 PATH 는 빈약)
+# Make sure claude·screencapture·cliclick are on PATH (the PATH an app spawns with directly is sparse)
 export PATH="/usr/sbin:/usr/bin:/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 SCAP=/usr/sbin/screencapture
 RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
@@ -28,39 +28,39 @@ RULES="${RULES_FILE:-$RP_DIR/rules.txt}"; [ -f "$RULES" ] || RULES="$HOME/.claud
 LOG="${LOG_FILE:-$RP_DIR/logs/remote-pair.log}"; mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 # size-cap rotation (5MB → .1) at startup — shared remote-pair.log, append-only writers tolerate it
 { _sz="$(stat -f %z "$LOG" 2>/dev/null || echo 0)"; [ "$_sz" -gt 5000000 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null; } || true
-SHOT="${RP_SHOT:-/tmp/rp-router.png}"          # RP_SHOT 지정 시 그 이미지 사용(테스트, 단발)
-DRY="${RP_DRY:-0}"                             # RP_DRY=1 = 실제 클릭/키 안 함(의도만)
+SHOT="${RP_SHOT:-/tmp/rp-router.png}"          # when RP_SHOT is set, use that image (test, one-shot)
+DRY="${RP_DRY:-0}"                             # RP_DRY=1 = don't actually click/press keys (intent only)
 
-# 적응형 폴링/검증 튜너블
-WAIT_SECS="${RP_WAIT_SECS:-${1:-18}}"          # 승인창 출현을 기다리는 총 윈도우(초)
-INTERVAL="${RP_INTERVAL:-1.2}"                 # 폴링 간격
-VERIFY_RETRY="${RP_VERIFY_RETRY:-3}"           # 클릭 후 "닫혔나" 확인 재시도
-# 비전(haiku) — 구독 claude CLI 재사용, best-effort
-VISION="${RP_VISION:-auto}"                    # auto(룰 미스 시) | on | off
+# adaptive polling / verification tunables
+WAIT_SECS="${RP_WAIT_SECS:-${1:-18}}"          # total window (seconds) to wait for the approval dialog to appear
+INTERVAL="${RP_INTERVAL:-1.2}"                 # polling interval
+VERIFY_RETRY="${RP_VERIFY_RETRY:-3}"           # retries to confirm "is it closed" after a click
+# vision (haiku) — reuse the subscription claude CLI, best-effort
+VISION="${RP_VISION:-auto}"                    # auto (on rule miss) | on | off
 VISION_MODEL="${RP_VISION_MODEL:-claude-haiku-4-5}"
-VISION_TIMEOUT="${RP_VISION_TIMEOUT:-12}"      # 비전 호출 1회 상한(헤드리스 claude 가 느리거나 막혀도 OCR 폴링 회복)
-VISION_EVERY="${RP_VISION_EVERY:-2}"           # N 사이클마다 1회만 비전 호출(지연/비용 제한)
-VISION_MAX_FAILS="${RP_VISION_MAX_FAILS:-2}"   # 연속 claude 실패 N회 → 그 실행 동안 비전 자동 비활성
+VISION_TIMEOUT="${RP_VISION_TIMEOUT:-12}"      # cap per vision call (so OCR polling recovers even if headless claude is slow or stuck)
+VISION_EVERY="${RP_VISION_EVERY:-2}"           # call vision only once every N cycles (limit latency/cost)
+VISION_MAX_FAILS="${RP_VISION_MAX_FAILS:-2}"   # N consecutive claude failures → auto-disable vision for this run
 VISION_FAILS=0; LAST_VISION_RC=0
 GENERIC_LABELS="Allow|Authorize|Authorize Once|Always Allow|Approve|Confirm|Continue|OK|허용|승인|확인|한 번 승인"
 
 log(){ printf '%s router: %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
-[ -n "$OCR" ] || { log "ocr-find 없음 — 중단"; exit 1; }
+[ -n "$OCR" ] || { log "ocr-find missing — aborting"; exit 1; }
 
-# 힌트: 에이전트가 "어떤 승인인지"(룰 id 또는 자유문구) 미리 알려주면 해당 룰을 우선 시도 +
-#   haiku 분류 prior 로 사용. 없어도 됨. (CLI 가 .label 파일로 전달, 또는 RP_FOR 환경변수)
+# hint: if the agent tells us in advance "which approval this is" (rule id or free text), try that rule first +
+#   use it as the prior for haiku classification. Optional. (passed by the CLI via a .label file, or the RP_FOR env var)
 HINT_FILE="${RP_HINT_FILE:-/tmp/remote-pair.approve-request.label}"
 TYPE_FILE="${RP_TYPE_FILE:-/tmp/remote-pair.approve-request.type}"
 HINT="${RP_FOR:-}"
 [ -z "$HINT" ] && [ -f "$HINT_FILE" ] && HINT="$(head -1 "$HINT_FILE" 2>/dev/null)"
-# --type: 에이전트가 "어떻게 승인할지"(key:<combo> | ocr:<라벨>)를 직접 지정 → 힌트 경로에서 룰 action override
+# --type: the agent directly specifies "how to approve" (key:<combo> | ocr:<label>) → overrides the rule action on the hint path
 HINT_TYPE="${RP_TYPE:-}"
 [ -z "$HINT_TYPE" ] && [ -f "$TYPE_FILE" ] && HINT_TYPE="$(head -1 "$TYPE_FILE" 2>/dev/null)"
 rm -f "$HINT_FILE" "$TYPE_FILE" 2>/dev/null || true
-[ -n "$HINT_TYPE" ] && log "type(에이전트 지정): $HINT_TYPE"
+[ -n "$HINT_TYPE" ] && log "type (agent-specified): $HINT_TYPE"
 HINT_ID=""
 if [ -n "$HINT" ]; then
-  # 별칭 관대: 브라우저명/변형을 룰 id 로 정규화 (예: Google Chrome/Chrome → Claude for Chrome)
+  # alias-tolerant: normalize browser names/variants to a rule id (e.g. Google Chrome/Chrome → Claude for Chrome)
   case "$(printf '%s' "$HINT" | tr '[:upper:]' '[:lower:]')" in
     *chrome*) HINT="Claude for Chrome" ;;
     *1password*|*"1 password"*) HINT="1Password" ;;
@@ -68,14 +68,14 @@ if [ -n "$HINT" ]; then
   log "hint: $HINT"
   HINT_ID="$(awk -F'\t' -v h="$(printf '%s' "$HINT" | tr '[:upper:]' '[:lower:]')" '
     $0!~/^[[:space:]]*#/ && NF>=3 { lid=tolower($1); if (index(lid,h)>0 || index(h,lid)>0) { print $1; exit } }' "$RULES")"
-  [ -n "$HINT_ID" ] && log "hint → rule '$HINT_ID' 우선 시도"
+  [ -n "$HINT_ID" ] && log "hint → trying rule '$HINT_ID' first"
 fi
-[ "$VISION" != off ] && [ -z "$CLAUDE" ] && { log "claude CLI 없음 → 비전 비활성(OCR 룰만)"; VISION=off; }
+[ "$VISION" != off ] && [ -z "$CLAUDE" ] && { log "claude CLI missing → vision disabled (OCR rules only)"; VISION=off; }
 
-capture(){ [ -n "${RP_SHOT:-}" ] && return 0; $SCAP -x "$SHOT" 2>/tmp/rp-scap.err || { log "screencapture 실패: $(tr '\n' ' ' </tmp/rp-scap.err 2>/dev/null)"; return 1; }; }
+capture(){ [ -n "${RP_SHOT:-}" ] && return 0; $SCAP -x "$SHOT" 2>/tmp/rp-scap.err || { log "screencapture failed: $(tr '\n' ' ' </tmp/rp-scap.err 2>/dev/null)"; return 1; }; }
 
-# 키 전송은 osascript(System Events)로 — cliclick(CGEvent 합성 키)은 Chrome 확장 등 웹 UI 팝업에
-# 안 먹히는 반면(실측 확인), System Events key code 는 먹힌다. 좌표 클릭(OCR 오매칭 위험) 회피.
+# Key presses go through osascript (System Events) — cliclick (synthetic CGEvent keys) doesn't work on web-UI popups like
+# Chrome extensions (confirmed empirically), whereas System Events key code does. Avoids coordinate clicks (risk of OCR mismatch).
 # "cmd+return" → key code 36 using {command down}  /  "return" → key code 36
 sendkey(){
   local combo="$1" key mods="" m kc parts="" M
@@ -96,7 +96,7 @@ sendkey(){
   fi
 }
 
-# 한 action 실행 (성공적으로 "뭔가 했으면" 0). $1=id $2=action
+# Run one action (0 if it "did something" successfully). $1=id $2=action
 do_action(){
   local id="$1" action="$2" labels C
   case "$action" in
@@ -105,7 +105,7 @@ do_action(){
              if [ "$DRY" = 1 ]; then echo "WOULD click ($C) [$id]"; else "$CLICK" c:"$C" >/dev/null 2>&1; fi
              log "[$id] click $C"; return 0
            fi
-           log "[$id] 버튼 못찾음 (labels=$labels)"; return 1 ;;
+           log "[$id] button not found (labels=$labels)"; return 1 ;;
     key:*) local combo="${action#key:}"
            if [ "$DRY" = 1 ]; then echo "WOULD key '$combo' [$id]"; else sendkey "$combo" >/dev/null 2>&1; fi
            log "[$id] key $combo"; return 0 ;;
@@ -113,10 +113,10 @@ do_action(){
   esac
 }
 
-# 검증: 창이 닫혔나? $1=marker(빈값이면 일반 라벨로 판단). 닫혔으면 0.
+# Verify: is the dialog closed? $1=marker (empty → judge by generic labels). 0 if closed.
 dialog_gone(){
   local marker="$1"
-  [ -n "${RP_SHOT:-}" ] && return 0       # 테스트(단발): 재캡처 불가 → 성공 간주
+  [ -n "${RP_SHOT:-}" ] && return 0       # test (one-shot): can't re-capture → treat as success
   capture || return 1
   if [ -n "$marker" ]; then
     "$OCR" "$SHOT" --has "$marker" 2>/dev/null && return 1 || return 0
@@ -125,15 +125,15 @@ dialog_gone(){
   fi
 }
 
-# 액션 + 검증 + 재시도. $1=id $2=marker $3=action. 성공(닫힘) 0, 실패 1.
-# action 이 'key:A|B|...' 면 여러 후보 키를 순차로 시도(누를 때마다 창 닫힘 검증) — 하나라도 닫으면 성공.
-#   (Claude-for-Chrome 처럼 사이트마다 승인키가 cmd+return / return 으로 갈리는 창 대응)
+# Action + verify + retry. $1=id $2=marker $3=action. Success (closed) 0, failure 1.
+# If the action is 'key:A|B|...', try each candidate key in turn (verify dialog closed after each press) — success if any closes it.
+#   (handles dialogs like Claude-for-Chrome where the approve key differs per site between cmd+return / return)
 act_and_verify(){
   local id="$1" marker="$2" action="$3" i
   case "$action" in
     key:*\|*)
-      # 각 후보 키를 짧은 간격으로 다회 연타(매번 닫힘 확인 → 닫히면 즉시 멈춰 부작용 방지).
-      # 팝업 출현 타이밍과 트리거가 어긋나도 단시간 다회로 명중 확률을 높인다.
+      # Tap each candidate key several times at short intervals (check for close each time → stop immediately once closed to avoid side effects).
+      # Even if popup-appearance timing is out of sync with the trigger, many taps over a short window raise the hit probability.
       local combo t tries="${RP_KEY_TRIES:-5}" gap="${RP_KEY_GAP:-0.3}"
       IFS='|' read -ra _KC <<< "${action#key:}"
       for combo in "${_KC[@]}"; do
@@ -142,26 +142,26 @@ act_and_verify(){
         for t in $(seq 1 "$tries"); do
           sendkey "$combo" >/dev/null 2>&1
           sleep "$gap"
-          if dialog_gone "$marker"; then log "success [$id] (key=$combo #$t, 창 닫힘)"; return 0; fi
+          if dialog_gone "$marker"; then log "success [$id] (key=$combo #$t, dialog closed)"; return 0; fi
         done
-        log "[$id] key=$combo ${tries}회 후 미확인 → 다음 후보 키"
+        log "[$id] key=$combo unconfirmed after ${tries} tries → next candidate key"
       done
-      log "[$id] 모든 후보 키 ${tries}회씩 시도했으나 닫힘 미확인"; return 1 ;;
+      log "[$id] tried all candidate keys ${tries} times each but close unconfirmed"; return 1 ;;
     *)
       do_action "$id" "$action" || return 1
       [ "$DRY" = 1 ] && return 0
       for i in $(seq 1 "$VERIFY_RETRY"); do
         sleep 0.8
-        if dialog_gone "$marker"; then log "success [$id] (검증: 창 닫힘)"; return 0; fi
-        log "[$id] 아직 안 닫힘 — 재클릭 ($i/$VERIFY_RETRY)"
+        if dialog_gone "$marker"; then log "success [$id] (verified: dialog closed)"; return 0; fi
+        log "[$id] still not closed — re-clicking ($i/$VERIFY_RETRY)"
         do_action "$id" "$action" || break
       done
-      log "[$id] 클릭했으나 닫힘 미확인"; return 1 ;;
+      log "[$id] clicked but close unconfirmed"; return 1 ;;
   esac
 }
 
-# haiku 분류: 화면에 어떤 "알려진 승인창"이 떴는지 ID 한 토큰. (좌표 안 줌 — 분류 전용)
-#   출력: <id> | UNKNOWN(승인창인데 룰에 없음) | NONE(승인창 아님)
+# haiku classification: a single token ID for which "known approval dialog" is on screen. (no coordinates — classification only)
+#   output: <id> | UNKNOWN (it's an approval dialog but not in the rules) | NONE (not an approval dialog)
 vision_classify(){
   [ "$VISION" = off ] && { echo NONE; return; }
   local ids; ids="$(awk -F'\t' '$0!~/^[[:space:]]*#/ && NF>=3 {printf "  %s\t%s\n",$1,$2}' "$RULES")"
@@ -176,63 +176,63 @@ Reply with EXACTLY ONE token, nothing else:
 - UNKNOWN if an approval dialog is visible but matches none of them
 - NONE if no approval dialog is visible"
   local out err; out="$(mktemp)"; err="$(mktemp)"
-  # 프롬프트는 positional 로 '먼저' — --allowed-tools 는 variadic 이라 뒤에 두면 prompt 를 삼킨다.
+  # The prompt goes 'first' as positional — --allowed-tools is variadic, so placing it after would swallow the prompt.
   ( "$CLAUDE" -p "$prompt" --model "$VISION_MODEL" --allowed-tools Read >"$out" 2>"$err" ) & local pp=$!
   ( sleep "$VISION_TIMEOUT"; kill -9 "$pp" 2>/dev/null ) & local kk=$!
   wait "$pp" 2>/dev/null; local rc=$?; kill "$kk" 2>/dev/null
-  LAST_VISION_RC=$rc                            # 0=정상(NONE 포함), ≠0=에러/타임아웃(137)
+  LAST_VISION_RC=$rc                            # 0=normal (incl. NONE), ≠0=error/timeout (137)
   [ "$rc" -ne 0 ] && log "vision claude rc=$rc: $(tr '\n' ' ' <"$err" 2>/dev/null | tail -c 160)"
   local tok; tok="$(tr -s '[:space:]' '\n' < "$out" | grep -v '^$' | tail -1)"; rm -f "$out" "$err"
   [ -n "$tok" ] && echo "$tok" || echo NONE
 }
 
-# id 로 룰 라인 찾기 → "marker<TAB>action" echo (없으면 빈값)
+# Find the rule line by id → echo "marker<TAB>action" (empty if not found)
 rule_by_id(){
   awk -F'\t' -v want="$1" '$0!~/^[[:space:]]*#/ && NF>=3 && $1==want {print $2"\t"$3; exit}' "$RULES"
 }
 
-# ── 메인: 적응형 폴링 ──
+# ── Main: adaptive polling ──
 deadline=$(( $(date +%s) + WAIT_SECS ))
 cycle=0
 while :; do
   cycle=$((cycle+1))
   capture || { sleep "$INTERVAL"; [ "$(date +%s)" -ge "$deadline" ] && break || continue; }
 
-  # 0) 힌트 룰 우선 시도 (에이전트가 어떤 승인인지 알려준 경우)
+  # 0) Try the hint rule first (when the agent told us which approval it is)
   handled=0
-  # 설계철학: 에이전트가 --for 로 "이 승인이 떴다"고 명시하면 그 판단을 신뢰한다 →
-  # OCR 매칭 없이도 룰 action(예: key:return)을 바로 실행. vision/OCR 은 힌트가 없을 때의 fallback 일 뿐.
-  # key:<combo> 는 OCR 0% 의존(키만 전송)이라, 화면을 못 읽어도 동작한다. act_and_verify 가 '창 닫힘'으로
-  # 결과를 검증하므로, 안 닫히면(엉뚱하면) 에이전트에게 실패로 보고되어 에이전트가 다시 판단한다.
+  # Design philosophy: when the agent states via --for "this approval came up," we trust that judgment →
+  # run the rule action (e.g. key:return) directly without OCR matching. vision/OCR are just the fallback when there's no hint.
+  # key:<combo> depends 0% on OCR (keys only), so it works even when the screen can't be read. Since act_and_verify
+  # verifies the result by "dialog closed," if it doesn't close (wrong guess) it's reported as a failure to the agent, which then re-judges.
   if [ -n "$HINT_ID" ] || [ -n "$HINT_TYPE" ]; then
     hra="$(rule_by_id "$HINT_ID")"
     hmarker=""; haction=""
     [ -n "$hra" ] && { hmarker="${hra%%$'\t'*}"; haction="${hra#*$'\t'}"; }
-    [ -n "$HINT_TYPE" ] && haction="$HINT_TYPE"          # --type: 에이전트가 방식 직접 지정 → 룰 action override
-    [ -z "$haction" ] && haction="ocr:$GENERIC_LABELS"   # for/type 둘 다 모호 → 범용 승인 버튼
+    [ -n "$HINT_TYPE" ] && haction="$HINT_TYPE"          # --type: agent specifies the method directly → overrides the rule action
+    [ -z "$haction" ] && haction="ocr:$GENERIC_LABELS"   # both for/type ambiguous → generic approve button
     if act_and_verify "${HINT_ID:-agent-type}" "$hmarker" "$haction"; then exit 0; fi
     handled=1
   fi
 
-  # 1) OCR 룰 (전체)
+  # 1) OCR rules (all)
   while IFS=$'\t' read -r id marker action; do
     case "$id" in ''|\#*) continue;; esac
     { [ -z "${marker:-}" ] || [ -z "${action:-}" ]; } && continue
     "$OCR" "$SHOT" --has "$marker" 2>/dev/null || continue
     if act_and_verify "$id" "$marker" "$action"; then exit 0; fi
-    handled=1   # 시도는 했음(검증 실패) → 다음 사이클 재시도
+    handled=1   # we did try (verification failed) → retry next cycle
   done < "$RULES"
 
-  # 2) 룰 미스 → haiku 분류 폴백 (사이클 게이트로 빈도 제한)
+  # 2) Rule miss → haiku classification fallback (rate-limited by cycle gate)
   if [ "$handled" = 0 ] && [ "$VISION" != off ] && [ $(( cycle % VISION_EVERY )) -eq 0 ]; then
     vid="$(vision_classify)"
     if [ "$LAST_VISION_RC" -ne 0 ]; then
       VISION_FAILS=$((VISION_FAILS+1))
       if [ "$VISION_FAILS" -ge "$VISION_MAX_FAILS" ]; then
-        VISION=off; log "vision 연속 실패 ${VISION_FAILS}회 → 이 실행 동안 비활성(OCR 룰만)"
+        VISION=off; log "vision failed ${VISION_FAILS} times in a row → disabled for this run (OCR rules only)"
       fi
     else
-      VISION_FAILS=0                              # 정상 응답이면 카운터 리셋
+      VISION_FAILS=0                              # reset the counter on a normal response
     fi
     log "vision → $vid"
     case "$vid" in
@@ -243,13 +243,13 @@ while :; do
            vmarker="${ra%%$'\t'*}"; vaction="${ra#*$'\t'}"
            if act_and_verify "$vid" "$vmarker" "$vaction"; then exit 0; fi
          else
-           # haiku 가 임의 토큰 반환 → 일반 라벨로 시도
+           # haiku returned an arbitrary token → try with generic labels
            if act_and_verify "vision:$vid" "" "ocr:$GENERIC_LABELS"; then exit 0; fi
          fi ;;
     esac
   fi
 
-  [ -n "${RP_SHOT:-}" ] && break               # 테스트(단발)
+  [ -n "${RP_SHOT:-}" ] && break               # test (one-shot)
   [ "$(date +%s)" -ge "$deadline" ] && break
   sleep "$INTERVAL"
 done

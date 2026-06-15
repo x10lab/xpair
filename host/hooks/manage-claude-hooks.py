@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
-# manage-claude-hooks.py — ~/.claude/settings.json 의 hooks 에 RemotePair 훅을
-# 멱등으로 추가/제거한다. 기존 사용자 훅(gstack/omc/notify 등)은 절대 건드리지 않는다.
+# manage-claude-hooks.py — idempotently adds/removes the RemotePair hooks in the
+# hooks section of ~/.claude/settings.json. Never touches existing user hooks
+# (gstack/omc/notify, etc.).
 #
-# 왜 python: macOS 에 jq 가 기본 없음. python3 는 CLT 와 함께 존재(설치 전제). JSON 안전 머지.
+# Why python: jq is not present by default on macOS. python3 ships with the CLT
+# (installation prerequisite). Safe JSON merge.
 #
-# 사용:
+# Usage:
 #   manage-claude-hooks.py add    <settings_path> <approve_cmd> <notify_cmd>
 #   manage-claude-hooks.py remove <settings_path> <approve_cmd> <notify_cmd>
 #
-# 식별: command 문자열에 cmd_path(파일 경로)가 포함된 엔트리를 '우리 것'으로 본다.
-#   → add 는 없을 때만 넣고(중복 방지), remove 는 그 엔트리만 빼고 빈 이벤트 배열은 정리한다.
+# Identification: an entry whose command string contains cmd_path (the file path)
+# is treated as 'ours'.
+#   → add only inserts when absent (avoids duplicates); remove drops only that
+#     entry and cleans up empty event arrays.
 #
-# 훅 배치 (data-driven):
-#   approve-reminder.sh  → PermissionDenied, PostToolUseFailure  (matcher: GUI 도구들)
-#   remote-pair-notify.sh→ Stop, Notification, SubagentStop       (matcher: None = 모든 도구)
-#                        → PermissionDenied, PostToolUseFailure  (matcher: GUI 도구들, approve 이벤트)
+# Hook layout (data-driven):
+#   approve-reminder.sh  → PermissionDenied, PostToolUseFailure  (matcher: GUI tools)
+#   remote-pair-notify.sh→ Stop, Notification, SubagentStop       (matcher: None = all tools)
+#                        → PermissionDenied, PostToolUseFailure  (matcher: GUI tools, approve events)
 import json, os, sys
 
-# ── approve-reminder 전용 설정 ────────────────────────────────────────────────
+# ── approve-reminder-specific config ──────────────────────────────────────────
 APPROVE_EVENTS = ["PermissionDenied", "PostToolUseFailure"]
-# GUI 승인창을 띄우는 것들 + Bash(ssh/git 이 1Password SSH agent 창에 막혀 hang→timeout).
+# Things that pop up a GUI approval dialog + Bash (ssh/git blocked on the 1Password SSH agent dialog, hang→timeout).
 APPROVE_MATCHER = r"mcp__claude-in-chrome__.*|mcp__computer-use__.*|Bash"
 
-# ── notify 훅 설정 ────────────────────────────────────────────────────────────
-# Stop/Notification/SubagentStop 은 matcher 없음(모든 도구에서 발생하는 세션 수준 이벤트).
+# ── notify hook config ────────────────────────────────────────────────────────
+# Stop/Notification/SubagentStop have no matcher (session-level events fired by all tools).
 NOTIFY_EVENTS_NO_MATCHER = ["Stop", "Notification", "SubagentStop"]
-# approve 계열은 approve-reminder 와 같은 matcher 로 notify 도 붙임.
+# For the approve family, attach notify with the same matcher as approve-reminder.
 NOTIFY_EVENTS_WITH_MATCHER = ["PermissionDenied", "PostToolUseFailure"]
 
 
@@ -36,8 +40,8 @@ def load(path):
         with open(path) as f:
             return json.load(f)
     except (ValueError, OSError):
-        # 손상/빈 파일이면 멈춘다 — 사용자 설정을 덮어쓰지 않기 위해 실패로 처리.
-        sys.stderr.write(f"settings.json 파싱 실패(보존): {path}\n")
+        # Stop on a corrupted/empty file — treat as failure to avoid overwriting user settings.
+        sys.stderr.write(f"failed to parse settings.json (preserved): {path}\n")
         sys.exit(3)
 
 
@@ -53,7 +57,7 @@ def save(path, data):
 
 
 def make_entry(cmd_path, event, matcher=None):
-    """훅 엔트리 하나를 반환. matcher=None 이면 키 자체를 생략."""
+    """Return a single hook entry. If matcher=None, omit the key entirely."""
     e = {"hooks": [{"type": "command", "command": f"{cmd_path} {event}"}]}
     if matcher is not None:
         e["matcher"] = matcher
@@ -106,7 +110,7 @@ def main():
     data = load(path)
     hooks = data.setdefault("hooks", {}) if isinstance(data, dict) else None
     if hooks is None:
-        sys.stderr.write("settings.json 최상위가 객체가 아님(보존)\n")
+        sys.stderr.write("top level of settings.json is not an object (preserved)\n")
         sys.exit(3)
 
     changed = False
@@ -116,20 +120,20 @@ def main():
         for ev in APPROVE_EVENTS:
             changed |= add_entry(hooks, ev, approve_cmd, APPROVE_MATCHER)
 
-        # 2) notify: Stop / Notification / SubagentStop (matcher 없음)
+        # 2) notify: Stop / Notification / SubagentStop (no matcher)
         for ev in NOTIFY_EVENTS_NO_MATCHER:
             changed |= add_entry(hooks, ev, notify_cmd, matcher=None)
 
-        # 3) notify: PermissionDenied + PostToolUseFailure (with matcher, approve 이벤트용)
+        # 3) notify: PermissionDenied + PostToolUseFailure (with matcher, for approve events)
         for ev in NOTIFY_EVENTS_WITH_MATCHER:
             changed |= add_entry(hooks, ev, notify_cmd, APPROVE_MATCHER)
 
     elif mode == "remove":
-        # approve-reminder 제거
+        # remove approve-reminder
         for ev in APPROVE_EVENTS:
             changed |= remove_entry(hooks, ev, approve_cmd)
 
-        # notify 제거 (모든 이벤트)
+        # remove notify (all events)
         for ev in NOTIFY_EVENTS_NO_MATCHER + NOTIFY_EVENTS_WITH_MATCHER:
             changed |= remove_entry(hooks, ev, notify_cmd)
 
@@ -144,7 +148,7 @@ def main():
         save(path, data)
         print(f"hooks {mode}: {path}")
     else:
-        print(f"hooks {mode}: no-op (이미 {'있음' if mode == 'add' else '없음'})")
+        print(f"hooks {mode}: no-op (already {'present' if mode == 'add' else 'absent'})")
 
 
 if __name__ == "__main__":

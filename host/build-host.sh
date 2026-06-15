@@ -1,45 +1,45 @@
 #!/bin/bash
-# build-host.sh — RemotePairHost.app 빌드 (메뉴바 호스트: tmux host + approve + 세션관리 + 업데이터)
+# build-host.sh — build RemotePairHost.app (menu-bar host: tmux host + approve + session management + updater)
 #
-# 책임별 .swift 를 한 번에 컴파일(패키지 의존 0). helpers(tmux-aqua·router·ocr-find) 를 번들에 동봉.
-# 서명: 안정 self-signed cert "RemotePair Local Signing" → TCC grant 가 designated requirement 에
-#   묶여 재빌드/업데이트에도 유지. cert 없으면 ad-hoc 폴백(재빌드마다 재토글). 생성: ./make-signing-cert.sh
+# Compiles the per-responsibility .swift files in one shot (zero package dependencies). Embeds the helpers (tmux-aqua, router, ocr-find) in the bundle.
+# Signing: stable self-signed cert "RemotePair Local Signing" → the TCC grant is bound to the designated requirement
+#   so it survives rebuilds/updates. Without the cert, falls back to ad-hoc (re-toggle on every rebuild). Generate it with: ./make-signing-cert.sh
 #
-# 사용:
-#   ./build-host.sh                 # build/RemotePairHost.app 빌드+서명+검증
-#   ./build-host.sh --deploy [host] # 위 + rsync → 원격(기본 REMOTE_HOST 또는 gh-mac-m1) → install.sh --role host
-#   ./build-host.sh --release       # 위 + 서명앱 zip → gh release create v<버전>
+# Usage:
+#   ./build-host.sh                 # build/RemotePairHost.app build+sign+verify
+#   ./build-host.sh --deploy [host] # above + rsync → remote (default REMOTE_HOST or gh-mac-m1) → install.sh --role host
+#   ./build-host.sh --release       # above + signed-app zip → gh release create v<version>
 set -euo pipefail
-cd "$(dirname "$0")/.."                       # repo 루트
+cd "$(dirname "$0")/.."                       # repo root
 . shared/config.sh                            # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
 
-VERSION="${RP_VERSION:-0.4.12}"                # 버전 단일 출처(Info.plist 로 박힘). 릴리스 태그 = v$VERSION. (pre-1.0, 패치 +0.0.1)
+VERSION="${RP_VERSION:-0.4.12}"                # single source of truth for the version (baked into Info.plist). Release tag = v$VERSION. (pre-1.0, patch +0.0.1)
 SRC_DIR=host/app
 APP="build/${APP_NAME}.app"
 EXEC="$APP_NAME"
 DEPLOY_HOST="${REMOTE_HOST:-gh-mac-m1}"
 
-# ── 서명 정체성 ──
+# ── signing identity ──
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_CN"; then
-  SIGN_ID="$SIGN_CN"; echo "서명: 안정 cert '$SIGN_CN' (재빌드/업데이트에도 grant 유지)"
+  SIGN_ID="$SIGN_CN"; echo "signing: stable cert '$SIGN_CN' (grant survives rebuilds/updates)"
 else
-  SIGN_ID="-"; echo "⚠ 서명: ad-hoc (cert '$SIGN_CN' 없음 → 재빌드마다 재토글). ./host/make-signing-cert.sh 권장"
+  SIGN_ID="-"; echo "⚠ signing: ad-hoc (cert '$SIGN_CN' missing → re-toggle on every rebuild). ./host/make-signing-cert.sh recommended"
 fi
 
-# ── SDK 선택 (CLT+신SDK 조합이 깨질 때 14.x 폴백) ──
+# ── SDK selection (fall back to 14.x when the CLT + new-SDK combination breaks) ──
 compile() { # $1=out
   local out="$1" sdk
-  # 1) 기본 툴체인 시도
+  # 1) try the default toolchain
   if xcrun swiftc -O "$SRC_DIR"/*.swift -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
-  # 2) 폴백: 호환 SDK 탐색 (Swift 5.10 CLT + MacOSX15 swiftinterface 불일치 회피)
+  # 2) fallback: probe for a compatible SDK (avoid the Swift 5.10 CLT + MacOSX15 swiftinterface mismatch)
   for sdk in /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk \
              /Library/Developer/CommandLineTools/SDKs/MacOSX14.sdk \
              /Library/Developer/CommandLineTools/SDKs/MacOSX13.3.sdk; do
     [ -d "$sdk" ] || continue
-    echo "  (기본 컴파일 실패 → SDK 폴백: $(basename "$sdk"))"
+    echo "  (default compile failed → SDK fallback: $(basename "$sdk"))"
     if xcrun swiftc -O -sdk "$sdk" -target arm64-apple-macos13.0 "$SRC_DIR"/*.swift -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
   done
-  echo "✗ Swift 컴파일 실패:"; cat /tmp/rp-swiftc.err >&2; return 1
+  echo "✗ Swift compile failed:"; cat /tmp/rp-swiftc.err >&2; return 1
 }
 
 echo "=== compile (Swift, multi-file) ==="
@@ -74,43 +74,43 @@ echo "=== embed helpers → Contents/Helpers ==="
 HELP="$APP/Contents/Helpers"; mkdir -p "$HELP"
 cp host/remote-pair-approve-router.sh "$HELP/"; chmod +x "$HELP/remote-pair-approve-router.sh"
 cp host/ocr-find "$HELP/"; chmod +x "$HELP/ocr-find"
-# cliclick = 앱의 click/key primitive 주입기. 번들에 동봉(자기완결). 없으면 런타임에 homebrew 경로 폴백.
+# cliclick = the app's click/key primitive injector. Embedded in the bundle (self-contained). If missing, falls back to the homebrew path at runtime.
 if [ -x /opt/homebrew/bin/cliclick ]; then cp /opt/homebrew/bin/cliclick "$HELP/cliclick"; chmod +x "$HELP/cliclick"; echo "  embedded: cliclick"; fi
-# tmux-aqua 는 호스트의 심장(keeper 서버 = 모든 세션의 부모). cask 는 .app 만 설치하므로
-# 런타임 ~/.local/bin 폴백이 존재하지 않는다 → 번들에 없으면 호스트가 죽은 채로 배포됨(세션 0).
-# 따라서 "없으면 경고하고 통과"가 아니라: 없으면 빌드 시도 → 그래도 없으면 HARD-FAIL.
+# tmux-aqua is the heart of the host (the keeper server = parent of every session). The cask installs only the .app, so
+# the runtime ~/.local/bin fallback does not exist → if it is missing from the bundle, the host ships dead (zero sessions).
+# So instead of "warn and pass through if missing": if missing, try to build it → if still missing, HARD-FAIL.
 if [ ! -x "$HOME/.local/bin/tmux-aqua" ]; then
-  echo "  tmux-aqua 없음(~/.local/bin) → ./host/build-tmux-aqua.sh 자동 실행 ..."
-  ./host/build-tmux-aqua.sh || { echo "✗ tmux-aqua 빌드 실패 — 수동으로 ./host/build-tmux-aqua.sh 실행 후 재시도" >&2; exit 1; }
+  echo "  tmux-aqua missing (~/.local/bin) → auto-running ./host/build-tmux-aqua.sh ..."
+  ./host/build-tmux-aqua.sh || { echo "✗ tmux-aqua build failed — run ./host/build-tmux-aqua.sh manually and retry" >&2; exit 1; }
 fi
-[ -x "$HOME/.local/bin/tmux-aqua" ] || { echo "✗ tmux-aqua 여전히 없음 — 번들 불가(헬퍼 없으면 cask 호스트 전멸: 세션 0)" >&2; exit 1; }
+[ -x "$HOME/.local/bin/tmux-aqua" ] || { echo "✗ tmux-aqua still missing — cannot bundle (without the helper the cask host is wiped out: zero sessions)" >&2; exit 1; }
 cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
-# 번들에 실제로 들어갔는지 최종 검증 — 깨진 번들이 release/cask 로 새는 것을 원천 차단.
-[ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua 번들 임베드 검증 실패: $HELP/tmux-aqua" >&2; exit 1; }
+# Final check that it actually made it into the bundle — block a broken bundle from leaking into release/cask at the source.
+[ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua bundle embed verification failed: $HELP/tmux-aqua" >&2; exit 1; }
 echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + remote-pair-approve-router.sh + ocr-find"
 
-# ── 화면공유 3종(screen 사이드카 + rp-screencap/rp-input-inject 헬퍼) → Contents/Helpers ──
-# SSH deploy 채널을 폐기했으므로 세 바이너리의 유일한 배달경로는 이 번들이다.
-#   • screen           v1(JPEG/WS) + v2(WebRTC/H.264) 사이드카. v2 는 --features webrtc 필수.
-#   • rp-screencap     SCK+VT H.264 캡쳐 (Screen Recording 권한)
-#   • rp-input-inject  원격 키보드/커서 주입 (Accessibility 권한)
-# 셋 다 안정 cert 로 inside-out 개별 서명(아래)되어 TCC grant 가 designated requirement 에 묶여
-# .app 업데이트에도 생존한다. resolver(serve_webrtc.rs)는 current_exe() 형제경로를 우선 탐색하므로
-# screen 이 Helpers/ 에서 기동하면 형제 rp-screencap/rp-input-inject 를 자동 발견한다.
+# ── the 3 screenshare binaries (screen sidecar + rp-screencap/rp-input-inject helpers) → Contents/Helpers ──
+# Since the SSH deploy channel was retired, this bundle is the only delivery path for the three binaries.
+#   • screen           v1 (JPEG/WS) + v2 (WebRTC/H.264) sidecar. v2 requires --features webrtc.
+#   • rp-screencap     SCK+VT H.264 capture (Screen Recording permission)
+#   • rp-input-inject  remote keyboard/cursor injection (Accessibility permission)
+# All three are individually inside-out signed with the stable cert (below) so the TCC grant is bound to the designated requirement
+# and survives .app updates. The resolver (serve_webrtc.rs) probes the current_exe() sibling path first, so
+# when screen starts from Helpers/ it auto-discovers the sibling rp-screencap/rp-input-inject.
 echo "=== build + embed screenshare binaries (screen + rp-screencap + rp-input-inject) ==="
-# cargo(+rustc) 보장: rustup 셸이 PATH 에 toolchain 을 안 깔았을 수 있어 ~/.cargo/bin 을 앞에 둔다.
+# Ensure cargo (+rustc): the rustup shell may not have put the toolchain on PATH, so put ~/.cargo/bin first.
 export PATH="$HOME/.cargo/bin:$PATH"
-command -v cargo >/dev/null || { echo "✗ cargo 없음 — Rust 툴체인 필요(rustup). screen 사이드카 빌드 불가." >&2; exit 1; }
+command -v cargo >/dev/null || { echo "✗ cargo missing — Rust toolchain required (rustup). Cannot build the screen sidecar." >&2; exit 1; }
 SCREEN_MANIFEST="host/rd/screen/Cargo.toml"
 echo "  cargo build --release --features webrtc ($SCREEN_MANIFEST) …"
 cargo build --release --features webrtc --manifest-path "$SCREEN_MANIFEST" \
-  || { echo "✗ screen 사이드카 cargo 빌드 실패(--features webrtc)" >&2; exit 1; }
+  || { echo "✗ screen sidecar cargo build failed (--features webrtc)" >&2; exit 1; }
 cp host/rd/screen/target/release/screen "$HELP/screen"; chmod +x "$HELP/screen"
-[ -x "$HELP/screen" ] || { echo "✗ screen 번들 임베드 검증 실패: $HELP/screen" >&2; exit 1; }
-# v2 경로(serve-webrtc 서브커맨드)가 실제로 들어갔는지 확인 — webrtc feature 누락 시 v2 가 조용히 사라짐.
+[ -x "$HELP/screen" ] || { echo "✗ screen bundle embed verification failed: $HELP/screen" >&2; exit 1; }
+# Confirm the v2 path (serve-webrtc subcommand) actually made it in — if the webrtc feature is missing, v2 silently disappears.
 "$HELP/screen" serve-webrtc --help >/dev/null 2>&1 \
-  || { echo "✗ screen 에 serve-webrtc 없음 — --features webrtc 빌드 실패" >&2; exit 1; }
-# rp-screencap / rp-input-inject — 단일 Swift 파일, compile() 과 동일한 툴체인/폴백 전략.
+  || { echo "✗ screen has no serve-webrtc — --features webrtc build failed" >&2; exit 1; }
+# rp-screencap / rp-input-inject — single Swift file, same toolchain/fallback strategy as compile().
 compile_helper() { # $1=src $2=out
   local src="$1" out="$2" sdk
   if xcrun swiftc -O "$src" -o "$out" 2>/tmp/rp-helper.err; then return 0; fi
@@ -118,21 +118,21 @@ compile_helper() { # $1=src $2=out
              /Library/Developer/CommandLineTools/SDKs/MacOSX14.sdk \
              /Library/Developer/CommandLineTools/SDKs/MacOSX13.3.sdk; do
     [ -d "$sdk" ] || continue
-    echo "  (helper 기본 컴파일 실패 → SDK 폴백: $(basename "$sdk"))"
+    echo "  (helper default compile failed → SDK fallback: $(basename "$sdk"))"
     if xcrun swiftc -O -sdk "$sdk" -target arm64-apple-macos13.0 "$src" -o "$out" 2>/tmp/rp-helper.err; then return 0; fi
   done
-  echo "✗ Swift helper 컴파일 실패 ($src):"; cat /tmp/rp-helper.err >&2; return 1
+  echo "✗ Swift helper compile failed ($src):"; cat /tmp/rp-helper.err >&2; return 1
 }
 compile_helper host/rd/rpmedia/rp-screencap.swift    "$HELP/rp-screencap";    chmod +x "$HELP/rp-screencap"
 compile_helper host/rd/rpmedia/rp-input-inject.swift "$HELP/rp-input-inject"; chmod +x "$HELP/rp-input-inject"
 [ -x "$HELP/rp-screencap" ] && [ -x "$HELP/rp-input-inject" ] \
-  || { echo "✗ rp-screencap/rp-input-inject 번들 임베드 검증 실패" >&2; exit 1; }
+  || { echo "✗ rp-screencap/rp-input-inject bundle embed verification failed" >&2; exit 1; }
 echo "  embedded: screen ($("$HELP/screen" --version 2>/dev/null || echo '?')) + rp-screencap + rp-input-inject"
 
-RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (icon 용; 아래에서 채움)
-# NOTE: 결합도 낮게 — 앱 번들엔 런타임에 앱이 직접 쓰는 것(Helpers: tmux-aqua·router·ocr-find)만 둔다.
-#   skills(claude 하네스) · rules.txt(approve 설정) · CLI 는 동봉/자기설치하지 않는다.
-#   그건 CLI/README 단일설치(shared/install.sh)가 담당한다.
+RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (for the icon; populated below)
+# NOTE: keep coupling low — the app bundle holds only what the app uses directly at runtime (Helpers: tmux-aqua·router·ocr-find).
+#   skills (the claude harness), rules.txt (approve config), and the CLI are not embedded/self-installed here.
+#   That is handled by the single CLI/README install (shared/install.sh).
 
 echo "=== embed app icon + menu-bar template → Contents/Resources ==="
 if [ -f assets/icon/AppIcon-1024.png ]; then
@@ -154,33 +154,33 @@ for f in menubar.png menubar@2x.png; do
 done
 [ -f "$RES/menubar.png" ] && echo "  menu-bar template → Resources/menubar.png (+@2x)"
 
-# ── 서명: inside-out 개별 서명 (Apple 권장; --deep 비의존) ──
-# --deep 는 검증용이며 nested 코드를 누락·오서명할 수 있어 TCC designated requirement 가 불안정해진다.
-# 각 Helpers 항목을 먼저 안정 cert 로 개별 서명한 뒤(Mach-O 는 --options runtime), outer .app 을 서명한다.
-# 이렇게 해야 화면공유 3종(screen·rp-screencap·rp-input-inject)의 Authority 가 안정 cert 로 박혀
-# Screen Recording·Accessibility grant 가 .app 업데이트에도 생존한다(designated requirement = cert leaf).
-# 셸 스크립트(approve-router.sh)도 개별 서명해야 outer 비-deep 서명 후 --verify --strict 가 통과한다.
+# ── signing: inside-out individual signing (Apple-recommended; not reliant on --deep) ──
+# --deep is for verification and can miss or mis-sign nested code, destabilizing the TCC designated requirement.
+# Sign each Helpers entry individually with the stable cert first (--options runtime for Mach-O), then sign the outer .app.
+# Done this way, the Authority of the 3 screenshare binaries (screen·rp-screencap·rp-input-inject) is baked in with the stable cert
+# so the Screen Recording / Accessibility grant survives .app updates (designated requirement = cert leaf).
+# The shell script (approve-router.sh) must also be signed individually so that --verify --strict passes after the outer non-deep signing.
 for bin in "$HELP"/*; do
   [ -f "$bin" ] || continue
   if file -b "$bin" | grep -q 'Mach-O'; then
     codesign -s "$SIGN_ID" --force --options runtime --timestamp=none "$bin" \
-      || { echo "✗ Helpers 개별 서명 실패(Mach-O): $bin" >&2; exit 1; }
+      || { echo "✗ Helpers individual signing failed (Mach-O): $bin" >&2; exit 1; }
   else
-    # 비-Mach-O(셸 스크립트): 하드닝 런타임 무의미 → 일반 서명으로 nested 봉인만 만족.
+    # non-Mach-O (shell script): a hardened runtime is meaningless → a plain signature is enough to satisfy the nested seal.
     codesign -s "$SIGN_ID" --force --timestamp=none "$bin" \
-      || { echo "✗ Helpers 개별 서명 실패(script): $bin" >&2; exit 1; }
+      || { echo "✗ Helpers individual signing failed (script): $bin" >&2; exit 1; }
   fi
 done
 codesign -s "$SIGN_ID" --force "$APP"
 echo "built + signed (inside-out): $APP (v$VERSION, $BUNDLE_PREFIX)"
 codesign -dv "$APP" 2>&1 | grep -iE 'Authority|^Identifier' || true
-# 화면공유 3종 Authority 확인(AC2): 안정 cert 여야 grant 생존. ad-hoc('-')면 보고만(빌드는 통과).
+# Check the Authority of the 3 screenshare binaries (AC2): it must be the stable cert for the grant to survive. If ad-hoc ('-'), report only (the build still passes).
 for b in screen rp-screencap rp-input-inject; do
   echo "  helper $b: $(codesign -dvv "$HELP/$b" 2>&1 | grep -i 'Authority=' | head -1 || echo 'unsigned?')"
 done
 codesign --verify --strict "$APP" && echo "verify OK ✓"
 
-# ── --deploy: 원격에 rsync 후 install.sh --role host (manifest 가역 설치 재사용) ──
+# ── --deploy: rsync to the remote, then install.sh --role host (reuse the reversible manifest install) ──
 if [ "${1:-}" = "--deploy" ]; then
   HOST="${2:-$DEPLOY_HOST}"
   echo ""
@@ -189,18 +189,18 @@ if [ "${1:-}" = "--deploy" ]; then
   rsync -az --delete --exclude '.git' --exclude '.omc' ./ "$HOST:~/.local/share/remote-pair/"
   ssh "$HOST" 'cd ~/.local/share/remote-pair && ./shared/install.sh --role host'
   echo ""
-  echo "※ 새 bundle id($BUNDLE_PREFIX)면 1회 재grant: System Settings → 손쉬운 사용 / 화면 기록 → $APP_NAME ON"
+  echo "※ For a new bundle id ($BUNDLE_PREFIX), re-grant once: System Settings → Accessibility / Screen Recording → $APP_NAME ON"
 fi
 
-# ── --release: 서명앱 zip → GitHub Releases (+ Homebrew Cask bump) ──
+# ── --release: signed-app zip → GitHub Releases (+ Homebrew Cask bump) ──
 if [ "${1:-}" = "--release" ]; then
-  command -v gh >/dev/null || { echo "✗ gh CLI 필요 (brew install gh)"; exit 1; }
-  # 가드: ad-hoc 서명 릴리스 금지. TCC(AX·SR) grant 는 designated requirement(= cert leaf)에 묶이는데,
-  #   ad-hoc 은 cdhash 뿐이라 업데이트마다 모든 설치처가 권한 재토글 → 배포본으로 절대 내보내지 않는다.
-  # NOTE: 캐노니컬 릴리스 경로는 'tag push → CI(release.yml)' 이며 repo 시크릿의 안정 p12(leaf 898E32)로 서명.
-  #   이 수동 경로는 그 시크릿과 같은 cert 를 가진 머신에서만 쓸 것. 다른 cert(예: 클라이언트 33849F)로
-  #   수동 릴리스하면 서명 정체성이 갈려 기존 설치처 grant 가 깨진다.
-  [ "$SIGN_ID" = "-" ] && { echo "✗ release 거부: ad-hoc 서명. 안정 cert '$SIGN_CN' 있는 머신에서만 릴리스(./host/make-signing-cert.sh)"; exit 1; }
+  command -v gh >/dev/null || { echo "✗ gh CLI required (brew install gh)"; exit 1; }
+  # Guard: no ad-hoc signed releases. The TCC (AX·SR) grant is bound to the designated requirement (= cert leaf), but
+  #   ad-hoc has only a cdhash, so every install site would re-toggle permissions on each update → never ship it in a distribution build.
+  # NOTE: the canonical release path is 'tag push → CI(release.yml)', signed with the stable p12 from the repo secret (leaf 898E32).
+  #   Use this manual path only on a machine that holds the same cert as that secret. Releasing manually with a different cert (e.g. the client's 33849F)
+  #   splits the signing identity and breaks the grant on existing install sites.
+  [ "$SIGN_ID" = "-" ] && { echo "✗ release refused: ad-hoc signing. Release only on a machine with the stable cert '$SIGN_CN' (./host/make-signing-cert.sh)"; exit 1; }
   ZIP="build/${APP_NAME}-${VERSION}.zip"
   echo "=== release: $ZIP → gh release create v$VERSION ($GH_REPO) ==="
   ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${APP_NAME}.app" "$(basename "$ZIP")" )
@@ -209,14 +209,14 @@ if [ "${1:-}" = "--release" ]; then
     || gh release upload "v$VERSION" "$ZIP" --repo "$GH_REPO" --clobber
   echo "released v$VERSION ✓"
 
-  # Homebrew Cask 자동 bump: version + sha256 를 방금 올린 zip 기준으로 갱신(SSOT = 릴리스 산출물).
+  # Homebrew Cask auto-bump: update version + sha256 against the zip just uploaded (SSOT = the release artifact).
   CASK="Casks/remote-pair-host.rb"
   if [ -f "$CASK" ]; then
     SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
     /usr/bin/sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" "$CASK"
     /usr/bin/sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" "$CASK"
-    echo "cask bumped: $CASK → v$VERSION sha256=${SHA:0:12}…  (커밋 후 tap 반영)"
+    echo "cask bumped: $CASK → v$VERSION sha256=${SHA:0:12}…  (reflected in the tap after commit)"
   else
-    echo "⚠ $CASK 없음 — cask bump 건너뜀"
+    echo "⚠ $CASK missing — skipping cask bump"
   fi
 fi

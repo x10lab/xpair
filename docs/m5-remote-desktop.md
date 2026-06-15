@@ -40,11 +40,11 @@ remote-pair-desktop check    # verify reachability + port 5900
 remote-pair desktop          # via the main CLI (registers 'desktop' subcommand)
 ```
 
-### Web integration
+### Client UI integration
 
-The "Remote Desktop" tab in the web UI calls `POST /api/desktop/open`.
-The web bridge runs `remote-pair-desktop open` on the client machine, which opens macOS Screen
-Sharing. The response is fire-and-forget (HTTP 200 + `{"status":"launched"}`).
+The "Remote Desktop" entry point launches `remote-pair-desktop open` on the client machine, which
+opens macOS Screen Sharing. The action is fire-and-forget (launch-and-forget; success is reported
+back as soon as Screen Sharing is invoked).
 
 ### Install
 
@@ -60,11 +60,11 @@ RemotePairHost by the TCC onboarding step.
 
 **Mechanism:** the existing `InputServer` inside the `.app` already has SR permission and uses
 `screencapture` / ScreenCaptureKit to capture screenshots for computer-use. We can expose a thin
-endpoint (in the host-side Python bridge, not the .app — see INVARIANT) that:
+host-side endpoint (outside the .app — see INVARIANT) that:
 
 1. Runs `screencapture -x -t png -` (or a short AVFoundation snippet) to grab a frame.
-2. Returns the PNG as a base64 data URL over SSH stdout, piped through the existing web bridge.
-3. The web SPA polls this endpoint at ~1 fps and updates an `<img>` tag.
+2. Returns the PNG as a base64 data URL over SSH stdout, piped back to the client.
+3. The client renders the feed, polling at ~1 fps and updating an `<img>` tag.
 
 **Feasibility:** high. `screencapture -x` is stdlib-level (ships with macOS), needs no new binary,
 and SR is already granted. The bottleneck is SSH round-trip latency (~50-200 ms), which is
@@ -91,6 +91,5 @@ acceptable for a status/monitoring view. For interactive control, v1 is needed.
 |---|---|
 | `install.sh --role client` | Copies `client/cli/remote-pair-desktop` → `$LOCAL_BIN/remote-pair-desktop` (755) |
 | `remote-pair` CLI | `desktop` subcommand delegates to `remote-pair-desktop "$@"` |
-| Web bridge (`remote-pair-web`) | `POST /api/desktop/open` → runs `remote-pair-desktop open` |
-| Web SPA | "Remote Desktop" tab button calls the above endpoint |
-| Host prerequisite | Screen Sharing enabled in System Settings (documented in onboard + doctor) |
+| Client UI | "Remote Desktop" entry point launches `remote-pair-desktop open` |
+| Host prerequisite | Screen Sharing enabled in System Settings (surfaced in onboarding + doctor) |

@@ -1,7 +1,7 @@
-// ocr-find.swift — Vision OCR 유틸.
-//  ocr-find <img> <label|label|...>   → 매칭 긍정버튼 중심 "x,y" (exact 우선). 없으면 exit 1.
-//  ocr-find <img> --has "<substr>"    → 화면에 그 텍스트 있으면 exit 0, 없으면 1 (다이얼로그 감지용).
-//  ocr-find <img> --dump              → 인식된 모든 텍스트+좌표 (디버그).
+// ocr-find.swift — Vision OCR utility.
+//  ocr-find <img> <label|label|...>   → "x,y" center of the matched affirmative button (exact match preferred). Exit 1 if none found.
+//  ocr-find <img> --has "<substr>"    → Exit 0 if that text is on screen, 1 otherwise (for dialog detection).
+//  ocr-find <img> --dump              → All recognized text + coordinates (debug).
 import Foundation
 import Vision
 import AppKit
@@ -45,8 +45,8 @@ if mode == "--has" {
     for (t, _) in items where t.contains(needle) { exit(0) }
     exit(1)
 }
-// 라벨 → 좌표 (긍정버튼)
+// label → coordinates (affirmative button)
 let labels = mode.lowercased().split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-for (t, o) in items where labels.contains(t) { print(center(o)); exit(0) }      // exact 우선
+for (t, o) in items where labels.contains(t) { print(center(o)); exit(0) }      // exact match preferred
 for (t, o) in items where t.count <= 20 { for l in labels where t.contains(l) { print(center(o)); exit(0) } }
 exit(1)

@@ -1,337 +1,349 @@
-# RemotePair 요구사항
+# RemotePair Requirements
 
-이 문서는 RemotePair 저장소의 **모든 Claude Code 세션**(로컬 laptop 5개 + 호스트 gh-mac-m1 4개, 그중 2개는 자동화 실행이라 사람 발화 없음)과 **2026-06-13 제품 비전 브레인스토밍**을 역추적해, 사용자가 실제로 요청·결정한 내용을 종합한 단일 스펙이다. 출처는 세션의 사람 발화이며, 추측은 배제했다. 신규 엔지니어가 이 문서만으로 M1~M6 로드맵을 구현할 수 있는 수준을 목표로 한다.
+This document is a single spec synthesizing what the user actually requested and decided, reconstructed by tracing back through **every Claude Code session** in the RemotePair repository (5 on the local laptop + 4 on host gh-mac-m1, 2 of which are automated runs with no human utterances) and the **2026-06-13 product vision brainstorm**. The sources are the human utterances in those sessions; speculation is excluded. The goal is a level of detail at which a new engineer could implement the M1–M6 roadmap from this document alone.
 
-> 코드 동작 원리는 [architecture.md](architecture.md), 추후/보류 항목은 [future.md](future.md), 사용자용 설치/사용은 [README](../README.md). 본 문서는 "무엇을·왜·어떻게 검증"에 집중한다.
-
----
-
-## 0. 제품 비전 / 불변식 (Invariants)
-
-이 절은 모든 후속 요구사항이 위반해선 안 되는 상위 제약이다. 아래 불변식은 결정이 아니라 **설계 헌법**이다 — 신규 기능은 먼저 이 절과의 정합성부터 확인한다.
-
-### 0.1 역할 분리 (저결합 헌법)
-- **앱(`RemotePair.app`) = 권한 데몬만.** 책임은 정확히 셋이다: ① AX·SR(필요 시 FDA) grant를 designated requirement에 붙들고, ② patched tmux 서버(`tmux-aqua`)를 자기 자식으로 붙들어 권한을 상속시키고, ③ InputServer primitive(shot/click/key) 하나씩만 실행한다. 그 외 로직(설치/매핑/approve 판단/HTTP)은 앱에 **넣지 않는다**.
-- **CLI(`remote-pair`) = 두뇌이자 SSOT.** 폴더 매핑·세션 결정·approve 좌표·재시도·온보딩 흐름을 전부 CLI가 결정한다. CLI엔 TCC/AX 코드가 없다(앱에 위임).
-- **approve 경로**: `remote-pair approve`(CLI) → 트리거 파일 → 앱이 라우터(`remote-pair-approve-router.sh`)를 **자기 자식으로** 실행(권한 상속). claude/스킬은 "막히면 트리거"만 하고, 무엇을 어떻게 허용할지는 라우터가 정한다.
-- **마법사·웹 브리지도 CLI 레이어다.** 온보딩 웹(§1 온보딩, architecture.md §9)은 `remote-pair web`이 띄우는 별도 python3 프로세스이며, **앱에는 HTTP/WebSocket 서버를 절대 넣지 않는다.** 검증: `host/app/*.swift`에 소켓/HTTP 리스너가 없어야 한다(현재 InputServer는 파일 채널만 사용).
-- 왜: 권한 경계(앱)와 두뇌(CLI)를 분리해야 ① 앱을 최소 권한·최소 코드로 유지하고(공격면↓), ② CLI를 README 한 줄로 단일 설치하며(앱이 CLI를 강제 설치하지 않음), ③ GUI를 웹→네이티브로 바꿔도 권한 데몬을 안 건드린다.
-
-### 0.2 상태의 단일 출처
-- `~/.remote-pair`가 모든 런타임 상태(config/logs/rules/manifest)의 단일 출처. 기기 간 `~/.claude` 동기화에 의존하지 않는다. `~/.claude`엔 에이전트 정체성(approve skill·rules·hooks)만 둔다.
-- 앱 생존 + AX/SR/FDA grant의 ground truth는 `~/.remote-pair/logs/status.json`(앱이 ~1초마다 기록). 에이전트·CLI·웹 브리지는 pgrep 추측 대신 이 파일을 읽는다.
-
-### 0.3 GUI 시임(seam) 불변
-- 프론트엔드는 **끝까지 웹**(HTML/CSS/JS). "앱"이란 네이티브 껍데기(WKWebView 또는 Electron) + 네이티브 브리지일 뿐이다. localhost 웹 → standalone 앱으로 가도 **바뀌는 건 브리지 구현뿐**이고, **JSON API 계약과 SPA는 불변**이다.
-- 즉 `client/cli/web/`의 SPA와 `/api/*` 계약이 교체 가능한 시임(seam)이다. 검증: 브리지를 python3 → Swift WKWebView로 바꿔도 `index.html`·API 응답 스키마가 그대로여야 한다.
+> For how the code works, see [architecture.md](architecture.md); for later/deferred items, see [future.md](future.md); for end-user install/usage, see the [README](../README.md). This document focuses on "what, why, and how it's verified."
 
 ---
 
-## 1. 기능 요구사항
+## 0. Product Vision / Invariants
 
-### 배포 / 설치
-- 오픈소스 self-signed 서명 문제를 **Homebrew Cask 배포**로 해결한다 — postflight로 quarantine를 제거해 self-signed라도 TCC grant가 동작.
-- Apple Silicon 전용 **프리빌트 바이너리**를 제공해 사용자 직접 빌드를 없앤다. `tmux-aqua`는 앱 번들에 임베드(별도 바이너리·brew 의존 제거).
-- **단일 명령 부트스트랩**(`curl … | bash`)으로 처음 쓰는 사람도 빌드 없이 설치.
-- bootstrap은 glue(CLI·approve 규칙·skill)만 설치하고, host면 **brew cask로 앱까지 자동 설치**한다. brew가 없으면 안내 후 중단.
-- **소스 빌드는 bootstrap에서 제거** → 메인테이너 전용(`host/build-*.sh`). (brew가 앱을 공급하므로)
-- installer **role 분리**(host/client/both) + Finder Service Quick Action으로 client 1분 설치.
-- 설치/제거 모두 **가역적**(manifest 추적). 웹 브리지·SPA 자산도 manifest에 기록돼 가역 제거된다(검증: `tests/t_10_install_reversibility.sh`).
-- **CI(GitHub Actions)로 릴리스**: 각 브랜치에서 새 태그 푸시 → 빌드 → 성공 시 main 머지. 신규 코드만 릴리스. CI가 직접 수행(셀프호스티드 아님), p12는 gh secret(`SIGNING_P12_BASE64`/`_PASSWORD`).
-- 릴리스 ad-hoc 서명 거부 가드 + cask `version`/`sha256` 자동 bump.
-- 버전 정책: pre-1.0. **v0.5.0에서 리네임·cert 전환을 묶어 마이너 bump**(아래 §리네임 참조), 이후 패치는 +0.0.1.
+This section sets the top-level constraints that no subsequent requirement may violate. The invariants below are not decisions but the **design constitution** — new features must first be checked for consistency with this section.
 
-### 리네임 / 정체성 통일 (M1, v0.5.0)
-- **앱 표시명·번들 id를 완전 통일한다**: `RemotePairHost` → `RemotePair`, `com.x10lab.remote-pair-host` → `com.x10lab.remote-pair`.
-  - 왜: 사용자에게 노출되는 이름(메뉴바·System Settings·cask)과 내부 식별자가 `*-host` 접미사로 갈라져 혼란. 단일 브랜드로 통일.
-  - 검증: `shared/config.sh`의 `APP_NAME=RemotePair`·`BUNDLE_PREFIX=com.x10lab.remote-pair`(기본값), `host/app/Config.swift`의 `BUNDLE_ID` 폴백이 `com.x10lab.remote-pair`. (이미 적용됨 — §4 참조)
-- **TCC 재grant는 1회로 묶는다**: designated requirement = identifier + leaf(cert)인데, bundle id 변경과 cert 전환(33849F → 898E32)을 **동시에** 하므로 두 변화가 한 번에 grant를 무효화한다 → v0.5.0 한 릴리스에서 **사용자 재grant 1회**로 끝낸다. 이후엔 grant 유지.
-  - 검증: 업그레이드 후 `RemotePair`(새 이름)를 AX/SR ON → `launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair` → `remote-pair status`가 `AX ✓ SR ✓`.
-- **cask 토큰 전환**: `remote-pair-host` → `remote-pair`(신규 cask). 사용자 액션: `brew uninstall --cask remote-pair-host && brew install --cask remote-pair`.
-  - 검증: `Casks/remote-pair.rb` 존재, `Casks/remote-pair-host.rb` 부재(이미 적용됨).
-- **전환기 dual-id 프로빙**: client CLI는 새/옛 bundle id·앱 이름을 **둘 다** 프로빙해, 아직 마이그레이션 안 된 호스트도 status/doctor/host에서 false-negative가 안 나게 한다.
-  - 검증: `client/cli/remote-pair`의 `LEGACY_BUNDLE`/`LEGACY_APP` 폴백, `tests/t_09_app_resolution.sh`의 dual-id 케이스.
-- **소스 디렉터리 정리 완료**(이전 deferred): `host/RemotePairHost/`→`host/app/`, `client/*`→`client/cli/`, `rs/`→`host/rd/`, `ide/`→`client/ide/`로 역할×위치 재배치. 빌드 산출물·식별자엔 영향 없음(swiftc·tests·SoT 체크로 검증). Swift 코멘트의 `RemotePairHost` 표기는 무해해 잔류. → [docs/monorepo-structure.md](monorepo-structure.md).
+### 0.1 Role Separation (the low-coupling constitution)
+- **The app (`RemotePair.app`) = permission daemon only.** Its responsibilities are exactly three: ① hold AX/SR (and FDA when needed) grants against the designated requirement, ② hold the patched tmux server (`tmux-aqua`) as its own child so permissions are inherited, and ③ run InputServer primitives (shot/click/key) one at a time. Any other logic (install/mapping/approve decisions/HTTP) is **not put** in the app.
+- **The CLI (`remote-pair`) = the brain and the SSOT.** Folder mapping, session decisions, approve coordinates, retries, and the onboarding flow are all decided by the CLI. The CLI has no TCC/AX code (it delegates that to the app).
+- **approve path**: `remote-pair approve` (CLI) → trigger file → the app runs the router (`remote-pair-approve-router.sh`) **as its own child** (inheriting permissions). claude/skills only "trigger when blocked"; the router decides what to allow and how.
+- **Onboarding is decided in the CLI layer, surfaced by the Electron onboarding windows.** The first-run onboarding (§1 Onboarding) is presented by two separate Electron windows — host onboarding embedded in RemotePairHost and client onboarding embedded in the RemotePair IDE — that drive the `remote-pair` CLI and read `status.json` for decisions; **an HTTP/WebSocket server is never put in the host app.** Verification: there must be no socket/HTTP listener in `host/app/*.swift` (the current InputServer uses a file channel only).
+- Why: separating the permission boundary (app) from the brain (CLI) lets us ① keep the app at minimal privilege and minimal code (smaller attack surface), ② install the CLI in a single README one-liner (the app does not force-install the CLI), and ③ swap or evolve the GUI (Electron onboarding, native shell) without touching the permission daemon.
 
-### 권한 / TCC
-- **AX·SR 필수, FDA 권장**(헤드리스 폴더 프롬프트가 세션을 멈추는 것 방지). FDA 권한을 실제로 쓰는 건 RemotePair 로직이 아니라 그 안의 `claude` 세션.
-- **앱은 권한을 토글하지 못한다**(SIP + non-MDM Mac 제약). 앱/마법사는 `open`으로 System Settings 해당 창만 열고, 토글은 사용자가 물리 화면에서 직접 한다. 적용 여부는 `status.json`으로만 감지한다.
-- TCC grant는 **안정 cert의 designated requirement(identifier + leaf)** 에 묶여 재빌드·업데이트에도 유지된다.
-- 릴리스 바이너리가 **동일 cert**로 서명돼야 머신 간/업데이트 간 grant가 안 깨진다(= cask 배포의 핵심 근거). cert 백업: `~/Library/Application Support/RemotePair/signing.p12`.
-- 권한 부여는 호스트 화면에서 1회 수동(SSH 불가) → 토글 후 `launchctl kickstart`.
-- 마이크/미디어 등 불필요 권한 요청 최소화(자식 세션 탓이지 앱 탓 아님).
+### 0.2 Single Source of Truth for State
+- `~/.remote-pair` is the single source of truth for all runtime state (config/logs/rules/manifest). It does not depend on cross-device `~/.claude` sync. `~/.claude` holds only the agent identity (approve skill, rules, hooks).
+- The ground truth for app liveness + AX/SR/FDA grants is `~/.remote-pair/logs/status.json` (written by the app roughly every second). The agent, CLI, and the onboarding windows read this file instead of guessing via pgrep.
 
-### Computer Use / 권한 상속
-- `claude`가 **권한 가진 앱 서브트리(patched tmux-aqua)** 안에 있어야 AX/SR을 상속해 Computer Use가 동작.
-- **InputServer primitive 채널**: CLI(두뇌, 권한 0)가 요청하고 앱(권한 경계)이 실행 — `shot`=screencapture / `click`=cliclick / `key`=osascript.
-- 키 입력은 **osascript(System Events)로 통일** — cliclick 합성키가 Chrome 확장 팝업 등 웹 UI에 안 먹힘.
-- `cliclick`(click primitive)은 번들 동봉 + 호스트 brew로 보장.
+### 0.3 GUI Seam Invariant
+- The frontend is **web all the way** (HTML/CSS/JS — here, the Electron React UI). An "app" is just a native shell (Electron, or WKWebView) + a native bridge. The web UI talks to the brain through a stable contract, and going from one shell to another **changes only the bridge implementation**, while **the contract and the web UI are invariant**.
+- That is, the React UI and its bridge contract are the replaceable seam: the onboarding React UI renders inside Electron and drives the `remote-pair` CLI / `status.json` through the shell's bridge, so the same UI could later be hosted by a different native shell without rewriting it. Verification: swapping the native shell must leave the React UI and its bridge contract unchanged.
 
-### approve 라우터
-- 트리거는 `touch` 대신 **`remote-pair` CLI 호출**. approve 로직은 **claude skill**(`~/.claude/skills/approve`)로 존재.
-- **적응형 폴링** — 트리거 직후 창이 아직 없어도(에이전트가 수 초 뒤 띄움) 대기 윈도우 동안 기다림.
-- **검증 루프** — 클릭/키 후 닫혔는지 재확인, 실패 시 재시도. 단시간 재시도를 늘려 실패확률↓.
-- **하이브리드 비전** — OCR 룰 우선, 미스 시 haiku 분류. **vision이 SPOF가 되면 안 됨**(claude 호출 실패 시 fallback 동작).
-- approve **타입 인자** 전달(어떤 종류 승인인지 — `--type key:..|ocr:..`).
-- **cmd+enter 먼저**(=항상 허용 → 창 재발 안 함), 실패 시 enter(cmd+enter 안 받는 모달 대응).
-- Claude for Chrome **site-level permission block 우회** — 에이전트가 실패를 인지하면 fallback로 재시도.
-- 에이전트 중심 + **스킬 기반 툴 선택**(하네스가 실패 시 approve 스킬을 안내).
-- **persist 자동감지 로직은 넣지 않는다**(의도적 제외).
-- 1Password 잠금 프롬프트는 bash tool fail 시 hook으로 처리. m1 기존 훅을 새 훅에 **정확히 동일하게** 반영.
-- record(녹화) 시도 시 뜨는 창들도 한 번에 처리.
+### 0.4 Update Boundary = Permission Boundary (the deployment constitution)
+- **What goes into the signed `.app` bundle is decided by "does it need a TCC grant?" — not by "interpreted vs. binary."** It splits into three layers:
+  - **`.app` (permission daemon, slow updates)** — things that need a grant: the app itself (AX/SR/FDA) + bundled Helpers (`tmux-aqua`, approve-router, ocr-find, cliclick) + **the screen sidecar (`screen` — needs its own SR grant)**. These are signed and auto-updated together with the app via cask/`Updater`.
+  - **glue (zero permissions, fast hot-swap)** — things that need no grant: the CLI (`remote-pair`), approve rules, the skill, the onboarding UI assets, hooks, the IDE extension. `remote-pair update` (L1 hot-swap) fetches these from GitHub and replaces them without restarting the app (not bundled in the app → cask-only hosts update without a repo).
+- **The exact meaning of "minimal permission daemon"**: it does not mean stripping out even the permission-requiring components; it means **the daemon embraces only the permission-requiring things and exposes them as base primitives**, while all the UI/CLI/skill/frontend running on top is separated out as zero-permission glue that auto-updates independently. A permission daemon embracing permission-requiring components is not a violation but its reason for being (the violation is embracing zero-permission things). The sidecar is not a fourth responsibility added to the "three app responsibilities" of §0.1; like `tmux-aqua`, it is a **bundled Helper the app supervises on-demand within its own process subtree**.
+- **The sidecar is on the app side of the permission boundary**: macOS scopes SR grants per binary, so `screen` needs its **own SR grant** → it must be **bundled in the signed .app** so that (a) the grant survives across updates under the same cert/designated requirement and (b) it auto-updates together on cask updates. The current manual deploy of `~/.remote-pair/bin/screen` (`remote-pair-screen-deploy`) is unsigned and in a user directory, which breaks grant survival → demote it to a dev fallback only.
+- Why: the host app can rarely be shipped (re-grant and signing costs). Cutting along the permission boundary lets the frequently-changing Fancy layer (glue) hot-swap without touching the app, while only the rarely-changing permission components are bundled into the signed bundle and move slowly.
 
-### 온보딩 마법사 (M1 첫 마일스톤)
-**무엇**: `remote-pair web`이 띄우는 localhost 웹 마법사가 첫 설치를 끝까지 안내한다. 단계: ① 역할 선택(host/client/both) → ② 권한(AX/SR/FDA를 하나씩, 라이브 감지 + Next 스텝) → ③ TCC 재grant 안내(필요할 때만) → ④ SSH 점검 → ⑤ 폴더 매핑 → ⑥ Syncthing 헬스 → ⑦ 검증(doctor).
-**왜**: 현재 온보딩이 CLI 프롬프트(`remote-pair onboard`)·물리 화면 권한 토글·SSH 키 셋업으로 흩어져 있어, 처음 쓰는 사람이 "다음에 뭘 하지"를 모른다. 웹 마법사가 라이브 상태를 보여주며 한 흐름으로 묶는다.
+---
 
-> **구현 상태(2026-06-13)**: 구현됨. `client/cli/remote-pair-web`(python3 stdlib 브리지)·`client/cli/web/`(SPA) 완성. architecture.md §9의 API 계약 전량 구현. 리네임·bundle id 통일(v0.5.0 계획/예정 — 현재 출하 정체성은 `RemotePairHost`/`com.x10lab.remote-pair-host` 유지). → architecture.md §9.
+## 1. Functional Requirements
 
-**어떻게 / 검증**:
-- 브리지는 `client/cli/remote-pair-web`(python3 stdlib, 외부 의존 0). SPA는 `client/cli/web/`(빌드·npm 불필요).
-- 브리지는 **얇은 HTTP↔CLI 어댑터**다: `remote-pair` CLI에 shell-out + `status.json` 읽기만 한다. **설치/권한/approve 로직을 재구현하지 않는다**(불변식 §0.1). 검증: `tests/test_remote_pair_web.py`(브리지 단위 테스트), 그리고 브리지 소스에 설치 로직 부재.
-- 권한은 앱이 토글 못하므로(SIP), 마법사는 `POST /api/permissions/open {pane}`으로 **설정창만 연다**. 적용 여부는 `GET /api/status`(status.json)를 ~1.5초 폴링해 **앱 재시작 없이 ~2초 내** 반영.
-- 재grant 필요 여부는 `GET /api/regrant`가 현재 bundle id를 신/구 비교해 판단한다.
-- 보안: `127.0.0.1` 바인딩 + **per-run 토큰**(런타임 생성, argv 비전달 → shell history 누출 차단). 토큰 없는 요청 거부. 검증: `tests/t_09_app_resolution.sh`의 `web/execs-bridge-no-token`(브리지 argv에 `token=` 미포함).
-- API 계약(역할/상태/권한열기/SSH점검/매핑/Syncthing/regrant)은 architecture.md §9에 명세. 이 JSON API가 GUI 시임(§0.3)이므로, 나중 WKWebView·code-server 임베드가 같은 계약을 재사용한다.
+### Distribution / Install
+- Resolve the open-source self-signed signing problem with **Homebrew Cask distribution** — a postflight removes the quarantine so the TCC grant works even when self-signed.
+- Provide **prebuilt binaries** for Apple Silicon only, eliminating user-side builds. `tmux-aqua` is embedded in the app bundle (removing a separate binary / brew dependency).
+- **Single-command bootstrap** (`curl … | bash`) so first-time users can install without building.
+- bootstrap installs only the glue (CLI, approve rules, skill), and for a host it **also auto-installs the app via brew cask**. If brew is missing, it instructs and aborts.
+- **Source builds are removed from bootstrap** → maintainer-only (`host/build-*.sh`). (Because brew supplies the app.)
+- installer **role separation** (host/client/both) + a Finder Service Quick Action for a 1-minute client install.
+- Both install and uninstall are **reversible** (manifest-tracked). All glue installed by bootstrap is recorded in the manifest and reversibly removed (verification: `tests/t_10_install_reversibility.sh`).
+- **Release via CI (GitHub Actions)**: push a new tag on each branch → build → on success merge to main. Only new code is released. CI performs it directly (not self-hosted); the p12 is a gh secret (`SIGNING_P12_BASE64` / `_PASSWORD`).
+- Release ad-hoc-signing rejection guard + automatic cask `version`/`sha256` bump.
+- Versioning policy: pre-1.0. **Host and Client identities are separated** (see §Identity Separation — Host keeps `-host` permanently, Client takes the bare). Independent per-component versions (`shared/identity/versions.json`: host/ide/screen-engine); patches bump by +0.0.1.
 
-### 알림 포워딩 (M2 후속)
-**무엇**: host(예: gh-mac-m1)에서 도는 Claude Code의 **완료/Stop/Ask-a-question** 알림과 **approve(승인유형)** 알림을 client(예: gh-mac-m4)로 전달한다. 알림 종류는 설정으로 토글한다.
-**왜**: host는 헤드리스로 24/7 돌고 사용자는 client 앞에 앉아 있다. host에서 세션이 멈추거나(질문/승인 대기) 끝났을 때 client가 모르면 방치된다.
-**어떻게 / 검증**:
-- 현재 host엔 `remote-pair-approve-reminder` **훅만** 있고 client 포워딩은 없다 → **신규 Notification/Stop 훅**을 추가해야 한다(`~/.claude/settings.json`의 hooks). 검증: `remote-pair doctor`가 approve 훅을 보듯, 신규 훅 등록 여부도 점검 항목에 추가.
-- 전달 채널은 저결합 원칙(§0.1)을 따라 CLI 레이어에서 처리(앱에 알림 서버를 넣지 않는다). 구체 전송 메커니즘(SSH back-channel / 푸시 / client 폴링)은 M2 설계에서 확정.
-- 설정 토글은 client.env 또는 마법사 설정 화면에서 노출. 어떤 알림 종류(완료/Stop/질문/approve)를 켤지 사용자가 선택.
+### Identity Separation — Host ≠ Client (M1 re-decision, 2026-06-15)
+- **Host and Client are not unified in identity; they are separated.** The two apps are too different in nature — the Host is a headless permission daemon running 24/7, the Client is an IDE GUI a person sits in front of. They can coexist on the same machine, so identical names would collide. Therefore the bare identity goes to the user-facing app, the Client, and the Host keeps `-host` permanently.
+  - **Host**: `RemotePair Host` / `com.x10lab.remote-pair-host` / cask `remote-pair-host` — **keeps `-host` permanently**. The code already has these values (verification: `shared/config.sh` `APP_NAME=RemotePairHost` / `BUNDLE_PREFIX=…remote-pair-host`, `host/app/Config.swift` fallback `RemotePairHost`, `Casks/remote-pair-host.rb`, the host component in `shared/identity/identity.json`). **No separate rename/migration.**
+  - **Client (IDE)**: `RemotePair` / `com.x10lab.remote-pair` / cask `remote-pair` — **the Client takes the bare identity.** The current IDE bundle id is `com.x10lab.remotepair-ide` (`identity.json` ide.darwinBundleIdentifier) → **migrate to `com.x10lab.remote-pair`** + create a new Client cask `remote-pair` (when the IDE ships). Separate from the Host cask.
+- **Withdrawn**: the prior "unify (`RemotePairHost`→`RemotePair`, host to bare)" decision (§3, 2026-06-13) is **superseded** by this separation. The `shared/config.sh` "0.5 RELEASE FLIP" comment that raises host to bare is unapplied and canceled. (The earlier §4 note that "unification was applied" was an error — the actual code was always `-host`.)
+- **The cert transition (33849F → 898E32) is decoupled from the host rename**: since the host bundle id does not change, the rationale of "bundle rename+cert together for a single re-grant" disappears. Release signing is consolidated under CI 898E32 (maintainer manual signing prohibited), but if the host cert actually changes, a **single re-grant** is independently needed at that time due to the change to the designated requirement (identifier+leaf).
+- **dual-id probing**: since the host id is stable, the client CLI's `LEGACY_BUNDLE` / `LEGACY_APP` fallbacks remain not for a host-rename transition but as defensive legacy support only (verification: `tests/t_09_app_resolution.sh`).
+- **Source directory cleanup complete** (previously deferred): `host/RemotePairHost/`→`host/app/`, `client/*`→`client/cli/`, `rs/`→`host/rd/`, `ide/`→`client/ide/`, rearranged by role × location. No effect on build artifacts or identifiers (verified by swiftc, tests, and SoT checks). The `RemotePairHost` strings in Swift comments are harmless and left in place. → [docs/monorepo-structure.md](monorepo-structure.md).
 
-> **구현 상태(2026-06-13)**: 구현됨. `host/hooks/remote-pair-notify.sh`가 Stop/Notification 이벤트를 `~/.remote-pair/notifications/queue.jsonl`에 기록하고, 클라이언트 브리지 `/api/notifications`가 SSH 폴링으로 전달한다. `host/hooks/notify.conf.example`로 `ENABLED_TYPES` 필터 설정. → architecture.md §10-3.
+### Permissions / TCC
+- **AX/SR required, FDA recommended** (to prevent headless folder prompts from stalling a session). What actually uses the FDA permission is not RemotePair logic but the `claude` session inside it.
+- **The app cannot toggle permissions** (SIP + non-MDM Mac constraint). The app/wizard only `open`s the relevant System Settings pane; the user toggles it directly on the physical screen. Whether it took effect is detected solely via `status.json`.
+- TCC grants are tied to a **stable cert's designated requirement (identifier + leaf)** and survive rebuilds and updates.
+- Release binaries must be signed with the **same cert** so grants don't break across machines/updates (= the core rationale for cask distribution). cert backup: `~/Library/Application Support/RemotePair/signing.p12`.
+- Granting permissions is a one-time manual step on the host screen (not over SSH) → after toggling, `launchctl kickstart`.
+- Minimize requests for unnecessary permissions like microphone/media (it's the child session's doing, not the app's).
 
-### 세션 / launch
-- **1:1 연결만** 지원(세션공유·멀티어태치 폐기). 충돌 시 1:1 방향으로.
-- `remote-pair-launch`는 레퍼런스 `claude-iterm-launch`의 **충실한 1:1 포팅**(robustness 동작 복원).
-- **폴더 매핑**: client 경로 → host 경로(외부 동기화로 내용 동일, 절대경로 다름). 기준 루트 `~/Spaces`.
-- **결정적 세션 이름**(host 경로 기반 `<HOST>_…`) — 상태바로 머신 식별, 한글 경로 대화 오염 차단.
-- **`_N` 넘버링**: `_1`에 클라이언트가 붙어 있으면 `_2` 새로, detached는 `attach -d`로 takeover.
-- **resume 버그 수정**: exit 후 빈 대화가 붙는 문제 — `--resume` 폴백이 실패를 삼킴 + stale SID. remote-control/resume/tmux를 동일 id 기반으로. `--dangerously-skip-permissions` 추가.
-- 다른 path의 새 세션이 기존 세션을 상속(pollute)하는 버그 수정.
-- 고아(orphan) 소켓 세션 자동 감지·정리.
-- onboarding을 fancy하게, iTerm2↔terminal을 CLI config로 전환 가능, 폴더매핑 모듈 재사용.
-- 비대화 옵션(`--yes`/`RP_YES`) 제공.
+### Computer Use / Permission Inheritance
+- `claude` must be inside the **permission-holding app subtree (patched tmux-aqua)** so it inherits AX/SR and Computer Use works.
+- **InputServer primitive channel**: the CLI (the brain, zero permissions) requests and the app (the permission boundary) executes — `shot`=screencapture / `click`=cliclick / `key`=osascript.
+- Keystrokes are **unified on osascript (System Events)** — cliclick synthetic keys don't register in web UIs like the Chrome extension popup.
+- `cliclick` (the click primitive) is both bundled and ensured via brew on the host.
 
-### 파일 동기화 (Syncthing)
-- **Syncthing 유지** + `doctor` 헬스체크 추가. RemotePair는 sync를 직접 구현하지 않고 Syncthing에 위임한다(저결합).
-- **e2e 폴더 매핑 자동구성**(후순위): 현재는 사용자가 Syncthing 폴더를 수동 구성한다. → RemotePair가 **양쪽(host/client) Syncthing REST API로 폴더를 자동 추가 + `.stignore` 주입**해 폴더 매핑을 e2e로 셋업. 선택적으로 `~/.claude` 동기화도 같은 메커니즘으로(현재 git 백본 opt-in의 대체/보완).
-- **제외 규칙은 유지**: `.git`(양쪽 git 상태가 달라 오인 커밋/푸시 위험)과 `.claude/projects/`(용량·프라이버시)는 동기화에서 제외. 작업트리만 동기화, `.git`은 기기-로컬.
-- 검증: `remote-pair doctor`가 Syncthing 데몬(127.0.0.1:8384) 도달성을 healthy 판정에 포함. 라이선스: Syncthing MPL-2.0(consume·번들 자유).
+### approve Router
+- The trigger is a **`remote-pair` CLI call** instead of `touch`. The approve logic exists as a **claude skill** (`~/.claude/skills/approve`).
+- **Adaptive polling** — even if the window isn't there yet right after the trigger (the agent brings it up a few seconds later), it waits through the wait window.
+- **Verification loop** — re-confirm whether it closed after a click/key, and retry on failure. More retries over a short window lower the failure probability.
+- **Hybrid vision** — OCR rules first, haiku classification on a miss. **vision must not become a SPOF** (fallback behavior when the claude call fails).
+- Pass an approve **type argument** (which kind of approval — `--type key:..|ocr:..`).
+- **cmd+enter first** (= always allow → the window doesn't recur), and on failure enter (to handle modals that don't accept cmd+enter).
+- **Bypass Claude for Chrome's site-level permission block** — when the agent recognizes a failure, it retries via fallback.
+- Agent-centric + **skill-based tool selection** (when the harness fails, it directs to the approve skill).
+- **Do not add persist auto-detection logic** (intentional exclusion).
+- The 1Password lock prompt is handled via a hook on bash-tool failure. Reflect the existing m1 hook **exactly identically** in the new hook.
+- Also handle, in one pass, the windows that appear when attempting record (recording).
 
-### Remote Desktop (M5, 보류)
-- **보류 상태**. v0 = 기존 screencapture/InputServer 채널 재사용 또는 macOS 내장 VNC(화면공유). v1 = WebRTC(ScreenCaptureKit + VideoToolbox HW 인코딩, Input Monitoring 권한 추가).
-- 라이선스: RemotePair는 AGPL-3.0-or-later(순수 자체코드). 화면공유는 자체 `host/rd/screen` 엔진.
+### Onboarding (M1 first milestone)
+**What**: guided first-run setup that walks a user end to end on first install. Steps: ① role selection (host/client/both) → ② permissions (AX/SR/FDA one at a time, live detection + a Next step) → ③ TCC re-grant guidance (only when needed) → ④ SSH check → ⑤ folder mapping → ⑥ Syncthing health → ⑦ verification (doctor). The onboarding is delivered as **two separate Electron onboarding windows**: **host onboarding** embedded in RemotePairHost (the host Swift app) and **client onboarding** embedded in the RemotePair IDE (the client VSCodium/Electron app), each shown on first install and scoped to that side's setup.
+**Why**: the current onboarding is scattered across CLI prompts (`remote-pair onboard`), physical-screen permission toggles, and SSH key setup, so a first-time user doesn't know "what to do next." Tying it into one guided flow per side, showing live state, gives each role a clear first-run path.
 
-> **구현 상태(2026-06-13)**: 스캐폴드. `client/cli/remote-pair-desktop`이 macOS Screen Sharing(VNC) arm's-length 런처(open/check/help 서브커맨드)를 구현하고, 브리지 `/api/desktop/open`이 이를 호출. 인-브라우저 스트리밍(WebRTC)은 스파이크 단계. → architecture.md §10-5.
+> **Implementation status (2026-06-15)**: **not yet built — blank slate.** The onboarding is being redesigned from scratch as two Electron onboarding windows (host onboarding in RemotePairHost, client onboarding in the RemotePair IDE), based on a React/shadcn mockup (`context/remotepair-onboarding`). The prior browser-based web onboarding wizard — a vanilla SPA plus a python HTTP bridge launched by a `remote-pair web` subcommand — was a pre-VSCodium attempt and has been **removed**; only the web *implementation* is gone, the onboarding *requirement* survives and is being rebuilt in Electron. The Host identity keeps `RemotePairHost` / `com.x10lab.remote-pair-host` permanently (separate from the Client — §Identity Separation).
 
-### 올인원 오케스트레이션 (후순위)
-**무엇**: RemotePair가 베스트 OSS를 **설치·구성·실행만** 시키는 "지휘자"가 된다. 소스는 안 건드리고 컴포넌트를 오케스트레이션한다(저결합 §0.1 유지).
-- **Syncthing**(파일 sync, MPL-2.0), **Tailscale/WireGuard**(zero-config 도달성, BSD-3/MIT). Remote Desktop은 자체 `host/rd/screen` 엔진.
-**라이선스**: RemotePair는 **AGPL-3.0-or-later**(순수 자체코드).
-- consume하는 OSS(Syncthing MPL-2.0·Tailscale BSD-3·WireGuard MIT): 번들 자유.
-- 화면공유는 외부 스택 미사용 — 자체 엔진(허용형 deps만). 상용 배포 전 법률 확인.
+**How / Verification** (target design for the Electron onboarding, not yet built):
+- The UI is a **React/shadcn** front end (per the `context/remotepair-onboarding` mockup) rendered inside each Electron shell — the host window inside RemotePairHost, the client window inside the RemotePair IDE. The UI is a **thin presentation layer**: it drives the `remote-pair` CLI and reads `status.json`, and **does not reimplement install/permission/approve logic** (invariant §0.1).
+- Since the app can't toggle permissions (SIP), the onboarding **only opens the relevant settings pane**; the user toggles it on the physical screen. Whether it took effect is reflected **within ~2 seconds, without restarting the app**, by polling `status.json` at ~1.5 seconds.
+- Whether a re-grant is needed is determined by comparing the current bundle id old vs. new.
+- Security invariant carried over: no HTTP/WebSocket listener is added to the host app (§0.1); the onboarding talks to the brain through the Electron shell's bridge to the `remote-pair` CLI / `status.json`, not a network server.
+- Because the onboarding UI is the GUI seam (§0.3), it stays invariant across native-shell changes; only the bridge implementation behind it is replaceable.
+
+### Notification Forwarding (M2 follow-up)
+**What**: forward the **completion/Stop/Ask-a-question** notifications and the **approve (approval-type)** notifications from Claude Code running on a host (e.g., gh-mac-m1) to a client (e.g., gh-mac-m4). Which notification kinds are forwarded is toggled in settings.
+**Why**: the host runs headless 24/7 and the user sits in front of the client. When a session on the host stalls (waiting on a question/approval) or finishes, if the client doesn't know, it's left unattended.
+**How / Verification**:
+- The host currently has **only** the `remote-pair-approve-reminder` hook and no client forwarding → a **new Notification/Stop hook** must be added (hooks in `~/.claude/settings.json`). Verification: just as `remote-pair doctor` looks at the approve hook, add registration of the new hook to its check items too.
+- The delivery channel is handled in the CLI layer per the low-coupling principle (§0.1) (no notification server is put in the app). The concrete transport mechanism (SSH back-channel / push / client polling) is finalized in the M2 design.
+- The settings toggle is exposed in client.env or the onboarding/settings screen. The user chooses which notification kinds (completion/Stop/question/approve) to enable.
+
+> **Implementation status (2026-06-15)**: host-side implemented; client delivery being re-exposed via the Electron IDE. `host/hooks/remote-pair-notify.sh` records Stop/Notification events to `~/.remote-pair/notifications/queue.jsonl`, and `ENABLED_TYPES` filtering is configured via `host/hooks/notify.conf.example` — these survive. The prior client delivery path, the web-bridge `/api/notifications` endpoint (a python HTTP bridge in the removed `client/cli/remote-pair-web` that polled the queue over SSH), was **removed**; the queue is now delivered to the client via the Electron IDE (SSH polling unchanged on the host side). → architecture.md §10-3.
+
+### Session / launch
+- Support **1:1 connection only** (session sharing/multi-attach withdrawn). On conflict, go 1:1.
+- `remote-pair-launch` is a **faithful 1:1 port** of the reference `claude-iterm-launch` (restoring its robustness behavior).
+- **Folder mapping**: client path → host path (contents identical via external sync, absolute paths differ). The base root is `~/Spaces`.
+- **Deterministic session names** (host-path-based `<HOST>_…`) — identify the machine by the status bar, and block Korean paths from polluting the conversation.
+- **`_N` numbering**: if a client is attached to `_1`, open `_2` fresh; for detached, take over via `attach -d`.
+- **resume bug fix**: empty conversations attaching after exit — `--resume` fallback was swallowing failures + a stale SID. Base remote-control/resume/tmux on the same id. Add `--dangerously-skip-permissions`.
+- Fix the bug where a new session at a different path inherits (pollutes) an existing session.
+- Auto-detect and clean up orphan socket sessions.
+- Make onboarding fancy, make iTerm2↔terminal switchable via CLI config, reuse the folder-mapping module.
+- Provide a non-interactive option (`--yes`/`RP_YES`).
+
+### File Sync (Syncthing)
+- **Keep Syncthing** + add a `doctor` health check. RemotePair does not implement sync itself but delegates it to Syncthing (low coupling).
+- **e2e auto-configuration of folder mapping** (lower priority): currently the user configures Syncthing folders manually. → RemotePair will **add folders via both (host/client) Syncthing REST APIs + inject `.stignore`** to set up folder mapping end to end. Optionally, `~/.claude` sync via the same mechanism (a replacement/complement for the current git-backbone opt-in).
+- **Keep the exclusion rules**: `.git` (the two sides' git states differ, risking erroneous commit/push) and `.claude/projects/` (size/privacy) are excluded from sync. Sync the working tree only; keep `.git` device-local.
+- Verification: `remote-pair doctor` includes reachability of the Syncthing daemon (127.0.0.1:8384) in its healthy verdict. License: Syncthing MPL-2.0 (free to consume/bundle).
+
+### Remote Desktop (M5, on hold)
+- **On hold**. v0 = reuse the existing screencapture/InputServer channel, or macOS built-in VNC (Screen Sharing). v1 = WebRTC (ScreenCaptureKit + VideoToolbox HW encoding, with an added Input Monitoring permission).
+- License: RemotePair is AGPL-3.0-or-later (pure first-party code). Screen sharing uses the first-party `host/rd/screen` engine.
+
+> **Implementation status (2026-06-15)**: scaffold. `client/cli/remote-pair-desktop` implements an arm's-length launcher for macOS Screen Sharing (VNC) (open/check/help subcommands) and survives; it is invoked via the IDE/CLI. The prior web-bridge invocation, the `/api/desktop/open` endpoint on the removed python HTTP bridge (`client/cli/remote-pair-web`), was **removed**. In-browser streaming (WebRTC) is at the spike stage. → architecture.md §10-5.
+
+**Deployment boundary / interface contract (sidecar, §0.4 applied)**:
+- The sidecar (`host/rd/screen`) needs its own SR grant, so it is **on the .app side of the permission boundary** — bundle it in the signed app bundle to simultaneously secure per-binary SR grant survival + cask auto-update. The current manual deploy of `~/.remote-pair/bin/screen` (`remote-pair-screen-deploy`) is kept as a dev fallback only. The bundle+signing is transport-agnostic (the same `screen` binary as v1a/v2 below, differing only by subcommand), so it can be done ahead of the v2 implementation.
+- **WebRTC (v2) cuts the permission boundary even more cleanly**: WebRTC's control plane (SDP/ICE **signaling** = bridge `/api/screen/signal/*`, zero permissions → glue) / data plane (capture → VideoToolbox H.264 → RTP, SR needed → sidecar) map 1:1 onto the permission boundary. In v1a (`screen serve`, WS+JPEG) the sidecar carries both transport and frames, but in v2 (`screen serve-webrtc`) the signaling moves out to glue and only "the permission-requiring media essence" remains in the sidecar. → [sidecar-webrtc-design.md](sidecar-webrtc-design.md).
+- **Version-skew contract (SoT)**: since the sidecar updates slowly with signing+app and the glue updates fast, a "new frontend ↔ old sidecar" skew is structural. Pin the sidecar↔glue signaling/capability handshake as **versioned** in `shared/screen-protocol`, so the frontend gracefully degrades with the sidecar capability as the floor (during the transition, `serve`/`serve-webrtc` coexist; ports 8889/8890 are reserved). The current `constants.json` has transport ports but no version/capability negotiation fields → add them when v2 begins.
+- **Security invariant**: v2 also keeps **loopback + `ssh -L`** (no public rendezvous/STUN/TURN; SSH stands in for TURN, ICE→`turn:127.0.0.1`). SRTP is media encryption only, not a tunnel replacement — the sidecar binds to `127.0.0.1` only, all the way through.
+
+### All-in-One Orchestration (lower priority)
+**What**: RemotePair becomes a "conductor" that only **installs, configures, and runs** best-of-breed OSS. It doesn't touch the sources; it orchestrates the components (maintaining low coupling §0.1).
+- **Syncthing** (file sync, MPL-2.0), **Tailscale/WireGuard** (zero-config reachability, BSD-3/MIT). Remote Desktop uses the first-party `host/rd/screen` engine.
+**License**: RemotePair is **AGPL-3.0-or-later** (pure first-party code).
+- The consumed OSS (Syncthing MPL-2.0, Tailscale BSD-3, WireGuard MIT): free to bundle.
+- Screen sharing uses no external stack — a first-party engine (permissive deps only). Get legal confirmation before commercial distribution.
 
 ### client
-- `remote-pair ls`(host 세션 목록), `remote-pair launch <dir>`(폴더 매핑 해석 후 존재 분기).
-- Finder Service "Launch Remote Pair"(폴더 우클릭).
-- `remote-pair config`로 role(host/client/both) 변경 + **interactive 옵션** 제공.
-- `remote-pair web`으로 온보딩 마법사 기동(브리지가 토큰 생성 + 127.0.0.1 URL 오픈).
+- `remote-pair ls` (list host sessions), `remote-pair launch <dir>` (resolve folder mapping, then branch on existence).
+- Finder Service "Launch Remote Pair" (right-click a folder).
+- `remote-pair config` to change the role (host/client/both) + provide an **interactive option**.
+- First-run onboarding is presented by the Electron onboarding window embedded in the RemotePair IDE (client side), driving the `remote-pair` CLI (§1 Onboarding). The earlier browser-based `remote-pair web` subcommand has been removed.
 
-### host 앱
-- 메뉴바 UI: 권한 부여, 설정창, **tmux 세션 목록**(클릭 시 detach/kill 모달, attached/detached 현황), Restart tmux host, Repair install.
-- 앱이 tmux 서버 생명주기 관리. **status.json**을 매 tick 기록(앱 생존 + AX/SR/FDA grant ground truth).
-- **자기설치**(다운로드 .app 첫 실행) + 버전 스탬프 리소스 갱신(grant·LaunchAgent·host.env 보존). 단, **client 머신에서 호스트로 자기설치하거나 중복 인스턴스가 뜨지 않게** 가드(gh-mac-m4 사고 재발방지 — 검증: `Installer.swift` legacy-shed가 옛 LaunchAgent bootout + 옛 .app 제거).
-- skills/rules/CLI 자기설치 **제거** — CLI/README 단일설치가 담당(결합도↓).
-- **1:N**(호스트 하나에 여러 클라이언트) 지원하되 세션 자체는 1:1.
-- 설치 시 SSH 키 연결 확인 및 미비 시 안내.
-- `host-gui-access` 스킬: 활성화 조건을 SKILL.md에 명시, "단정하지 말 것" 주의.
-- **앱은 HTTP/WebSocket 서버를 갖지 않는다**(불변식 §0.1) — 웹 마법사는 별도 CLI 프로세스.
+### host app
+- Menu-bar UI: grant permissions, settings pane, **tmux session list** (a detach/kill modal on click, attached/detached status), Restart tmux host, Repair install.
+- The app manages the tmux server lifecycle. It writes **status.json** every tick (ground truth for app liveness + AX/SR/FDA grants).
+- **Self-install** (first launch of the downloaded .app) + version-stamp resource refresh (preserving grants, the LaunchAgent, host.env). However, guard so that **a client machine does not self-install as a host and no duplicate instance appears** (preventing a recurrence of the gh-mac-m4 incident — verification: `Installer.swift` legacy-shed boots out the old LaunchAgent + removes the old .app).
+- **Remove** self-install of skills/rules/CLI — the single CLI/README install handles that (lower coupling).
+- Support **1:N** (one host to multiple clients), but the sessions themselves stay 1:1.
+- On install, verify the SSH key connection and guide the user if it's missing.
+- `host-gui-access` skill: state the activation conditions in SKILL.md, with a "do not assert" caution.
+- **The app has no HTTP/WebSocket server** (invariant §0.1) — the host onboarding is an Electron window embedded in RemotePairHost that drives the `remote-pair` CLI / `status.json`, not a network server in the app.
 
-### Web 셸 + 에디터 (M3·M4)
-- **M3 — Web 셸 + 터미널**: 브라우저에서 호스트 세션을 다룬다. **code-server**를 임베드해 통합 터미널이 `tmux-aqua attach`로 호스트 세션에 붙고, Detach/Attach 탭 UX를 제공한다.
-- **M4 — IDE 프론트엔드(RemotePair IDE)**: code-server 경로를 **피벗**해 **VSCodium 포크**(`remotepair-ide`, `~/Spaces/Work/Devs/Lang-Swift/remotepair-ide`)로 전환. 이유: Claude Code / Codex 익스텐션 호환성(마켓플레이스·Node API)을 위해 실제 VS Code / Electron 엔진이 필요했고, code-server의 web-only 환경으로는 불가. 백엔드(M1–M6 tmux-aqua·approve·sync·onboarding)는 재사용.
-  - 번들 id: `com.x10lab.remotepair-ide`(앱 id 통합은 향후 deferred).
-  - 전략: **"코드 유지, UI 숨김"** — upstream rebase 비용을 낮추기 위해 기여 코드를 unregister하지 않고 composite-bar 허용목록 + `when: ContextKeyExpr.false()` 패턴으로만 숨긴다.
-  - dev-watch: `nvm node 22.22.1`, `buildConfig.useEsbuildTranspile=true`(dev 전용); `tsc --noEmit -p src/tsconfig.json --max-old-space-size=8192`가 타입 검증 기준.
-- 왜 웹 셸: GUI 시임(§0.3)을 그대로 재사용 — 웹 마법사가 쓰는 JSON API/127.0.0.1 패턴 위에 셸·에디터를 얹어, 나중에 네이티브 껍데기로 포팅할 때 프론트가 불변.
+### Web Shell + Editor (M3·M4)
+- **M3 — Web shell + terminal (removed — superseded by M4)**: the original goal was to handle host sessions from the browser (a web SPA whose integrated terminal attaches to host sessions via `tmux-aqua attach`, with a Detach/Attach tab UX). This was built as a pre-VSCodium web SPA (`client/cli/web/`) and has been **removed**; the shell/terminal is now provided by the M4 VSCodium IDE.
+- **M4 — IDE frontend (RemotePair IDE)**: **pivot** away from the code-server path to a **VSCodium fork** (`remotepair-ide`, `~/Spaces/Work/Devs/Lang-Swift/remotepair-ide`). Reason: Claude Code / Codex extension compatibility (marketplace, Node API) required an actual VS Code / Electron engine, which code-server's web-only environment can't provide. The backend (M1–M6 tmux-aqua, approve, sync, onboarding) is reused.
+  - bundle id: `com.x10lab.remotepair-ide` → the Client will migrate to the bare `com.x10lab.remote-pair` (§Identity Separation; a separate app from the host).
+  - Strategy: **"keep the code, hide the UI"** — to lower the cost of upstream rebases, contributed code is not unregistered; it is hidden only via composite-bar allowlists + the `when: ContextKeyExpr.false()` pattern.
+  - dev-watch: `nvm node 22.22.1`, `buildConfig.useEsbuildTranspile=true` (dev only); `tsc --noEmit -p src/tsconfig.json --max-old-space-size=8192` is the type-validation baseline.
+- Why a web shell: reuse the GUI seam (§0.3) as-is — by layering the shell/editor on the same web-UI / CLI-bridge pattern, the frontend stays invariant when later porting to a native shell.
 
-> **구현 상태(2026-06-14)**:
-> - **M3 터미널 탭**: 구현됨. `client/cli/web/`(xterm.js SPA)이 `/api/term/*`을 통해 SSH 경유 `capture-pane`/`send-keys`로 tmux-aqua 세션에 연결. alt-screen 한계(vim·htop 등 full-screen 앱은 그대로 캡처 안 됨)는 알려진 제약. → architecture.md §10-2.
-> - **M4 IDE 프론트엔드**: **G001–G008 전부 구현·검증 완료**. VSCodium 포크(`remotepair-ide`)로 피벗. dev-CDP + 브랜드 빌드(m4, 7회) + 원격 E2E(gh-mac-m1 aqua tmux 소켓 → REMOTEPAIR_E2E_OK) 검증 완료. 남은 작업은 `vscode/src` 변경의 `patches/` 캡처(rebase-safety)뿐. 상세는 §1 IDE Frontend 참조. → `.omc/ultragoal/`
+> **Implementation status (2026-06-15)**:
+> - **M3 terminal tab**: **removed — superseded by the M4 VSCodium IDE.** The M3 web shell/terminal was a pre-VSCodium web SPA (an xterm.js SPA in the now-deleted `client/cli/web/`, talking to tmux-aqua sessions via the removed `/api/term/*` bridge over SSH-routed `capture-pane`/`send-keys`); the SPA, the python HTTP bridge, and the `/api/term/*` contract were all **deleted**. The shell/terminal is now the M4 VSCodium IDE (embedded EditorPart sessions). The historical alt-screen limitation of the `capture-pane` approach no longer applies. → architecture.md §10-2.
+> - **M4 IDE frontend**: **G001–G008 all implemented and verified**. Pivoted to a VSCodium fork (`remotepair-ide`). Verified via dev-CDP + branded builds (m4, 7 times) + remote E2E (gh-mac-m1 aqua tmux socket → REMOTEPAIR_E2E_OK). The remaining work is only capturing `vscode/src` changes into `patches/` (rebase-safety). See §1 IDE Frontend for details. → `.omc/ultragoal/`
 
-### IDE Frontend (RemotePair IDE) — M4 세부 사양
+### IDE Frontend (RemotePair IDE) — M4 detailed spec
 
-**포크 레포**: `~/Spaces/Work/Devs/Lang-Swift/remotepair-ide` (VSCodium 베이스).  
-**번들 id**: `com.x10lab.remotepair-ide` (앱 id 통합은 deferred).  
-**원칙**: 코드 보존(rebase 용이) + UI 숨김 전용(composite-bar 허용목록 / `when=false`). 코어 터미널 동작 코드는 **불변 — 절대 수정 금지**. 에지케이스 지뢰밭.
+**Fork repo**: `~/Spaces/Work/Devs/Lang-Swift/remotepair-ide` (VSCodium-based).  
+**bundle id**: `com.x10lab.remotepair-ide` (→ will migrate to the bare `com.x10lab.remote-pair` — §Identity Separation, a separate app from the host).  
+**Principle**: code preservation (easy rebase) + UI hiding only (composite-bar allowlist / `when=false`). The core terminal behavior code is **invariant — never modify**. An edge-case minefield.
 
-#### 구현 완료 (G001–G008 — dev-CDP + 브랜드 빌드 + 원격 E2E 검증)
+#### Implementation complete (G001–G008 — dev-CDP + branded build + remote E2E verified)
 
-**좌측 레일 (Text-only)**
-- 컨테이너: Browser / Sessions / Settings 세 개만 허용(native 컨테이너들은 prune되어 코드는 유지, 레일에서 제거).
-- 구현: `activitybarPart.ts`의 `ActivityBarCompositeBar.isRailAllowedContainer` 패턴 + 허용목록.
+**Left rail (text-only)**
+- Containers: only Browser / Sessions / Settings are allowed (native containers are pruned, the code is kept, and they're removed from the rail).
+- Implementation: the `ActivityBarCompositeBar.isRailAllowedContainer` pattern + an allowlist in `activitybarPart.ts`.
 
-**Sessions 사이드바**
-- 임베드된 `EditorPart`에 **네이티브 VS Code 수평 탭**으로 세션 표시(초기 iTerm2 둥근 pill → 사용자 피드백으로 네이티브 flat 탭으로 변경; `multiEditorTabsControl.css`의 pill override 블록 제거, 반응형 가로 스크롤 블록은 유지).
-- **"+" 버튼**: Sessions 뷰 헤더 DOM에 직접 삽입한 커스텀 버튼(ViewTitle action이 이 컨테이너에 렌더되지 않아 DOM 직접 삽입으로 해결). 클릭 → 탭 내 세션 유형 picker 열림.
-- **in-tab New Session picker**: `SessionPickerInput`(EditorInput) + `SessionPickerPane`(EditorPane)으로 구현. 탭 안에 4개 카드(Claude / Shell / Codex / Gemini) 렌더. 카드 선택 → 해당 세션 실행 → picker 탭 닫힘.
+**Sessions sidebar**
+- Sessions are shown as **native VS Code horizontal tabs** in the embedded `EditorPart` (initial iTerm2 rounded pills → changed to native flat tabs per user feedback; the pill override block in `multiEditorTabsControl.css` is removed, the responsive horizontal-scroll block is kept).
+- **"+" button**: a custom button inserted directly into the Sessions view header DOM (a ViewTitle action doesn't render in this container, so it's solved by direct DOM insertion). Click → opens an in-tab session-type picker.
+- **in-tab New Session picker**: implemented with `SessionPickerInput` (EditorInput) + `SessionPickerPane` (EditorPane). Renders 4 cards (Claude / Shell / Codex / Gemini) inside a tab. Selecting a card → runs that session → closes the picker tab.
   - Shell: `terminalInstanceService.createInstance({}, TerminalLocation.Editor)`.
-  - Claude: 임베드 그룹에 터미널 열고 `remote-pair launch` sendText.
-  - Codex / Gemini: 터미널 + 각 CLI sendText.
-- 터미널 포커스/입력: 호스팅 레이어의 `focus()` override로 해결. 코어 터미널 동작 미수정.
-- 임베드 그룹 툴바(`+ ⌄ ⊟ ⋯`) CSS로 숨김(커스텀 "+" 와 중복 방지).
+  - Claude: opens a terminal in the embedded group and sendText `remote-pair launch`.
+  - Codex / Gemini: a terminal + each CLI via sendText.
+- Terminal focus/input: solved via a `focus()` override in the hosting layer. The core terminal behavior is unmodified.
+- The embedded group toolbar (`+ ⌄ ⊟ ⋯`) is hidden via CSS (to avoid duplication with the custom "+").
 
-**숨겨진 네이티브 UI (코드 보존)**
-- 하단 패널: Problems / Output / Debug / Terminal / Ports — `RemotePairPanelCompositeBar` 허용목록으로 숨김(`remotepair*` 컨테이너만 통과). 코드는 등록 유지(rebase-safe).
-- CHAT / Build-with-Agent(Auxiliary Bar): `RemotePairAuxBarCompositeBar` 허용목록으로 숨김.
-- Outline, Timeline: `when: ContextKeyExpr.false()` — 뷰 디스크립터에만 적용, 코드 유지.
+**Hidden native UI (code preserved)**
+- Bottom panel: Problems / Output / Debug / Terminal / Ports — hidden via the `RemotePairPanelCompositeBar` allowlist (only `remotepair*` containers pass). The code stays registered (rebase-safe).
+- CHAT / Build-with-Agent (Auxiliary Bar): hidden via the `RemotePairAuxBarCompositeBar` allowlist.
+- Outline, Timeline: `when: ContextKeyExpr.false()` — applied only on the view descriptor, the code is kept.
 
-**하단 Session Manager 패널**
-- **세 개의 Panel 컨테이너 탭**(`remotepair.sessions.attached` / `.detached` / `.history`) — 네이티브 Problems/Output/Terminal처럼 하단 가로 탭으로 표시(라벨이 곧 카테고리; "세션 매니저" 단일 라벨 폐기). 공간 절약 위해 패널 기본 높이를 낮게(`layout.ts` `PANEL_SIZE`=90px + `panelPart` `preferredHeight`/`minimumHeight`).
-- G003 허용목록(`remotepair*`)을 통과하는 유일한 패널 그룹.
-  - Attached: 임베드 세션들이 `ITerminalService.instances`를 우회(Editor 위치 생성)하므로 `AttachedSessionsProvider`를 별도 구현해 sidebar가 직접 추적. 카드에 **활성 세션 outline 하이라이트**(`.remotepair-session-card-active`) + **닫기 X 버튼**(`.remotepair-session-card-close`; `AttachedSessionsProvider.close?`/`getActiveId?`).
-  - Detached: `remote-pair ls` 기반 tmux-aqua 세션 목록(dev 환경 = 빈 상태). 클릭 → reattach: 임베드 그룹에 터미널 열고 `remote-pair attach <name>` sendText.
-  - History: IStorageService(workspace scope)로 지난 세션명 유지.
+**Bottom Session Manager panel**
+- **Three Panel container tabs** (`remotepair.sessions.attached` / `.detached` / `.history`) — shown as bottom horizontal tabs like the native Problems/Output/Terminal (the label is the category; the single "Session Manager" label is dropped). To save space, the panel default height is lowered (`layout.ts` `PANEL_SIZE`=90px + `panelPart` `preferredHeight`/`minimumHeight`).
+- The only panel group that passes the G003 allowlist (`remotepair*`).
+  - Attached: since embedded sessions bypass `ITerminalService.instances` (created at the Editor location), a separate `AttachedSessionsProvider` is implemented so the sidebar tracks them directly. The card has an **active-session outline highlight** (`.remotepair-session-card-active`) + a **close X button** (`.remotepair-session-card-close`; `AttachedSessionsProvider.close?` / `getActiveId?`).
+  - Detached: a tmux-aqua session list based on `remote-pair ls` (dev environment = empty state). Click → reattach: opens a terminal in the embedded group and sendText `remote-pair attach <name>`.
+  - History: past session names are retained via IStorageService (workspace scope).
 
-#### 완료 (G005–G008, 브랜드 빌드)
+#### Complete (G005–G008, branded build)
 
-| 항목 | 상태 | 비고 |
+| Item | Status | Notes |
 |---|---|---|
-| G005 Browser 멀티루트 | ✅ 완료 | FOLDER_MAPS 모든 clientDir 멀티루트; per-folder "+"; [Add Mapping]; Search/Extensions 진입점 (`~` 확장·`existsSync`·`updateWorkspaceFolders` 반환 처리 포함) |
-| G006 Host 버튼 | ✅ 완료 | status bar 좌측: 호스트명 + 도달성 아이콘; 클릭 → quickpick. 네이티브 "><" SSH 인디케이터 제거. 패키지앱(CDP :9444)에서 실제 호스트 `gh-mac-m1` 표시 검증 |
-| G008 functional-test gate | ✅ 완료 | 36개 기능 인벤토리(`G008-functional-test-inventory.md`) 클릭 테스트 통과 |
-| 브랜드 빌드 검증 | ✅ 완료 | m4에서 branded build 7회; 패키지앱 + 원격 E2E(gh-mac-m1 aqua tmux 소켓 → REMOTEPAIR_E2E_OK) 검증 |
+| G005 Browser multi-root | ✅ complete | Multi-root all clientDir in FOLDER_MAPS; per-folder "+"; [Add Mapping]; Search/Extensions entry points (including `~` expansion, `existsSync`, and handling the `updateWorkspaceFolders` return) |
+| G006 Host button | ✅ complete | status bar left: host name + reachability icon; click → quickpick. Native "><" SSH indicator removed. Verified the actual host `gh-mac-m1` is shown in the packaged app (CDP :9444) |
+| G008 functional-test gate | ✅ complete | 36-item functional inventory (`G008-functional-test-inventory.md`) click test passed |
+| Branded-build verification | ✅ complete | Branded build 7 times on m4; verified the packaged app + remote E2E (gh-mac-m1 aqua tmux socket → REMOTEPAIR_E2E_OK) |
 
 #### future / deferred
 
-| 항목 | 상태 | 비고 |
+| Item | Status | Notes |
 |---|---|---|
-| patches/ 캡처 (rebase-safety) | ✅ 캡처·검증 완료 | `vscode/src` 변경(G001–G008, 23파일 +1747/−42)을 `patches/zz-remotepair-ide-frontend.patch`로 캡처. 별도 worktree에 base+42 재구성→git diff로 추출(undo_telemetry·announcement 노이즈 제외). **gold 검증**: 실제 prepare_vscode 순서(json→root패치(zz 마지막)→osx→announcement→telemetry)로 적용 시 작업트리와 0 diff. top repo(remotepair-ide master) 커밋만 남음 |
-| 화면공유 사이드카(`host/rd/screen`) | 구현됨 | §1 Remote Desktop 참조 |
-| 앱 id 통합 | deferred | `com.x10lab.remotepair-ide` → `com.x10lab.remote-pair` 통합은 후속 마일스톤 |
+| patches/ capture (rebase-safety) | ✅ captured and verified | Captured `vscode/src` changes (G001–G008, 23 files +1747/−42) as `patches/zz-remotepair-ide-frontend.patch`. Reconstructed base+42 in a separate worktree → extracted via git diff (excluding undo_telemetry/announcement noise). **gold verification**: applied in the actual prepare_vscode order (json→root patches (zz last)→osx→announcement→telemetry), giving a 0 diff against the working tree. Only the top-repo (remotepair-ide master) commit remains |
+| Screen-sharing sidecar (`host/rd/screen`) | implemented | See §1 Remote Desktop |
+| Client bare-id migration | deferred | `com.x10lab.remotepair-ide` → `com.x10lab.remote-pair` (the **Client**, not the host, takes the bare — §Identity Separation). Creating the new Client cask `remote-pair` happens when the IDE ships |
 
-#### G009 — Browser UX 개편 (신규, in-progress, 2026-06-14)
+#### G009 — Browser UX overhaul (new, in-progress, 2026-06-14)
 
-권위 스펙: `remotepair-ide/.omc/specs/deep-interview-browser-multiroot-favorites-ux.md`. 네 컴포넌트:
+Authoritative spec: `remotepair-ide/.omc/specs/deep-interview-browser-multiroot-favorites-ux.md`. Four components:
 
-- **C1 — 루트/매핑 추가 UX (mount-first)**: Browser 폴더 리스트 *아래* 오프셋 버튼 "Add Root/Mapping"(맵 없으면 빈 공간에 동일 버튼, new-folder와 구분되는 아이콘). 클릭 → 호스트 폴더 지정 → **mount-first**: `remote-pair mount`(SMB 기본=맥 내장·커널확장 불필요; SSHFS 옵션 — `docs/m-mount.md`, 런처 `client/cli/remote-pair-mount` 완성)로 마운트 → 마운트포인트(`~/.remote-pair/mounts/...`)를 FOLDER_MAP으로 가리켜 루트 추가. SMB/SSHFS는 실제 OS 마운트라 **Finder에도 자동 노출**. Syncthing 복사동기화는 **legacy**(`SYNC_BACKEND` 기본을 syncthing→mount). row-1 타이틀의 'Add Mapping' 제거(단일 진입점). Browser 루트 = FOLDER_MAPS clientDir만(실행 인자로 열린 비-매핑 워크스페이스 폴더는 표시 안 함).
-- **C2 — Favorites 뷰**: Browser 컨테이너 하단에 별도 뷰(기존 Explorer의 OUTLINE/TIMELINE처럼). 폴더 별표 → Favorites 등록(workspace+global 영속). 항목/'+' 클릭 → 그 폴더에서 **새 Sessions 터미널 시작**(`openSessionInFolder` 재사용) = 빠른 세션 런처.
-- **C3 — 폴더행 인라인 컨트롤**: 모든 폴더 행(루트+모든 하위폴더) 우측에 **호버 시** 별표(Favorite 토글) + '+'(여기서 새 세션). 파일 행엔 없음. `MenuId.ExplorerContext` group:'inline' + `ExplorerFolderContext`.
-- **C4 — Browser = 메타-컨테이너 + 2행 헤더**: Browser는 Sessions와 동일한 *상위* 컨테이너로 하위 컨테이너(Explorer/Search/Extensions/…)를 담는다. **Row-1 버튼 = 하위 컨테이너 라우터**: 클릭 시 Browser 내부 콘텐츠만 교체(현행처럼 전체 창을 덮는 글로벌 뷰렛 이동 ❌, 같은 Browser 프레임 유지). Row-2 = 활성 하위 컨테이너 컨트롤(Explorer면 동적 루트-라벨[클릭한 하위폴더가 속한 루트] + 네이티브 새파일/새폴더/새로고침/접기). **최대 난도 항목** — Explorer/Search/Extensions를 한 컨테이너의 내부-라우팅 하위뷰로 중첩하는 방법을 아키텍트가 확정(후보: View로 등록 후 가시성 토글 / 커스텀 라우터로 각 뷰렛 pane을 Browser body에 호스팅[Sessions 임베드 EditorPart 패턴] / 통합 프레임 유지 composite-swap).
+- **C1 — Root/mapping add UX (mount-first)**: an offset "Add Root/Mapping" button *below* the Browser folder list (when there's no map, the same button in the empty space, with an icon distinct from new-folder). Click → designate a host folder → **mount-first**: mount via `remote-pair mount` (SMB by default = macOS built-in, no kernel extension needed; SSHFS as an option — `docs/m-mount.md`, launcher `client/cli/remote-pair-mount` complete) → point the mount point (`~/.remote-pair/mounts/...`) as a FOLDER_MAP to add the root. SMB/SSHFS are real OS mounts, so they're **auto-exposed in Finder too**. Syncthing copy-sync is **legacy** (the `SYNC_BACKEND` default moves syncthing→mount). Remove 'Add Mapping' from the row-1 title (single entry point). Browser roots = only FOLDER_MAPS clientDir (a non-mapped workspace folder opened via launch arguments is not shown).
+- **C2 — Favorites view**: a separate view at the bottom of the Browser container (like the existing Explorer's OUTLINE/TIMELINE). Star a folder → register it in Favorites (workspace+global persistence). Clicking an item / '+' → **starts a new Sessions terminal in that folder** (reusing `openSessionInFolder`) = a quick session launcher.
+- **C3 — Folder-row inline controls**: on the right of every folder row (root + all subfolders), **on hover**, a star (Favorite toggle) + '+' (new session here). Not on file rows. `MenuId.ExplorerContext` group:'inline' + `ExplorerFolderContext`.
+- **C4 — Browser = meta-container + 2-row header**: Browser is a *parent* container, like Sessions, that holds child containers (Explorer/Search/Extensions/…). **Row-1 buttons = child-container router**: clicking swaps only the inner content of Browser (❌ not the current global viewlet move that covers the whole window; it keeps the same Browser frame). Row-2 = controls for the active child container (for Explorer, a dynamic root-label [the root the clicked subfolder belongs to] + native new-file/new-folder/refresh/collapse). **The highest-difficulty item** — the architect finalizes how to nest Explorer/Search/Extensions as internally-routed child views of one container (candidates: register as Views then toggle visibility / host each viewlet pane in the Browser body via a custom router [the Sessions embedded-EditorPart pattern] / a composite-swap that keeps a unified frame).
 
-병행 수정(적용·dev 검증 완료, 다음 브랜드 빌드 대기):
-- **터미널 키 입력/포커스**: `RemotePairTerminalSidebarView.focus()`가 `super.focus()`로 컨테이너에 포커스를 뺏던 것 제거 → xterm textarea 직접 포커스 + microtask 재확정(코어 터미널 불변).
-- **우측 사이드바(secondary side bar) 레이아웃 제거**: `layout.ts setAuxiliaryBarHidden`에서 hidden 강제(그리드 공간 0, 코드·노드 보존).
-- **Sessions '+' 중복 제거**: row-1 ViewTitle 액션만 유지, body 커스텀 버튼 제거.
+Parallel fixes (applied, dev-verified, awaiting the next branded build):
+- **Terminal key input/focus**: removed `RemotePairTerminalSidebarView.focus()` stealing focus to the container via `super.focus()` → focuses the xterm textarea directly + reconfirms on a microtask (core terminal invariant).
+- **Remove the right sidebar (secondary side bar) layout**: force hidden in `layout.ts setAuxiliaryBarHidden` (zero grid space, code/node preserved).
+- **Remove the duplicate Sessions '+'**: keep only the row-1 ViewTitle action, remove the body custom button.
 
-**구현 상태 (2026-06-15):** C1–C4 전부 소스 구현·tsc 0 errors. C4는 dev CDP **스파이크 PASS** — Browser 메타-컨테이너 Row-1(Explorer/Search/Extensions) + 2행헤더 + Explorer↔Search 인-프레임 라우팅(호스팅 SearchView, 활성=Browser 유지, 에러 0). C4 라우터 메커니즘은 plan의 `moveViewsToContainer`(영속화·canToggleVisibility:false 블로커)를 피해, Browser 컨테이너에 RemotePair 소유 뷰(`remotepair.browser.search`)로 네이티브 SearchView를 비영속 호스팅(`remotePairBrowserRouter.ts`). Extensions in-frame은 v1 제외(스파이크 #2). 코어 수정은 explorerView.ts의 마킹된 below-list 푸터(C1)+Row-2 라벨(C4.2)뿐. 남은 것: 패키지 빌드 라이브 검증(C1 mount 풀흐름·C3 호버) + patches/ 재캡처.
+**Implementation status (2026-06-15):** C1–C4 all source-implemented, tsc 0 errors. C4 is a dev-CDP **spike PASS** — Browser meta-container Row-1 (Explorer/Search/Extensions) + 2-row header + Explorer↔Search in-frame routing (hosted SearchView, active = stays Browser, 0 errors). The C4 router mechanism avoids the plan's `moveViewsToContainer` (persistence / canToggleVisibility:false blockers) by non-persistently hosting the native SearchView as a RemotePair-owned view (`remotepair.browser.search`) in the Browser container (`remotePairBrowserRouter.ts`). Extensions in-frame is excluded from v1 (spike #2). The only core edits are the marked below-list footer in explorerView.ts (C1) + the Row-2 label (C4.2). Remaining: live verification of the package build (C1 full mount flow, C3 hover) + re-capturing patches/.
 
-#### IDE 프론트엔드 불변식
-1. **코어 터미널 동작 코드 불변**: `xterm`, `TerminalInstance`, `TerminalProcessManager` 등 코어 파일은 절대 수정하지 않는다. 호스팅/임베딩 레이어와 새 contributor 파일만 건드린다.
-2. **"코드 유지, UI 숨김"**: native 컨테이너 unregister 금지. composite-bar 허용목록 + `when=false`만 사용해 upstream rebase를 쉽게 유지한다.
-3. **단일 열기 계약**: 모든 세션 오픈은 `openSession({kind, cmd, hostDir, sessionName})`을 통해 임베드된 `part.activeGroup`으로만, global editorService 우회 금지.
-4. **tsc 클린**: 모든 커밋 전 `tsc --noEmit -p src/tsconfig.json --max-old-space-size=8192` (nvm node 22.22.1) 0 errors.
-5. **dev-watch**: `buildConfig.useEsbuildTranspile=true`는 dev 전용 — production 빌드에 이 설정을 쓰지 않는다.
+#### IDE frontend invariants
+1. **Core terminal behavior code is invariant**: core files like `xterm`, `TerminalInstance`, `TerminalProcessManager` are never modified. Only the hosting/embedding layer and new contributor files are touched.
+2. **"Keep the code, hide the UI"**: no unregistering native containers. Use only composite-bar allowlists + `when=false` to keep upstream rebases easy.
+3. **Single-open contract**: every session open goes through `openSession({kind, cmd, hostDir, sessionName})` into the embedded `part.activeGroup` only; no bypassing the global editorService.
+4. **tsc clean**: before every commit, `tsc --noEmit -p src/tsconfig.json --max-old-space-size=8192` (nvm node 22.22.1) with 0 errors.
+5. **dev-watch**: `buildConfig.useEsbuildTranspile=true` is dev-only — do not use this setting in production builds.
 
-### README / 문서
-- 아키텍처 다이어그램, 문제기반 Features, 설치 중심 구성, 깊은 TCC 내부는 본문에서 제거.
-- **⚠️ 보안/책임 경고**: macOS 가드레일을 모두 풀기 때문에 부주의로 인한 손해는 전적으로 사용자 책임, as-is 무보증.
-- 새 설치방법 반영, **한국어/영어 두 버전**.
-- **폴더 매핑 다이어그램**(Google Drive/Syncthing/iCloud, 부모경로는 달라도 하위는 동일).
-- 직역투 정정(Computer Use·headless 등 고유명사 영문 유지), 군더더기 제거.
-- **Claude Code 붙여넣기 설치 프롬프트**(레포 URL만 — README를 직접 읽음). 한/영 모두 프롬프트는 영어.
-- brew 없는 사용자 안내 + [brew.sh] 링크.
-- 원격 로그인 섹션: 스크린샷 + Apple 가이드 링크(원격 로그인은 CLI·host 양쪽 설정 필요).
-- SSH 키 기반 접근 절차(검증 중심으로 압축).
-- 제목 위계: 호스트/클라이언트를 축으로, 하위 단계는 `####`.
-- 사용방법 섹션(Finder 실행 스크린샷), 문제해결 & 버그 신고 섹션.
-- **리네임 업그레이드 안내**(README·cask caveats): cask 토큰 전환 + AX/SR 재grant 1회. (이미 반영됨)
-- `docs/`에 내부 로직 문서(architecture.md), 추후 항목(future.md), 본 requirements.md.
-
----
-
-## 2. 비기능 요구사항 / 제약
-
-- **Apple Silicon macOS 전용**, macOS Ventura+ (Sequoia 권장).
-- 오픈소스 — 별도 배포 인프라 비용 없이 GitHub Releases 활용. 라이선스 **AGPL-3.0-or-later**(AGPL 컴포넌트와 묶지 않음 — §올인원 라이선스 매트릭스).
-- **`~/.remote-pair`가 상태의 단일 출처** — 기기 간 `~/.claude` 동기화 불요. RemotePair 자체 config은 `.claude` 밖 네임스페이스(기기별, sync 안 함).
-- **낮은 결합도 / 높은 응집도**(§0.1 불변식): 앱 = 권한 데몬만, CLI = 두뇌(SSOT 겸 메인 인터페이스), 마법사/웹/셸 = CLI 레이어. CLI엔 TCC/AX 코드 없음(앱에 위임). 앱이 CLI를 강제 설치하지 않음. 앱에 네트워크 서버 없음.
-- **GUI는 웹 우선, 네이티브는 껍데기**(§0.3) — JSON API 시임 고정, 브리지 구현만 교체 가능.
-- 웹 브리지·SPA는 **빌드 툴체인·npm 의존 0**(python3 stdlib + 정적 자산). 외부 패키지 추가는 저결합·무의존 원칙 위반으로 간주.
-- **`.git`은 Syncthing 동기화 제외**(`.stignore`) — 양쪽 git 상태가 달라 오인 커밋/푸시 위험. 작업트리만 동기화, `.git`은 기기-로컬.
-- `.claude/projects/` 폴더는 `.gitignore` + git 히스토리 제거(용량·프라이버시) + Syncthing 제외.
-- 추적가능 로깅(5MB 회전), 실패 시 일시정지.
-- 보안: 웹 브리지는 loopback 전용 + per-run 토큰. 절대 외부 바인딩하지 않는다.
-- 이 프로젝트 대화는 **한국어**. 직역투·군더더기 배제.
+### README / Docs
+- Remove the architecture diagram, problem-based Features, install-centric structure, and deep TCC internals from the main body.
+- **⚠️ Security/liability warning**: because it disables all macOS guardrails, any damage from carelessness is entirely the user's responsibility, as-is with no warranty.
+- Reflect the new install method, in **both Korean and English versions**.
+- **Folder-mapping diagram** (Google Drive/Syncthing/iCloud; parent paths differ but the subpaths are identical).
+- Fix translationese (keep proper nouns like Computer Use, headless in English), remove cruft.
+- **A Claude Code paste-in install prompt** (the repo URL only — it reads the README itself). The prompt is in English for both Korean and English.
+- Guidance for users without brew + a [brew.sh] link.
+- Remote Login section: screenshots + an Apple guide link (Remote Login needs setup on both the CLI and host sides).
+- SSH-key-based access procedure (condensed to be verification-centric).
+- Heading hierarchy: along the host/client axis, with sub-steps at `####`.
+- A How-to-Use section (Finder-launch screenshots), a Troubleshooting & Bug-Reporting section.
+- **Identity-separation guidance** (README, cask caveats): the Host cask keeps `remote-pair-host` permanently, and the Client (IDE) cask `remote-pair` is a separate app. The existing host-rename migration guidance (cask token transition) is **withdrawn** — §Identity Separation. (README needs re-reconciliation.)
+- In `docs/`: the internal-logic doc (architecture.md), later items (future.md), and this requirements.md.
 
 ---
 
-## 3. 결정 기록 (Decisions)
+## 2. Non-functional Requirements / Constraints
 
-- **Homebrew Cask 배포 채택** — self-signed 코드서명 문제 회피 + 동일 cert 바이너리로 cross-cert grant 깨짐을 근본 해결.
-- **소스 빌드를 bootstrap에서 제거**, 메인테이너 전용으로 분리(brew가 앱 공급).
-- **bootstrap이 host면 brew cask까지 자동** 설치("cli가 다 해버리자").
-- **1:1 연결만** — 세션공유 폐기. launch는 `claude-iterm-launch` 충실 포팅.
-- **approve 키는 osascript** 통일(cliclick 합성키가 Chrome 확장 팝업에 안 먹힘).
-- **persist 자동감지 로직 제외**(의도적).
-- approve는 에이전트 중심 + 스킬 기반 툴 선택.
-- RemotePair config는 자체 네임스페이스(`~/.remote-pair`), `.claude`는 에이전트 정체성(skill·rules·logs) 전용.
-- **sync 기본 off**(동기화 없는 환경에서도 동작).
-- `legacy/` 폴더 삭제.
-- **세션 식별은 결정적 id 기반**(한글 경로 오염 차단) — uuid5/`--session-id` 방식은 철회.
-- `claude` 실행에 `--dangerously-skip-permissions` 추가.
-- **(2026-06-13) 정체성 통일** — `RemotePairHost`→`RemotePair`, `com.x10lab.remote-pair-host`→`com.x10lab.remote-pair`. cask 토큰도 `remote-pair`로 전환(신규 cask). 소스 디렉터리명은 deferred.
-- **(2026-06-13) 서명 cert 전환을 리네임과 한 릴리스(v0.5.0)에 묶음** — 33849F → 898E32. bundle id 변경 + cert 변경이 동시이므로 designated requirement(identifier+leaf)가 한 번에 무효화되어, **재grant 1회**로 끝난다. 기존의 "릴리스는 m4(33849F)에서만 서명" 항목을 대체한다(CI 서명, p12는 gh secret). 이후 릴리스는 898E32로 일관 서명.
-- **(2026-06-13) GUI는 웹 우선** — localhost 웹 마법사로 시작 → 나중에 네이티브 껍데기(WKWebView/Electron)로 포팅. 프론트는 끝까지 웹, JSON API가 교체 가능한 시임. 앱엔 네트워크 서버를 넣지 않음.
-- **(2026-06-13) 에디터는 code-server 포크 vendoring** — 설정 우선, 안 되는 것만 surgical 패치(점진적, Cursor식). from-scratch 아님. Claude Code 익스텐션은 Open VSX.
-- **(2026-06-14) M4 에디터를 VSCodium 포크(RemotePair IDE)로 피벗** — code-server 경로 폐기. Claude Code / Codex 익스텐션 호환성(Node API·마켓플레이스)이 실제 VS Code / Electron 엔진을 요구함. 백엔드(M1–M6)는 재사용. 전략: "코드 유지, UI 숨김"(composite-bar 허용목록 + `when=false`); 코어 터미널 동작 코드 불변(에지케이스 지뢰밭). 번들 id `com.x10lab.remotepair-ide`(앱 id 통합 deferred). dev-watch: nvm node 22.22.1 + `buildConfig.useEsbuildTranspile=true`(dev 전용).
-- **(2026-06-13) 온보딩 마법사를 M1 첫 마일스톤으로** — 역할→권한→재grant→SSH→매핑→Syncthing→검증. 브리지는 얇은 HTTP↔CLI 어댑터(설치 로직 재구현 금지).
-- **(2026-06-13) 올인원은 오케스트레이션만** — 베스트 OSS를 설치·구성·실행만. 화면공유는 자체 `host/rd/screen` 엔진(허용형 deps). 상용 배포 전 법률 확인.
-- **(2026-06-14) 파일 접근 기본을 mount-first로 전환** — Browser 루트/매핑 추가는 기본적으로 호스트 폴더를 **마운트**(`remote-pair mount`, SMB 기본=맥 내장, SSHFS 옵션; `docs/m-mount.md`)하고 마운트포인트를 FOLDER_MAP으로 가리킨다. 단일 source-of-truth·무충돌·Finder 자동 노출. Syncthing 복사동기화는 **legacy**로 유지(`SYNC_BACKEND` 기본 syncthing→mount). 런처는 완성, config/wizard/doctor wiring은 follow-up. 화면공유 사이드카는 자체 엔진(`host/rd/screen`)으로 구현됨.
-- **(2026-06-14) Browser는 메타-컨테이너** — Sessions와 대칭. Browser는 하위 컨테이너(Explorer/Search/Extensions/…)를 담는 상위 컨테이너이고 2행 헤더 Row-1이 하위뷰 라우터. 클릭 시 전체 창을 덮는 글로벌 뷰렛 이동이 아니라 Browser 내부 콘텐츠만 교체. 중첩 메커니즘은 아키텍트 확정(§1 G009).
-- **(2026-06-13) Remote Desktop 보류** — v0 screencapture 채널/VNC, v1 WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring 추가).
-- 버전 정책: pre-1.0 유지. 리네임·cert 전환은 v0.5.0 마이너 bump로 처리, 이후 패치 +0.0.1.
+- **Apple Silicon macOS only**, macOS Ventura+ (Sequoia recommended).
+- Open source — use GitHub Releases with no separate distribution-infra cost. License **AGPL-3.0-or-later** (not bundled with non-AGPL-compatible components — §All-in-One license matrix).
+- **`~/.remote-pair` is the single source of truth for state** — no need for cross-device `~/.claude` sync. RemotePair's own config is in a namespace outside `.claude` (per-device, not synced).
+- **Low coupling / high cohesion** (invariant §0.1): app = permission daemon only, CLI = the brain (SSOT and the main interface), onboarding/web/shell = CLI layer. The CLI has no TCC/AX code (delegated to the app). The app does not force-install the CLI. The app has no network server.
+- **GUI is web-first, native is a shell** (§0.3) — the web-UI / CLI-bridge seam is fixed, only the bridge implementation is replaceable.
+- **`.git` is excluded from Syncthing sync** (`.stignore`) — the two sides' git states differ, risking erroneous commit/push. Sync the working tree only; keep `.git` device-local.
+- The `.claude/projects/` folder is `.gitignore`d + removed from git history (size/privacy) + excluded from Syncthing.
+- Traceable logging (5MB rotation), pause on failure.
+- Security: the onboarding runs inside the native Electron shell and reaches the brain through the shell's bridge to the `remote-pair` CLI / `status.json` — no network server is added to the host app, so there is nothing that binds externally (§0.1).
+- This project's conversations are in **Korean**. Avoid translationese and cruft.
 
 ---
 
-## 4. 미해결 / 열린 항목 (Open issues)
+## 3. Decisions
 
-### 해결됨
-- ~~**brew cask appdir 불일치**~~ — Homebrew cask 기본 위치 `/Applications`에 맞춰 통일. `config.sh` `APP_PATH`·Updater·Installer 폴백·Permissions 안내·README를 모두 `/Applications`로 변경. 앱 자기설치 LaunchAgent는 `Bundle.main` 실제 경로를 써서 원래도 무관.
-- ~~**메인테이너 문서 버전 표기 불일치**~~ — README "For maintainers"를 실제 릴리스/cask와 정합(현재 0.5.0). `host/build-host.sh`의 `VERSION` 단일 출처와 일치.
-- ~~**정체성 통일(리네임 + bundle id + cask 토큰)**~~ — 코드/cask는 적용 완료: `config.sh` 기본값 `RemotePair`/`com.x10lab.remote-pair`, `Config.swift` `BUNDLE_ID` 폴백, `Installer.swift` legacy-shed, `client/cli/remote-pair` dual-id 프로빙, `Casks/remote-pair.rb`(옛 cask 부재). 남은 일은 사용자 마이그레이션 안내(README 반영됨)와 소스 디렉터리명 정리(deferred).
-- ~~**cert 전환(33849F → 898E32)**~~ — 리네임과 v0.5.0에 묶어 처리(재grant 1회). `build-host.sh`가 v0.5.0~ 정체성 변경 + 재grant 필요를 명시.
-- ~~**클라 머신 호스트 자기설치·중복 인스턴스**~~ — `Installer.swift` legacy-shed가 옛 LaunchAgent bootout + 옛 .app 제거로 두 메뉴바 인스턴스 차단(gh-mac-m4 사고 재발방지, 커밋 1ffb3bd).
-
-### 열린 항목
-- **4개 pre-existing 런처 테스트 실패** — `tests/run.sh` 결과 159 passed / 4 failed. 실패 항목: `t_04_target` `target/remote-host+--local→local`, `t_07_resilience` `s1/reach-fail-no-tailscale`·`s2/exit-node-set`, `t_06`(혹은 동치) `s4/dir-ssherr`. **근본 원인**: `--local` 강제 또는 원격 도달 실패로 로컬 폴백 경로를 탈 때, 머신에 RemotePair 호스트가 없으면(`ensure_local_host` 거짓) 런처가 `tmux-aqua new-session` 대신 **plain `tmux new`/`tmux attach`** 를 호출한다(`client/cli/remote-pair-launch:277-290`). 테스트는 `tmux-aqua`/`new-session`을 기대하므로 실패. 설계상 "tmux-aqua 없는 머신엔 computer-use 없음"이 의도지만, 테스트 기대와 어긋나므로 (a) 로컬 폴백도 tmux-aqua를 우선 시도하도록 런처를 고치거나 (b) 테스트 기대를 현재 설계에 맞추는 결정이 필요.
-- **host hot-update 권한 상속 충돌 스파이크(M6 선행, ⚠️)** — 앱을 재시작해 무중단 업데이트하면 tmux 부모가 launchd로 reparent되어 AX 상속이 깨질 수 있다(`tmux-aqua`가 reparent를 막는 전제가 앱 교체 시 흔들림). M6 hot-update 구현 전에 **권한 상속이 유지되는지 스파이크**로 먼저 검증해야 한다.
-- **의존성 라이선스 검증** — 화면공유 엔진(`host/rd/screen`) deps가 허용형만인지 cargo-deny로 확인(RemotePair=AGPL-3.0). 상용 배포 전 법률 자문.
-- **code-server 포크 유지보수 비용** — 포크·vendoring + surgical 패치 모델은 업스트림 추종 비용이 든다. 패치 표면 최소화 + 업스트림 리베이스 전략을 M3 착수 시 확정.
-- **알림 포워딩 훅 부재** — 현재 host엔 approve-reminder 훅만 있고 Notification/Stop 포워딩 훅이 없다(M2에서 추가).
-- **glue 자동 업데이트** — cask가 .app만 자동 업데이트하고 approve 스킬·훅(glue)은 bootstrap 재실행이 필요. .app 번들 동봉 vs repo 재실행 모델 결정 대기. → [future.md](future.md).
-- 메뉴바 "활성 세션 없음" 표시가 실제 세션 상태와 불일치(앱 미기동·status.json 부재 시 ground-truth 괴리).
-- 클린설치 테스트(m1/m4)를 cron 예약으로 검증.
+- **Adopt Homebrew Cask distribution** — sidesteps the self-signed code-signing problem + fundamentally resolves cross-cert grant breakage via same-cert binaries.
+- **Remove source builds from bootstrap**, splitting them out as maintainer-only (brew supplies the app).
+- **bootstrap auto-installs the brew cask too when it's a host** ("let the cli do it all").
+- **1:1 connection only** — session sharing withdrawn. launch is a faithful port of `claude-iterm-launch`.
+- **approve keys are osascript** (unified) (cliclick synthetic keys don't register in the Chrome extension popup).
+- **Exclude persist auto-detection logic** (intentional).
+- approve is agent-centric + skill-based tool selection.
+- RemotePair config is in its own namespace (`~/.remote-pair`); `.claude` is dedicated to agent identity (skill/rules/logs).
+- **sync defaults off** (works even in environments without sync).
+- Delete the `legacy/` folder.
+- **Session identification is based on a deterministic id** (blocks Korean-path pollution) — the uuid5/`--session-id` approach is retracted.
+- Add `--dangerously-skip-permissions` to the `claude` invocation.
+- **(2026-06-13) Identity unification** ~~unify `RemotePairHost`→`RemotePair`~~ — **withdrawn (superseded by the 2026-06-15 separation).** The Host/Client natures are too different, so separate instead of unify. The source-directory renaming (host/app, client/cli, host/rd, client/ide) was completed as separate work.
+- **(2026-06-15) Host/Client identity separation (unification withdrawn)** — the two apps' natures are too different (Host = headless permission daemon 24/7, Client = an IDE GUI a person sits in) + name collision when coexisting on the same machine. → **Host** `RemotePair Host`/`com.x10lab.remote-pair-host`/cask `remote-pair-host` (`-host` permanent, the code already matches), **Client** `RemotePair`/`com.x10lab.remote-pair`/cask `remote-pair` (the Client takes the bare). Migrate the IDE bundle id `remotepair-ide`→`remote-pair` + create a new Client cask (when the IDE ships). Cancel `config.sh` "0.5 RELEASE FLIP" (host→bare).
+- **(2026-06-13→06-15 revised) Signing cert consolidated under CI 898E32** — release signing is via CI only (release.yml, 898E32, the p12 a gh secret), maintainer manual signing prohibited (blocking 33849F contamination). **Since the host rename was canceled, the "rename+cert together" bundling is released** — if the host cert actually changes, a **single re-grant** is needed at that time due to the designated-requirement (identifier+leaf) change (an independent event).
+- **(2026-06-13) GUI is web-first** — the frontend stays web all the way (now realized as the Electron React UI), with the native shell as a replaceable seam. The original "start with a localhost web wizard" approach (a vanilla SPA + python HTTP bridge) was a pre-VSCodium attempt and has been removed; the web-first principle survives in the Electron onboarding (§1 Onboarding). No network server in the app.
+- **(2026-06-13) The editor is a vendored code-server fork** — config first, surgical patches only for what config can't do (incremental, Cursor-style). Not from-scratch. The Claude Code extension is from Open VSX.
+- **(2026-06-14) Pivot the M4 editor to a VSCodium fork (RemotePair IDE)** — abandon the code-server path. Claude Code / Codex extension compatibility (Node API, marketplace) requires an actual VS Code / Electron engine. The backend (M1–M6) is reused. Strategy: "keep the code, hide the UI" (composite-bar allowlist + `when=false`); the core terminal behavior code is invariant (an edge-case minefield). bundle id `com.x10lab.remotepair-ide` (app-id consolidation deferred). dev-watch: nvm node 22.22.1 + `buildConfig.useEsbuildTranspile=true` (dev only).
+- **(2026-06-13→06-15 revised) Onboarding as the first M1 milestone** — role→permissions→re-grant→SSH→mapping→Syncthing→verification. **Redesigned as two Electron onboarding windows** (host onboarding in RemotePairHost, client onboarding in the RemotePair IDE), based on a React/shadcn mockup (`context/remotepair-onboarding`) — **not yet built**. The prior browser-based web wizard (vanilla SPA + python HTTP bridge) was removed; the onboarding stays a thin presentation layer over the `remote-pair` CLI (no reimplementing install logic).
+- **(2026-06-13) All-in-One is orchestration only** — just install/configure/run best-of-breed OSS. Screen sharing is the first-party `host/rd/screen` engine (permissive deps). Get legal confirmation before commercial distribution.
+- **(2026-06-14) Switch the file-access default to mount-first** — adding a Browser root/mapping by default **mounts** the host folder (`remote-pair mount`, SMB default = macOS built-in, SSHFS option; `docs/m-mount.md`) and points the mount point as a FOLDER_MAP. Single source-of-truth, conflict-free, auto-exposed in Finder. Keep Syncthing copy-sync as **legacy** (the `SYNC_BACKEND` default moves syncthing→mount). The launcher is complete; config/wizard/doctor wiring is follow-up. The screen-sharing sidecar is implemented as the first-party engine (`host/rd/screen`).
+- **(2026-06-14) Browser is a meta-container** — symmetric with Sessions. Browser is a parent container that holds child containers (Explorer/Search/Extensions/…), and the 2-row header's Row-1 is the child-view router. Clicking swaps only the inner content of Browser, not a global viewlet move that covers the whole window. The nesting mechanism is finalized by the architect (§1 G009).
+- **(2026-06-13) Remote Desktop on hold** — v0 screencapture channel/VNC, v1 WebRTC (ScreenCaptureKit+VideoToolbox, with added Input Monitoring).
+- **(2026-06-15) Update boundary = permission boundary (the deployment constitution, §0.4)** — what goes into the signed `.app` bundle is decided by "does it need a TCC grant?" (independent of interpreted/binary). Permission-needing (app, Helpers, the `screen` sidecar) → bundled in the signed bundle, cask auto-update. Zero-permission (CLI, skill, rules, web, hooks, IDE ext = glue) → `remote-pair update` hot-swap (GitHub fetch, not bundled). The sidecar needs its own SR grant, so it's on the app side and the app supervises it in its process subtree (the current manual deploy in `~/.remote-pair/bin` is a dev fallback). WebRTC v2's control/data plane split matches this boundary (signaling=glue, media=sidecar). To prevent skew, pin the signaling/capability contract as versioned in `shared/screen-protocol`. Security: v2 also uses loopback+`ssh -L`.
+- Versioning policy: stay pre-1.0. With the host rename canceled, the rationale for a v0.5.0 bundled bump is dissolved — independent per-component versions (`versions.json`: host/ide/screen-engine), patches +0.0.1. The Client (IDE) bare-id migration / new cask is an IDE-ship milestone.
 
 ---
 
-*출처: 세션 27d757a4 · 318aaabe · a26f7244 · afad7df4 · df30583d (로컬), 109edb94 · 644df73d (호스트). 4d6e9677 · a23aa692(호스트)는 approve/heartbeat 자동 실행 세션으로 사람 요구사항 없음. **2026-06-13 제품 비전 세션**(웹 UI 전환·정체성 통일·온보딩 마법사·알림 포워딩·올인원 오케스트레이션·로드맵 M1~M6)을 본 개정에 반영했다.*
+## 4. Unresolved / Open Issues
+
+### Resolved
+- ~~**brew cask appdir mismatch**~~ — unified on the Homebrew cask default location `/Applications`. Changed `config.sh` `APP_PATH`, the Updater, the Installer fallback, the Permissions guidance, and the README all to `/Applications`. The app self-install LaunchAgent uses the actual `Bundle.main` path, so it was unaffected originally.
+- ~~**maintainer-doc version mismatch**~~ — reconciled the README "For maintainers" with the actual release/cask (currently 0.5.0). Matches the single source of `VERSION` in `host/build-host.sh`.
+- ~~**Identity unification — applied**~~ ⚠️ **This note was an error.** Bare unification was never applied in the code — host was always `-host` (`config.sh` `APP_NAME=RemotePairHost`/`BUNDLE_PREFIX=…remote-pair-host`, `Config.swift` fallback `RemotePairHost`, `Casks/remote-pair-host.rb`, `identity.json` host component). Re-decided on 2026-06-15 as **separation** (Host `-host` permanent, Client takes bare). For the remaining work see "Client bare-identity migration" below.
+- ~~**cert transition (33849F → 898E32)**~~ — release signing consolidated under CI (898E32) (maintainer manual signing prohibited). With the host rename canceled, "bundled with the rename" is released — when the cert actually changes, the single re-grant is an independent event.
+- ~~**client-machine host self-install / duplicate instances**~~ — `Installer.swift` legacy-shed blocks two menu-bar instances by booting out the old LaunchAgent + removing the old .app (preventing a recurrence of the gh-mac-m4 incident, commit 1ffb3bd).
+
+### Open Issues
+- **4 pre-existing launcher test failures** — `tests/run.sh` results: 159 passed / 4 failed. Failing items: `t_04_target` `target/remote-host+--local→local`, `t_07_resilience` `s1/reach-fail-no-tailscale`·`s2/exit-node-set`, `t_06` (or equivalent) `s4/dir-ssherr`. **Root cause**: when forced `--local` or remote-reach failure takes the local-fallback path, if the machine has no RemotePair host (`ensure_local_host` false), the launcher calls **plain `tmux new`/`tmux attach`** instead of `tmux-aqua new-session` (`client/cli/remote-pair-launch:277-290`). The tests expect `tmux-aqua`/`new-session`, so they fail. By design "no tmux-aqua machine means no computer-use" is intended, but it contradicts the test expectations, so a decision is needed to either (a) fix the launcher so the local fallback also tries tmux-aqua first, or (b) adjust the test expectations to the current design.
+- **Client (IDE) bare-identity migration (unimplemented)** — per the Host/Client separation (§Identity Separation) decision, move the IDE to bare: `shared/identity/identity.json` ide.darwinBundleIdentifier and the IDE product.json `com.x10lab.remotepair-ide`→`com.x10lab.remote-pair`, display name `RemotePair`, **create a new Client cask `remote-pair`** (when the IDE ships), remove the `shared/config.sh` "0.5 RELEASE FLIP" (host→bare) comment. Verify consistency via `shared/identity/check-identity.sh`.
+- **Host hot-update permission-inheritance conflict spike (M6 prerequisite, ⚠️)** — a zero-downtime update by restarting the app may reparent the tmux parent to launchd, breaking AX inheritance (the premise that `tmux-aqua` prevents reparenting is shaken when the app is swapped). Before implementing M6 hot-update, **first verify via a spike that permission inheritance is preserved**.
+- **Dependency license verification** — verify with cargo-deny that the screen-sharing engine (`host/rd/screen`) deps are permissive only (RemotePair = AGPL-3.0). Legal counsel before commercial distribution.
+- **code-server fork maintenance cost** — the fork/vendoring + surgical-patch model incurs upstream-tracking cost. Finalize a minimal patch surface + upstream-rebase strategy when M3 begins.
+- **Missing notification-forwarding hook** — the host currently has only the approve-reminder hook and no Notification/Stop forwarding hook (added in M2).
+- **Deployment-boundary implementation (principle finalized, §0.4)** — "permission boundary = bundle boundary" is decided (§0.4·§3). The remaining implementation set: ① bundle the screen sidecar (`screen`) into the signed .app (`build-host.sh` — per-binary SR grant survival + cask auto-update; demote the current `remote-pair-screen-deploy` manual deploy to a dev fallback), ② auto-trigger glue on app launch (call `remote-pair update` after `Updater` L2 — zero permissions, so independent of the sidecar; closes the gap where cask updated only the .app and the glue didn't follow), ③ when v2 begins, add a version/capability signaling contract to `shared/screen-protocol` (preventing slow-sidecar ↔ fast-glue skew). → [future.md](future.md).
+- The menu-bar "no active session" display is inconsistent with the actual session state (a ground-truth gap when the app isn't running / status.json is absent).
+- Verify the clean-install test (m1/m4) via a cron schedule.
 
 ---
 
-## 5. 로드맵 (M1 → M6)
+*Sources: sessions 27d757a4 · 318aaabe · a26f7244 · afad7df4 · df30583d (local), 109edb94 · 644df73d (host). 4d6e9677 · a23aa692 (host) are approve/heartbeat automated-run sessions with no human requirements. The **2026-06-13 product vision session** (web UI transition, identity unification, onboarding wizard, notification forwarding, all-in-one orchestration, roadmap M1–M6) is reflected in this revision.*
 
-각 마일스톤은 위 요구사항을 묶은 출시 단위다. 의존 순서대로 나열.
+---
 
-| 마일스톤 | 범위 | 상태(2026-06-13) | 핵심 검증 | 참조 |
+## 5. Roadmap (M1 → M6)
+
+Each milestone is a release unit bundling the requirements above. Listed in dependency order.
+
+| Milestone | Scope | Status (2026-06-13) | Key verification | Reference |
 |---|---|---|---|---|
-| **M1** | 온보딩 마법사 + 정체성 통일(리네임·bundle id·cask·cert, v0.5.0) | 마법사 구현됨; 리네임·cert 전환은 v0.5.0 예정(현재 정체성 `-host` 유지) | `remote-pair web` 마법사가 역할→권한→재grant→SSH→매핑→Syncthing→검증을 끝까지 안내. 재grant 1회 후 `status` = AX✓ SR✓. dual-id 프로빙 동작. | §1 온보딩·리네임, architecture.md §9 |
-| **M2** | 알림 포워딩 | 구현됨 | host의 완료/Stop/질문/approve 알림이 client로 전달, 종류 토글. 신규 Notification/Stop 훅이 `doctor`에서 점검됨. | §1 알림 포워딩, architecture.md §10-3 |
-| **M3** | Web 셸 + 터미널 | 구현됨(alt-screen 한계 있음) | xterm.js 터미널이 `capture-pane`/`send-keys` SSH 경유로 tmux-aqua 세션에 연결. Detach/Attach 탭. JSON API 시임 재사용. | §1 Web 셸, architecture.md §10-2 |
-| **M4** | IDE 프론트엔드 (RemotePair IDE — VSCodium 포크) | **G001–G008 완료 + 브랜드 빌드·원격 E2E 검증** | 레일(Browser/Sessions/Settings), Sessions 임베드 EditorPart + 네이티브 탭 + in-tab picker(Claude/Shell/Codex/Gemini), 탭형 Session Manager(Attached/Detached/History, 활성 하이라이트+X), Host 버튼. 남은 작업: `patches/` 캡처(rebase-safety). | §1 IDE Frontend, `.omc/ultragoal/` |
-| **M5** | Remote Desktop | 스캐폴드(VNC launcher 구현, WebRTC는 스파이크) | v0: macOS Screen Sharing arm's-length 런처. v1: WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring). | §1 Remote Desktop·올인원, architecture.md §10-5 |
-| **M6** | host hot-update | 설계 확정, AX 상속 스파이크 대기 | 무중단 앱 업데이트(L1 glue 핫스왑 + L2 네이티브 재실행). **⚠️ 선행 스파이크 필수**: 앱 재시작 시 tmux 부모가 launchd로 바뀌어 AX 상속이 깨지는지 먼저 검증. | §4 hot-update 스파이크, architecture.md §11 |
+| **M1** | Onboarding (two Electron windows) + Host/Client identity separation | Onboarding **not yet built** (redesigned from scratch as Electron windows; prior web wizard removed); Host `-host` permanent (code matches), Client bare-id migration when the IDE ships | Two Electron onboarding windows (host in RemotePairHost, client in the RemotePair IDE), based on the React/shadcn mockup, guide role→permissions→re-grant→SSH→mapping→Syncthing→verification end to end. After a single re-grant, `status` = AX✓ SR✓. | §1 Onboarding·Identity Separation |
+| **M2** | Notification forwarding | implemented | The host's completion/Stop/question/approve notifications are forwarded to the client, with kind toggles. The new Notification/Stop hook is checked by `doctor`. | §1 Notification Forwarding, architecture.md §10-3 |
+| **M3** | Web shell + terminal | **removed — superseded by M4 VSCodium IDE** | The pre-VSCodium web SPA (xterm.js in `client/cli/web/`, talking over the removed `/api/term/*` bridge) was deleted; the shell/terminal is now the M4 IDE's embedded EditorPart sessions. | §1 Web Shell, architecture.md §10-2 |
+| **M4** | IDE frontend (RemotePair IDE — VSCodium fork) | **G001–G008 complete + branded-build/remote-E2E verified** | Rail (Browser/Sessions/Settings), Sessions embedded EditorPart + native tabs + in-tab picker (Claude/Shell/Codex/Gemini), tabbed Session Manager (Attached/Detached/History, active highlight+X), Host button. Remaining: `patches/` capture (rebase-safety). | §1 IDE Frontend, `.omc/ultragoal/` |
+| **M5** | Remote Desktop | scaffold (VNC launcher implemented, WebRTC is a spike) | v0: an arm's-length launcher for macOS Screen Sharing. v1: WebRTC (ScreenCaptureKit+VideoToolbox, Input Monitoring). | §1 Remote Desktop·All-in-One, architecture.md §10-5 |
+| **M6** | host hot-update | design finalized, awaiting the AX-inheritance spike | Zero-downtime app update (L1 glue hot-swap + L2 native re-exec). **⚠️ Prerequisite spike required**: first verify whether restarting the app changes the tmux parent to launchd and breaks AX inheritance. | §4 hot-update spike, architecture.md §11 |
