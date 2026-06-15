@@ -72,6 +72,14 @@ it must stay a byte-faithful mirror of `vscodium/<tag>` so subtree pulls apply c
 > pristine VSCodium are the four §1 items (ext, zz patch, product overlay, dev-build.sh). `00-brand`,
 > `80`, `81` were previously mislabeled as RemotePair — they are stock and live in `vendor/`.
 
+## 2.5 Licensing
+- **`remotepair/` (RemotePair-owned) = AGPL-3.0-or-later** — matches the monorepo root `LICENSE`.
+  `remotepair/ext/LICENSE` is the AGPL text; `remotepair/ext/package.json` declares
+  `"license": "AGPL-3.0-or-later"`.
+- **`vendor/vscodium/` = MIT** (VSCodium/VS Code upstream) — we cannot relicense it; it stays as
+  shipped. The distributed RemotePair.app combines the two: AGPL governs the whole derivative work,
+  while the MIT-licensed upstream portions remain MIT.
+
 ## 3. Build & sync flow
 - **Build:** `client/ide/build.sh` → inject zz patch + overlay into `vendor/vscodium/` (trap-cleaned) →
   `remotepair/dev-build.sh` (CWD=vendor) → `get_repo.sh` (clone vscode into gitignored `vendor/vscodium/vscode/`)
