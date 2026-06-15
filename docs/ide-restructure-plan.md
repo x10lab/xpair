@@ -1,5 +1,7 @@
 # remotepair-ide 모노레포 친화 재구조화 설계 (Goal Step 1)
 
+> ✅ **실행됨** — 현행 구조는 [`docs/monorepo-structure.md`](monorepo-structure.md) 참조. 미해결이던 "remotepair-ext 번들링 경로"는 **미배선 갭**으로 확인(현행 문서 §5).
+
 > **목적:** 사용자가 "수정해" 트리거 시 — `ide/` 진입 *전*에 `remotepair-ide` 내부를 모노레포 친화로 정리 → 그다음 런북(`docs/ide-merge-runbook.md`) 실행.
 > **결정적 제약:** `remotepair-ide`는 **VSCodium 포크**다. 스톡 레이아웃(`patches/`·`src/`·`build/`·루트 스크립트)을 옮기면 upstream 동기화(`get_repo.sh`/`update_upstream.sh`, 패치 적용 순서)가 깨진다.
 > **결론:** 전면 reshuffle ❌ · **경계 정리 + 자기완결화 ✅** (최소·additive·upstream 무해).

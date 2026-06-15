@@ -1,5 +1,7 @@
 # RemotePair × IDE 통합 실행 런북 (Stage 2)
 
+> ✅ **실행됨** — 현행 구조는 [`docs/monorepo-structure.md`](monorepo-structure.md) 참조. 이 런북은 통합 *전* 계획이며, 실제 실행은 ultragoal `monorepo-refactor`로 진행됨(rs/ 포함).
+
 > **전제:** `docs/ide-merge-architecture.md`(Stage 1) 승인됨.
 > **역할:** 코드 리팩터는 **사용자가 수행**. 본 런북은 정확한 **순서 · git 메커닉 · 구조 작업 목록 · 검증 체크리스트**를 제공한다(그대로 따라 실행 가능).
 > **브랜치:** `feat/integrate-remotepair-ide`
@@ -40,7 +42,7 @@ git rev-parse --is-shallow-repository      # false 확인
 
 | 새 위치 | SoT 내용 | 추출 출처 | 소비자 참조 변경 |
 |---------|----------|-----------|------------------|
-| `shared/screen-protocol/` | WS 경로·바인딩(`127.0.0.1:<port>`)·JPEG 프레이밍·입력 이벤트(상대좌표 0..1/키) 상수·타입 | `native/remote-pair-screen/src/serve.rs` 주석 프로토콜 | 사이드카(serve.rs)가 상수 참조 / 입력 역전송 포맷 단일화 |
+| `shared/screen-protocol/` | WS 경로·바인딩(`127.0.0.1:<port>`)·JPEG 프레이밍·입력 이벤트(상대좌표 0..1/키) 상수·타입 | `rs/remote-pair-screen/src/serve.rs` 주석 프로토콜 | 사이드카(serve.rs)가 상수 참조 / 입력 역전송 포맷 단일화 |
 | `shared/onboarding/` | role-aware 스텝 모델(host 8 / client 6 스텝의 id·순서·조건) | `client/web/app.js` `buildSteps(role)` | `client/web`는 모델을 읽어 렌더만 |
 | `shared/identity/` | 브랜드명 + **단일 버전 소스** | `Casks/remote-pair-host.rb`(0.4.12) ↔ `product.json`(0.1.0) | Casks·README·product.json이 이 소스 참조 |
 
