@@ -1,20 +1,13 @@
 // RemotePair client extension for the RemotePair IDE (VSCodium fork).
 // Plain CommonJS, vscode API + node stdlib only. No external npm deps.
 //
-// Reuses the proven RemotePair host backend (host = REMOTE_HOST over ssh):
-//   InputServer file channel on the host:
-//     write "<verb>\t<args>" to /tmp/remote-pair.input-req, then read /tmp/remote-pair.input-res
-//     verbs: shot\t<outpath> -> writes screenshot PNG, replies "ok\t<path>"
-//            click\t<x>\t<y> -> clicks at host display pixels
-//            key\t<combo>     -> sends a key combo
-//
 // All ssh invocations are argv-safe (spawn, never a shell string built from REMOTE_HOST).
 //
-// v1: WebSocket streaming mode — ssh local-forward tunnel → ws://127.0.0.1:<port>
-//     The sidecar `screen serve` on the host pushes binary JPEG frames
-//     at ~10 fps over loopback WS on 127.0.0.1:8889.
-//     Mode is controlled by setting remotepair.remoteDesktop.mode (auto|v1|v0).
-//     In "auto": try v1 and if no frame arrives within ~4 s fall back to v0 polling.
+// Remote Desktop is a single WebRTC path (v2): an ssh local-forward tunnel carries
+// only the signaling WebSocket (ws://127.0.0.1:<port> → host `screen serve-webrtc`).
+// The H.264 media itself flows P2P over UDP/RTP/ICE and is decoded natively by the
+// webview. Input (cursor/keyboard) is captured in the webview and sent over WebRTC
+// DataChannels (rp-ctl / rp-move) — not through this extension.
 
 const vscode = require("vscode");
 const cp = require("child_process");
@@ -39,22 +32,12 @@ const AI_EXTENSIONS = [
   "jeanp413.open-remote-ssh",
 ];
 
-// Host-side InputServer channel files. (shared/screen-protocol → generated contracts)
-const REQ_FILE = CONTRACTS.screen.reqFile;
-const RES_FILE = CONTRACTS.screen.resFile;
-const SHOT_FILE = "/tmp/rp-rd.png"; // remote temp screenshot path
-
-const SHOT_INTERVAL_MS = 1200; // poll cadence while view visible (v0)
-const SHOT_SETTLE_MS = 400; // wait for host to render the png after request
 const NOTIFY_INTERVAL_MS = 5000;
-const INPUT_THROTTLE_MS = CONTRACTS.screen.inputThrottleMs; // min gap between forwarded input events
 const SSH_CONNECT_TIMEOUT = 6; // seconds
 
-// v1 WS stream constants (shared/screen-protocol → generated contracts)
-const SIDECAR_REMOTE_PORT = CONTRACTS.screen.v1aPort; // v1 JPEG sidecar port on the host
-const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // v2 WebRTC signaling port
-const V1_FIRST_FRAME_TIMEOUT_MS = 4000; // auto-mode: fall back if no frame in this window
-const V1_TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before WS connect
+// v2 WebRTC signaling (shared/screen-protocol → generated contracts)
+const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // host `screen serve-webrtc` signaling port
+const TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before the webview connects
 
 // REMOTE_HOST must be a bare ssh host alias / hostname. Validate hard before
 // it ever reaches a spawned process (defense in depth even though spawn is
@@ -220,23 +203,12 @@ function sshRun(host, remoteCmd, opts = {}) {
   });
 }
 
-/** Send one InputServer verb to the host (fire-and-forget-ish, returns res). */
-async function sendInput(host, fields) {
-  // Build the request line safely: tab-separated fields written via printf.
-  // The content contains only our own validated tokens (verbs, integers, simple
-  // key combos); we still POSIX-single-quote it defensively before the shell.
-  const reqCmd =
-    `printf %s ${shSingleQuote(fields.join("\t"))} > ${REQ_FILE}; ` +
-    `sleep 0.05; cat ${RES_FILE} 2>/dev/null`;
-  return sshRun(host, reqCmd, { timeoutMs: 8000 });
-}
-
 /** POSIX single-quote escape for embedding a literal in a sh command. */
 function shSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
-// --- v1 tunnel helpers -------------------------------------------------------
+// --- tunnel helpers ----------------------------------------------------------
 
 /**
  * Find a free local TCP port by asking the OS.
@@ -255,17 +227,16 @@ function getFreePort() {
 
 /**
  * Spawn an ssh local-forward tunnel (non-blocking: ssh -fN).
- * argv-safe: host is validated, port is an integer, SIDECAR_REMOTE_PORT is a constant.
+ * argv-safe: host is validated, ports are integers.
  *
- * Returns { child, port } — child.kill() to teardown.
- * The caller should wait V1_TUNNEL_SETTLE_MS before connecting.
+ * Returns the child process — child.kill() to teardown.
+ * The caller should wait TUNNEL_SETTLE_MS before connecting.
+ * Forwards the v2 WebRTC signaling port (media itself flows over UDP/ICE, not this TCP tunnel).
  */
 function spawnTunnel(host, localPort, remotePort) {
   // -fN: go to background, no remote command.  ControlMaster=auto reuses
   // the existing authenticated master so there's no new key prompt.
-  // remotePort defaults to the v1 JPEG sidecar port; v2/WebRTC passes the
-  // signaling port (media itself flows over UDP/ICE, not this TCP tunnel).
-  const rport = remotePort || SIDECAR_REMOTE_PORT;
+  const rport = remotePort;
   const args = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
@@ -285,16 +256,6 @@ function spawnTunnel(host, localPort, remotePort) {
   return child;
 }
 
-/** Read the configured mode: "auto" | "v1" | "v0" */
-function getDesktopMode() {
-  try {
-    const cfg = vscode.workspace.getConfiguration("remotepair.remoteDesktop");
-    const m = cfg.get("mode");
-    if (m === "v1" || m === "v0") return m;
-  } catch (_e) {}
-  return "auto"; // default
-}
-
 // --- Remote Desktop editor-tab panel ---------------------------------------
 // Wireframe: Remote Desktop is a *pinned editor tab* ("RD") in the main editor
 // area (the right pane), behaving like a normal editor tab next to file tabs —
@@ -304,18 +265,14 @@ class RemoteDesktopPanel {
   /** @param {vscode.Uri} extensionUri */
   constructor(extensionUri, state) {
     this.extensionUri = extensionUri;
-    this.state = state; // shared mutable: { inputEnabled, lastShot:{w,h} }
+    this.state = state; // shared mutable: { inputEnabled }
     this.panel = null;
-    this.pollTimer = null;
     this.visible = false;
-    this.busy = false;
-    this.lastInputTs = 0;
 
-    // v1 tunnel state
+    // v2 WebRTC signaling tunnel state
     this._tunnelChild = null;   // ssh -fN child process
-    this._tunnelPort = null;    // local port in use
-    this._v1Active = false;     // true while v1 WS stream is expected to be running
-    this._v1FallbackTimer = null; // auto-mode first-frame watchdog
+    this._tunnelPort = null;    // local signaling port in use
+    this._v2Active = false;     // true while the v2 signaling tunnel is up
   }
 
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
@@ -371,47 +328,34 @@ class RemoteDesktopPanel {
     if (this.visible) this._startStream();
   }
 
-  /** Entry point: decide v0 or v1 based on mode setting, then start. */
+  /** Entry point: start the v2 WebRTC stream. */
   async _startStream() {
     // Guard against double-start (refresh + visibility-restore overlap) which
     // could otherwise spawn two ssh tunnels on different ports.
-    if (this._v1Active || this._v2Active || this.pollTimer) return;
-    const mode = getDesktopMode();
-    if (mode === "v0") {
-      this._startV0();
-      return;
-    }
+    if (this._v2Active) return;
     const host = getValidHost();
     if (!host) {
       this.post({ type: "status", state: "no-host" });
       return;
     }
-    if (mode === "v1") {
-      await this._startV1(host, false);
-      return;
-    }
-    // "v2" or "auto": prefer WebRTC (UDP H.264, lowest latency / highest fps),
-    // fall back to v1 (WS JPEG) then v0 (polling) if it doesn't come up.
-    await this._startV2(host, mode === "auto");
+    await this._startV2(host);
   }
 
-  /** Stop v0 polling, v1 tunnel, and v2 signaling/peer. */
+  /** Tear down the v2 signaling tunnel. */
   _stopAll() {
-    this._stopV0();
-    this._stopV1();
     this._stopV2();
   }
 
   // --- v2 WebRTC (UDP/RTP H.264) -------------------------------------------
 
-  async _startV2(host, autoFallback) {
+  async _startV2(host) {
     this._stopV2();
     let localPort;
     try {
       localPort = await getFreePort();
     } catch (e) {
-      log(`v2: getFreePort error: ${e.message}; trying v1`);
-      this._startV1(host, autoFallback);
+      log(`v2: getFreePort error: ${e.message}`);
+      this.post({ type: "status", state: "error", detail: String(e.message) });
       return;
     }
     this._tunnelPort = localPort;
@@ -425,89 +369,11 @@ class RemoteDesktopPanel {
       const signalUrl = `ws://127.0.0.1:${localPort}`;
       log(`v2: telling webview to connect signaling ${signalUrl}`);
       self.post({ type: "v2Connect", signalUrl });
-      if (autoFallback) {
-        self._v2FallbackTimer = setTimeout(() => {
-          if (!self._v2Active) return;
-          log(`v2: no media within ${V1_FIRST_FRAME_TIMEOUT_MS}ms — falling back to v1`);
-          self._stopV2();
-          self._startV1(host, true);
-        }, V1_FIRST_FRAME_TIMEOUT_MS);
-      }
-    }, V1_TUNNEL_SETTLE_MS);
+    }, TUNNEL_SETTLE_MS);
   }
 
   _stopV2() {
     this._v2Active = false;
-    if (this._v2FallbackTimer) {
-      clearTimeout(this._v2FallbackTimer);
-      this._v2FallbackTimer = null;
-    }
-    if (this._tunnelChild) {
-      try { this._tunnelChild.kill("SIGTERM"); } catch (_e) {}
-      this._tunnelChild = null;
-    }
-    this._tunnelPort = null;
-  }
-
-  // --- v0 polling -----------------------------------------------------------
-
-  _startV0() {
-    if (this.pollTimer) return;
-    this.tick(true);
-    this.pollTimer = setInterval(() => this.tick(false), SHOT_INTERVAL_MS);
-  }
-
-  _stopV0() {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-  }
-
-  // --- v1 WS tunnel ---------------------------------------------------------
-
-  async _startV1(host, autoFallback) {
-    this._stopV1(); // clean up any previous tunnel
-
-    let localPort;
-    try {
-      localPort = await getFreePort();
-    } catch (e) {
-      log(`v1: getFreePort error: ${e.message}; falling back to v0`);
-      this._startV0();
-      return;
-    }
-
-    this._tunnelPort = localPort;
-    this._tunnelChild = spawnTunnel(host, localPort);
-    this._v1Active = true;
-
-    // Wait for the tunnel to establish, then tell the webview to connect.
-    const self = this;
-    setTimeout(() => {
-      if (!self._v1Active || !self.panel) return;
-      const wsUrl = `ws://127.0.0.1:${localPort}`;
-      log(`v1: telling webview to connect ${wsUrl}`);
-      self.post({ type: "v1Connect", wsUrl });
-
-      if (autoFallback) {
-        // Watchdog: if no first-frame message arrives within the timeout, fall back.
-        self._v1FallbackTimer = setTimeout(() => {
-          if (!self._v1Active) return;
-          log(`v1: no first frame within ${V1_FIRST_FRAME_TIMEOUT_MS}ms — falling back to v0`);
-          self._stopV1();
-          self._startV0();
-        }, V1_FIRST_FRAME_TIMEOUT_MS);
-      }
-    }, V1_TUNNEL_SETTLE_MS);
-  }
-
-  _stopV1() {
-    this._v1Active = false;
-    if (this._v1FallbackTimer) {
-      clearTimeout(this._v1FallbackTimer);
-      this._v1FallbackTimer = null;
-    }
     if (this._tunnelChild) {
       try { this._tunnelChild.kill("SIGTERM"); } catch (_e) {}
       this._tunnelChild = null;
@@ -521,171 +387,29 @@ class RemoteDesktopPanel {
     }
   }
 
-  async onMessage(msg) {
+  onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
-    const host = getValidHost();
 
     if (msg.type === "ready") {
       this.postInputState();
       return;
     }
     if (msg.type === "refresh") {
-      if (this._v1Active) {
-        // Re-trigger v1 connect (re-send the wsUrl to webview).
-        if (host && this._tunnelPort) {
-          this.post({ type: "v1Connect", wsUrl: `ws://127.0.0.1:${this._tunnelPort}` });
-        } else {
-          this._stopAll();
-          this._startStream();
-        }
-      } else {
-        this.tick(true);
-      }
+      // Restart the v2 signaling tunnel and tell the webview to reconnect.
+      this._stopAll();
+      this._startStream();
       return;
     }
-
-    // v1 feedback from webview
-    if (msg.type === "v1FirstFrame") {
-      log(`v1: first frame received by webview`);
-      // Cancel the auto-fallback watchdog — v1 is working.
-      if (this._v1FallbackTimer) {
-        clearTimeout(this._v1FallbackTimer);
-        this._v1FallbackTimer = null;
-      }
-      return;
-    }
-    if (msg.type === "v1Error") {
-      log(`v1: webview reported error: ${msg.detail || "unknown"}`);
-      if (this._v1Active) {
-        const mode = getDesktopMode();
-        // Fall back to v0 in auto AND explicit-v1 modes (in v0 mode v1 never
-        // started, so it can't be reached here). The old "v0" check was dead.
-        if (mode === "auto" || mode === "v1") {
-          log(`v1: falling back to v0`);
-          this._stopV1();
-          this._startV0();
-        }
-      }
-      return;
-    }
-
-    // v2 (WebRTC) feedback from webview
+    // v2 (WebRTC) feedback from webview. Input (cursor/keyboard) is sent directly
+    // over WebRTC DataChannels in the webview, so the extension only handles status.
     if (msg.type === "v2FirstFrame") {
       log(`v2: media track rendering`);
-      if (this._v2FallbackTimer) {
-        clearTimeout(this._v2FallbackTimer);
-        this._v2FallbackTimer = null;
-      }
       return;
     }
     if (msg.type === "v2Error") {
       log(`v2: webview reported error: ${msg.detail || "unknown"}`);
-      if (this._v2Active) {
-        const mode = getDesktopMode();
-        if (mode === "auto") {
-          log(`v2: falling back to v1`);
-          this._stopV2();
-          this._startV1(host, true);
-        }
-      }
+      this.post({ type: "status", state: "error", detail: String(msg.detail || "webrtc error") });
       return;
-    }
-
-    if (!host) return;
-    if (!this.state.inputEnabled) return;
-
-    const now = Date.now();
-    if (now - this.lastInputTs < INPUT_THROTTLE_MS) return;
-    this.lastInputTs = now;
-
-    if (msg.type === "click") {
-      // msg.rx, msg.ry are relative 0..1. Scale to host display pixels using
-      // the dimensions of the last screenshot (defaults to display size).
-      const dim = this.state.lastShot || { w: 1344, h: 1008 };
-      const rx = clamp01(Number(msg.rx));
-      const ry = clamp01(Number(msg.ry));
-      if (!isFinite(rx) || !isFinite(ry)) return;
-      const x = Math.round(rx * dim.w);
-      const y = Math.round(ry * dim.h);
-      if (!Number.isInteger(x) || !Number.isInteger(y)) return;
-      log(`click -> ${x},${y} (rel ${rx.toFixed(3)},${ry.toFixed(3)} of ${dim.w}x${dim.h})`);
-      await sendInput(host, ["click", String(x), String(y)]);
-    } else if (msg.type === "key") {
-      const combo = sanitizeCombo(msg.combo);
-      if (!combo) return;
-      log(`key -> ${combo}`);
-      await sendInput(host, ["key", combo]);
-    } else if (msg.type === "v1Dimensions") {
-      // v1 stream can report frame dimensions for input scaling
-      const w = Number(msg.w);
-      const h = Number(msg.h);
-      if (w > 0 && h > 0 && w < 100000 && h < 100000) {
-        this.state.lastShot = { w, h };
-      }
-    }
-  }
-
-  startPolling() {
-    this._startV0();
-  }
-
-  stopPolling() {
-    this._stopV0();
-  }
-
-  /** One screenshot poll cycle (v0 path). */
-  async tick(force) {
-    if (!this.panel || (!this.visible && !force)) return;
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      const host = getValidHost();
-      if (!host) {
-        this.post({ type: "status", state: "no-host" });
-        return;
-      }
-      // Request shot, wait for host to render, read back as base64, then clean.
-      const reqLine = shSingleQuote(`shot\t${SHOT_FILE}`);
-      const settle = (SHOT_SETTLE_MS / 1000).toFixed(2);
-      const remoteCmd =
-        `printf %s ${reqLine} > ${REQ_FILE}; ` +
-        `sleep ${settle}; ` +
-        `cat ${RES_FILE} 2>/dev/null; printf '\\n'; ` +
-        `base64 < ${SHOT_FILE} 2>/dev/null; ` +
-        `rm -f ${SHOT_FILE}`;
-      const res = await sshRun(host, remoteCmd, {
-        encoding: "utf8",
-        timeoutMs: 12000,
-        maxBuffer: 24 * 1024 * 1024,
-      });
-      if (res.code !== 0 && res.code !== null) {
-        log(`shot ssh exited code=${res.code} stderr=${res.stderr.slice(0, 200)}`);
-        this.post({ type: "status", state: "unreachable", detail: firstLine(res.stderr) });
-        return;
-      }
-      const text = String(res.stdout);
-      const nl = text.indexOf("\n");
-      const statusLine = nl >= 0 ? text.slice(0, nl) : text;
-      const b64 = (nl >= 0 ? text.slice(nl + 1) : "").replace(/\s+/g, "");
-      if (!b64) {
-        log(`shot returned no image. status=${statusLine.slice(0, 80)}`);
-        this.post({ type: "status", state: "no-image", detail: statusLine });
-        return;
-      }
-      // Update cached dimensions for input scaling.
-      const dim = pngDimensionsFromBase64(b64);
-      if (dim) this.state.lastShot = dim;
-      this.post({
-        type: "frame",
-        dataUri: `data:image/png;base64,${b64}`,
-        w: dim ? dim.w : null,
-        h: dim ? dim.h : null,
-      });
-    } catch (e) {
-      log(`tick error: ${e && e.message ? e.message : e}`);
-      this.post({ type: "status", state: "error", detail: String(e && e.message ? e.message : e) });
-    } finally {
-      this.busy = false;
     }
   }
 
@@ -699,11 +423,7 @@ class RemoteDesktopPanel {
 
   refresh() {
     if (this.panel) {
-      if (this._v1Active) {
-        this.onMessage({ type: "refresh" });
-      } else {
-        this.tick(true);
-      }
+      this.onMessage({ type: "refresh" });
     }
   }
 
@@ -715,17 +435,16 @@ class RemoteDesktopPanel {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "media", "remote-desktop.css")
     );
-    // CSP: allow our nonce'd script, our stylesheet, data: images, blob: images,
-    // and WebSocket connections to loopback (for v1 WS stream).
+    // CSP: allow our nonce'd script, our stylesheet, the H.264 <video> media,
+    // and the v2 signaling WebSocket on loopback.
     const csp = [
       `default-src 'none'`,
-      `img-src ${webview.cspSource} data: blob:`,
       `media-src ${webview.cspSource} blob: mediastream:`,
       `style-src ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
       `font-src ${webview.cspSource}`,
-      // ws://127.0.0.1:* = v1 JPEG stream AND v2 WebRTC signaling (both loopback,
-      // reached over ssh -L). v2 media itself is UDP/RTP, not subject to CSP.
+      // ws://127.0.0.1:* = v2 WebRTC signaling (loopback, reached over ssh -L).
+      // The v2 media itself is UDP/RTP, not subject to CSP.
       `connect-src ws://127.0.0.1:* ws://localhost:*`,
     ].join("; ");
 
@@ -740,15 +459,12 @@ class RemoteDesktopPanel {
 </head>
 <body>
   <div id="stage">
-    <img id="screen" alt="Host screen" draggable="false" />
-    <canvas id="screen-canvas"></canvas>
     <video id="screen-video" autoplay muted playsinline></video>
     <div id="overlay" class="hidden">
       <div id="overlay-title">RemotePair</div>
       <div id="overlay-msg">Connecting to host…</div>
     </div>
     <div id="badge" class="off" title="Input forwarding">input: off</div>
-    <div id="mode-badge" class="mode-v0" title="Stream mode">v0</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -756,48 +472,7 @@ class RemoteDesktopPanel {
   }
 }
 
-// --- helpers for image / input ---------------------------------------------
-
-function clamp01(n) {
-  if (!isFinite(n)) return NaN;
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
-}
-
-/** Allow only a conservative key-combo grammar: tokens of [a-z0-9] joined by '+'. */
-function sanitizeCombo(combo) {
-  if (typeof combo !== "string") return null;
-  const c = combo.toLowerCase().trim();
-  if (!c) return null;
-  if (!/^[a-z0-9]+(\+[a-z0-9]+)*$/.test(c)) return null;
-  if (c.length > 64) return null;
-  return c;
-}
-
-/** Decode the IHDR of a PNG from its base64 to get width/height. */
-function pngDimensionsFromBase64(b64) {
-  try {
-    // Only need the first ~32 bytes; decode a small prefix.
-    const head = Buffer.from(b64.slice(0, 64), "base64");
-    // PNG signature (8) + length(4) + "IHDR"(4) + width(4) + height(4)
-    if (head.length < 24) return null;
-    if (head[0] !== 0x89 || head[1] !== 0x50 || head[2] !== 0x4e || head[3] !== 0x47) return null;
-    if (head.toString("ascii", 12, 16) !== "IHDR") return null;
-    const w = head.readUInt32BE(16);
-    const h = head.readUInt32BE(20);
-    if (w > 0 && h > 0 && w < 100000 && h < 100000) return { w, h };
-    return null;
-  } catch (_e) {
-    return null;
-  }
-}
-
-function firstLine(s) {
-  const t = String(s || "").trim();
-  const nl = t.indexOf("\n");
-  return nl >= 0 ? t.slice(0, nl) : t;
-}
+// --- helpers ----------------------------------------------------------------
 
 function makeNonce() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -1303,7 +978,7 @@ async function addRoot() {
 function activate(context) {
   log("RemotePair activating…");
 
-  const state = { inputEnabled: true, lastShot: null };
+  const state = { inputEnabled: true };
 
   // 1) First-run: ensure the 3 AI extensions (best-effort, swallow errors).
   ensureExtensions(false).catch((e) => log(`ensureExtensions error: ${e}`));
