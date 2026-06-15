@@ -1,5 +1,20 @@
-/vscode/
-/VSCode-darwin-*/
+# RemotePair IDE (Vendor 분리) — root ignores.
+# vendor/vscodium/ ships its own VSCodium .gitignore (covers vscode/ etc. relative to itself);
+# the rules below cover build artifacts + transient RemotePair injections at the client/ide root.
+
+# VSCodium build outputs inside the vendor recipe
+vendor/vscodium/vscode/
+vendor/vscodium/vscode-*/
+vendor/vscodium/VSCode-*/
+vendor/vscodium/assets/
+vendor/vscodium/dev/build.env
+
+# transient RemotePair build-time injections (build.sh trap removes these; ignore in case of an
+# interrupted build so they never dirty the pristine vendor tree)
+vendor/vscodium/product.json.rp-orig
+vendor/vscodium/patches/zz-remotepair-ide-frontend.patch
+
+# generic
 *.dmg
 *.vsix
 **/node_modules/
