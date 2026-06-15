@@ -640,5 +640,19 @@
     "gruntfuggly.todo-tree": {
       "default": false
     }
-  }
+  },
+  "nameShort": "RemotePairLocal",
+  "nameLong": "RemotePair (Local)",
+  "applicationName": "remotepair-local",
+  "dataFolderName": ".remotepair-local",
+  "darwinBundleIdentifier": "com.x10lab.remotepair-ide-local",
+  "urlProtocol": "remotepair",
+  "serverApplicationName": "remotepair-server",
+  "serverDataFolderName": ".remotepair-server",
+  "win32AppUserModelId": "x10lab.RemotePairLocal",
+  "win32MutexName": "remotepairlocal",
+  "win32DirName": "RemotePair (Local)",
+  "win32NameVersion": "RemotePair",
+  "win32RegValueName": "RemotePair",
+  "win32ShellNameShort": "RemotePair"
 }
