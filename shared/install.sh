@@ -216,6 +216,8 @@ if is_client; then
   say "[client] launcher + Service"
   install -d "$RP_DIR/bin" 2>/dev/null || mkdir -p "$RP_DIR/bin"
   [ -f "$CLIENT_DIR/hangul-romanize" ] && install_file "$CLIENT_DIR/hangul-romanize" "$RP_DIR/bin/hangul-romanize" 755
+  say "[client] shared logger → $RP_DIR/bin/logging.sh"
+  install_file "$HERE/logging.sh" "$RP_DIR/bin/logging.sh" 644
   install_file "$CLIENT_DIR/remote-pair-launch" "$LAUNCHER" 755
 
   # ── Web-tab launchers: editor (M4 code-server) + desktop (M5 Screen Sharing). manifest-recorded → reversible. ──

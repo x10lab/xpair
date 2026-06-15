@@ -52,6 +52,9 @@ APP_PATH="/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${A
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/remote-pair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$LOG_DIR/remote-pair.heartbeat}"
+# Unified logging contract — see docs/logging.md. Single file-level knob: default INFO,
+# REMOTEPAIR_LOG overrides (trace|debug|info|warn|error). Per-component files live under $LOG_DIR.
+LOG_LEVEL="${REMOTEPAIR_LOG:-${LOG_LEVEL:-info}}"
 RULES_FILE="${RULES_FILE:-$RP_DIR/rules.txt}"           # approve router rules (formerly ~/.claude/auto-approve/rules.txt)
 
 # ── Client config (no personal path defaults) ──

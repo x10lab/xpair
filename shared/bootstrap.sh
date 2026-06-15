@@ -23,8 +23,13 @@ ROLE="${ROLE:-both}"     # host | client | both
 
 c()    { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
-warn() { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Source the shared logger (installed by shared/install.sh); no-op fallback keeps warn() safe
+# during the bootstrap clone phase before logging.sh is present.
+# shellcheck disable=SC1090
+[ -f "${RP_DIR:-$HOME/.remote-pair}/bin/logging.sh" ] && . "${RP_DIR:-$HOME/.remote-pair}/bin/logging.sh"
+type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; warn(){ printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }; }
 # Use /dev/tty so user input still works under a pipe (curl|bash)
 ask()  { local q="$1" v=""; { printf '%s' "$q" > /dev/tty; read -r v < /dev/tty; } 2>/dev/null || true; printf '%s' "$v"; }
 
