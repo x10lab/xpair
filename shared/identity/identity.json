@@ -1,0 +1,32 @@
+{
+  "$comment": "RemotePair 브랜드/식별자 단일 소스(SoT). 소비자(Casks·ide/product.json·host Swift·rs Cargo)는 이 값과 일치해야 하며 shared/identity/check-identity.sh 로 검증된다. 향후 build-time codegen(docs/ide-merge-architecture.md)으로 생성 주입 가능.",
+  "product": "RemotePair",
+  "org": "com.x10lab",
+  "homepage": "https://github.com/ghyeongl/remote-pair",
+  "urlProtocol": "remotepair",
+  "signingCommonName": "RemotePair Local Signing",
+  "components": {
+    "host": {
+      "displayName": "RemotePairHost",
+      "app": "RemotePairHost.app",
+      "bundleId": "com.x10lab.remote-pair-host",
+      "desc": "Menu-bar host for remote pairing with Claude (tmux + approve + sessions)"
+    },
+    "ide": {
+      "nameShort": "RemotePair",
+      "nameLong": "RemotePair",
+      "applicationName": "remotepair",
+      "dataFolderName": ".remotepair",
+      "darwinBundleIdentifier": "com.x10lab.remotepair-ide",
+      "urlProtocol": "remotepair",
+      "serverApplicationName": "remotepair-server",
+      "serverDataFolderName": ".remotepair-server",
+      "win32AppUserModelId": "x10lab.RemotePair",
+      "win32MutexName": "remotepair"
+    },
+    "screen-engine": {
+      "crate": "remote-pair-screen",
+      "note": "rs/ (remotepair-rs) 자체 네이티브 화면엔진"
+    }
+  }
+}
