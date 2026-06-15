@@ -139,7 +139,7 @@ ICE는 host candidate (링크-로컬/LAN IP)만으로 연결
 
 ```
 1. Host 사이드카 기동
-   remote-pair-screen serve-webrtc --token <SESSION_TOKEN> --port 4000
+   screen serve-webrtc --token <SESSION_TOKEN> --port 4000
    → RTCPeerConnection 준비, 시그널링 WebSocket 연결 대기
 
 2. Client 연결
@@ -451,7 +451,7 @@ ICE Restart가 실패하면 시그널링 채널(WebSocket)을 통해 전체 Peer
 
 ```
 RemotePair: Apache-2.0
-사이드카(remote-pair-screen): Apache-2.0 (Cargo.toml에 명시)
+사이드카(screen): Apache-2.0 (Cargo.toml에 명시)
 ```
 
 AGPL-3.0 라이선스의 소프트웨어(RustDesk 포함)는 링크, 코드 복사, 파생저작물 생성 모두 금지한다.

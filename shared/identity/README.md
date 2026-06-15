@@ -17,7 +17,7 @@ RemotePair 모노레포(`remote-pair` 코어 · `client/ide/` VSCodium 포크 ·
 | `client/ide/product.json` | nameShort/Long·applicationName·dataFolderName·darwinBundleIdentifier·urlProtocol·server*·win32* |
 | `client/ide/remotepair-ext/package.json` | `version` == `versions.ide` (product.json엔 version 없음 — 앱 버전은 빌드시 RELEASE_VERSION 주입) |
 | `Casks/remote-pair-host.rb` | `version` == `versions.host` |
-| `host/rd/remote-pair-screen/Cargo.toml` | `version` == `versions.screen-engine` |
+| `host/rd/screen/Cargo.toml` | `version` == `versions.screen-engine` |
 | `host/app/Config.swift` | `BUNDLE_ID` 기본값에 `components.host.bundleId` 존재 |
 
 ## 사용

@@ -1,5 +1,5 @@
 {
-  "$comment": "RemotePair Remote Desktop 화면 프로토콜 단일 소스(SoT). rs/(serve.rs·serve_webrtc.rs)와 ide/(remote-desktop.js·extension.js)가 이 계약을 구현하며 check-screen-protocol.sh로 정합 검증한다.",
+  "$comment": "RemotePair Remote Desktop 화면 프로토콜 단일 소스(SoT). host/rd/(serve.rs·serve_webrtc.rs)와 client/ide/(remote-desktop.js·extension.js)가 이 계약을 구현하며 check-screen-protocol.sh로 정합 검증한다.",
   "transport": {
     "v1a_jpeg": {
       "scheme": "ws",
@@ -7,12 +7,12 @@
       "defaultPort": 8889,
       "tunnel": "ssh -L <port>:127.0.0.1:<port> <host>",
       "frame": "binary WebSocket message; whole-frame JPEG",
-      "server": "rs: `remote-pair-screen serve`"
+      "server": "host/rd: `screen serve`"
     },
     "v2_webrtc": {
       "signalingHost": "127.0.0.1",
       "defaultSignalPort": 8890,
-      "server": "rs: `remote-pair-screen serve-webrtc`",
+      "server": "host/rd: `screen serve-webrtc`",
       "media": "H.264 / WebRTC"
     },
     "v0_fallback": {

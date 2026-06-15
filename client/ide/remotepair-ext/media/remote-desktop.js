@@ -469,7 +469,7 @@
       } else if (m.state === "unreachable") {
         msg = "Host unreachable. Check SSH to the host." + (m.detail ? "\n" + m.detail : "");
       } else if (m.state === "no-image") {
-        msg = "No screen yet. Is RemotePairHost.app running on the host?\n(v1: is remote-pair-screen serve running?)";
+        msg = "No screen yet. Is RemotePairHost.app running on the host?\n(v1: is screen serve running?)";
       } else if (m.state === "error") {
         msg = "Error: " + (m.detail || "unknown");
       }

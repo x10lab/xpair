@@ -8,7 +8,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 C="$HERE/constants.json"
 command -v jq >/dev/null || { echo "jq required"; exit 2; }
 
-MAIN="$ROOT/host/rd/remote-pair-screen/src/main.rs"
+MAIN="$ROOT/host/rd/screen/src/main.rs"
 EXT="$ROOT/client/ide/remotepair-ext/extension.js"
 RDJS="$ROOT/client/ide/remotepair-ext/media/remote-desktop.js"
 

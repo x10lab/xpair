@@ -12,7 +12,7 @@ remote-pair/                  (단일 git 모노레포 — host/client × 컴포
 ├─ host/                      ◀ 호스트 머신에서 실행
 │   ├─ app/                   RemotePairHost.app 소스 (메뉴바·캡처·입력·grant 소유)
 │   ├─ rd/                    ◀ 원격데스크톱 엔진 서브트리 (remotepair-rs)
-│   │   ├─ remote-pair-screen/  Rust: serve.rs(WS+JPEG)·serve_webrtc.rs(WebRTC)
+│   │   ├─ screen/  Rust: serve.rs(WS+JPEG)·serve_webrtc.rs(WebRTC)
 │   │   └─ rpmedia/             Swift: 캡처·VT인코드·입력주입(AX)
 │   ├─ hooks/  skills/        claude 호스트 연동
 │   └─ build-host·approve-router·rules·ocr-find   빌드/데몬 글루

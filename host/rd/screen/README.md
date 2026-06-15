@@ -1,4 +1,4 @@
-# remote-pair-screen
+# screen
 
 License-clean screen-capture sidecar for **RemotePair Remote Desktop** — the v1
 high-performance path that replaces the v0 `ssh` + InputServer screenshot polling.
@@ -18,7 +18,7 @@ high-performance path that replaces the v0 `ssh` + InputServer screenshot pollin
 | | v0 (shipped) | **v1a (this crate, now)** | v1b (planned) |
 |---|---|---|---|
 | Path | `ssh` + InputServer **screenshot polling** | **WebSocket + JPEG, continuous capture** | Native capture → HW encode → WebRTC |
-| Lives in | the IDE extension | this Rust sidecar (`remote-pair-screen serve`) | this sidecar (behind `webrtc` feature) |
+| Lives in | the IDE extension | this Rust sidecar (`screen serve`) | this sidecar (behind `webrtc` feature) |
 | Encode | per-frame PNG | per-frame **JPEG** (software, quality knob) | VideoToolbox H.264/HEVC (hardware) |
 | Transport | poll over `ssh` | **WS binary frames over `ssh -L` tunnel** | WebRTC (SRTP/DTLS) over `ssh -L` |
 | Latency | high (poll + PNG per frame) | medium (~10fps continuous stream) | low (HW codec, continuous) |
@@ -35,7 +35,7 @@ hardware H.264/HEVC over WebRTC so the client just renders a `<video>`.
 ### Pipeline: v1a (now) → v1b (planned)
 
 ```
-  ┌──────────────────── host (remote-pair-screen serve) — v1a SHIPPED ───────────────────┐
+  ┌──────────────────── host (screen serve) — v1a SHIPPED ───────────────────┐
   │                                                                                        │
   │   xcap (capture frames)  ──▶  image crate: JPEG encode  ──▶  tungstenite WS server     │
   │        ▲                       (software, --quality)         (binary frames, 127.0.0.1)│
@@ -58,17 +58,17 @@ hardware H.264/HEVC over WebRTC so the client just renders a `<video>`.
 
 ```sh
 # Capture ONE frame of the primary display and write a PNG (proves the path).
-remote-pair-screen capture --out /tmp/frame.png
+screen capture --out /tmp/frame.png
 #  -> captured 3024x1964 frame -> /tmp/frame.png
 
 # Print the dimensions + metadata of every connected display.
-remote-pair-screen info
+screen info
 #  -> 1 display(s):
 #  ->   [0] Display #41057: 1512x982 @ 2x (primary)
 
 # v1a: continuous-capture WebSocket JPEG frame server (loopback only).
-remote-pair-screen serve --port 8889 --fps 10 --quality 60
-#  -> remote-pair-screen serve: listening on ws://127.0.0.1:8889 (fps=10, jpeg quality=60, ...)
+screen serve --port 8889 --fps 10 --quality 60
+#  -> screen serve: listening on ws://127.0.0.1:8889 (fps=10, jpeg quality=60, ...)
 #  (binds 127.0.0.1:8889; at 10fps captures + JPEG-encodes the primary display
 #   and sends each frame as a binary WS message to connected clients; skips
 #   capture entirely when no client is connected. Ctrl-C to stop.)
@@ -102,9 +102,9 @@ ws.onmessage = (ev) => {
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"   # cargo 1.96+
-cd native/remote-pair-screen
+cd native/screen
 cargo build --release
-./target/release/remote-pair-screen info
+./target/release/screen info
 ```
 
 Built and verified on **macOS arm64** (Apple Silicon), Rust 1.96.
@@ -158,7 +158,7 @@ RustDesk's capture crate). The latter is banned in `deny.toml`.
 
 The intended topology for v1a:
 
-1. **Host** runs `remote-pair-screen serve` (it binds **127.0.0.1 only** — never
+1. **Host** runs `screen serve` (it binds **127.0.0.1 only** — never
    a routable interface). The sidecar binary needs its **own Screen Recording
    TCC grant** — macOS scopes the permission per-binary, so the host app's grant
    does not cover this binary. It must be a **signed** binary so the grant

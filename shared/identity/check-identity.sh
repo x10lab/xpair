@@ -43,7 +43,7 @@ CASK="$ROOT/Casks/remote-pair-host.rb"
   "$(grep -E '^[[:space:]]*version "' "$CASK" | head -1 | sed -E 's/.*version "([^"]+)".*/\1/')"
 
 # --- host/rd Cargo.toml version ---
-CARGO="$ROOT/host/rd/remote-pair-screen/Cargo.toml"
+CARGO="$ROOT/host/rd/screen/Cargo.toml"
 [[ -f "$CARGO" ]] && check "rs screen-engine version" "$(jq -r '."screen-engine"' "$VER")" \
   "$(awk -F'"' '/^\[package\]/{p=1} p&&/^version[[:space:]]*=/{print $2; exit}' "$CARGO")"
 

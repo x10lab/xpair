@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-pair-screen-deploy — deploy the remote-pair-screen sidecar to the host.
+# remote-pair-screen-deploy — deploy the screen sidecar to the host.
 #
 # Usage:  remote-pair-screen-deploy [REMOTE_HOST]
 #
@@ -7,7 +7,7 @@
 # variable REMOTE_HOST, then from ~/.remote-pair/client.env.
 # The sidecar binary is taken from:
 #   $SIDECAR_BIN   (env override)
-#   <script-dir>/../../host/rd/remote-pair-screen/target/release/remote-pair-screen
+#   <script-dir>/../../host/rd/screen/target/release/screen
 #
 # The script is argv-safe: no shell-string construction from user-controlled
 # values.  All ssh/scp invocations use discrete argument arrays via exec/process
@@ -78,13 +78,13 @@ validate_host "$REMOTE_HOST"
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_BIN="$SCRIPT_DIR/../../host/rd/remote-pair-screen/target/release/remote-pair-screen"
+DEFAULT_BIN="$SCRIPT_DIR/../../host/rd/screen/target/release/screen"
 SIDECAR_BIN="${SIDECAR_BIN:-$DEFAULT_BIN}"
 
 if [[ ! -f "$SIDECAR_BIN" ]]; then
   die "Sidecar binary not found at: $SIDECAR_BIN
 Build it first (the 'webrtc' feature is REQUIRED for the v2 serve-webrtc path):
-  cd $SCRIPT_DIR/../../host/rd/remote-pair-screen
+  cd $SCRIPT_DIR/../../host/rd/screen
   cargo build --release --features webrtc"
 fi
 
@@ -93,7 +93,7 @@ fi
 if ! "$SIDECAR_BIN" serve-webrtc --help >/dev/null 2>&1; then
   warn "Sidecar lacks the 'serve-webrtc' subcommand — built without --features webrtc?"
   warn "The v2 WebRTC path will be unavailable. Rebuild with:"
-  warn "  cd $SCRIPT_DIR/../../host/rd/remote-pair-screen && cargo build --release --features webrtc"
+  warn "  cd $SCRIPT_DIR/../../host/rd/screen && cargo build --release --features webrtc"
 fi
 
 # Swift v2 helpers (compiled ON the host so the binary path is stable for TCC
@@ -125,7 +125,7 @@ SSH_OPTS=(
 # ---------------------------------------------------------------------------
 
 REMOTE_BIN_DIR=".remote-pair/bin"
-REMOTE_BIN_PATH="$REMOTE_BIN_DIR/remote-pair-screen"
+REMOTE_BIN_PATH="$REMOTE_BIN_DIR/screen"
 
 info "Creating $REMOTE_BIN_DIR on host…"
 ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "mkdir -p '$REMOTE_BIN_DIR'"
@@ -210,13 +210,13 @@ DEPLOYMENT COMPLETE — ONE-TIME HOST SETUP REQUIRED
 ===========================================================================
 
 The host binaries have been copied to:
-    ~/.remote-pair/bin/remote-pair-screen   (v1 JPEG/WS sidecar)
+    ~/.remote-pair/bin/screen   (v1 JPEG/WS sidecar)
     ~/.remote-pair/bin/rp-screencap         (v2 WebRTC H.264 capture)
     ~/.remote-pair/bin/rp-input-inject      (v2 remote keyboard/cursor)
 
 Grant TWO permissions on the HOST machine (one-time, per binary path):
 
-  • Screen Recording → remote-pair-screen AND rp-screencap  (so the screen
+  • Screen Recording → screen AND rp-screencap  (so the screen
     can be captured for both the v1 and v2 paths)
   • Accessibility   → rp-input-inject                        (so remote
     keyboard/cursor input can be injected into host apps)
@@ -228,7 +228,7 @@ HOW TO GRANT SCREEN RECORDING (macOS):
          System Settings > Privacy & Security > Screen Recording
     2. Click the (+) button.
     3. Navigate to (press Cmd+Shift+G in the picker to type the path):
-         ~/.remote-pair/bin/remote-pair-screen
+         ~/.remote-pair/bin/screen
        and also add:
          ~/.remote-pair/bin/rp-screencap
     4. Enable the toggle next to each.
@@ -255,7 +255,7 @@ HOW TO START THE SIDECAR ON THE HOST:
 
   v2 — WebRTC / H.264 (recommended: UDP/RTP, low latency, remote input):
 
-    ~/.remote-pair/bin/remote-pair-screen serve-webrtc
+    ~/.remote-pair/bin/screen serve-webrtc
 
     Default: signaling WebSocket on 127.0.0.1:8890; media flows P2P over
     UDP/ICE. Spawns rp-screencap (capture) and rp-input-inject (remote
@@ -265,7 +265,7 @@ HOW TO START THE SIDECAR ON THE HOST:
 
   v1 — JPEG over WebSocket (fallback, no remote input):
 
-    ~/.remote-pair/bin/remote-pair-screen serve
+    ~/.remote-pair/bin/screen serve
 
   Default: listens on 127.0.0.1:8889, ~10 fps JPEG stream.
   Performance: a static screen now sends ~0 bytes (change-detection
@@ -281,7 +281,7 @@ HOW TO START THE SIDECAR ON THE HOST:
     (see --help for the full list)
 
   Example (Retina host, bandwidth-conscious):
-    ~/.remote-pair/bin/remote-pair-screen serve --scale 0.5 --quality 55
+    ~/.remote-pair/bin/screen serve --scale 0.5 --quality 55
 
   The RemotePair extension on the client will automatically forward the
   WS port over SSH when the Remote Desktop view opens (v1 mode).

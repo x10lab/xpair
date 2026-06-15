@@ -35,7 +35,7 @@ hex head: 00 00 00 01 27 42 00 33 ...   (start code + SPS, profile 0x42=Baseline
 (독립 헬퍼 `rp-vt-encode` 프로세스 파이프, deny-clean).
 
 ```
-remote-pair-screen serve-webrtc (tokio, --features webrtc):
+screen serve-webrtc (tokio, --features webrtc):
   xcap capture (RGBA) ──swizzle→ BGRA ──stdin──▶ rp-vt-encode (영속 VTCompressionSession)
                                                     │ inter-frame P/IDR
   webrtc-rs ◀── length-prefixed Annex-B NAL ──stdout┘

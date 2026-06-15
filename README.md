@@ -280,6 +280,6 @@ Repo layout: `host/` (app, build scripts, approve router, skills), `client/` (CL
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+AGPL-3.0-or-later. See [LICENSE](LICENSE). (Commercial/dual licensing 문의 가능)
 
 Personal tool, tested on macOS (Apple Silicon). Not endorsed by Apple. Contributions welcome — please open an issue before large changes.

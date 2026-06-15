@@ -1,8 +1,8 @@
 [package]
-name = "remote-pair-screen"
+name = "screen"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 description = "License-clean screen-capture sidecar for RemotePair Remote Desktop (v1 high-performance path). v1a: continuous-capture WebSocket JPEG frame server; v1b (webrtc + VideoToolbox HW encode) TODO."
 repository = "https://github.com/x10lab/remote-pair"
 publish = false

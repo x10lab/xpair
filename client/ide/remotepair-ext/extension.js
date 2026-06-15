@@ -11,7 +11,7 @@
 // All ssh invocations are argv-safe (spawn, never a shell string built from REMOTE_HOST).
 //
 // v1: WebSocket streaming mode — ssh local-forward tunnel → ws://127.0.0.1:<port>
-//     The sidecar `remote-pair-screen serve` on the host pushes binary JPEG frames
+//     The sidecar `screen serve` on the host pushes binary JPEG frames
 //     at ~10 fps over loopback WS on 127.0.0.1:8889.
 //     Mode is controlled by setting remotepair.remoteDesktop.mode (auto|v1|v0).
 //     In "auto": try v1 and if no frame arrives within ~4 s fall back to v0 polling.

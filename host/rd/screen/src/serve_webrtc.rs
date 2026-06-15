@@ -81,7 +81,7 @@ async fn run_async(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("bind {addr}: {e}"))?;
-    eprintln!("remote-pair-screen serve-webrtc: signaling ws://{addr} (H.264/WebRTC UDP)");
+    eprintln!("screen serve-webrtc: signaling ws://{addr} (H.264/WebRTC UDP)");
     eprintln!("  reach signaling over:  ssh -L {port}:127.0.0.1:{port} <host>");
     eprintln!("  media flows P2P over UDP/ICE (host-candidate, loopback/LAN/VPN)");
 

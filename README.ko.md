@@ -281,6 +281,6 @@ RP_VERSION=0.4.12 ./host/build-host.sh --release  # 서명, zip, gh 릴리스, c
 
 ## 라이선스
 
-Apache-2.0. [LICENSE](LICENSE) 참고.
+AGPL-3.0-or-later. [LICENSE](LICENSE) 참고. (상용/dual 라이선스 문의 가능)
 
 개인용 도구이며 macOS(Apple Silicon)에서 테스트되었습니다. Apple과 무관합니다. 기여 환영 — 큰 변경 전에는 이슈를 먼저 열어주세요.

@@ -1,8 +1,10 @@
-# cargo-deny configuration — the AGPL firewall for remote-pair-screen.
+# cargo-deny configuration — dependency license firewall for screen.
 #
-# RemotePair is licensed Apache-2.0. RustDesk is AGPL-3.0 and MUST NOT become a
-# dependency (directly or transitively). This file enforces a PERMISSIVE-ONLY
-# license policy and explicitly denies the (L)GPL/AGPL family.
+# screen is pure first-party code, licensed AGPL-3.0-or-later
+# (dual-licensable — we own the copyright). To keep that dual-licensing option,
+# every DEPENDENCY must stay permissive (MIT/Apache/etc.): we cannot sell a
+# commercial license for copyleft code we don't own. So — permissive-only
+# allow-list for deps; AGPL is allowed ONLY for our own crate (exception below).
 #
 # Run:  cargo-deny check licenses
 #       cargo-deny check bans
@@ -47,22 +49,20 @@ confidence-threshold = 0.93
 # SPDX. Clarify them explicitly rather than loosening the global policy.
 # (None required for the current tree; add entries here if cargo-deny reports
 #  an "unlicensed" crate that is in fact permissive.)
-exceptions = []
+exceptions = [
+    # Our own crate is AGPL-3.0; allow it here so cargo-deny passes while the
+    # permissive-only policy still applies to every dependency.
+    { name = "screen", allow = ["AGPL-3.0-or-later"] },
+]
 
 # r-efi (a transitive UEFI crate) is "MIT OR Apache-2.0 OR LGPL-2.1-or-later".
 # The OR means we can take MIT/Apache-2.0; cargo-deny resolves this to a
 # permitted license automatically, so no clarification entry is needed.
 
 [bans]
-# Belt-and-suspenders: explicitly ban RustDesk crates by name, even though the
-# license allow-list above would already reject AGPL. If any rustdesk-published
-# crate ever appears in the tree, fail hard.
-deny = [
-    { name = "rustdesk" },
-    { name = "rustdesk-server" },
-    { name = "scrap" },          # RustDesk's AGPL capture crate — do NOT confuse with `scap`.
-    { name = "hbb_common" },     # RustDesk shared crate (AGPL).
-]
+# The permissive-only license allow-list above already rejects any copyleft
+# (GPL/AGPL/…) dependency, so no per-crate name bans are needed. This engine is
+# pure first-party code with permissive dependencies only.
 multiple-versions = "warn"
 wildcards = "allow"
 

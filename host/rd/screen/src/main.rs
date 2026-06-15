@@ -1,4 +1,4 @@
-//! remote-pair-screen — license-clean screen-capture sidecar for RemotePair
+//! screen — license-clean screen-capture sidecar for RemotePair
 //! Remote Desktop (the v1 high-performance path).
 //!
 //! STATUS: v1a (WS+JPEG software path). The `capture`/`info` paths prove the
@@ -31,7 +31,7 @@ mod serve_webrtc;
 
 /// License-clean screen-capture sidecar for RemotePair Remote Desktop (v1).
 #[derive(Parser, Debug)]
-#[command(name = "remote-pair-screen", version, about, long_about = None)]
+#[command(name = "screen", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

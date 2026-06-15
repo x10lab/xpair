@@ -102,8 +102,8 @@
           "enum": ["auto", "v2", "v1", "v0"],
           "enumDescriptions": [
             "Try v2 WebRTC (H.264/UDP) first, then v1 WebSocket JPEG, then v0 polling",
-            "Always use v2 WebRTC H.264/UDP stream (requires remote-pair-screen serve-webrtc on host) — highest performance",
-            "Always use v1 WebSocket JPEG stream (requires remote-pair-screen serve on host)",
+            "Always use v2 WebRTC H.264/UDP stream (requires screen serve-webrtc on host) — highest performance",
+            "Always use v1 WebSocket JPEG stream (requires screen serve on host)",
             "Always use v0 SSH screenshot polling (legacy)"
           ],
           "default": "auto",

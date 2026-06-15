@@ -94,7 +94,7 @@ pub fn run(port: u16, fps: u32, quality: u8, scale: f32) -> Result<(), String> {
         .map_err(|e| format!("could not bind {addr} (loopback): {e}"))?;
 
     eprintln!(
-        "remote-pair-screen serve: listening on ws://{addr} \
+        "screen serve: listening on ws://{addr} \
          (fps={fps}, jpeg quality={quality}, scale={scale}, loopback only)"
     );
     eprintln!(
