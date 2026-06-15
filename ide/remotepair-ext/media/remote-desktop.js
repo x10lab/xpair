@@ -222,6 +222,113 @@
     }
   }
 
+  // -------------------------------------------------------------------------
+  // v2 input capture (Step 3): IME-aware split — completed Unicode text via
+  // composition/input events (Korean-safe), shortcuts/non-printable via keydown.
+  // Sends over two host-created DataChannels: rp-ctl (reliable) / rp-move (lossy).
+  // -------------------------------------------------------------------------
+
+  // JS KeyboardEvent.code -> macOS virtual keycode (for shortcuts / non-printable)
+  const MAC_VK = {
+    KeyA:0,KeyS:1,KeyD:2,KeyF:3,KeyH:4,KeyG:5,KeyZ:6,KeyX:7,KeyC:8,KeyV:9,KeyB:11,
+    KeyQ:12,KeyW:13,KeyE:14,KeyR:15,KeyY:16,KeyT:17,Digit1:18,Digit2:19,Digit3:20,
+    Digit4:21,Digit6:22,Digit5:23,Digit9:25,Digit7:26,Digit8:28,Digit0:29,KeyO:31,
+    KeyU:32,KeyI:34,KeyP:35,Enter:36,KeyL:37,KeyJ:38,KeyK:40,KeyN:45,KeyM:46,
+    Tab:48,Space:49,Backspace:51,Escape:53,ArrowLeft:123,ArrowRight:124,
+    ArrowDown:125,ArrowUp:126,
+  };
+  function macFlags(ev) {
+    let f = 0;
+    if (ev.metaKey) f |= 0x100000;  // cmd
+    if (ev.shiftKey) f |= 0x20000;
+    if (ev.ctrlKey) f |= 0x40000;
+    if (ev.altKey) f |= 0x80000;
+    return f;
+  }
+
+  let ctlDC = null, moveDC = null, inSeq = 0;
+  let lastMoveTs = 0;
+  const MOVE_MIN_MS = 1000 / 60; // ≤60 Hz (B4)
+
+  function dcSend(dc, obj) {
+    if (!dc || dc.readyState !== "open") return;
+    obj.seq = ++inSeq;
+    try { dc.send(JSON.stringify(obj)); } catch (_e) {}
+  }
+
+  // Hidden focusable catcher: the IME composes here so we get composition/input
+  // events (a <video> never fires them). Kept off-screen + transparent.
+  let imeCatcher = null;
+  function ensureCatcher() {
+    if (imeCatcher) return imeCatcher;
+    const el = document.createElement("div");
+    el.contentEditable = "true";
+    el.setAttribute("autocorrect", "off");
+    el.setAttribute("autocapitalize", "off");
+    el.style.cssText =
+      "position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;" +
+      "outline:none;border:0;overflow:hidden;z-index:-1;";
+    el.addEventListener("compositionend", function (ev) {
+      if (!v2Mode || !inputEnabled || !ctlDC) return;
+      if (ev.data) dcSend(ctlDC, { t: "x", s: ev.data });
+      el.textContent = "";
+    });
+    el.addEventListener("input", function (ev) {
+      if (!v2Mode || !inputEnabled || !ctlDC) return;
+      el.textContent = ""; // never accumulate
+      if (ev.isComposing) return; // composition handled by compositionend
+      if (ev.inputType === "insertText" && ev.data) dcSend(ctlDC, { t: "x", s: ev.data });
+    });
+    stage.appendChild(el);
+    imeCatcher = el;
+    return el;
+  }
+
+  function setupV2Input(pc) {
+    ctlDC = null; moveDC = null;
+    ensureCatcher();
+    pc.ondatachannel = function (ev) {
+      const dc = ev.channel;
+      if (dc.label === "rp-ctl") ctlDC = dc;
+      else if (dc.label === "rp-move") moveDC = dc;
+      dc.onopen = function () { /* ready */ };
+    };
+  }
+
+  // mouse move -> rp-move (throttle + coalesce + bufferedAmount guard) (B4)
+  stage.addEventListener("mousemove", function (ev) {
+    if (!v2Mode || !inputEnabled || !haveFrame || !moveDC || moveDC.readyState !== "open") return;
+    const now = Date.now();
+    if (now - lastMoveTs < MOVE_MIN_MS) return;
+    if (moveDC.bufferedAmount > 64 * 1024) return; // drop instead of queue
+    const c = relCoords(ev);
+    if (!c) return;
+    lastMoveTs = now;
+    dcSend(moveDC, { t: "m", rx: c.rx, ry: c.ry });
+  });
+  // click -> rp-ctl. Also focus the IME catcher so subsequent typing composes there.
+  stage.addEventListener("mousedown", function (ev) {
+    if (!v2Mode || !inputEnabled || !haveFrame || !ctlDC) return;
+    if (imeCatcher) imeCatcher.focus();
+    const c = relCoords(ev);
+    if (!c) return;
+    dcSend(ctlDC, { t: "c", rx: c.rx, ry: c.ry, btn: ev.button === 2 ? "r" : "l" });
+  });
+  // keydown -> rp-ctl ONLY for shortcuts / non-printable. Printable text is
+  // routed via input/compositionend (so Korean composes correctly).
+  document.addEventListener("keydown", function (ev) {
+    if (!v2Mode || !inputEnabled || !haveFrame || !ctlDC) return;
+    if (ev.isComposing || ev.keyCode === 229) return; // IME composing — defer to compositionend
+    const hasMod = ev.metaKey || ev.ctrlKey || ev.altKey;
+    const printable = ev.key && ev.key.length === 1;
+    if (printable && !hasMod) return; // plain text -> handled by 'input' below
+    const code = MAC_VK[ev.code];
+    if (code === undefined) return;
+    ev.preventDefault();
+    dcSend(ctlDC, { t: "k", code: code, flags: macFlags(ev) });
+  });
+  // (completed-text capture lives on the IME catcher created in ensureCatcher)
+
   function connectV2(signalUrl) {
     closeWs();
     closePc2();
@@ -238,6 +345,7 @@
     const pc = new RTCPeerConnection({ iceServers: [] }); // host candidates (loopback/LAN/VPN)
     pc2 = pc;
     pc.addTransceiver("video", { direction: "recvonly" });
+    setupV2Input(pc);
 
     pc.ontrack = function (ev) {
       video.srcObject = ev.streams[0];

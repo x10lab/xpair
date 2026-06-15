@@ -1140,15 +1140,40 @@ function reconcileBrowserRoots() {
   }
 
   log(`reconcileBrowserRoots: current=[${current.join(", ")}] target=[${clientDirs.join(", ")}]`);
+  // RELOAD CAVEAT: vscode.workspace.updateWorkspaceFolders RELOADS the window when the change
+  // transitions to/from 0 folders OR replaces the folder at index 0 (documented behavior). To
+  // avoid an unnecessary reload, take an additive fast-path when `current` is a strict prefix of
+  // the target (only NEW roots are appended): inserting at the end (start === current.length)
+  // never touches index 0 and never crosses the 0-folder boundary, so the window stays put.
+  // Anything else (removals, reordering, replacing index 0, or going to/from 0 folders) needs the
+  // full replace below, which may reload — but the `alreadyCorrect` guard above already prevents
+  // spurious runs, so the replace only fires on a genuine difference.
+  const isAdditiveAppend =
+    current.length > 0 &&
+    clientDirs.length > current.length &&
+    current.every((d, i) => clientDirs[i] === d);
   try {
-    // Single replace: delete all current folders, insert the mapped clientDirs in order.
-    // When clientDirs is empty this removes every root (e.g. the phantom launch-arg folder),
-    // leaving zero roots so the Browser renders its empty-state add button.
-    const ok = vscode.workspace.updateWorkspaceFolders(
-      0,
-      current.length,
-      ...clientDirs.map((d) => ({ uri: vscode.Uri.file(d) }))
-    );
+    let ok;
+    if (isAdditiveAppend) {
+      // Append-only: insert the trailing new roots without disturbing existing ones (no reload).
+      const added = clientDirs.slice(current.length);
+      log(`reconcileBrowserRoots: additive append of [${added.join(", ")}] (no reload)`);
+      ok = vscode.workspace.updateWorkspaceFolders(
+        current.length,
+        0,
+        ...added.map((d) => ({ uri: vscode.Uri.file(d) }))
+      );
+    } else {
+      // Full replace: delete all current folders, insert the mapped clientDirs in order. This may
+      // reload the window (index-0 replace and/or the 0-folder boundary). When clientDirs is empty
+      // this removes every root (e.g. the phantom launch-arg folder), leaving zero roots so the
+      // Browser renders its empty-state add button.
+      ok = vscode.workspace.updateWorkspaceFolders(
+        0,
+        current.length,
+        ...clientDirs.map((d) => ({ uri: vscode.Uri.file(d) }))
+      );
+    }
     if (!ok) {
       // false = no-op or invalid change. This is expected when removing the very last
       // folder is rejected by the workspace model in some single-folder states; it is NOT
