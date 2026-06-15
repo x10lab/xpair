@@ -18,8 +18,17 @@ enum Permissions {
         let probe = (NSHomeDirectory() as NSString)
             .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db")
         guard let fh = FileHandle(forReadingAtPath: probe) else { return false }
-        defer { try? fh.close() }
-        return ((try? fh.read(upToCount: 1)) ?? nil) != nil
+        defer {
+            // Closing the read-only probe handle failing is genuinely ignorable, but trace it so a leaked fd is diagnosable.
+            do { try fh.close() } catch { log(.debug, "fdaGranted: close TCC.db probe handle failed: \(error)") }
+        }
+        // A successful 1-byte read means FDA is granted; a read error means it isn't (the load-bearing inference) — log the error so a non-FDA failure is distinguishable from other I/O faults.
+        do {
+            return try fh.read(upToCount: 1) != nil
+        } catch {
+            log(.debug, "fdaGranted: TCC.db probe read failed (treating as FDA not granted): \(error)")
+            return false
+        }
     }
 
     /// One-line summary for the menu bar status. e.g. "Permissions: Accessibility ✓  Screen Recording ✗  Full Disk ✗"
@@ -73,6 +82,22 @@ enum Permissions {
         a.addButton(withTitle: "OK")
         bringToFront()
         a.runModal()
+    }
+
+    /// Onboarding-triggered single-permission request (the onboarding owns the surrounding UI, so no alert/panes here).
+    /// AX → AXIsProcessTrustedWithOptions(prompt) shows the system prompt AND registers the app in the Accessibility list.
+    /// SR → CGRequestScreenCaptureAccess() registers the app in the Screen Recording list. FDA has no request API.
+    static func request(_ key: String) {
+        if isClientRole { return }   // client = access-only, never requests
+        switch key {
+        case "ax":
+            let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(opts)
+        case "sr":
+            if !srGranted() { CGRequestScreenCaptureAccess() }
+        default:
+            break   // fda: no programmatic request API — the user adds the app via the Full Disk Access pane
+        }
     }
 }
 

@@ -37,12 +37,13 @@ final class HostManager {
         // The session name is the cross-machine correlation id, so log it before pkill removes the evidence.
         let (out, _) = runCapture(TMUX, ["-S", SOCKET, "ls", "-F", "#S"])
         let names = out.split(separator: "\n").map(String.init).filter { !$0.isEmpty && $0 != "_keeper" }
-        if !names.isEmpty { log("HOST: reaping \(names.count) session(s): \(names.joined(separator: ", "))") }
+        if !names.isEmpty { log(.warn, "reaping \(names.count) session(s): \(names.joined(separator: ", "))") }
         for pat in ["tmux-aqua -S \(SOCKET)", "/usr/bin/script -q /dev/null \(TMUX)"] {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
             p.arguments = ["-f", pat]
-            try? p.run(); p.waitUntilExit()
+            do { try p.run(); p.waitUntilExit() }
+            catch { log(.warn, "reapStrays: pkill -f \"\(pat)\" failed to launch: \(error)") }
         }
         usleep(250_000)
     }
@@ -68,7 +69,7 @@ final class HostManager {
 
         var pid: pid_t = 0
         let rc = posix_spawn(&pid, "/usr/bin/script", &fa, nil, cargs, cenv)
-        if rc == 0 { childPid = pid; log("HOST: tmux server spawned pid=\(pid) sock=\(SOCKET)") }
-        else { log("HOST: posix_spawn failed rc=\(rc)") }
+        if rc == 0 { childPid = pid; log(.info, "tmux server spawned pid=\(pid) sock=\(SOCKET)") }
+        else { log(.error, "posix_spawn failed rc=\(rc)") }
     }
 }

@@ -55,14 +55,14 @@ enum Updater {
                     case .failure(let err):
                         let msg = "\(err)"
                         if interactive { info("Update check failed", msg) }
-                        log("UPDATE: check failed — \(msg)")
+                        log(.warn, "check failed — \(msg)")
                     case .success(let rel):
                         if isNewer(rel.tag, than: APP_VERSION) {
                             promptAndApply(rel)
                         } else if interactive {
                             info("Latest version", "\(APP_NAME) \(APP_VERSION) is already up to date (latest: \(rel.tag)).")
                         }
-                        log("UPDATE: current=\(APP_VERSION) latest=\(rel.tag)")
+                        log(.info, "current=\(APP_VERSION) latest=\(rel.tag)")
                     }
                 }
             }
@@ -87,6 +87,7 @@ enum Updater {
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tag = json["tag_name"] as? String,
                   let assets = json["assets"] as? [[String: Any]] else {
+                log(.debug, "fetchLatest: release JSON missing/unparseable (\(data.count) bytes)")
                 fail("failed to parse response"); return
             }
             let notes = (json["body"] as? String) ?? ""
@@ -134,10 +135,10 @@ enum Updater {
             bringToFront()
             // ⓒ proceed only on consent (alertFirstButtonReturn). Otherwise (Later/close), do not restart.
             guard a.runModal() == .alertFirstButtonReturn else {
-                log("UPDATE: LEVEL-2 relaunch declined by user (\(liveCount) live session(s)) — staying on \(APP_VERSION)")
+                log(.info, "LEVEL-2 relaunch declined by user (\(liveCount) live session(s)) — staying on \(APP_VERSION)")
                 return
             }
-            log("UPDATE: LEVEL-2 relaunch consented (\(liveCount) live session(s)) → \(rel.tag)")
+            log(.info, "LEVEL-2 relaunch consented (\(liveCount) live session(s)) → \(rel.tag)")
         } else {
             // ── (c) 0 real sessions → safe with no interruption. Still get explicit confirmation (prevent an unexpected restart). ──
             a.informativeText = "Moving from \(APP_VERSION) → \(rel.tag). No sessions are running, so it is safe. Apply now?\n\n"
@@ -146,7 +147,7 @@ enum Updater {
             a.addButton(withTitle: "Later")
             bringToFront()
             guard a.runModal() == .alertFirstButtonReturn else { return }
-            log("UPDATE: LEVEL-2 relaunch (0 live sessions) → \(rel.tag)")
+            log(.info, "LEVEL-2 relaunch (0 live sessions) → \(rel.tag)")
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -164,14 +165,15 @@ enum Updater {
                 }
             } catch {
                 DispatchQueue.main.async { info("Update failed", "\(error)") }
-                log("UPDATE: apply failed — \(error)")
+                log(.error, "apply failed — \(error)")
             }
         }
     }
 
     private static func downloadAndStage(_ url: URL) throws -> String {
         let tmp = NSTemporaryDirectory() + "rp-update-\(getpid())"
-        try? FileManager.default.removeItem(atPath: tmp)
+        do { try FileManager.default.removeItem(atPath: tmp) }
+        catch { log(.debug, "stage: no stale tmp to clear at \(tmp): \(error)") }
         try FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
         let zipPath = tmp + "/update.zip"
 
@@ -180,7 +182,12 @@ enum Updater {
         var dlErr: Error?
         let task = URLSession.shared.downloadTask(with: url) { loc, _, err in
             if let err = err { dlErr = err }
-            else if let loc = loc { try? FileManager.default.moveItem(atPath: loc.path, toPath: zipPath) }
+            else if let loc = loc {
+                // Preserve original flow: a failed move is detected by the fileExists guard below
+                // (which throws "no download artifact"); just make the underlying cause traceable.
+                do { try FileManager.default.moveItem(atPath: loc.path, toPath: zipPath) }
+                catch { log(.warn, "download: staging move failed: \(error)") }
+            }
             sem.signal()
         }
         task.resume(); sem.wait()
@@ -193,6 +200,7 @@ enum Updater {
         // find the .app
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: tmp),
               let appName = entries.first(where: { $0.hasSuffix(".app") }) else {
+            log(.debug, "stage: no .app among extracted entries at \(tmp)")
             throw RPError("no .app inside the zip")
         }
         // FIX 10 defense line: the bundle name is an untrusted value coming from the downloaded zip. Proceed only when
@@ -242,10 +250,11 @@ enum Updater {
     private static func swapInPlace(_ newApp: String) throws {
         let dest = "/Applications/\(APP_NAME).app"
         runCapture("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp])
-        try? FileManager.default.removeItem(atPath: dest)
+        do { try FileManager.default.removeItem(atPath: dest) }
+        catch { log(.warn, "swap: could not remove existing app at \(dest) (may be absent or locked): \(error)") }
         try FileManager.default.createDirectory(atPath: "/Applications", withIntermediateDirectories: true)
         try FileManager.default.moveItem(atPath: newApp, toPath: dest)
-        log("UPDATE: swapped → \(dest)")
+        log(.info, "swapped → \(dest)")
     }
 
     private static func relaunch() {
@@ -268,7 +277,10 @@ enum Updater {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = ["-c", script]
-        try? p.run()   // run independently of the parent
+        // run independently of the parent; if the helper fails to spawn, the app will terminate
+        // below without anything to relaunch it (unless LaunchAgent KeepAlive kicks in) — log loudly.
+        do { try p.run() }
+        catch { log(.error, "relaunch: failed to spawn restart helper, app may not come back: \(error)") }
         NSApp.terminate(nil)
     }
 }

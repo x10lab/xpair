@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."                       # repo root
 . shared/config.sh                            # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
 
-VERSION="${RP_VERSION:-0.4.12}"                # single source of truth for the version (baked into Info.plist). Release tag = v$VERSION. (pre-1.0, patch +0.0.1)
+VERSION="${RP_VERSION:-0.5.0}"                # single source of truth for the version (baked into Info.plist). Release tag = v$VERSION. (pre-1.0, patch +0.0.1)
 SRC_DIR=host/app
 APP="build/${APP_NAME}.app"
 EXEC="$APP_NAME"

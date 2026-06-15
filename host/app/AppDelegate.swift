@@ -147,12 +147,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // ── steady-state loop: heartbeat + status (ground truth) + trigger check (all lightweight) ──
     @objc func poll() {
-        try? "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8)
+        do { try "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8) }
+        catch { log(.debug, "heartbeat write failed: \(error)") }   // ignorable: next tick (1s) retries
         writeStatus()   // write app liveness + AX/SR/FDA grant facts to status.json — so the agent reads them without guessing
         if FileManager.default.fileExists(atPath: TRIGGER) {
-            try? FileManager.default.removeItem(atPath: TRIGGER)
-            log("APPROVE: trigger → router")
+            do { try FileManager.default.removeItem(atPath: TRIGGER) }
+            catch { log(.warn, "approve: removing trigger \(TRIGGER) failed (router may re-fire): \(error)") }
+            log("trigger → router")
             approve.run()
+        }
+        // Onboarding (Electron) → app triggers: only the host app can register for TCC / run the installer.
+        let grantReq = "/tmp/remote-pair.grant-request"
+        if let raw = try? String(contentsOfFile: grantReq, encoding: .utf8) {
+            do { try FileManager.default.removeItem(atPath: grantReq) }
+            catch { log(.warn, "onboard: removing grant-request \(grantReq) failed (may re-fire next tick): \(error)") }
+            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            log("grant-request → Permissions.request(\(key))")
+            Permissions.request(key)
+        }
+        let installReq = "/tmp/remote-pair.install-request"
+        if FileManager.default.fileExists(atPath: installReq) {
+            do { try FileManager.default.removeItem(atPath: installReq) }
+            catch { log(.warn, "onboard: removing install-request \(installReq) failed (may re-fire next tick): \(error)") }
+            log("install-request → Installer.install")
+            Installer.install(force: true, refreshResources: true)
         }
     }
 

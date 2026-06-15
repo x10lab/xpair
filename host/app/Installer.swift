@@ -47,17 +47,24 @@ enum Installer {
     static func shouldSkipSelfInstall() -> Bool {
         let p = Bundle.main.bundlePath
         if !(p.hasPrefix("/Applications/") || p.hasPrefix("\(HOME)/Applications/")) {
-            log("INSTALL: launched from non-installed location (\(p)) — refusing host self-install (build/dev launch guard)")
+            log(.warn, "launched from non-installed location (\(p)) — refusing host self-install (build/dev launch guard)")
             return true
         }
-        let role = (try? String(contentsOfFile: ROLE_FILE, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let role: String
+        do {
+            role = try String(contentsOfFile: ROLE_FILE, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            // Absent role marker is normal (cask-only host, or pre-marker install) — trace it but treat as empty.
+            log(.debug, "role marker read skipped (\(ROLE_FILE)): \(error)")
+            role = ""
+        }
         if role == "client" {
-            log("INSTALL: role=client marker — skipping host self-install")
+            log(.info, "role=client marker — skipping host self-install")
             return true
         }
         if role.isEmpty && fm.fileExists(atPath: CLIENT_ENV_FILE) && !fm.fileExists(atPath: HOST_ENV) {
-            log("INSTALL: client.env present + no host.env — treating as client, skipping host self-install")
+            log(.info, "client.env present + no host.env — treating as client, skipping host self-install")
             return true
         }
         return false
@@ -66,14 +73,21 @@ enum Installer {
     static func ensureInstalled() {
         if shouldSkipSelfInstall() { return }
         let installed = fm.fileExists(atPath: appPlist) && fm.fileExists(atPath: HOST_ENV)
-        let stamped = (try? String(contentsOfFile: versionFile, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stamped: String
+        do {
+            stamped = try String(contentsOfFile: versionFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            // Missing version stamp is normal on first install / pre-stamp builds — trace and treat as unstamped.
+            log(.debug, "version stamp read skipped (\(versionFile)): \(error)")
+            stamped = ""
+        }
         if installed && stamped == APP_VERSION { return }                 // LEVEL-1: same version → true no-op (no hot-swap/tmux interference)
         if installed {
-            log("INSTALL: version \(stamped.isEmpty ? "(none)" : stamped) → \(APP_VERSION) — refreshing resources (grant/config preserved)")
+            log(.info, "version \(stamped.isEmpty ? "(none)" : stamped) → \(APP_VERSION) — refreshing resources (grant/config preserved)")
             install(force: false, refreshResources: true)                 // LEVEL-1: version up → refresh resources only (preserve grant/LaunchAgent)
         } else {
-            log("INSTALL: not fully installed (plist=\(fm.fileExists(atPath: appPlist)) host.env=\(fm.fileExists(atPath: HOST_ENV))) → installing")
+            log(.info, "not fully installed (plist=\(fm.fileExists(atPath: appPlist)) host.env=\(fm.fileExists(atPath: HOST_ENV))) → installing")
             install(force: false)
         }
     }
@@ -84,15 +98,18 @@ enum Installer {
         // Direct call paths such as repairInstall also refuse a non-installed location (build/) — so the LaunchAgent does not point at a dev tree.
         let bp = Bundle.main.bundlePath
         if !(bp.hasPrefix("/Applications/") || bp.hasPrefix("\(HOME)/Applications/")) {
-            log("INSTALL: install() refused — launched from non-installed location (\(bp))")
+            log(.warn, "install() refused — launched from non-installed location (\(bp))")
             return
         }
-        log("INSTALL: begin (force=\(force) refreshResources=\(refreshResources))")
+        log(.info, "begin (force=\(force) refreshResources=\(refreshResources))")
         ensureDir(RP_DIR)
         ensureDir(LOG_DIR)
         ensureDir("\(RP_DIR)/bin")
         // role marker: if install.sh did not lay it down (pure cask install), record as host. If already present, respect it (both/host).
-        if !fm.fileExists(atPath: ROLE_FILE) { try? "host\n".write(toFile: ROLE_FILE, atomically: true, encoding: .utf8) }
+        if !fm.fileExists(atPath: ROLE_FILE) {
+            do { try "host\n".write(toFile: ROLE_FILE, atomically: true, encoding: .utf8) }
+            catch { log(.warn, "role marker write failed (\(ROLE_FILE)): \(error)") }
+        }
 
         // 1. env files (host.env: HOST_KEYS defaults, common.env: COMMON_KEYS)
         writeEnv(COMMON_ENV, [
@@ -123,13 +140,15 @@ enum Installer {
         let tmuxLink = "\(LOCAL_BIN)/tmux-aqua"
         if fm.fileExists(atPath: tmuxSrc) {
             ensureDir(LOCAL_BIN)
+            // nil = no existing link (fresh install) — expected, not an error.
             let cur = try? fm.destinationOfSymbolicLink(atPath: tmuxLink)
             if cur != tmuxSrc {
-                try? fm.removeItem(atPath: tmuxLink)
-                do { try fm.createSymbolicLink(atPath: tmuxLink, withDestinationPath: tmuxSrc); log("INSTALL: tmux-aqua link → \(tmuxSrc)") }
-                catch { log("INSTALL: tmux-aqua link failed: \(error)") }
+                do { try fm.removeItem(atPath: tmuxLink) }
+                catch { log(.debug, "tmux-aqua stale link remove skipped (\(tmuxLink)): \(error)") }
+                do { try fm.createSymbolicLink(atPath: tmuxLink, withDestinationPath: tmuxSrc); log(.info, "tmux-aqua link → \(tmuxSrc)") }
+                catch { log(.error, "tmux-aqua link failed: \(error)") }
             }
-        } else { log("INSTALL: bundled tmux-aqua not found (\(tmuxSrc))") }
+        } else { log(.warn, "bundled tmux-aqua not found (\(tmuxSrc))") }
 
         // 4b. Three screen-sharing symlinks → bundled Helpers/{screen,rp-screencap,rp-input-inject}.
         //     Resolves the stable path ~/.remote-pair/bin/<name> that extensions/docs call to the bundle's signed binary
@@ -147,8 +166,10 @@ enum Installer {
         bootstrap(label: APP_LABEL, plist: appPlist)
         bootstrap(label: WATCHDOG_LABEL, plist: wdPlist)
 
-        try? APP_VERSION.write(toFile: versionFile, atomically: true, encoding: .utf8)   // version stamp → so the next launch can decide no-op
-        log("INSTALL: done (force=\(force) → version \(APP_VERSION))")
+        // version stamp → so the next launch can decide no-op. If this fails, the next launch re-runs install (idempotent) instead of no-op'ing.
+        do { try APP_VERSION.write(toFile: versionFile, atomically: true, encoding: .utf8) }
+        catch { log(.warn, "version stamp write failed (\(versionFile)) — next launch will re-run install: \(error)") }
+        log(.info, "done (force=\(force) → version \(APP_VERSION))")
     }
 
     // ── host notification hook mirror (for cask-only hosts) ────────────────────────────────────
@@ -304,12 +325,14 @@ enum Installer {
         if let h = FileHandle(forWritingAtPath: manifest) {
             h.seekToEndOfFile()
             if let d = lines.data(using: .utf8) { h.write(d) }
-            try? h.close()
+            do { try h.close() }
+            catch { log(.debug, "manifest handle close skipped (\(manifest)): \(error)") }
         } else {
             // No file → create it fresh (append start point). best-effort even if it fails.
-            try? lines.write(toFile: manifest, atomically: true, encoding: .utf8)
+            do { try lines.write(toFile: manifest, atomically: true, encoding: .utf8) }
+            catch { log(.warn, "cask-only manifest fresh write failed (\(manifest)) — uninstall reversibility may be incomplete: \(error)") }
         }
-        log("INSTALL: cask-only manifest recorded → \(manifest) (\(fileRecords.count) file + hooks)")
+        log(.info, "cask-only manifest recorded → \(manifest) (\(fileRecords.count) file + hooks)")
     }
 
     /// Best-effort guess of the host/hooks path in the repo source tree (dev/source install). nil if absent.
@@ -343,13 +366,18 @@ enum Installer {
         let tmp = dst + ".rp-tmp"
         do {
             try data.write(to: URL(fileURLWithPath: tmp), options: .atomic)
-            try? fm.removeItem(atPath: dst)
+            // Remove an existing destination so the move can't collide — absent dst is the normal fresh-install case.
+            do { try fm.removeItem(atPath: dst) }
+            catch { log(.debug, "copyFile pre-move remove skipped (\(dst)): \(error)") }
             try fm.moveItem(atPath: tmp, toPath: dst)
-            try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: dst)
+            do { try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: dst) }
+            catch { log(.warn, "copyFile chmod \(String(mode, radix: 8)) failed (\(dst)): \(error)") }
             return true
         } catch {
-            try? fm.removeItem(atPath: tmp)
-            log("INSTALL: copyFile failed \(src) → \(dst): \(error)")
+            // Best-effort cleanup of the temp on failure.
+            do { try fm.removeItem(atPath: tmp) }
+            catch { log(.debug, "copyFile temp cleanup skipped (\(tmp)): \(error)") }
+            log(.error, "copyFile failed \(src) → \(dst): \(error)")
             return false
         }
     }
@@ -364,26 +392,35 @@ enum Installer {
         for name in names {
             let src = "\(helpersDir)/\(name)"
             let link = "\(binDir)/\(name)"
-            guard fm.fileExists(atPath: src) else { log("INSTALL: bundled \(name) not found (\(src)) — link skip"); continue }
+            guard fm.fileExists(atPath: src) else { log(.warn, "bundled \(name) not found (\(src)) — link skip"); continue }
+            // nil = no existing link (fresh install) — expected, not an error.
             let cur = try? fm.destinationOfSymbolicLink(atPath: link)
             if cur == src { continue }                       // already the correct link → no-op
             // Remove a stale link or a real file (ad-hoc) left behind by an old deploy, then replace with a new symlink.
-            try? fm.removeItem(atPath: link)
-            do { try fm.createSymbolicLink(atPath: link, withDestinationPath: src); log("INSTALL: \(name) link → \(src)") }
-            catch { log("INSTALL: \(name) link failed: \(error)") }
+            do { try fm.removeItem(atPath: link) }
+            catch { log(.debug, "\(name) stale link/file remove skipped (\(link)): \(error)") }
+            do { try fm.createSymbolicLink(atPath: link, withDestinationPath: src); log(.info, "\(name) link → \(src)") }
+            catch { log(.error, "\(name) link failed: \(error)") }
         }
     }
 
     // ── helpers ──
 
     private static func ensureDir(_ p: String) {
-        try? fm.createDirectory(atPath: p, withIntermediateDirectories: true)
+        // withIntermediateDirectories:true is a no-op if the dir already exists, so any throw is a real failure
+        // (install layout below depends on these dirs existing).
+        do { try fm.createDirectory(atPath: p, withIntermediateDirectories: true) }
+        catch { log(.warn, "ensureDir failed (\(p)): \(error)") }
     }
 
     private static func writeFile(_ path: String, _ contents: String, mode: Int? = nil) {
         ensureDir((path as NSString).deletingLastPathComponent)
-        try? contents.write(toFile: path, atomically: true, encoding: .utf8)
-        if let mode = mode { try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: path) }
+        do { try contents.write(toFile: path, atomically: true, encoding: .utf8) }
+        catch { log(.error, "writeFile failed (\(path)): \(error)"); return }
+        if let mode = mode {
+            do { try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: path) }
+            catch { log(.warn, "writeFile chmod \(String(mode, radix: 8)) failed (\(path)): \(error)") }
+        }
     }
 
     /// _write_env mirror: header + `KEY=<shell-quoted value>` (matches bash printf %q).

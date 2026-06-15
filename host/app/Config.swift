@@ -15,8 +15,17 @@ let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // present = client installed on th
 /// This machine's role. ROLE_FILE trimmed and used as-is (host|client|both); "" if absent or empty (= default host).
 /// Parsing is kept consistent with Installer.shouldSkipSelfInstall(Installer.swift:50-55).
 func currentRole() -> String {
-    (try? String(contentsOfFile: ROLE_FILE, encoding: .utf8))?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    // Absent ROLE_FILE = default host (""), the common case → stay silent. Only an *unexpected* read
+    // error (file present but unreadable, e.g. perms) is worth a .debug; a missing file is not an error.
+    do {
+        return try String(contentsOfFile: ROLE_FILE, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    } catch {
+        if FileManager.default.fileExists(atPath: ROLE_FILE) {
+            log(.debug, "ROLE: present but unreadable at \(ROLE_FILE): \(error) — defaulting to host")
+        }
+        return ""
+    }
 }
 
 /// Does this machine act as a host? host / both / empty (unset = default host) → true.  Only client is false.
@@ -53,7 +62,18 @@ let APP_NAME = (Bundle.main.infoDictionary?["CFBundleName"] as? String) ?? "Remo
 let BUNDLE_ID = Bundle.main.bundleIdentifier ?? "com.x10lab.remote-pair-host"
 
 func ensureDirs() {
-    try? FileManager.default.createDirectory(atPath: LOG_DIR, withIntermediateDirectories: true)
+    // §1: logs dir MUST be mode 0700 (contains host names, ssh aliases, paths). Idempotent.
+    do {
+        try FileManager.default.createDirectory(atPath: LOG_DIR, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+    } catch {
+        // Already-exists is the common, ignorable case; anything else means we may fail to log below.
+        // Use FileHandle.standardError (NOT log()) to avoid recursion into a dir that may not exist.
+        let exists = FileManager.default.fileExists(atPath: LOG_DIR, isDirectory: nil)
+        if !exists {
+            FileHandle.standardError.write(Data("[remote-pair] ensureDirs: cannot create \(LOG_DIR): \(error)\n".utf8))
+        }
+    }
 }
 
 /// The single ground truth read by the agent (remote-pair status/doctor). Lets it know whether the app
@@ -64,29 +84,125 @@ func writeStatus() {
     let json = "{\"ts\":\(ts),\"pid\":\(getpid()),\"version\":\"\(APP_VERSION)\","
         + "\"bundle_id\":\"\(BUNDLE_ID)\",\"socket\":\"\(SOCKET)\","
         + "\"ax\":\(Permissions.axTrusted()),\"sr\":\(Permissions.srGranted()),\"fda\":\(Permissions.fdaGranted())}\n"
-    try? json.write(toFile: STATUS_FILE, atomically: true, encoding: .utf8)
+    // status.json is the agent's ground truth; a stale file makes the agent misjudge liveness/grants → warn.
+    do { try json.write(toFile: STATUS_FILE, atomically: true, encoding: .utf8) }
+    catch { log(.warn, "STATUS: write \(STATUS_FILE) failed: \(error)") }
 }
 
-let LOG_MAX_BYTES = 5_000_000        // rotate remote-pair.log past 5MB, keep one .1 backup (24/7 host → unbounded growth otherwise)
+let LOG_MAX_BYTES = 5_000_000        // §7: rotate remote-pair.log past 5MB (24/7 host → unbounded growth otherwise)
+let LOG_BACKUPS = 3                   // §7: keep live file + .1/.2/.3
+let LOG_LOCK = "\(LOG_DIR)/.remote-pair.log.lock"  // §7: cross-writer advisory lock (Swift host + launcher bash share remote-pair.log)
 
-/// Size-cap rotation: if `path` exceeds `maxBytes`, move it to `path.1` (overwriting the prior backup).
-/// Append-only callers tolerate the race; worst case is one lost line at the rotation instant.
+// MARK: - Logging contract (docs/logging.md)
+
+/// §4 levels (ascending). A record is written iff its level >= the resolved threshold.
+enum Level: Int {
+    case trace, debug, info, warn, error
+    /// §3: upper-case level token in the line.
+    var tag: String {
+        switch self {
+        case .trace: return "TRACE"
+        case .debug: return "DEBUG"
+        case .info:  return "INFO"
+        case .warn:  return "WARN"
+        case .error: return "ERROR"
+        }
+    }
+    /// Parse a level *name* (case-insensitive). nil for unknown tokens.
+    static func parse(_ raw: String) -> Level? {
+        switch raw.lowercased() {
+        case "trace": return .trace
+        case "debug": return .debug
+        case "info":  return .info
+        case "warn", "warning": return .warn
+        case "error": return .error
+        default: return nil
+        }
+    }
+}
+
+/// §4: file threshold = REMOTEPAIR_LOG (level name, case-insensitive) else .info. Resolved once at process start.
+let LOG_THRESHOLD: Level = {
+    if let raw = ProcessInfo.processInfo.environment["REMOTEPAIR_LOG"],
+       let lvl = Level.parse(raw) { return lvl }
+    return .info
+}()
+
+/// §3 timestamp: local-tz ISO-8601 to second precision with numeric offset, e.g. 2026-06-15T10:45:16+0900.
+/// (ISO8601DateFormatter emits a `Z`/UTC by default and a colon in the offset; the contract example is `+0900`.)
+private let logTSFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone.current
+    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+    return f
+}()
+
+/// §7 size-cap rotation under a shared advisory lock so the Swift host and the launcher bash writer
+/// don't clobber each other's backups (both append to remote-pair.log). Keeps live + .1/.2/.3.
+/// The lock guards only the cheap stat + rename window; appends stay lock-free atomic single writes (§7).
 func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
     let fm = FileManager.default
+    // Cheap pre-check outside the lock — avoid taking the lock on every single log line.
     guard let attrs = try? fm.attributesOfItem(atPath: path),
           let size = (attrs[.size] as? NSNumber)?.intValue, size > maxBytes else { return }
-    let backup = path + ".1"
-    try? fm.removeItem(atPath: backup)
-    try? fm.moveItem(atPath: path, toPath: backup)
+
+    let lockFD = open(LOG_LOCK, O_CREAT | O_RDWR, 0o600)
+    guard lockFD >= 0 else {
+        // Can't lock → skip rotation rather than race the launcher. Worst case: file grows past cap until next attempt.
+        log(.debug, "ROTATE: cannot open lock \(LOG_LOCK) (errno=\(errno)) — skipping rotation this pass")
+        return
+    }
+    defer { close(lockFD) }
+    guard flock(lockFD, LOCK_EX) == 0 else {
+        log(.debug, "ROTATE: flock LOCK_EX failed (errno=\(errno)) — skipping rotation this pass")
+        return
+    }
+    defer { flock(lockFD, LOCK_UN) }
+
+    // Re-check under the lock: another writer may have rotated between our pre-check and acquiring the lock.
+    guard let attrs2 = try? fm.attributesOfItem(atPath: path),
+          let size2 = (attrs2[.size] as? NSNumber)?.intValue, size2 > maxBytes else { return }
+
+    // Shift backups: .(N-1) → .N, …, .1 → .2, live → .1. Keep at most LOG_BACKUPS.
+    let oldest = "\(path).\(LOG_BACKUPS)"
+    do { if fm.fileExists(atPath: oldest) { try fm.removeItem(atPath: oldest) } }
+    catch { log(.debug, "ROTATE: remove oldest \(oldest) failed: \(error)") }
+    var i = LOG_BACKUPS - 1
+    while i >= 1 {
+        let src = "\(path).\(i)"
+        let dst = "\(path).\(i + 1)"
+        if fm.fileExists(atPath: src) {
+            do { try fm.moveItem(atPath: src, toPath: dst) }
+            catch { log(.debug, "ROTATE: move \(src) → \(dst) failed: \(error)") }
+        }
+        i -= 1
+    }
+    do { try fm.moveItem(atPath: path, toPath: "\(path).1") }
+    catch { log(.warn, "ROTATE: move live \(path) → \(path).1 failed: \(error)") }
 }
 
-func log(_ s: String) {
+/// §3 unified writer. Emits `[<ISO8601>] [<LEVEL>] [host] [<session>] <msg>` to remote-pair.log (LOGP),
+/// gated by LOG_THRESHOLD. session defaults to RP_SESSION (§5), or `-` for app-level events.
+func log(_ level: Level = .info, _ s: String,
+         session: String = (ProcessInfo.processInfo.environment["RP_SESSION"] ?? "-")) {
+    guard level.rawValue >= LOG_THRESHOLD.rawValue else { return }
     ensureDirs()
     rotateIfNeeded(LOGP, LOG_MAX_BYTES)
-    let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
-    if let fh = FileHandle(forWritingAtPath: LOGP) { fh.seekToEndOfFile(); fh.write(line.data(using: .utf8)!); try? fh.close() }
-    else { try? line.write(toFile: LOGP, atomically: false, encoding: .utf8) }
+    let sess = session.isEmpty ? "-" : session
+    let line = "[\(logTSFormatter.string(from: Date()))] [\(level.tag)] [host] [\(sess)] \(s)\n"
+    let data = Data(line.utf8)
+    if let fh = FileHandle(forWritingAtPath: LOGP) {
+        fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+    } else {
+        // File doesn't exist yet — create it. (Append-create race tolerated; first line at worst.)
+        do { try line.write(toFile: LOGP, atomically: false, encoding: .utf8) }
+        catch { FileHandle.standardError.write(Data("[remote-pair] log: write \(LOGP) failed: \(error)\n".utf8)) }
+    }
 }
+
+/// §8 legacy shim: the 45 bare-string call-sites stay unchanged and resolve to .info.
+func log(_ s: String) { log(.info, s) }
 
 // Short synchronous run helper — captures stdout (coordinates, session lists, etc.). Don't use it for heavy work.
 @discardableResult
