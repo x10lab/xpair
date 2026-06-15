@@ -40,6 +40,24 @@ jobs:
       - name: Install build deps (tmux-aqua + cliclick for bundle embed)
         run: brew install libevent ncurses utf8proc cliclick
 
+      # The screen sidecar (Contents/Helpers/screen, --features webrtc) is built by
+      # build-host.sh via cargo. macos-latest runners have no Rust toolchain, so install it.
+      - name: Install Rust toolchain (for screen sidecar)
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cache cargo registry + the screen crate's target dir (ephemeral runners have no
+      # warm cache; the webrtc build is ~1min). Keyed on the crate's Cargo.lock.
+      - name: Cache cargo (screen sidecar)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            host/rd/screen/target
+          key: cargo-screen-${{ runner.os }}-${{ hashFiles('host/rd/screen/Cargo.lock') }}
+          restore-keys: |
+            cargo-screen-${{ runner.os }}-
+
       - name: Build patched tmux-aqua
         run: ./host/build-tmux-aqua.sh
 

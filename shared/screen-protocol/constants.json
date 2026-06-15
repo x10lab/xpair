@@ -14,10 +14,6 @@
       "defaultSignalPort": 8890,
       "server": "host/rd: `screen serve-webrtc`",
       "media": "H.264 / WebRTC"
-    },
-    "v0_fallback": {
-      "name": "ssh screenshot polling (InputServer `shot` verb)",
-      "autoFallbackMs": 4000
     }
   },
   "captureParams": {
@@ -33,7 +29,6 @@
     "throttleMs": 120,
     "webviewCoords": "relative 0..1 (rx,ry); extension이 프레임 dimensions로 host 픽셀 변환",
     "verbs": {
-      "shot": "shot\\t<outpath>  ->  screenshot PNG, reply: ok\\t<path>",
       "click": "click\\t<x>\\t<y>  ->  click at host display PIXELS",
       "key": "key\\t<combo>  ->  key combo"
     }
