@@ -1,5 +1,5 @@
 {
-  "$comment": "RemotePair 온보딩 단계 모델 SoT. 같은 온보딩 개념을 두 UI가 렌더한다: 웹 마법사(client/cli/web/app.js, role-aware buildSteps)와 IDE walkthroughs(ide/remotepair-ext, contributes.walkthroughs). 여기서 정규 개념과 역할 적용·UI 매핑을 고정하고 check-onboarding.sh로 정합 검증한다.",
+  "$comment": "RemotePair 온보딩 단계 모델 SoT. 같은 온보딩 개념을 두 UI가 렌더한다: 웹 마법사(client/cli/web/app.js, role-aware buildSteps)와 IDE walkthroughs(client/ide/remotepair-ext, contributes.walkthroughs). 여기서 정규 개념과 역할 적용·UI 매핑을 고정하고 check-onboarding.sh로 정합 검증한다.",
   "roles": ["host", "client", "both"],
   "ideWalkthroughId": "remotepair.setup",
   "concepts": [

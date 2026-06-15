@@ -1,5 +1,5 @@
 {
-  "$comment": "RemotePair 브랜드/식별자 단일 소스(SoT). 소비자(Casks·ide/product.json·host Swift·rs Cargo)는 이 값과 일치해야 하며 shared/identity/check-identity.sh 로 검증된다. 향후 build-time codegen(docs/ide-merge-architecture.md)으로 생성 주입 가능.",
+  "$comment": "RemotePair 브랜드/식별자 단일 소스(SoT). 소비자(Casks·client/ide/product.json·host/app Swift·host/rd Cargo)는 이 값과 일치해야 하며 shared/identity/check-identity.sh 로 검증된다. 향후 build-time codegen(docs/ide-merge-architecture.md)으로 생성 주입 가능.",
   "product": "RemotePair",
   "org": "com.x10lab",
   "homepage": "https://github.com/ghyeongl/remote-pair",
@@ -26,7 +26,7 @@
     },
     "screen-engine": {
       "crate": "remote-pair-screen",
-      "note": "rs/ (remotepair-rs) 자체 네이티브 화면엔진"
+      "note": "host/rd/ (remotepair-rs) 자체 네이티브 화면엔진"
     }
   }
 }

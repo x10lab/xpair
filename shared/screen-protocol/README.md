@@ -6,7 +6,7 @@ RemotePair Remote Desktop의 **호스트↔IDE 와이어 계약**을 한 곳에�
 
 ## 데이터 흐름
 ```
-[rs/ 호스트]                          [ide/ 클라이언트(웹뷰)]
+[host/rd/ 호스트]                          [client/ide/ 클라이언트(웹뷰)]
 remote-pair-screen serve  ──JPEG──▶   remote-desktop.js
   ws 127.0.0.1:8889        (binary)   WS→Blob(jpeg)→createImageBitmap→canvas
         ▲ ssh -L 8889 터널
@@ -33,10 +33,10 @@ extension → host InputServer 파일채널: /tmp/remote-pair.input-req|-res
 ## 소비자
 | 소비자 | 구현 |
 |--------|------|
-| `rs/remote-pair-screen/src/serve.rs` | v1a WS+JPEG 서버 (port 8889 default) |
-| `rs/remote-pair-screen/src/serve_webrtc.rs` | v2 WebRTC (signaling 8890) |
-| `ide/remotepair-ext/extension.js` | 터널·InputServer 전달·포트 상수(SIDECAR/SIGNAL) |
-| `ide/remotepair-ext/media/remote-desktop.js` | 웹뷰 렌더·입력 캡처·메시지 어휘 |
+| `host/rd/remote-pair-screen/src/serve.rs` | v1a WS+JPEG 서버 (port 8889 default) |
+| `host/rd/remote-pair-screen/src/serve_webrtc.rs` | v2 WebRTC (signaling 8890) |
+| `client/ide/remotepair-ext/extension.js` | 터널·InputServer 전달·포트 상수(SIDECAR/SIGNAL) |
+| `client/ide/remotepair-ext/media/remote-desktop.js` | 웹뷰 렌더·입력 캡처·메시지 어휘 |
 
 ## 사용
 ```bash

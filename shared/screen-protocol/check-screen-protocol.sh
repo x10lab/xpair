@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-screen-protocol.sh — verify rs/ + ide/ implement the screen-protocol SoT.
+# check-screen-protocol.sh — verify host/rd/ + client/ide/ implement the screen-protocol SoT.
 # Presence/equality checks of the canonical constants in both implementations.
 set -euo pipefail
 
@@ -56,4 +56,4 @@ for m in $(jq -r '.webviewToExtMessages[]' "$C"); do
   have "remote-desktop.js msg '$m'" "$RDJS" "\"$m\""
 done
 
-if [[ $fail -eq 0 ]]; then echo "✓ screen-protocol SoT: rs/ + ide/ aligned"; else echo "✗ screen-protocol drift detected"; exit 1; fi
+if [[ $fail -eq 0 ]]; then echo "✓ screen-protocol SoT: host/rd/ + client/ide/ aligned"; else echo "✗ screen-protocol drift detected"; exit 1; fi
