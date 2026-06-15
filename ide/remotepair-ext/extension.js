@@ -25,26 +25,30 @@ const net = require("net");
 
 // --- constants -------------------------------------------------------------
 
+// Build-time generated from the monorepo shared/ SoT (screen-protocol + identity).
+// Committed so this extension stays self-contained; regenerate via generate-contracts.mjs.
+const CONTRACTS = require("./generated/contracts.json");
+
 const AI_EXTENSIONS = [
   "anthropic.claude-code",
   "openai.chatgpt",
   "jeanp413.open-remote-ssh",
 ];
 
-// Host-side InputServer channel files.
-const REQ_FILE = "/tmp/remote-pair.input-req";
-const RES_FILE = "/tmp/remote-pair.input-res";
+// Host-side InputServer channel files. (shared/screen-protocol → generated contracts)
+const REQ_FILE = CONTRACTS.screen.reqFile;
+const RES_FILE = CONTRACTS.screen.resFile;
 const SHOT_FILE = "/tmp/rp-rd.png"; // remote temp screenshot path
 
 const SHOT_INTERVAL_MS = 1200; // poll cadence while view visible (v0)
 const SHOT_SETTLE_MS = 400; // wait for host to render the png after request
 const NOTIFY_INTERVAL_MS = 5000;
-const INPUT_THROTTLE_MS = 120; // min gap between forwarded input events
+const INPUT_THROTTLE_MS = CONTRACTS.screen.inputThrottleMs; // min gap between forwarded input events
 const SSH_CONNECT_TIMEOUT = 6; // seconds
 
-// v1 WS stream constants
-const SIDECAR_REMOTE_PORT = 8889; // v1 JPEG sidecar port on the host
-const SIGNAL_REMOTE_PORT = 8890; // v2 WebRTC signaling port (remote-pair-screen serve-webrtc)
+// v1 WS stream constants (shared/screen-protocol → generated contracts)
+const SIDECAR_REMOTE_PORT = CONTRACTS.screen.v1aPort; // v1 JPEG sidecar port on the host
+const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // v2 WebRTC signaling port
 const V1_FIRST_FRAME_TIMEOUT_MS = 4000; // auto-mode: fall back if no frame in this window
 const V1_TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before WS connect
 

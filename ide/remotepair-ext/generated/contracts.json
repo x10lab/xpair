@@ -1,0 +1,16 @@
+{
+  "_generated": "DO NOT EDIT — generated from monorepo shared/ by generate-contracts.mjs",
+  "screen": {
+    "v1aPort": 8889,
+    "v2SignalPort": 8890,
+    "inputThrottleMs": 120,
+    "reqFile": "/tmp/remote-pair.input-req",
+    "resFile": "/tmp/remote-pair.input-res"
+  },
+  "identity": {
+    "product": "RemotePair",
+    "urlProtocol": "remotepair",
+    "ideBundleId": "com.x10lab.remotepair-ide"
+  },
+  "version": "0.1.0"
+}

@@ -17,6 +17,10 @@ have() { # desc file pattern
   if [[ -f "$2" ]] && grep -qE "$3" "$2"; then printf 'ok:  %-46s\n' "$1"
   else printf 'MISS: %-46s (%s)\n' "$1" "${3}"; fail=1; fi
 }
+eq() { # desc expected actual
+  if [[ "$2" == "$3" ]]; then printf 'ok:  %-46s = %s\n' "$1" "$2"
+  else printf 'MISS: %-46s SoT=%q gen=%q\n' "$1" "$2" "$3"; fail=1; fi
+}
 
 PORT_V1A=$(jq -r .transport.v1a_jpeg.defaultPort "$C")
 PORT_V2=$(jq -r .transport.v2_webrtc.defaultSignalPort "$C")
@@ -28,14 +32,18 @@ THROTTLE=$(jq -r .input.throttleMs "$C")
 have "rs main.rs v1a port = $PORT_V1A" "$MAIN" "default_value_t = $PORT_V1A"
 have "rs main.rs v2 signal port = $PORT_V2" "$MAIN" "default_value_t = $PORT_V2"
 
-# --- ide extension: port constants ---
-have "ext SIDECAR_REMOTE_PORT = $PORT_V1A" "$EXT" "SIDECAR_REMOTE_PORT *= *$PORT_V1A"
-have "ext SIGNAL_REMOTE_PORT = $PORT_V2"   "$EXT" "SIGNAL_REMOTE_PORT *= *$PORT_V2"
-
-# --- ide extension: InputServer files + throttle ---
-have "ext REQ_FILE = $REQ"   "$EXT" "$(printf '%s' "$REQ" | sed 's/[.]/\\./g')"
-have "ext RES_FILE = $RES"   "$EXT" "$(printf '%s' "$RES" | sed 's/[.]/\\./g')"
-have "ext INPUT_THROTTLE_MS = $THROTTLE" "$EXT" "INPUT_THROTTLE_MS *= *$THROTTLE"
+# --- ide consumes the SoT via build-time generated contracts (self-contained) ---
+GEN="$ROOT/ide/remotepair-ext/generated/contracts.json"
+have "ext requires generated contracts" "$EXT" 'require\("\./generated/contracts\.json"\)'
+if [[ -f "$GEN" ]]; then
+  eq "generated v1aPort"        "$PORT_V1A" "$(jq -r .screen.v1aPort "$GEN")"
+  eq "generated v2SignalPort"   "$PORT_V2"  "$(jq -r .screen.v2SignalPort "$GEN")"
+  eq "generated inputThrottleMs" "$THROTTLE" "$(jq -r .screen.inputThrottleMs "$GEN")"
+  eq "generated reqFile"        "$REQ"      "$(jq -r .screen.reqFile "$GEN")"
+  eq "generated resFile"        "$RES"      "$(jq -r .screen.resFile "$GEN")"
+else
+  printf 'MISS: %-46s (run generate-contracts.mjs)\n' "generated/contracts.json present"; fail=1
+fi
 
 # --- ide extension: InputServer verbs present (wire form `<verb>\t` — doc + send sites) ---
 for v in $(jq -r '.input.verbs | keys[]' "$C"); do
