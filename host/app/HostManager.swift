@@ -8,8 +8,10 @@ import Darwin
 
 final class HostManager {
     private(set) var childPid: pid_t = 0
+    let screen = ScreenServer()   // v2 WebRTC screen-share sidecar (must run in this app's GUI session)
 
     func ensureServer() {
+        screen.ensureServer()      // watchdog the screen sidecar on the same 5 s cadence
         if childPid != 0 && isAlive(childPid) { return }   // keep it if it is genuinely alive
         spawn()
     }
