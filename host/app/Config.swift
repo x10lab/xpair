@@ -43,11 +43,8 @@ let HEARTBEAT = "\(LOG_DIR)/remote-pair.heartbeat"                    // watchdo
 let STATUS_FILE = "\(LOG_DIR)/status.json"                            // 에이전트가 읽는 ground truth: 앱 생존 + AX/SR/FDA grant
 let RULES_FILE = "\(RP_DIR)/rules.txt"                                // approve 라우터 룰
 let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy) /approve 스킬 touch → 구 라우터 폴백
-// CLI(두뇌, 권한 0) ↔ 앱(권한 경계) primitive 채널. CLI 가 요청, 앱이 grant 로 실행.
-//   요청(INPUT_REQ, 탭구분):  shot\t<outpath>  |  click\t<x>\t<y>  |  key\t<combo>
-//   응답(INPUT_RES):          ok  |  ok\t<path>  |  err\t<msg>
-let INPUT_REQ = "/tmp/remote-pair.input-req"
-let INPUT_RES = "/tmp/remote-pair.input-res"
+// (구 v0 InputServer 파일채널 INPUT_REQ/INPUT_RES 제거됨 — 0.1초 메인스레드 폴링이 메뉴바를 freeze
+//  시켰음. 화면공유·입력은 v1/v2: remote-pair(screen) serve-webrtc + rp-input-inject 가 대체.)
 
 // 표시용 버전 + 업데이트 대상 (Info.plist 단일 출처; build-host.sh 가 채움)
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
