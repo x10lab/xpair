@@ -45,10 +45,11 @@ else
   printf 'MISS: %-46s (run generate-contracts.mjs)\n' "generated/contracts.json present"; fail=1
 fi
 
-# --- ide extension: InputServer verbs present (wire form `<verb>\t` — doc + send sites) ---
-for v in $(jq -r '.input.verbs | keys[]' "$C"); do
-  have "ext references verb '$v' (\\t-form)" "$EXT" "$v\\\\t"
-done
+# --- ide extension: InputServer verbs at their REAL call sites (not just the doc comment) ---
+# click/key are sent via sendInput(host, ["click"|"key", ...]); shot is the `shot\t` template literal.
+have "ext sends 'click' via sendInput" "$EXT" '\["click"'
+have "ext sends 'key' via sendInput"   "$EXT" '\["key"'
+have "ext uses 'shot' (\\t literal)"    "$EXT" 'shot\\t'
 
 # --- ide webview: message vocabulary ---
 for m in $(jq -r '.webviewToExtMessages[]' "$C"); do

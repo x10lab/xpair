@@ -24,11 +24,20 @@ else
   miss "generated/contracts.json missing — run generate-contracts.mjs"
 fi
 
-# 3) self-containment: only the generator may reference the parent shared/
-viol=$(grep -rnE '\.\./\.\./shared|\.\./shared|/shared/' "$EXT" --include='*.js' --include='*.json' 2>/dev/null \
+# 3) self-containment: only the generator may reference the parent shared/ (relative parent paths)
+viol=$(grep -rnE '\.\./\.\./shared|\.\./shared' "$EXT" --include='*.js' --include='*.json' 2>/dev/null \
        | grep -v 'generate-contracts' || true)
 [[ -z "$viol" ]] && ok "no ide/ → parent shared/ deps (generator excepted)" \
                   || { miss "ide/ reaches parent shared/:"; echo "$viol"; }
+
+# 4) generated identity/version fields are covered by the SoT (no silent drift surface)
+command -v jq >/dev/null || { echo "jq required"; exit 2; }
+IDJSON="$ROOT/shared/identity/identity.json"; VERJSON="$ROOT/shared/identity/versions.json"
+eqg() { if [[ "$2" == "$3" ]]; then ok "$1 = $2"; else miss "$1 (SoT=$2 gen=$3)"; fi; }
+eqg "generated.identity.product"     "$(jq -r .product "$IDJSON")"     "$(jq -r .identity.product "$GEN")"
+eqg "generated.identity.urlProtocol" "$(jq -r .urlProtocol "$IDJSON")" "$(jq -r .identity.urlProtocol "$GEN")"
+eqg "generated.identity.ideBundleId" "$(jq -r .components.ide.darwinBundleIdentifier "$IDJSON")" "$(jq -r .identity.ideBundleId "$GEN")"
+eqg "generated.version"              "$(jq -r .ide "$VERJSON")"        "$(jq -r .version "$GEN")"
 
 [[ $fail -eq 0 ]] && echo "✓ ide/ self-contained (consumes shared/ via committed generated/ only)" \
                   || { echo "✗ self-containment violated"; exit 1; }

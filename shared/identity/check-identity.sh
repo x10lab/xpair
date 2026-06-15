@@ -45,7 +45,7 @@ CASK="$ROOT/Casks/remote-pair-host.rb"
 # --- rs Cargo.toml version ---
 CARGO="$ROOT/rs/remote-pair-screen/Cargo.toml"
 [[ -f "$CARGO" ]] && check "rs screen-engine version" "$(jq -r '."screen-engine"' "$VER")" \
-  "$(grep -E '^version' "$CARGO" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+  "$(awk -F'"' '/^\[package\]/{p=1} p&&/^version[[:space:]]*=/{print $2; exit}' "$CARGO")"
 
 # --- host bundle id present in Config.swift ---
 CFG="$ROOT/host/RemotePairHost/Config.swift"

@@ -37,4 +37,4 @@ const out = {
 
 mkdirSync(join(here, "generated"), { recursive: true });
 writeFileSync(join(here, "generated", "contracts.json"), JSON.stringify(out, null, 2) + "\n");
-console.error("✓ generated/contracts.json written from shared/ SoT");
+console.log("✓ generated/contracts.json written from shared/ SoT");
