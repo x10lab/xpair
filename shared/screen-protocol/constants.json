@@ -1,0 +1,42 @@
+{
+  "$comment": "RemotePair Remote Desktop 화면 프로토콜 단일 소스(SoT). rs/(serve.rs·serve_webrtc.rs)와 ide/(remote-desktop.js·extension.js)가 이 계약을 구현하며 check-screen-protocol.sh로 정합 검증한다.",
+  "transport": {
+    "v1a_jpeg": {
+      "scheme": "ws",
+      "host": "127.0.0.1",
+      "defaultPort": 8889,
+      "tunnel": "ssh -L <port>:127.0.0.1:<port> <host>",
+      "frame": "binary WebSocket message; whole-frame JPEG",
+      "server": "rs: `remote-pair-screen serve`"
+    },
+    "v2_webrtc": {
+      "signalingHost": "127.0.0.1",
+      "defaultSignalPort": 8890,
+      "server": "rs: `remote-pair-screen serve-webrtc`",
+      "media": "H.264 / WebRTC"
+    },
+    "v0_fallback": {
+      "name": "ssh screenshot polling (InputServer `shot` verb)",
+      "autoFallbackMs": 4000
+    }
+  },
+  "captureParams": {
+    "fps": { "min": 1, "max": 120 },
+    "quality": { "min": 1, "max": 100 },
+    "scale": { "min": 0.1, "max": 1.0 }
+  },
+  "input": {
+    "channel": "host InputServer file channel",
+    "reqFile": "/tmp/remote-pair.input-req",
+    "resFile": "/tmp/remote-pair.input-res",
+    "wireFormat": "<verb>\\t<args...>",
+    "throttleMs": 120,
+    "webviewCoords": "relative 0..1 (rx,ry); extension이 프레임 dimensions로 host 픽셀 변환",
+    "verbs": {
+      "shot": "shot\\t<outpath>  ->  screenshot PNG, reply: ok\\t<path>",
+      "click": "click\\t<x>\\t<y>  ->  click at host display PIXELS",
+      "key": "key\\t<combo>  ->  key combo"
+    }
+  },
+  "webviewToExtMessages": ["click", "key", "ready", "v1Dimensions", "v1Error", "v1FirstFrame", "v2Error", "v2FirstFrame"]
+}
