@@ -8,8 +8,8 @@ S="$HERE/steps.json"
 command -v jq >/dev/null || { echo "jq required"; exit 2; }
 
 APP="$ROOT/client/web/app.js"
-PKG="$ROOT/ide/remotepair-ext/package.json"
-MEDIA="$ROOT/ide/remotepair-ext/media"
+PKG="$ROOT/client/ide/remotepair-ext/package.json"
+MEDIA="$ROOT/client/ide/remotepair-ext/media"
 
 fail=0
 have() { if [[ -f "$2" ]] && grep -qE "$3" "$2"; then printf 'ok:  %-44s\n' "$1"; else printf 'MISS: %-44s (%s)\n' "$1" "$3"; fail=1; fi; }

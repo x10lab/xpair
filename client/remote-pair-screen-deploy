@@ -7,7 +7,7 @@
 # variable REMOTE_HOST, then from ~/.remote-pair/client.env.
 # The sidecar binary is taken from:
 #   $SIDECAR_BIN   (env override)
-#   <script-dir>/../rs/remote-pair-screen/target/release/remote-pair-screen
+#   <script-dir>/../host/rd/remote-pair-screen/target/release/remote-pair-screen
 #
 # The script is argv-safe: no shell-string construction from user-controlled
 # values.  All ssh/scp invocations use discrete argument arrays via exec/process
@@ -78,13 +78,13 @@ validate_host "$REMOTE_HOST"
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_BIN="$SCRIPT_DIR/../rs/remote-pair-screen/target/release/remote-pair-screen"
+DEFAULT_BIN="$SCRIPT_DIR/../host/rd/remote-pair-screen/target/release/remote-pair-screen"
 SIDECAR_BIN="${SIDECAR_BIN:-$DEFAULT_BIN}"
 
 if [[ ! -f "$SIDECAR_BIN" ]]; then
   die "Sidecar binary not found at: $SIDECAR_BIN
 Build it first (the 'webrtc' feature is REQUIRED for the v2 serve-webrtc path):
-  cd $SCRIPT_DIR/../rs/remote-pair-screen
+  cd $SCRIPT_DIR/../host/rd/remote-pair-screen
   cargo build --release --features webrtc"
 fi
 
@@ -93,14 +93,14 @@ fi
 if ! "$SIDECAR_BIN" serve-webrtc --help >/dev/null 2>&1; then
   warn "Sidecar lacks the 'serve-webrtc' subcommand — built without --features webrtc?"
   warn "The v2 WebRTC path will be unavailable. Rebuild with:"
-  warn "  cd $SCRIPT_DIR/../rs/remote-pair-screen && cargo build --release --features webrtc"
+  warn "  cd $SCRIPT_DIR/../host/rd/remote-pair-screen && cargo build --release --features webrtc"
 fi
 
 # Swift v2 helpers (compiled ON the host so the binary path is stable for TCC
 # and the signature is ad-hoc-valid for the host's arch). Sources live in
 # rs/rpmedia/. rp-screencap = SCK+VT H.264 capture (Screen Recording perm);
 # rp-input-inject = remote keyboard/cursor injection (Accessibility perm).
-RPMEDIA_DIR="$SCRIPT_DIR/../rs/rpmedia"
+RPMEDIA_DIR="$SCRIPT_DIR/../host/rd/rpmedia"
 SCREENCAP_SRC="$RPMEDIA_DIR/rp-screencap.swift"
 INPUT_SRC="$RPMEDIA_DIR/rp-input-inject.swift"
 

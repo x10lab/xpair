@@ -8,9 +8,9 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 C="$HERE/constants.json"
 command -v jq >/dev/null || { echo "jq required"; exit 2; }
 
-MAIN="$ROOT/rs/remote-pair-screen/src/main.rs"
-EXT="$ROOT/ide/remotepair-ext/extension.js"
-RDJS="$ROOT/ide/remotepair-ext/media/remote-desktop.js"
+MAIN="$ROOT/host/rd/remote-pair-screen/src/main.rs"
+EXT="$ROOT/client/ide/remotepair-ext/extension.js"
+RDJS="$ROOT/client/ide/remotepair-ext/media/remote-desktop.js"
 
 fail=0
 have() { # desc file pattern
@@ -33,7 +33,7 @@ have "rs main.rs v1a port = $PORT_V1A" "$MAIN" "default_value_t = $PORT_V1A"
 have "rs main.rs v2 signal port = $PORT_V2" "$MAIN" "default_value_t = $PORT_V2"
 
 # --- ide consumes the SoT via build-time generated contracts (self-contained) ---
-GEN="$ROOT/ide/remotepair-ext/generated/contracts.json"
+GEN="$ROOT/client/ide/remotepair-ext/generated/contracts.json"
 have "ext requires generated contracts" "$EXT" 'require\("\./generated/contracts\.json"\)'
 if [[ -f "$GEN" ]]; then
   eq "generated v1aPort"        "$PORT_V1A" "$(jq -r .screen.v1aPort "$GEN")"

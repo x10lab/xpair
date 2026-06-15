@@ -22,7 +22,7 @@ check() { # desc expected actual
 }
 
 # --- ide/product.json brand fields + version ---
-PJ="$ROOT/ide/product.json"
+PJ="$ROOT/client/ide/product.json"
 if [[ -f "$PJ" ]]; then
   for k in nameShort nameLong applicationName dataFolderName darwinBundleIdentifier \
            urlProtocol serverApplicationName serverDataFolderName win32AppUserModelId win32MutexName; do
@@ -34,7 +34,7 @@ fi
 
 # ide version lives in the committed RemotePair extension (product.json has none;
 # the app version is injected at build from RELEASE_VERSION).
-EXT_PKG="$ROOT/ide/remotepair-ext/package.json"
+EXT_PKG="$ROOT/client/ide/remotepair-ext/package.json"
 [[ -f "$EXT_PKG" ]] && check "ide version (remotepair-ext)" "$(jq -r .ide "$VER")" "$(jq -r '.version // empty' "$EXT_PKG")"
 
 # --- Casks/remote-pair-host.rb version ---
@@ -43,7 +43,7 @@ CASK="$ROOT/Casks/remote-pair-host.rb"
   "$(grep -E '^[[:space:]]*version "' "$CASK" | head -1 | sed -E 's/.*version "([^"]+)".*/\1/')"
 
 # --- rs Cargo.toml version ---
-CARGO="$ROOT/rs/remote-pair-screen/Cargo.toml"
+CARGO="$ROOT/host/rd/remote-pair-screen/Cargo.toml"
 [[ -f "$CARGO" ]] && check "rs screen-engine version" "$(jq -r '."screen-engine"' "$VER")" \
   "$(awk -F'"' '/^\[package\]/{p=1} p&&/^version[[:space:]]*=/{print $2; exit}' "$CARGO")"
 

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const shared = join(here, "..", "..", "shared");
+const shared = join(here, "..", "..", "..", "shared");
 const rd = (p) => JSON.parse(readFileSync(p, "utf8"));
 
 const proto = rd(join(shared, "screen-protocol", "constants.json"));
