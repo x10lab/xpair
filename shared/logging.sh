@@ -54,8 +54,11 @@ _rp_unlock() { rmdir "$1" 2>/dev/null || true; }
 
 # ── Rotate a log file if > 5 MB, under advisory lock ─────────────────────────
 # _rp_rotate <filepath>
-# Uses flock(1) when available (Linux); falls back to mkdir-based lock (macOS stock).
-# Lock file for remote-pair.log MUST be $LOG_DIR/.remote-pair.log.lock (shared with Swift writer).
+# SINGLE lock primitive on ALL platforms: an atomic mkdir lock on "<file>.lock.d".
+# This is deliberate: macOS stock has no flock(1), AND the Swift writer of remote-pair.log uses
+# the SAME mkdir lock dir (see host/app/Config.swift rotateIfNeeded). Using one primitive
+# everywhere is what makes the cross-language lock (bash launcher ↔ Swift daemon) on
+# remote-pair.log actually interoperate — a flock(2)-vs-mkdir mix would NOT mutually exclude.
 _rp_rotate() {
   local f="$1"
   [ -f "$f" ] || return 0
@@ -63,38 +66,30 @@ _rp_rotate() {
   sz="$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null || echo 0)"
   [ "$sz" -le 5000000 ] && return 0   # under 5 MB — nothing to do
 
-  # Determine lock primitive and lock identifier.
   local basename_f; basename_f="$(basename "$f")"
-  local lock_file="$LOG_DIR/.${basename_f}.lock"
-  # For remote-pair.log the lock must be exactly $LOG_DIR/.remote-pair.log.lock
-  # (shared with the Swift rotateIfNeeded flock(2) call).
-
-  if command -v flock >/dev/null 2>&1; then
-    # flock available (Linux / util-linux on macOS via Homebrew)
-    (
-      flock -w 5 200 2>/dev/null || true
-      # Re-check size inside the lock (another writer may have rotated already)
-      local sz2
-      sz2="$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null || echo 0)"
-      [ "$sz2" -le 5000000 ] && exit 0
-      # Shift: .2 ← .1 ← live (drop old .2 if present)
+  local lockd="$LOG_DIR/.${basename_f}.lock.d"   # e.g. .remote-pair.log.lock.d (shared w/ Swift)
+  if _rp_lock "$lockd"; then
+    # Re-check size inside the lock (another writer may have rotated already)
+    local sz2
+    sz2="$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null || echo 0)"
+    if [ "$sz2" -gt 5000000 ]; then
+      # Shift: .2 ← .1 ← live (drop old .2 if present) → keep max 3 (live + .1 + .2)
       [ -f "${f}.1" ] && mv -f "${f}.1" "${f}.2" 2>/dev/null || true
       mv -f "$f" "${f}.1" 2>/dev/null || true
-    ) 200>"$lock_file"
-  else
-    # macOS stock path: mkdir-based spin lock
-    local lockd="${lock_file}.d"
-    if _rp_lock "$lockd"; then
-      local sz2
-      sz2="$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null || echo 0)"
-      if [ "$sz2" -gt 5000000 ]; then
-        [ -f "${f}.1" ] && mv -f "${f}.1" "${f}.2" 2>/dev/null || true
-        mv -f "$f" "${f}.1" 2>/dev/null || true
-      fi
-      _rp_unlock "$lockd"
     fi
-    # If lock timed out, proceed without rotation (safe — log may grow slightly over limit)
+    _rp_unlock "$lockd"
   fi
+  # If the lock timed out, proceed without rotation (safe — log may grow slightly over limit).
+}
+
+# ── Redaction (docs/logging.md §6) ────────────────────────────────────────────
+# Mask the home dir → ~ and the REMOTE_HOST value / ssh alias → <host>, so logs shipped via
+# `remote-pair logs --collect` don't leak the reporter's paths/host. Best-effort, msg body only.
+_rp_redact() {
+  local s="$1"
+  [ -n "${HOME:-}" ] && s="${s//$HOME/~}"
+  [ -n "${REMOTE_HOST:-}" ] && s="${s//$REMOTE_HOST/<host>}"
+  printf '%s' "$s"
 }
 
 # ── Core log function ──────────────────────────────────────────────────────────
@@ -128,6 +123,9 @@ rp_log() {
 
   # Rotate-on-open (size check before append)
   _rp_rotate "$logfile"
+
+  # Redact sensitive paths/host before any sink (docs/logging.md §6)
+  msg="$(_rp_redact "$msg")"
 
   # Format: [<ISO-8601 ts>] [<LEVEL>] [<comp>] [<session>] <msg>
   local ts level_upper session_tag

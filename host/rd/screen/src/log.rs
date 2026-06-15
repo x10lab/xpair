@@ -252,6 +252,49 @@ impl Visit for MessageVisitor {
     }
 }
 
+/// §6 REMOTE_HOST for redaction — env wins, else parsed once from ~/.remote-pair/client.env.
+static REMOTE_HOST: OnceLock<Option<String>> = OnceLock::new();
+fn remote_host() -> Option<String> {
+    REMOTE_HOST
+        .get_or_init(|| {
+            if let Ok(h) = std::env::var("REMOTE_HOST") {
+                if !h.trim().is_empty() {
+                    return Some(h);
+                }
+            }
+            let home = std::env::var_os("HOME")?;
+            let path = std::path::Path::new(&home).join(".remote-pair/client.env");
+            let raw = std::fs::read_to_string(path).ok()?;
+            for line in raw.lines() {
+                if let Some(v) = line.trim().strip_prefix("REMOTE_HOST=") {
+                    let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .clone()
+}
+
+/// §6 redaction: mask the home dir → ~ and REMOTE_HOST → <host> before any sink (logs may be
+/// shipped via `remote-pair logs --collect`). Best-effort, message body only.
+fn redact(s: &str) -> String {
+    let mut r = s.to_string();
+    if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
+        if !home.is_empty() {
+            r = r.replace(&home, "~");
+        }
+    }
+    if let Some(host) = remote_host() {
+        if !host.is_empty() {
+            r = r.replace(&host, "<host>");
+        }
+    }
+    r
+}
+
 /// The custom layer: formats and persists the unified contract line for every
 /// event whose level passes the `EnvFilter`.
 struct RemotePairLayer;
@@ -270,7 +313,7 @@ impl<S: Subscriber> Layer<S> for RemotePairLayer {
             level_str(meta.level()),
             COMP,
             current_session(),
-            visitor.message,
+            redact(&visitor.message),
         );
 
         if let Some(file) = FILE.get() {

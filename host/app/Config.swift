@@ -90,8 +90,11 @@ func writeStatus() {
 }
 
 let LOG_MAX_BYTES = 5_000_000        // §7: rotate remote-pair.log past 5MB (24/7 host → unbounded growth otherwise)
-let LOG_BACKUPS = 3                   // §7: keep live file + .1/.2/.3
-let LOG_LOCK = "\(LOG_DIR)/.remote-pair.log.lock"  // §7: cross-writer advisory lock (Swift host + launcher bash share remote-pair.log)
+let LOG_BACKUPS = 2                   // §7: keep live + .1 + .2 (max 3 total)
+// §7 cross-writer lock. MUST be the SAME atomic-mkdir lock dir that bash _rp_rotate uses
+// (shared/logging.sh: "$LOG_DIR/.remote-pair.log.lock.d") — a flock(2) lock would NOT interoperate
+// with bash's mkdir lock, so the Swift host + launcher bash writers would not actually mutually exclude.
+let LOG_LOCK_DIR = "\(LOG_DIR)/.remote-pair.log.lock.d"
 
 // MARK: - Logging contract (docs/logging.md)
 
@@ -147,39 +150,63 @@ func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
     guard let attrs = try? fm.attributesOfItem(atPath: path),
           let size = (attrs[.size] as? NSNumber)?.intValue, size > maxBytes else { return }
 
-    let lockFD = open(LOG_LOCK, O_CREAT | O_RDWR, 0o600)
-    guard lockFD >= 0 else {
-        // Can't lock → skip rotation rather than race the launcher. Worst case: file grows past cap until next attempt.
-        log(.debug, "ROTATE: cannot open lock \(LOG_LOCK) (errno=\(errno)) — skipping rotation this pass")
-        return
+    // Acquire the SHARED atomic-mkdir lock (same primitive + dir as bash _rp_rotate, shared/logging.sh)
+    // so the Swift host and the launcher bash writer serialize on remote-pair.log. 5s spin then give up.
+    var spins = 0
+    while mkdir(LOG_LOCK_DIR, 0o700) != 0 {
+        if errno != EEXIST { return }            // unexpected error → skip rotation this pass
+        spins += 1; if spins >= 50 { return }    // 50 × 0.1s = 5s timeout → skip (file grows slightly past cap)
+        usleep(100_000)
     }
-    defer { close(lockFD) }
-    guard flock(lockFD, LOCK_EX) == 0 else {
-        log(.debug, "ROTATE: flock LOCK_EX failed (errno=\(errno)) — skipping rotation this pass")
-        return
-    }
-    defer { flock(lockFD, LOCK_UN) }
+    defer { rmdir(LOG_LOCK_DIR) }
+
+    // Rotation diagnostics go to STDERR, never log() — re-entering log()→rotateIfNeeded while we hold
+    // this lock (e.g. on a rename failure of an oversized file) would deadlock on the same mkdir lock.
+    func diag(_ m: String) { FileHandle.standardError.write(Data("[remote-pair] rotate: \(m)\n".utf8)) }
 
     // Re-check under the lock: another writer may have rotated between our pre-check and acquiring the lock.
     guard let attrs2 = try? fm.attributesOfItem(atPath: path),
           let size2 = (attrs2[.size] as? NSNumber)?.intValue, size2 > maxBytes else { return }
 
-    // Shift backups: .(N-1) → .N, …, .1 → .2, live → .1. Keep at most LOG_BACKUPS.
+    // Shift backups: .(N-1) → .N, …, .1 → .2, live → .1. Keep at most LOG_BACKUPS (live + .1 + .2).
     let oldest = "\(path).\(LOG_BACKUPS)"
     do { if fm.fileExists(atPath: oldest) { try fm.removeItem(atPath: oldest) } }
-    catch { log(.debug, "ROTATE: remove oldest \(oldest) failed: \(error)") }
+    catch { diag("remove oldest \(oldest) failed: \(error)") }
     var i = LOG_BACKUPS - 1
     while i >= 1 {
         let src = "\(path).\(i)"
         let dst = "\(path).\(i + 1)"
         if fm.fileExists(atPath: src) {
             do { try fm.moveItem(atPath: src, toPath: dst) }
-            catch { log(.debug, "ROTATE: move \(src) → \(dst) failed: \(error)") }
+            catch { diag("move \(src) → \(dst) failed: \(error)") }
         }
         i -= 1
     }
     do { try fm.moveItem(atPath: path, toPath: "\(path).1") }
-    catch { log(.warn, "ROTATE: move live \(path) → \(path).1 failed: \(error)") }
+    catch { diag("move live \(path) → \(path).1 failed: \(error)") }
+}
+
+/// §6 REMOTE_HOST for redaction — env wins, else parsed once from ~/.remote-pair/client.env (KEY=VALUE).
+private let logRemoteHost: String? = {
+    if let h = ProcessInfo.processInfo.environment["REMOTE_HOST"], !h.isEmpty { return h }
+    if let raw = try? String(contentsOfFile: "\(RP_DIR)/client.env", encoding: .utf8) {
+        for line in raw.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("REMOTE_HOST=") {
+                let v = String(t.dropFirst("REMOTE_HOST=".count)).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                return v.isEmpty ? nil : v
+            }
+        }
+    }
+    return nil
+}()
+
+/// §6 redaction: mask the home dir → ~ and REMOTE_HOST → <host> before any sink (logs may be shipped
+/// via `remote-pair logs --collect`). Best-effort, msg body only.
+func logRedact(_ s: String) -> String {
+    var r = s.replacingOccurrences(of: HOME, with: "~")
+    if let h = logRemoteHost { r = r.replacingOccurrences(of: h, with: "<host>") }
+    return r
 }
 
 /// §3 unified writer. Emits `[<ISO8601>] [<LEVEL>] [host] [<session>] <msg>` to remote-pair.log (LOGP),
@@ -190,7 +217,7 @@ func log(_ level: Level = .info, _ s: String,
     ensureDirs()
     rotateIfNeeded(LOGP, LOG_MAX_BYTES)
     let sess = session.isEmpty ? "-" : session
-    let line = "[\(logTSFormatter.string(from: Date()))] [\(level.tag)] [host] [\(sess)] \(s)\n"
+    let line = "[\(logTSFormatter.string(from: Date()))] [\(level.tag)] [host] [\(sess)] \(logRedact(s))\n"
     let data = Data(line.utf8)
     if let fh = FileHandle(forWritingAtPath: LOGP) {
         fh.seekToEndOfFile(); fh.write(data); try? fh.close()

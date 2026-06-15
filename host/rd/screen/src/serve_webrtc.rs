@@ -113,6 +113,7 @@ async fn run_async(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), 
     // One browser (pair session is 1:1). Each signaling connection gets a fresh
     // PeerConnection + encoder pipeline; teardown on disconnect.
     loop {
+        crate::log::rotate_guard(); // §7 long-lived guard: also rotate between signaling sessions
         let (stream, peer) = match listener.accept().await {
             Ok(x) => x,
             Err(e) => {
@@ -203,7 +204,14 @@ async fn handle_session(
     let track_w = track.clone();
     let frame_dur = Duration::from_secs_f64(1.0 / fps as f64);
     tokio::spawn(async move {
+        let mut frames: u64 = 0;
         while let Some(au) = au_rx.recv().await {
+            // §7 long-lived guard: this is the ACTIVE media path (serve-webrtc), so rust.log must be
+            // rotated mid-session, not only at init. Cheap stat every ~300 frames (~10s @ 30fps).
+            frames = frames.wrapping_add(1);
+            if frames.is_multiple_of(300) {
+                crate::log::rotate_guard();
+            }
             let sample = Sample {
                 data: Bytes::from(au),
                 duration: frame_dur,
