@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  Entitlements for a LOCALLY-built, self-signed RemotePair IDE (dev/test).
-  Electron's V8 needs allow-jit; a self-signed identity (no Team ID) needs disable-library-validation.
-  `codesign --deep` STRIPS entitlements, so re-signing must be inside-out with these applied to the
-  helper apps + main app (see local-sign.sh). NOT for release — release signing is CI (Developer ID).
--->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.cs.allow-jit</key><true/>

@@ -52,14 +52,18 @@ RP_LOCAL_IDENTITY="${RP_LOCAL_IDENTITY:-$([ -z "$GITHUB_ACTIONS" ] && echo 1 || 
 if [ "$RP_LOCAL_IDENTITY" = "1" ]; then
   echo "→ local-identity build: RemotePairLocal (isolated lock domain; RP_LOCAL_IDENTITY=0 for prod identity)"
   _pj_tmp="$(mktemp)"
+  # NOTE: the VSCodium recipe assumes nameShort == nameLong (gulp names the .app from nameLong,
+  # build_cli.sh's codium-tunnel copy looks it up via nameShort) — keep them EQUAL or the CLI
+  # copy fails ("No such file"). The single-instance lock is keyed on nameShort (getUserDataPath),
+  # so changing nameShort (= nameLong here) is what isolates the lock domain.
   jq '.nameShort = "RemotePairLocal"
-    | .nameLong = "RemotePair (Local)"
+    | .nameLong = "RemotePairLocal"
     | .applicationName = "remotepair-local"
     | .dataFolderName = ".remotepair-local"
     | .darwinBundleIdentifier = "com.x10lab.remotepair-ide-local"
     | .win32MutexName = "remotepairlocal"
     | .win32AppUserModelId = "x10lab.RemotePairLocal"
-    | .win32DirName = "RemotePair (Local)"' \
+    | .win32DirName = "RemotePairLocal"' \
     "$VENDOR/product.json" > "$_pj_tmp" && mv "$_pj_tmp" "$VENDOR/product.json"
 fi
 
