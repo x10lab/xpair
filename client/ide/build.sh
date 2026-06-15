@@ -41,6 +41,28 @@ cp "$RP/patches/zz-remotepair-ide-frontend.patch" "$INJECTED_PATCH"
 cp "$VENDOR/product.json" "$PRODUCT_BAK"
 cp "$RP/product.overlay.json" "$VENDOR/product.json"
 
+# 2b) Local-identity isolation. Local/dev builds get a DISTINCT product identity so they live in
+#     their own single-instance lock domain. The macOS lock lives at
+#     ~/Library/Application Support/<nameShort> (see vscode environmentService.ts → getUserDataPath
+#     uses product.nameShort), so a stale local/dev instance sharing nameShort otherwise squats the
+#     lock and a NEW launch (e.g. the production cask app) silently hands off to it and exits
+#     ("the app won't launch"). Suffixing the identity for local builds prevents that collision.
+#     CI keeps the production identity. Override with RP_LOCAL_IDENTITY=0 to build the prod identity locally.
+RP_LOCAL_IDENTITY="${RP_LOCAL_IDENTITY:-$([ -z "$GITHUB_ACTIONS" ] && echo 1 || echo 0)}"
+if [ "$RP_LOCAL_IDENTITY" = "1" ]; then
+  echo "→ local-identity build: RemotePairLocal (isolated lock domain; RP_LOCAL_IDENTITY=0 for prod identity)"
+  _pj_tmp="$(mktemp)"
+  jq '.nameShort = "RemotePairLocal"
+    | .nameLong = "RemotePair (Local)"
+    | .applicationName = "remotepair-local"
+    | .dataFolderName = ".remotepair-local"
+    | .darwinBundleIdentifier = "com.x10lab.remotepair-ide-local"
+    | .win32MutexName = "remotepairlocal"
+    | .win32AppUserModelId = "x10lab.RemotePairLocal"
+    | .win32DirName = "RemotePair (Local)"' \
+    "$VENDOR/product.json" > "$_pj_tmp" && mv "$_pj_tmp" "$VENDOR/product.json"
+fi
+
 # 3) run the RemotePair orchestrator (pristine VSCodium dev/build.sh + RemotePair identity)
 #    with CWD = recipe root so its relative sources (get_repo.sh, build.sh, …) resolve into vendor.
 ( cd "$VENDOR" && bash "$RP/dev-build.sh" "$@" )
@@ -56,3 +78,15 @@ for out in "$VENDOR"/VSCode-darwin-*/ "$VENDOR"/VSCode-linux-*/ "$VENDOR"/VSCode
   echo "→ build output: client/ide/dist/$(basename "$out")"
 done
 shopt -u nullglob
+
+# 5) re-sign the macOS app so it actually launches. The gulp build emits an adhoc signature; under a
+#    hardened runtime Electron's V8 JIT needs allow-jit (+ disable-library-validation for a self-signed
+#    identity), and `codesign --deep` strips entitlements — so re-sign inside-out (local-sign.sh).
+#    No-op when not macOS or when the signing identity is absent. Release signing is done in CI.
+if [ "$(uname)" = "Darwin" ]; then
+  shopt -s nullglob
+  for app in "$HERE"/dist/VSCode-darwin-*/*.app; do
+    bash "$RP/local-sign.sh" "$app" || echo "  (re-sign skipped/failed for $(basename "$app"))"
+  done
+  shopt -u nullglob
+fi
