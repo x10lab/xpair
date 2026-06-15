@@ -1,86 +1,46 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091
+# RemotePair IDE build — thin wrapper over the pristine VSCodium recipe in vendor/vscodium/.
+#
+# Vendor 분리 (Option C): vendor/vscodium/ is PRISTINE VSCodium (git subtree from
+# github.com/VSCodium/vscodium). Everything RemotePair owns lives in remotepair/.
+# This wrapper injects the RemotePair artifacts into the pristine recipe at build time
+# (trap-cleaned so vendor stays byte-pristine for the next `git subtree pull`), then runs
+# the RemotePair build orchestrator with CWD = the recipe root.
+#
+# Usage:  ./build.sh [dev-build flags]      (e.g. -p assets, -o skip-build, -s skip-source)
+set -e
 
-set -ex
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENDOR="$HERE/vendor/vscodium"
+RP="$HERE/remotepair"
 
-. version.sh
+[ -d "$VENDOR" ] || {
+  echo "vendor/vscodium/ missing — populate it first:" >&2
+  echo "  git subtree add --prefix=client/ide/vendor/vscodium vscodium <tag> --squash" >&2
+  exit 1
+}
 
-if [[ "${SHOULD_BUILD}" == "yes" ]]; then
-  echo "MS_COMMIT=\"${MS_COMMIT}\""
+INJECTED_PATCH="$VENDOR/patches/zz-remotepair-ide-frontend.patch"
+PRODUCT_BAK="$VENDOR/product.json.rp-orig"
 
-  . prepare_vscode.sh
+cleanup() {
+  # restore pristine vendor (so `git subtree pull` stays conflict-free)
+  rm -f "$INJECTED_PATCH"
+  [ -f "$PRODUCT_BAK" ] && mv -f "$PRODUCT_BAK" "$VENDOR/product.json"
+  rm -f "$VENDOR/dev/build.env"
+}
+trap cleanup EXIT INT TERM
 
-  cd vscode || { echo "'vscode' dir not found"; exit 1; }
+# 1) inject the RemotePair frontend patch — prepare_vscode.sh applies ../patches/*.patch (glob,
+#    name-sorted); zz- sorts last so it lands after all stock + RemotePair-needed patches.
+cp "$RP/patches/zz-remotepair-ide-frontend.patch" "$INJECTED_PATCH"
 
-  export NODE_OPTIONS="--max-old-space-size=8192"
-  export VSCODE_PUBLISH_COUNTER=1
+# 2) inject the branding overlay — prepare_vscode.sh:128 merges the in-vscode/ stock product.json
+#    with ../product.json (= vendor/vscodium/product.json), our overlay winning on key conflicts.
+#    Stash pristine first; the trap restores it after the build.
+cp "$VENDOR/product.json" "$PRODUCT_BAK"
+cp "$RP/product.overlay.json" "$VENDOR/product.json"
 
-  npm run gulp vscode-min-prepack
-
-  if [[ "${OS_NAME}" == "osx" ]]; then
-    # remove win32 node modules
-    rm -f .build/extensions/ms-vscode.js-debug/src/win32-app-container-tokens.*.node
-
-    # generate Group Policy definitions
-    npm run copy-policy-dto --prefix build
-    node build/lib/policies/policyGenerator.ts build/lib/policies/policyData.jsonc darwin
-
-    npm run gulp "vscode-darwin-${VSCODE_ARCH}-min-packing"
-
-    find "../VSCode-darwin-${VSCODE_ARCH}" -print0 | xargs -0 touch -c
-
-    . ../build_cli.sh
-
-    VSCODE_PLATFORM="darwin"
-  elif [[ "${OS_NAME}" == "windows" ]]; then
-    # in CI, packaging will be done by a different job
-    if [[ "${CI_BUILD}" == "no" ]]; then
-      . ../build/windows/rtf/make.sh
-
-      # generate Group Policy definitions
-      npm run copy-policy-dto --prefix build
-      node build/lib/policies/policyGenerator.ts build/lib/policies/policyData.jsonc win32
-
-      npm run gulp "vscode-win32-${VSCODE_ARCH}-min-packing"
-
-      if [[ "${VSCODE_ARCH}" != "x64" ]]; then
-        SHOULD_BUILD_REH="no"
-        SHOULD_BUILD_REH_WEB="no"
-      fi
-
-      . ../build_cli.sh
-    fi
-
-    VSCODE_PLATFORM="win32"
-  else # linux
-    # remove win32 node modules
-    rm -f .build/extensions/ms-vscode.js-debug/src/win32-app-container-tokens.*.node
-
-    # in CI, packaging will be done by a different job
-    if [[ "${CI_BUILD}" == "no" ]]; then
-      # generate Group Policy definitions
-      npm run copy-policy-dto --prefix build
-      node build/lib/policies/policyGenerator.ts build/lib/policies/policyData.jsonc linux
-
-      npm run gulp "vscode-linux-${VSCODE_ARCH}-min-packing"
-
-      find "../VSCode-linux-${VSCODE_ARCH}" -print0 | xargs -0 touch -c
-
-      . ../build_cli.sh
-    fi
-
-    VSCODE_PLATFORM="linux"
-  fi
-
-  if [[ "${SHOULD_BUILD_REH}" != "no" ]]; then
-    npm run gulp minify-vscode-reh
-    npm run gulp "vscode-reh-${VSCODE_PLATFORM}-${VSCODE_ARCH}-min-ci"
-  fi
-
-  if [[ "${SHOULD_BUILD_REH_WEB}" != "no" ]]; then
-    npm run gulp minify-vscode-reh-web
-    npm run gulp "vscode-reh-web-${VSCODE_PLATFORM}-${VSCODE_ARCH}-min-ci"
-  fi
-
-  cd ..
-fi
+# 3) run the RemotePair orchestrator (pristine VSCodium dev/build.sh + RemotePair identity)
+#    with CWD = recipe root so its relative sources (get_repo.sh, build.sh, …) resolve into vendor.
+( cd "$VENDOR" && bash "$RP/dev-build.sh" "$@" )

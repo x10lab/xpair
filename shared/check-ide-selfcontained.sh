@@ -5,7 +5,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-EXT="$ROOT/client/ide/remotepair-ext"
+EXT="$ROOT/client/ide/remotepair/ext"
 GEN="$EXT/generated/contracts.json"
 fail=0
 ok()   { printf 'ok:  %s\n' "$1"; }
