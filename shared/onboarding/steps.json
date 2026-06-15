@@ -1,0 +1,13 @@
+{
+  "$comment": "RemotePair 온보딩 단계 모델 SoT. 같은 온보딩 개념을 두 UI가 렌더한다: 웹 마법사(client/web/app.js, role-aware buildSteps)와 IDE walkthroughs(ide/remotepair-ext, contributes.walkthroughs). 여기서 정규 개념과 역할 적용·UI 매핑을 고정하고 check-onboarding.sh로 정합 검증한다.",
+  "roles": ["host", "client", "both"],
+  "ideWalkthroughId": "remotepair.setup",
+  "concepts": [
+    { "id": "welcome",     "title": "환영/역할 선택",            "roles": ["host", "client"], "web": ["welcome"],                          "ideWalkthrough": null },
+    { "id": "permissions", "title": "호스트 TCC 권한(화면·입력)", "roles": ["host"],           "web": ["permissions", "regrant"],            "ideWalkthrough": "permissions" },
+    { "id": "connect",     "title": "SSH 연결(client↔host)",      "roles": ["host", "client"], "web": ["ssh", "client-ssh-setup", "host-guide"], "ideWalkthrough": "connect" },
+    { "id": "file-access", "title": "파일 접근(매핑 + syncthing/mount)", "roles": ["host", "client"], "web": ["maps", "syncthing"],          "ideWalkthrough": "fileaccess" },
+    { "id": "extensions",  "title": "IDE AI 확장 설치",           "roles": ["client"],         "web": [],                                   "ideWalkthrough": "extensions" },
+    { "id": "verify",      "title": "완료/검증",                  "roles": ["host", "client"], "web": ["verify"],                           "ideWalkthrough": null }
+  ]
+}
