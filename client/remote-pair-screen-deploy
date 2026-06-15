@@ -83,10 +83,26 @@ SIDECAR_BIN="${SIDECAR_BIN:-$DEFAULT_BIN}"
 
 if [[ ! -f "$SIDECAR_BIN" ]]; then
   die "Sidecar binary not found at: $SIDECAR_BIN
-Build it first:
+Build it first (the 'webrtc' feature is REQUIRED for the v2 serve-webrtc path):
   cd $SCRIPT_DIR/../rs/remote-pair-screen
-  cargo build --release"
+  cargo build --release --features webrtc"
 fi
+
+# Guard: a binary built without the 'webrtc' feature has no serve-webrtc
+# subcommand, so the v2 (WebRTC) path is silently missing. Warn loudly.
+if ! "$SIDECAR_BIN" serve-webrtc --help >/dev/null 2>&1; then
+  warn "Sidecar lacks the 'serve-webrtc' subcommand — built without --features webrtc?"
+  warn "The v2 WebRTC path will be unavailable. Rebuild with:"
+  warn "  cd $SCRIPT_DIR/../rs/remote-pair-screen && cargo build --release --features webrtc"
+fi
+
+# Swift v2 helpers (compiled ON the host so the binary path is stable for TCC
+# and the signature is ad-hoc-valid for the host's arch). Sources live in
+# rs/rpmedia/. rp-screencap = SCK+VT H.264 capture (Screen Recording perm);
+# rp-input-inject = remote keyboard/cursor injection (Accessibility perm).
+RPMEDIA_DIR="$SCRIPT_DIR/../rs/rpmedia"
+SCREENCAP_SRC="$RPMEDIA_DIR/rp-screencap.swift"
+INPUT_SRC="$RPMEDIA_DIR/rp-input-inject.swift"
 
 info "Sidecar:     $SIDECAR_BIN ($(du -sh "$SIDECAR_BIN" | cut -f1))"
 info "Remote host: $REMOTE_HOST"
@@ -136,6 +152,54 @@ info "Remote binary version check:"
 ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "'$REMOTE_BIN_PATH' --version 2>&1 || true"
 
 # ---------------------------------------------------------------------------
+# 4b. Build + deploy the Swift v2 helpers on the host (non-fatal)
+#     The WebRTC (v2) path needs two host-side helpers in ~/.remote-pair/bin/:
+#       rp-screencap     — SCK+VT H.264 capture  (serve_webrtc screencap_path)
+#       rp-input-inject  — remote keyboard/cursor (serve_webrtc input_helper_path)
+#     We copy the .swift sources and compile them ON the host with `swiftc -O`
+#     so the resulting binary path is stable (TCC grants bind to path) and the
+#     code signature is valid for the host architecture. If swiftc is absent
+#     (no Xcode CLT) we warn and skip — v1 (JPEG/WS) still works.
+# ---------------------------------------------------------------------------
+
+REMOTE_SRC_DIR=".remote-pair/src"
+deploy_helper() {
+  local src="$1" name="$2"
+  if [[ ! -f "$src" ]]; then
+    warn "helper source missing: $src (skipping $name)"
+    return 0
+  fi
+  info "Deploying helper source $name → $REMOTE_HOST:~/$REMOTE_SRC_DIR/$name.swift …"
+  scp "${SSH_OPTS[@]}" -- "$src" "$REMOTE_HOST:$REMOTE_SRC_DIR/$name.swift"
+}
+
+if ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "command -v swiftc >/dev/null 2>&1"; then
+  info "Creating $REMOTE_SRC_DIR on host…"
+  ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" "mkdir -p '$REMOTE_SRC_DIR'"
+  deploy_helper "$SCREENCAP_SRC" "rp-screencap"
+  deploy_helper "$INPUT_SRC"     "rp-input-inject"
+  info "Compiling helpers on host (swiftc -O)…"
+  # Compile each into ~/.remote-pair/bin/. Non-fatal per helper.
+  ssh "${SSH_OPTS[@]}" -- "$REMOTE_HOST" '
+    set -e
+    cd "$HOME/.remote-pair"
+    for h in rp-screencap rp-input-inject; do
+      if [ -f "src/$h.swift" ]; then
+        if swiftc -O "src/$h.swift" -o "bin/$h" 2>/tmp/rp-$h-build.log; then
+          chmod +x "bin/$h"
+          echo "  built bin/$h ($(du -h "bin/$h" | cut -f1))"
+        else
+          echo "  WARN: failed to build $h (see /tmp/rp-$h-build.log on host)" >&2
+        fi
+      fi
+    done
+  ' || warn "host helper compile step reported errors (v2 input/capture may be unavailable)"
+else
+  warn "swiftc not found on $REMOTE_HOST — skipping v2 helper build."
+  warn "Install Xcode Command Line Tools on the host (xcode-select --install) and re-run to enable WebRTC capture + remote input."
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Print one-time TCC grant instructions
 # ---------------------------------------------------------------------------
 
@@ -145,11 +209,17 @@ cat <<'INSTRUCTIONS'
 DEPLOYMENT COMPLETE — ONE-TIME HOST SETUP REQUIRED
 ===========================================================================
 
-The sidecar binary has been copied to:
-    ~/.remote-pair/bin/remote-pair-screen
+The host binaries have been copied to:
+    ~/.remote-pair/bin/remote-pair-screen   (v1 JPEG/WS sidecar)
+    ~/.remote-pair/bin/rp-screencap         (v2 WebRTC H.264 capture)
+    ~/.remote-pair/bin/rp-input-inject      (v2 remote keyboard/cursor)
 
-Before the v1 WebSocket stream can capture your screen you MUST grant
-Screen Recording permission to that binary on the HOST machine.
+Grant TWO permissions on the HOST machine (one-time, per binary path):
+
+  • Screen Recording → remote-pair-screen AND rp-screencap  (so the screen
+    can be captured for both the v1 and v2 paths)
+  • Accessibility   → rp-input-inject                        (so remote
+    keyboard/cursor input can be injected into host apps)
 
 HOW TO GRANT SCREEN RECORDING (macOS):
 
@@ -157,11 +227,20 @@ HOW TO GRANT SCREEN RECORDING (macOS):
     1. On the HOST Mac open:
          System Settings > Privacy & Security > Screen Recording
     2. Click the (+) button.
-    3. Navigate to:
+    3. Navigate to (press Cmd+Shift+G in the picker to type the path):
          ~/.remote-pair/bin/remote-pair-screen
-       (press Cmd+Shift+G in the file picker to type the path)
-    4. Enable the toggle next to remote-pair-screen.
+       and also add:
+         ~/.remote-pair/bin/rp-screencap
+    4. Enable the toggle next to each.
     5. If prompted, quit and relaunch.
+
+HOW TO GRANT ACCESSIBILITY (macOS) — required for remote input:
+
+    1. System Settings > Privacy & Security > Accessibility
+    2. Click (+), Cmd+Shift+G, and add:
+         ~/.remote-pair/bin/rp-input-inject
+    3. Enable its toggle. Without this, remote keyboard/cursor is silently
+       disabled (the screen still streams).
 
   Option B — via tccutil (Terminal, macOS 12+):
     This resets the permission and then the GUI step above is still needed
@@ -174,7 +253,17 @@ HOW TO GRANT SCREEN RECORDING (macOS):
 
 HOW TO START THE SIDECAR ON THE HOST:
 
-  Run in a terminal on the HOST (or add to your login items / launchd):
+  v2 — WebRTC / H.264 (recommended: UDP/RTP, low latency, remote input):
+
+    ~/.remote-pair/bin/remote-pair-screen serve-webrtc
+
+    Default: signaling WebSocket on 127.0.0.1:8890; media flows P2P over
+    UDP/ICE. Spawns rp-screencap (capture) and rp-input-inject (remote
+    keyboard/cursor) from ~/.remote-pair/bin automatically. The IDE webview
+    forwards 8890 over SSH and connects via RTCPeerConnection.
+    Options: --port (8890) --fps (30) --bitrate (4000000) --scale (1.0)
+
+  v1 — JPEG over WebSocket (fallback, no remote input):
 
     ~/.remote-pair/bin/remote-pair-screen serve
 
