@@ -29,9 +29,13 @@ const net = require("net");
 // Committed so this extension stays self-contained; regenerate via generate-contracts.mjs.
 const CONTRACTS = require("./generated/contracts.json");
 
+// RemotePair: AI agent extensions (Claude Code / Codex·ChatGPT) are DISABLED for now —
+// CLI-only. Use the New Session picker's claude/codex/gemini CLI agents instead of the
+// in-editor GUI extensions. Re-enable later by uncommenting. open-remote-ssh stays: it is
+// the SSH transport, not an AI agent.
 const AI_EXTENSIONS = [
-  "anthropic.claude-code",
-  "openai.chatgpt",
+  // "anthropic.claude-code",
+  // "openai.chatgpt",
   "jeanp413.open-remote-ssh",
 ];
 

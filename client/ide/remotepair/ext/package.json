@@ -143,8 +143,8 @@
           },
           {
             "id": "remotepair.setup.extensions",
-            "title": "Install the AI extensions",
-            "description": "RemotePair bundles Claude Code, ChatGPT, and Open Remote - SSH. They are installed automatically on first run; you can re-run it anytime.\n[Install AI Extensions](command:remotepair.ensureExtensions)",
+            "title": "AI agents run via the CLI",
+            "description": "RemotePair runs AI agents (Claude, Codex, Gemini) via the terminal CLI — start one from the New Session picker. Only Open Remote - SSH is installed automatically (for host connections).\n[Install Open Remote - SSH](command:remotepair.ensureExtensions)",
             "media": {
               "markdown": "media/walkthrough-extensions.md"
             }

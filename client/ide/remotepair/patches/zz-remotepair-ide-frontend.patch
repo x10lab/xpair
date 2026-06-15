@@ -1,5 +1,5 @@
 diff --git a/src/vs/workbench/browser/layout.ts b/src/vs/workbench/browser/layout.ts
-index 3480283a..1978a469 100644
+index 3480283a..edd00a3d 100644
 --- a/src/vs/workbench/browser/layout.ts
 +++ b/src/vs/workbench/browser/layout.ts
 @@ -2224,6 +2224,12 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
@@ -15,7 +15,17 @@ index 3480283a..1978a469 100644
  		if (hidden && this.setAuxiliaryBarMaximized(false) && !this.isVisible(Parts.AUXILIARYBAR_PART)) {
  			return; // return: leaving maximised auxiliary bar made this part hidden
  		}
-@@ -2980,7 +2986,10 @@ class LayoutStateModel extends Disposable {
+@@ -2941,7 +2947,8 @@ class LayoutStateModel extends Disposable {
+ 		const auxiliaryBarForceMaximized = this.configurationService.getValue(WorkbenchLayoutSettings.AUXILIARYBAR_FORCE_MAXIMIZED);
+ 		const workbenchState = this.contextService.getWorkbenchState();
+ 		const mainContainerDimension = configuration.mainContainerDimension;
+-		LayoutStateKeys.SIDEBAR_SIZE.defaultValue = Math.min(300, mainContainerDimension.width / 4);
++		// RemotePair: default the left side bar to 1/3 of the window width (stock was min(300, w/4)).
++		LayoutStateKeys.SIDEBAR_SIZE.defaultValue = Math.round(mainContainerDimension.width / 3);
+ 		LayoutStateKeys.SIDEBAR_HIDDEN.defaultValue = workbenchState === WorkbenchState.EMPTY || auxiliaryBarForceMaximized === true;
+ 		LayoutStateKeys.AUXILIARYBAR_SIZE.defaultValue = auxiliaryBarForceMaximized ? Math.max(300, mainContainerDimension.width / 2) : Math.min(300, mainContainerDimension.width / 4);
+ 		LayoutStateKeys.AUXILIARYBAR_HIDDEN.defaultValue = (() => {
+@@ -2980,7 +2987,10 @@ class LayoutStateModel extends Disposable {
  					return false;
  			}
  		})();
@@ -27,6 +37,15 @@ index 3480283a..1978a469 100644
  		LayoutStateKeys.PANEL_POSITION.defaultValue = positionFromString(this.configurationService.getValue(WorkbenchLayoutSettings.PANEL_POSITION) ?? 'bottom');
  
  		// Apply all defaults
+@@ -3039,7 +3049,7 @@ class LayoutStateModel extends Disposable {
+ 
+ 		// Restrict auxiliary bar size in case of small window dimensions
+ 		if (this.isNew[StorageScope.WORKSPACE] && configuration.mainContainerDimension.width <= DEFAULT_WORKSPACE_WINDOW_DIMENSIONS.width) {
+-			this.setInitializationValue(LayoutStateKeys.SIDEBAR_SIZE, Math.min(300, configuration.mainContainerDimension.width / 4));
++			this.setInitializationValue(LayoutStateKeys.SIDEBAR_SIZE, Math.round(configuration.mainContainerDimension.width / 3)); // RemotePair: 1/3 default
+ 			this.setInitializationValue(LayoutStateKeys.AUXILIARYBAR_SIZE, Math.min(300, configuration.mainContainerDimension.width / 4));
+ 		}
+ 	}
 diff --git a/src/vs/workbench/browser/parts/activitybar/activitybarPart.ts b/src/vs/workbench/browser/parts/activitybar/activitybarPart.ts
 index bfd30e64..1d973f00 100644
 --- a/src/vs/workbench/browser/parts/activitybar/activitybarPart.ts
@@ -2564,10 +2583,10 @@ index 00000000..7580cf40
 +}
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
 new file mode 100644
-index 00000000..6e0c2012
+index 00000000..325f7893
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,608 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -2838,7 +2857,18 @@ index 00000000..6e0c2012
 +				return;
 +			}
 +			const input = this.instantiationService.createInstance(SessionPickerInput);
-+			group.openEditor(input, { pinned: false }).then(undefined, () => { /* best-effort */ });
++			group.openEditor(input, { pinned: false }).then(() => {
++				// Blank-fix (same as mountTerminal): re-fire visibility + layout now that the
++				// group + editor exist, so the embedded EditorPart actually renders. The
++				// setVisible in renderBody ran before any group existed and was missed; without
++				// this the picker (the launch editor) would open at 0×0 and stay blank.
++				if (this.editorPart === part) {
++					part.setVisible(this.isBodyVisible());
++					if (this.lastWidth > 0 && this.lastHeight > 0) {
++						part.layout(this.lastWidth, this.lastHeight, 0, 0);
++					}
++				}
++			}, () => { /* best-effort */ });
 +		}, () => { /* part disposed */ });
 +	}
 +
@@ -2899,51 +2929,6 @@ index 00000000..6e0c2012
 +				// best-effort
 +			}
 +		}, () => { /* part disposed */ });
-+	}
-+
-+	/**
-+	 * Open a new terminal as an editor inside the embedded EditorPart's own group.
-+	 * Using the part's `activeGroup` (not a scoped IEditorService) keeps the editor
-+	 * inside the embedded part instead of leaking into the main editor area.
-+	 */
-+	private mountTerminal(): void {
-+		const part = this.editorPart;
-+		if (!part) {
-+			return;
-+		}
-+		// `whenReady` resolves once the grid + initial group exist (synchronously
-+		// after `create()` in the common case); guarding it avoids a missing group.
-+		part.whenReady.then(() => {
-+			if (this.editorPart !== part) {
-+				return; // disposed/recreated in the meantime
-+			}
-+			const group = part.activeGroup;
-+			if (!group) {
-+				return;
-+			}
-+			try {
-+				// Use the shared helper so this auto-mounted terminal is also tracked in
-+				// the attached map (and the Session Manager Attached row reflects it).
-+				const { opened } = this.openTerminalInGroup(group);
-+				opened.then(() => {
-+					// Blank-fix (timing): push visibility + relayout now that the group and
-+					// terminal editor actually exist. Part.setVisible only *fires* an event
-+					// and EditorGroupView reacts to future events only, so the setVisible in
-+					// renderBody (before any group exists) was missed → xterm stayed hidden at
-+					// 0×0. Re-firing here reaches the live group: onDidVisibilityChange →
-+					// editorPane.setVisible → TerminalEditor.setVisible → terminalInstance
-+					// renders. The relayout gives xterm a non-zero fit.
-+					if (this.editorPart === part) {
-+						part.setVisible(this.isBodyVisible());
-+						if (this.lastWidth > 0 && this.lastHeight > 0) {
-+							part.layout(this.lastWidth, this.lastHeight, 0, 0);
-+						}
-+					}
-+				}, () => { /* best-effort */ });
-+			} catch (e) {
-+				// best-effort: empty editor part still renders
-+			}
-+		}, () => { /* part disposed before ready */ });
 +	}
 +
 +	/** Reflect the active terminal session's title in the view/container header. */
@@ -3058,8 +3043,9 @@ index 00000000..6e0c2012
 +		this.partDisposables.add(part.onDidChangeActiveGroup(group => this.trackActiveGroup(group)));
 +		this.trackActiveGroup(part.activeGroup);
 +
-+		// Mount an initial terminal so the embedded part shows a terminal editor tab.
-+		this.mountTerminal();
++		// RemotePair: on launch, show the New Session picker first (not an empty terminal).
++		// A terminal editor is created only when the user picks Claude/Shell/Codex/Gemini.
++		this.openSessionPicker();
 +	}
 +
 +	protected override layoutBody(height: number, width: number): void {
