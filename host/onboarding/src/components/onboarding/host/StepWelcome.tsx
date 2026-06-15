@@ -1,0 +1,34 @@
+import { Server } from "lucide-react";
+
+export function StepWelcome() {
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <Server className="h-7 w-7" />
+      </div>
+      <h2 className="text-2xl font-semibold tracking-tight text-foreground">
+        Set up RemotePairHost
+      </h2>
+      <p className="mt-3 max-w-sm text-sm text-muted-foreground">
+        This Mac will run your sessions 24/7 and accept connections from your
+        client. Setup takes about a minute.
+      </p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Tap <span className="font-medium text-foreground">Begin setup</span> to install the helper.
+      </p>
+      <ul className="mt-6 w-full max-w-sm space-y-2 text-left text-sm text-muted-foreground">
+        <Bullet>Grant three macOS permissions</Bullet>
+        <Bullet>Wait for your client to connect</Bullet>
+      </ul>
+    </div>
+  );
+}
+
+function Bullet({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
+      <span>{children}</span>
+    </li>
+  );
+}
