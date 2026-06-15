@@ -8,6 +8,10 @@ cask "remote-pair-host" do
   homepage "https://github.com/ghyeongl/remote-pair"
 
   depends_on macos: :ventura
+  # The host bundles arm64-only binaries (app + screen sidecar + Swift helpers,
+  # all built -target arm64-apple-macos13.0). Reject Intel explicitly instead of
+  # failing silently at launch. (universal via lipo is a separate follow-up.)
+  depends_on arch: :arm64
 
   # Self-signed (not notarized): strip quarantine so Gatekeeper allows launch and
   # TCC (Accessibility / Screen Recording) grants stick to the stable signing identity.

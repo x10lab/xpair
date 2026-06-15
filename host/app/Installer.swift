@@ -128,6 +128,15 @@ enum Installer {
             }
         } else { log("INSTALL: bundled tmux-aqua 없음 (\(tmuxSrc))") }
 
+        // 4b. 화면공유 3종 심볼릭링크 → 번들 Helpers/{screen,rp-screencap,rp-input-inject}.
+        //     익스텐션/문서가 호출하는 안정 경로 ~/.remote-pair/bin/<name> 를 번들의 서명 바이너리로
+        //     해소한다(SSH deploy 폐기 후 유일 배달경로 = 번들). 심볼릭이므로 .app 업데이트 시 항상
+        //     새 번들을 가리켜 버전 스큐가 없고, serve_webrtc resolver 의 current_exe().canonicalize()
+        //     가 링크를 실제 Helpers 경로로 해소해 형제 헬퍼를 발견한다.
+        //     구 SSH deploy 가 남긴 stale 실제파일(ad-hoc 서명)이 있으면 심볼릭으로 교체 — 안정 cert
+        //     바이너리로 grant 가 해소되도록(S3c stale 정리). install.sh manifest 가역성과 동일 의미.
+        linkBundledBinaries(["screen", "rp-screencap", "rp-input-inject"])
+
         // 5. watchdog 스크립트 + LaunchAgent plist (앱 + watchdog) — install.sh 와 동일 모양
         writeWatchdogScript()
         writeFile(appPlist, appPlistXML())
@@ -339,6 +348,26 @@ enum Installer {
             try? fm.removeItem(atPath: tmp)
             log("INSTALL: copyFile 실패 \(src) → \(dst): \(error)")
             return false
+        }
+    }
+
+    /// 번들 Contents/Helpers/<name> → ~/.remote-pair/bin/<name> 심볼릭링크(잘못/stale 링크·실제파일이면 교체).
+    /// 화면공유 사이드카·헬퍼의 안정 호출경로(~/.remote-pair/bin)를 서명된 번들 바이너리로 해소한다.
+    /// 번들에 없는 항목은 조용히 skip(개발/부분 번들). 멱등 — 이미 올바른 링크면 no-op.
+    private static func linkBundledBinaries(_ names: [String]) {
+        let helpersDir = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path
+        let binDir = "\(RP_DIR)/bin"
+        ensureDir(binDir)
+        for name in names {
+            let src = "\(helpersDir)/\(name)"
+            let link = "\(binDir)/\(name)"
+            guard fm.fileExists(atPath: src) else { log("INSTALL: bundled \(name) 없음 (\(src)) — link skip"); continue }
+            let cur = try? fm.destinationOfSymbolicLink(atPath: link)
+            if cur == src { continue }                       // 이미 올바른 링크 → no-op
+            // stale 링크 또는 구 deploy 가 남긴 실제파일(ad-hoc) 제거 후 새 심볼릭으로 교체.
+            try? fm.removeItem(atPath: link)
+            do { try fm.createSymbolicLink(atPath: link, withDestinationPath: src); log("INSTALL: \(name) link → \(src)") }
+            catch { log("INSTALL: \(name) link 실패: \(error)") }
         }
     }
 

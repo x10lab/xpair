@@ -89,6 +89,46 @@ cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
 [ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua 번들 임베드 검증 실패: $HELP/tmux-aqua" >&2; exit 1; }
 echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + remote-pair-approve-router.sh + ocr-find"
 
+# ── 화면공유 3종(screen 사이드카 + rp-screencap/rp-input-inject 헬퍼) → Contents/Helpers ──
+# SSH deploy 채널을 폐기했으므로 세 바이너리의 유일한 배달경로는 이 번들이다.
+#   • screen           v1(JPEG/WS) + v2(WebRTC/H.264) 사이드카. v2 는 --features webrtc 필수.
+#   • rp-screencap     SCK+VT H.264 캡쳐 (Screen Recording 권한)
+#   • rp-input-inject  원격 키보드/커서 주입 (Accessibility 권한)
+# 셋 다 안정 cert 로 inside-out 개별 서명(아래)되어 TCC grant 가 designated requirement 에 묶여
+# .app 업데이트에도 생존한다. resolver(serve_webrtc.rs)는 current_exe() 형제경로를 우선 탐색하므로
+# screen 이 Helpers/ 에서 기동하면 형제 rp-screencap/rp-input-inject 를 자동 발견한다.
+echo "=== build + embed screenshare binaries (screen + rp-screencap + rp-input-inject) ==="
+# cargo(+rustc) 보장: rustup 셸이 PATH 에 toolchain 을 안 깔았을 수 있어 ~/.cargo/bin 을 앞에 둔다.
+export PATH="$HOME/.cargo/bin:$PATH"
+command -v cargo >/dev/null || { echo "✗ cargo 없음 — Rust 툴체인 필요(rustup). screen 사이드카 빌드 불가." >&2; exit 1; }
+SCREEN_MANIFEST="host/rd/screen/Cargo.toml"
+echo "  cargo build --release --features webrtc ($SCREEN_MANIFEST) …"
+cargo build --release --features webrtc --manifest-path "$SCREEN_MANIFEST" \
+  || { echo "✗ screen 사이드카 cargo 빌드 실패(--features webrtc)" >&2; exit 1; }
+cp host/rd/screen/target/release/screen "$HELP/screen"; chmod +x "$HELP/screen"
+[ -x "$HELP/screen" ] || { echo "✗ screen 번들 임베드 검증 실패: $HELP/screen" >&2; exit 1; }
+# v2 경로(serve-webrtc 서브커맨드)가 실제로 들어갔는지 확인 — webrtc feature 누락 시 v2 가 조용히 사라짐.
+"$HELP/screen" serve-webrtc --help >/dev/null 2>&1 \
+  || { echo "✗ screen 에 serve-webrtc 없음 — --features webrtc 빌드 실패" >&2; exit 1; }
+# rp-screencap / rp-input-inject — 단일 Swift 파일, compile() 과 동일한 툴체인/폴백 전략.
+compile_helper() { # $1=src $2=out
+  local src="$1" out="$2" sdk
+  if xcrun swiftc -O "$src" -o "$out" 2>/tmp/rp-helper.err; then return 0; fi
+  for sdk in /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk \
+             /Library/Developer/CommandLineTools/SDKs/MacOSX14.sdk \
+             /Library/Developer/CommandLineTools/SDKs/MacOSX13.3.sdk; do
+    [ -d "$sdk" ] || continue
+    echo "  (helper 기본 컴파일 실패 → SDK 폴백: $(basename "$sdk"))"
+    if xcrun swiftc -O -sdk "$sdk" -target arm64-apple-macos13.0 "$src" -o "$out" 2>/tmp/rp-helper.err; then return 0; fi
+  done
+  echo "✗ Swift helper 컴파일 실패 ($src):"; cat /tmp/rp-helper.err >&2; return 1
+}
+compile_helper host/rd/rpmedia/rp-screencap.swift    "$HELP/rp-screencap";    chmod +x "$HELP/rp-screencap"
+compile_helper host/rd/rpmedia/rp-input-inject.swift "$HELP/rp-input-inject"; chmod +x "$HELP/rp-input-inject"
+[ -x "$HELP/rp-screencap" ] && [ -x "$HELP/rp-input-inject" ] \
+  || { echo "✗ rp-screencap/rp-input-inject 번들 임베드 검증 실패" >&2; exit 1; }
+echo "  embedded: screen ($("$HELP/screen" --version 2>/dev/null || echo '?')) + rp-screencap + rp-input-inject"
+
 RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (icon 용; 아래에서 채움)
 # NOTE: 결합도 낮게 — 앱 번들엔 런타임에 앱이 직접 쓰는 것(Helpers: tmux-aqua·router·ocr-find)만 둔다.
 #   skills(claude 하네스) · rules.txt(approve 설정) · CLI 는 동봉/자기설치하지 않는다.
@@ -114,9 +154,30 @@ for f in menubar.png menubar@2x.png; do
 done
 [ -f "$RES/menubar.png" ] && echo "  menu-bar template → Resources/menubar.png (+@2x)"
 
-codesign -s "$SIGN_ID" --force --deep "$APP"
-echo "built + signed: $APP (v$VERSION, $BUNDLE_PREFIX)"
+# ── 서명: inside-out 개별 서명 (Apple 권장; --deep 비의존) ──
+# --deep 는 검증용이며 nested 코드를 누락·오서명할 수 있어 TCC designated requirement 가 불안정해진다.
+# 각 Helpers 항목을 먼저 안정 cert 로 개별 서명한 뒤(Mach-O 는 --options runtime), outer .app 을 서명한다.
+# 이렇게 해야 화면공유 3종(screen·rp-screencap·rp-input-inject)의 Authority 가 안정 cert 로 박혀
+# Screen Recording·Accessibility grant 가 .app 업데이트에도 생존한다(designated requirement = cert leaf).
+# 셸 스크립트(approve-router.sh)도 개별 서명해야 outer 비-deep 서명 후 --verify --strict 가 통과한다.
+for bin in "$HELP"/*; do
+  [ -f "$bin" ] || continue
+  if file -b "$bin" | grep -q 'Mach-O'; then
+    codesign -s "$SIGN_ID" --force --options runtime --timestamp=none "$bin" \
+      || { echo "✗ Helpers 개별 서명 실패(Mach-O): $bin" >&2; exit 1; }
+  else
+    # 비-Mach-O(셸 스크립트): 하드닝 런타임 무의미 → 일반 서명으로 nested 봉인만 만족.
+    codesign -s "$SIGN_ID" --force --timestamp=none "$bin" \
+      || { echo "✗ Helpers 개별 서명 실패(script): $bin" >&2; exit 1; }
+  fi
+done
+codesign -s "$SIGN_ID" --force "$APP"
+echo "built + signed (inside-out): $APP (v$VERSION, $BUNDLE_PREFIX)"
 codesign -dv "$APP" 2>&1 | grep -iE 'Authority|^Identifier' || true
+# 화면공유 3종 Authority 확인(AC2): 안정 cert 여야 grant 생존. ad-hoc('-')면 보고만(빌드는 통과).
+for b in screen rp-screencap rp-input-inject; do
+  echo "  helper $b: $(codesign -dvv "$HELP/$b" 2>&1 | grep -i 'Authority=' | head -1 || echo 'unsigned?')"
+done
 codesign --verify --strict "$APP" && echo "verify OK ✓"
 
 # ── --deploy: 원격에 rsync 후 install.sh --role host (manifest 가역 설치 재사용) ──

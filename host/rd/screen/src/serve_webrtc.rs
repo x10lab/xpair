@@ -38,9 +38,29 @@ use webrtc::track::track_local::TrackLocal;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 
+/// Locate a helper binary that sits **next to this executable** (the bundle
+/// `Contents/Helpers/` layout). `current_exe()` is `canonicalize()`d first so a
+/// symlinked launch path (e.g. `~/.remote-pair/bin/screen` → bundle Helpers) is
+/// resolved to the real bundle dir, where the sibling helpers actually live.
+/// Returns `None` when no sibling helper exists (dev `cargo run`, missing file).
+fn sibling_helper(name: &str) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let real = exe.canonicalize().unwrap_or(exe);
+    let sibling = real.parent()?.join(name);
+    if sibling.exists() {
+        return sibling.to_str().map(|s| s.to_string());
+    }
+    None
+}
+
 /// Resolve the remote-input injector helper (`rp-input-inject`).
+/// Order: `$RP_INPUT_INJECT` → bundle sibling (`current_exe` dir) →
+/// `~/.remote-pair/bin` → PATH.
 fn input_helper_path() -> String {
     if let Ok(p) = std::env::var("RP_INPUT_INJECT") {
+        return p;
+    }
+    if let Some(p) = sibling_helper("rp-input-inject") {
         return p;
     }
     let home = std::env::var("HOME").unwrap_or_default();
@@ -53,8 +73,13 @@ fn input_helper_path() -> String {
 
 /// Resolve the SCK capture+encode helper (`rp-screencap`). It self-captures via
 /// ScreenCaptureKit and encodes H.264 — no raw-frame pipe, no Rust-side capture.
+/// Order: `$RP_SCREENCAP` → bundle sibling (`current_exe` dir) →
+/// `~/.remote-pair/bin` → PATH.
 fn screencap_path() -> String {
     if let Ok(p) = std::env::var("RP_SCREENCAP") {
+        return p;
+    }
+    if let Some(p) = sibling_helper("rp-screencap") {
         return p;
     }
     let home = std::env::var("HOME").unwrap_or_default();
