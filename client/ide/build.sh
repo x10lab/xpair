@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # RemotePair IDE build — thin wrapper over the pristine VSCodium recipe in vendor/vscodium/.
 #
-# Vendor 분리 (Option C): vendor/vscodium/ is PRISTINE VSCodium (git subtree from
+# Vendor separation (Option C): vendor/vscodium/ is PRISTINE VSCodium (git subtree from
 # github.com/VSCodium/vscodium). Everything RemotePair owns lives in remotepair/.
 # This wrapper injects the RemotePair artifacts into the pristine recipe at build time
 # (trap-cleaned so vendor stays byte-pristine for the next `git subtree pull`), then runs
@@ -44,3 +44,15 @@ cp "$RP/product.overlay.json" "$VENDOR/product.json"
 # 3) run the RemotePair orchestrator (pristine VSCodium dev/build.sh + RemotePair identity)
 #    with CWD = recipe root so its relative sources (get_repo.sh, build.sh, …) resolve into vendor.
 ( cd "$VENDOR" && bash "$RP/dev-build.sh" "$@" )
+
+# 4) relocate the packaged app out of vendor into a clean dist/. The gulp recipe hardcodes its
+#    output to ../VSCode-<os>-<arch>/ (= inside vendor/vscodium/); move it so vendor stays
+#    artifact-free and the deliverable lives at a predictable client/ide/dist/ path.
+shopt -s nullglob
+for out in "$VENDOR"/VSCode-darwin-*/ "$VENDOR"/VSCode-linux-*/ "$VENDOR"/VSCode-win32-*/; do
+  mkdir -p "$HERE/dist"
+  rm -rf "$HERE/dist/$(basename "$out")"
+  mv "$out" "$HERE/dist/"
+  echo "→ build output: client/ide/dist/$(basename "$out")"
+done
+shopt -u nullglob

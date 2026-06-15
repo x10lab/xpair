@@ -1,6 +1,9 @@
-# RemotePair IDE (Vendor 분리) — root ignores.
+# RemotePair IDE (vendor-separated) — root ignores.
 # vendor/vscodium/ ships its own VSCodium .gitignore (covers vscode/ etc. relative to itself);
 # the rules below cover build artifacts + transient RemotePair injections at the client/ide root.
+
+# packaged app output — build.sh relocates the gulp output here, out of vendor
+/dist/
 
 # VSCodium build outputs inside the vendor recipe
 vendor/vscodium/vscode/
