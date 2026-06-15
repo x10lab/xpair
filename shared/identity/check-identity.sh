@@ -48,7 +48,7 @@ CARGO="$ROOT/host/rd/remote-pair-screen/Cargo.toml"
   "$(awk -F'"' '/^\[package\]/{p=1} p&&/^version[[:space:]]*=/{print $2; exit}' "$CARGO")"
 
 # --- host bundle id present in Config.swift ---
-CFG="$ROOT/host/RemotePairHost/Config.swift"
+CFG="$ROOT/host/app/Config.swift"
 EXP_BID="$(jq -r .components.host.bundleId "$ID")"
 if [[ -f "$CFG" ]]; then
   if grep -q "$EXP_BID" "$CFG"; then printf 'ok: %-40s = %s\n' "host bundleId in Config.swift" "$EXP_BID"

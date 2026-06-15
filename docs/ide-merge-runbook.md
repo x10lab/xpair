@@ -43,11 +43,11 @@ git rev-parse --is-shallow-repository      # false 확인
 | 새 위치 | SoT 내용 | 추출 출처 | 소비자 참조 변경 |
 |---------|----------|-----------|------------------|
 | `shared/screen-protocol/` | WS 경로·바인딩(`127.0.0.1:<port>`)·JPEG 프레이밍·입력 이벤트(상대좌표 0..1/키) 상수·타입 | `rs/remote-pair-screen/src/serve.rs` 주석 프로토콜 | 사이드카(serve.rs)가 상수 참조 / 입력 역전송 포맷 단일화 |
-| `shared/onboarding/` | role-aware 스텝 모델(host 8 / client 6 스텝의 id·순서·조건) | `client/web/app.js` `buildSteps(role)` | `client/web`는 모델을 읽어 렌더만 |
+| `shared/onboarding/` | role-aware 스텝 모델(host 8 / client 6 스텝의 id·순서·조건) | `client/cli/web/app.js` `buildSteps(role)` | `client/cli/web`는 모델을 읽어 렌더만 |
 | `shared/identity/` | 브랜드명 + **단일 버전 소스** | `Casks/remote-pair-host.rb`(0.4.12) ↔ `product.json`(0.1.0) | Casks·README·product.json이 이 소스 참조 |
 
 - [ ] `shared/screen-protocol/` 추출 + 사이드카가 참조하도록 변경
-- [ ] `shared/onboarding/` 스텝 모델 추출 + `client/web` 렌더 분리
+- [ ] `shared/onboarding/` 스텝 모델 추출 + `client/cli/web` 렌더 분리
 - [ ] `shared/identity/` 단일 버전/브랜드 소스 + 소비자 연결
 - [ ] `remote-pair` 단독 빌드/테스트 통과
 

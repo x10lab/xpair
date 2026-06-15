@@ -1,6 +1,6 @@
 .DS_Store
 build/
-host/RemotePairHost/RemotePairHost
+host/app/RemotePairHost
 *.o
 # OMC 런타임 상태 (기기 로컬)
 .omc/

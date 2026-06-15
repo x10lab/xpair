@@ -8,30 +8,34 @@
 ## 1. 구성 — 3 형제 레포 → 단일 모노레포
 
 ```
-remote-pair/                  (단일 git 모노레포)
-├─ host/                      RemotePairHost(메뉴바·화면캡처·입력·hooks)·approve-router
-├─ client/                    CLI(remote-pair*) + web/ 온보딩 마법사(role-aware)
+remote-pair/                  (단일 git 모노레포 — host/client × 컴포넌트)
+├─ host/                      ◀ 호스트 머신에서 실행
+│   ├─ app/                   RemotePairHost.app 소스 (메뉴바·캡처·입력·grant 소유)
+│   ├─ rd/                    ◀ 원격데스크톱 엔진 서브트리 (remotepair-rs)
+│   │   ├─ remote-pair-screen/  Rust: serve.rs(WS+JPEG)·serve_webrtc.rs(WebRTC)
+│   │   └─ rpmedia/             Swift: 캡처·VT인코드·입력주입(AX)
+│   ├─ hooks/  skills/        claude 호스트 연동
+│   └─ build-host·approve-router·rules·ocr-find   빌드/데몬 글루
+├─ client/                    ◀ 클라이언트 머신에서 실행
+│   ├─ cli/                   remote-pair* CLI + web/ 온보딩(role-aware) + hangul-romanize
+│   └─ ide/                   ◀ remotepair-ide 서브트리 (VSCodium 포크) — 내장 ext + generated/
 ├─ shared/                    ◀ SoT (아래 §2)
-├─ ide/                       ◀ remotepair-ide 서브트리 (VSCodium 포크, 415 tracked)
-│   └─ remotepair-ext/        내장 확장 (+ generate-contracts.mjs, generated/)
-├─ rs/                        ◀ remotepair-rs 서브트리 (자체 네이티브 화면엔진 = canonical, 18 tracked)
-│   ├─ remote-pair-screen/    Rust: serve.rs(WS+JPEG) · serve_webrtc.rs(WebRTC)
-│   └─ rpmedia/               Swift: 캡처·VT인코드·입력 스파이크
 ├─ docs/  tests/  assets/  Casks/
 ```
-> `native/`(구 화면엔진 사본)는 **제거**됨 — `rs/`로 통일(분기 사본 폐기, 참조 갱신).
-> `ide/vscode/`·`*.dmg` 등 6.9G 빌드산출물은 `ide/.gitignore`가 자동 무시.
+> 역할×위치 재배치: `rs`("rust"라 의미불명) → **`host/rd`**(remote-desktop=화면+입력, 호스트측), `ide` → **`client/ide`**, `client/*` → **`client/cli`**, `host/RemotePairHost` → **`host/app`**.
+> 구 `native/`(화면엔진 사본)는 제거 — `host/rd`로 통일. 검증: swiftc(host/app) + 전체 tests + SoT 체크 green.
+> `client/ide/vscode/`·`*.dmg` 등 6.9G 빌드산출물은 중첩 `.gitignore`가 자동 무시.
 
 ## 2. shared/ — 단일 소스(SoT)
 
 | 디렉터리 | 계약 | 소비자 | 체크 |
 |----------|------|--------|------|
-| `shared/identity/` | 브랜드·컴포넌트 식별자·버전(독립) | Casks·ide/product.json·rs Cargo·host Config | `check-identity.sh` |
-| `shared/screen-protocol/` | WS/WebRTC 포트·프레임·입력채널·메시지 어휘 | rs(serve*.rs)·ide(extension·remote-desktop.js) | `check-screen-protocol.sh` |
+| `shared/identity/` | 브랜드·컴포넌트 식별자·버전(독립) | Casks·client/ide/product.json·host/rd Cargo·host/app Config | `check-identity.sh` |
+| `shared/screen-protocol/` | WS/WebRTC 포트·프레임·입력채널·메시지 어휘 | host/rd(serve*.rs)·client/ide(extension·remote-desktop.js) | `check-screen-protocol.sh` |
 | `shared/onboarding/` | role-aware 단계모델 | 웹 마법사·IDE walkthroughs | `check-onboarding.sh` |
 
-**build-time codegen:** `ide/remotepair-ext/generate-contracts.mjs`가 `shared/`를 읽어
-`ide/remotepair-ext/generated/contracts.json`을 생성(커밋). `remotepair-ext`는 이 생성물만
+**build-time codegen:** `client/ide/remotepair-ext/generate-contracts.mjs`가 `shared/`를 읽어
+`client/ide/remotepair-ext/generated/contracts.json`을 생성(커밋). `remotepair-ext`는 이 생성물만
 소비 → **ide/ self-contained**(standalone 빌드가 `../../shared` 불필요, subtree pull 안전).
 검증: `shared/check-ide-selfcontained.sh`.
 

@@ -2,7 +2,7 @@
 
 ## Status (as of scaffold delivery)
 
-**What is working now:** `client/remote-pair-editor` launches an unmodified
+**What is working now:** `client/cli/remote-pair-editor` launches an unmodified
 `code-server` process if it is already installed. The RemotePair web bridge can
 iframe `http://127.0.0.1:${EDITOR_PORT}` to show the editor tab.
 
@@ -167,9 +167,9 @@ Neither is implemented in this scaffold.
 | Item | Status |
 |---|---|
 | Fork created at `ghyeongl/code-server` | Done |
-| `client/remote-pair-editor` scaffold | Done — launches stock code-server if installed |
+| `client/cli/remote-pair-editor` scaffold | Done — launches stock code-server if installed |
 | install.sh wiring (LOCAL_BIN install) | Integration point — see below; not yet wired |
-| `remote-pair editor` subcommand | Integration point — not yet wired in `client/remote-pair` |
+| `remote-pair editor` subcommand | Integration point — not yet wired in `client/cli/remote-pair` |
 | EDITOR_PORT config default | Integration point — not yet in `config.sh` / CLIENT_KEYS |
 | Claude Code extension auto-install | Future work |
 | Layout patches (left-terminal/right-desktop) | Future work |
@@ -188,7 +188,7 @@ Neither is implemented in this scaffold.
    fi
    ```
 
-2. **`client/remote-pair`** — add `editor` subcommand that delegates to
+2. **`client/cli/remote-pair`** — add `editor` subcommand that delegates to
    `$LOCAL_BIN/remote-pair-editor "$@"`. Register it in the usage header as:
    ```
    remote-pair editor [start|status|stop] [<folder>]
@@ -202,7 +202,7 @@ Neither is implemented in this scaffold.
    Add `EDITOR_PORT` to `CLIENT_KEYS` array so `install.sh` writes it to
    `~/.remote-pair/client.env`.
 
-4. **Web bridge (`client/remote-pair-web`)** — the editor tab iframe should
+4. **Web bridge (`client/cli/remote-pair-web`)** — the editor tab iframe should
    point to `http://127.0.0.1:${EDITOR_PORT}`. The bridge should call
    `remote-pair-editor start <folder>` before serving the iframe URL, and
    proxy the status check to `remote-pair-editor status`.

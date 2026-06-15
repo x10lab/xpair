@@ -39,8 +39,8 @@ done
 #                           (구 id를 LIVE가 아니라 legacy 로 내려서 정리) + migrate_host_env 재도입
 #   2) Casks/*.rb         : cask token (remote-pair-host → remote-pair), app "RemotePair.app", version
 #   3) .github/workflows/release.yml : 릴리스 에셋 이름(RemotePairHost* → RemotePair*)
-#   4) Swift fallbacks    : host/RemotePairHost/*.swift 의 bundle-id/앱이름 fallback
-#   5) client/remote-pair : APP_NAME/BUNDLE_PREFIX fallback (현재는 dual-id 프로브로 양쪽 다 인식)
+#   4) Swift fallbacks    : host/app/*.swift 의 bundle-id/앱이름 fallback
+#   5) client/cli/remote-pair : APP_NAME/BUNDLE_PREFIX fallback (현재는 dual-id 프로브로 양쪽 다 인식)
 # 전체 레시피는 docs/future.md(올인원 섹션) / docs/requirements.md 참조.
 RP_ORG="${RP_ORG:-com.x10lab}"
 BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair-host}"
@@ -88,7 +88,7 @@ SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"
 
 # ── Repository root + role dirs (host/ client/ shared/ layout) ──
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLIENT_DIR="$REPO_ROOT/client"   # laptop-side artifacts: remote-pair CLI, launcher, Service, hangul-romanize
+CLIENT_DIR="$REPO_ROOT/client/cli"   # laptop-side artifacts: remote-pair CLI, launcher, Service, hangul-romanize
 HOST_DIR="$REPO_ROOT/host"       # computer-use machine: app sources, build scripts, approve rules, skills
 
 # Per-role persistence key groups (install writes only to its own file)

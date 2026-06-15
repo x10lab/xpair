@@ -14,7 +14,7 @@
 - **앱(`RemotePair.app`) = 권한 데몬만.** 책임은 정확히 셋이다: ① AX·SR(필요 시 FDA) grant를 designated requirement에 붙들고, ② patched tmux 서버(`tmux-aqua`)를 자기 자식으로 붙들어 권한을 상속시키고, ③ InputServer primitive(shot/click/key) 하나씩만 실행한다. 그 외 로직(설치/매핑/approve 판단/HTTP)은 앱에 **넣지 않는다**.
 - **CLI(`remote-pair`) = 두뇌이자 SSOT.** 폴더 매핑·세션 결정·approve 좌표·재시도·온보딩 흐름을 전부 CLI가 결정한다. CLI엔 TCC/AX 코드가 없다(앱에 위임).
 - **approve 경로**: `remote-pair approve`(CLI) → 트리거 파일 → 앱이 라우터(`remote-pair-approve-router.sh`)를 **자기 자식으로** 실행(권한 상속). claude/스킬은 "막히면 트리거"만 하고, 무엇을 어떻게 허용할지는 라우터가 정한다.
-- **마법사·웹 브리지도 CLI 레이어다.** 온보딩 웹(§1 온보딩, architecture.md §9)은 `remote-pair web`이 띄우는 별도 python3 프로세스이며, **앱에는 HTTP/WebSocket 서버를 절대 넣지 않는다.** 검증: `host/RemotePairHost/*.swift`에 소켓/HTTP 리스너가 없어야 한다(현재 InputServer는 파일 채널만 사용).
+- **마법사·웹 브리지도 CLI 레이어다.** 온보딩 웹(§1 온보딩, architecture.md §9)은 `remote-pair web`이 띄우는 별도 python3 프로세스이며, **앱에는 HTTP/WebSocket 서버를 절대 넣지 않는다.** 검증: `host/app/*.swift`에 소켓/HTTP 리스너가 없어야 한다(현재 InputServer는 파일 채널만 사용).
 - 왜: 권한 경계(앱)와 두뇌(CLI)를 분리해야 ① 앱을 최소 권한·최소 코드로 유지하고(공격면↓), ② CLI를 README 한 줄로 단일 설치하며(앱이 CLI를 강제 설치하지 않음), ③ GUI를 웹→네이티브로 바꿔도 권한 데몬을 안 건드린다.
 
 ### 0.2 상태의 단일 출처
@@ -23,7 +23,7 @@
 
 ### 0.3 GUI 시임(seam) 불변
 - 프론트엔드는 **끝까지 웹**(HTML/CSS/JS). "앱"이란 네이티브 껍데기(WKWebView 또는 Electron) + 네이티브 브리지일 뿐이다. localhost 웹 → standalone 앱으로 가도 **바뀌는 건 브리지 구현뿐**이고, **JSON API 계약과 SPA는 불변**이다.
-- 즉 `client/web/`의 SPA와 `/api/*` 계약이 교체 가능한 시임(seam)이다. 검증: 브리지를 python3 → Swift WKWebView로 바꿔도 `index.html`·API 응답 스키마가 그대로여야 한다.
+- 즉 `client/cli/web/`의 SPA와 `/api/*` 계약이 교체 가능한 시임(seam)이다. 검증: 브리지를 python3 → Swift WKWebView로 바꿔도 `index.html`·API 응답 스키마가 그대로여야 한다.
 
 ---
 
@@ -44,14 +44,14 @@
 ### 리네임 / 정체성 통일 (M1, v0.5.0)
 - **앱 표시명·번들 id를 완전 통일한다**: `RemotePairHost` → `RemotePair`, `com.x10lab.remote-pair-host` → `com.x10lab.remote-pair`.
   - 왜: 사용자에게 노출되는 이름(메뉴바·System Settings·cask)과 내부 식별자가 `*-host` 접미사로 갈라져 혼란. 단일 브랜드로 통일.
-  - 검증: `shared/config.sh`의 `APP_NAME=RemotePair`·`BUNDLE_PREFIX=com.x10lab.remote-pair`(기본값), `host/RemotePairHost/Config.swift`의 `BUNDLE_ID` 폴백이 `com.x10lab.remote-pair`. (이미 적용됨 — §4 참조)
+  - 검증: `shared/config.sh`의 `APP_NAME=RemotePair`·`BUNDLE_PREFIX=com.x10lab.remote-pair`(기본값), `host/app/Config.swift`의 `BUNDLE_ID` 폴백이 `com.x10lab.remote-pair`. (이미 적용됨 — §4 참조)
 - **TCC 재grant는 1회로 묶는다**: designated requirement = identifier + leaf(cert)인데, bundle id 변경과 cert 전환(33849F → 898E32)을 **동시에** 하므로 두 변화가 한 번에 grant를 무효화한다 → v0.5.0 한 릴리스에서 **사용자 재grant 1회**로 끝낸다. 이후엔 grant 유지.
   - 검증: 업그레이드 후 `RemotePair`(새 이름)를 AX/SR ON → `launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair` → `remote-pair status`가 `AX ✓ SR ✓`.
 - **cask 토큰 전환**: `remote-pair-host` → `remote-pair`(신규 cask). 사용자 액션: `brew uninstall --cask remote-pair-host && brew install --cask remote-pair`.
   - 검증: `Casks/remote-pair.rb` 존재, `Casks/remote-pair-host.rb` 부재(이미 적용됨).
 - **전환기 dual-id 프로빙**: client CLI는 새/옛 bundle id·앱 이름을 **둘 다** 프로빙해, 아직 마이그레이션 안 된 호스트도 status/doctor/host에서 false-negative가 안 나게 한다.
-  - 검증: `client/remote-pair`의 `LEGACY_BUNDLE`/`LEGACY_APP` 폴백, `tests/t_09_app_resolution.sh`의 dual-id 케이스.
-- **소스 디렉터리명은 이번엔 유지**(deferred): `host/RemotePairHost/`와 Swift 코멘트의 `RemotePairHost` 표기는 빌드 산출물·식별자엔 영향이 없어 후속 정리로 미룬다. → [future.md](future.md).
+  - 검증: `client/cli/remote-pair`의 `LEGACY_BUNDLE`/`LEGACY_APP` 폴백, `tests/t_09_app_resolution.sh`의 dual-id 케이스.
+- **소스 디렉터리 정리 완료**(이전 deferred): `host/RemotePairHost/`→`host/app/`, `client/*`→`client/cli/`, `rs/`→`host/rd/`, `ide/`→`client/ide/`로 역할×위치 재배치. 빌드 산출물·식별자엔 영향 없음(swiftc·tests·SoT 체크로 검증). Swift 코멘트의 `RemotePairHost` 표기는 무해해 잔류. → [docs/monorepo-structure.md](monorepo-structure.md).
 
 ### 권한 / TCC
 - **AX·SR 필수, FDA 권장**(헤드리스 폴더 프롬프트가 세션을 멈추는 것 방지). FDA 권한을 실제로 쓰는 건 RemotePair 로직이 아니라 그 안의 `claude` 세션.
@@ -84,10 +84,10 @@
 **무엇**: `remote-pair web`이 띄우는 localhost 웹 마법사가 첫 설치를 끝까지 안내한다. 단계: ① 역할 선택(host/client/both) → ② 권한(AX/SR/FDA를 하나씩, 라이브 감지 + Next 스텝) → ③ TCC 재grant 안내(필요할 때만) → ④ SSH 점검 → ⑤ 폴더 매핑 → ⑥ Syncthing 헬스 → ⑦ 검증(doctor).
 **왜**: 현재 온보딩이 CLI 프롬프트(`remote-pair onboard`)·물리 화면 권한 토글·SSH 키 셋업으로 흩어져 있어, 처음 쓰는 사람이 "다음에 뭘 하지"를 모른다. 웹 마법사가 라이브 상태를 보여주며 한 흐름으로 묶는다.
 
-> **구현 상태(2026-06-13)**: 구현됨. `client/remote-pair-web`(python3 stdlib 브리지)·`client/web/`(SPA) 완성. architecture.md §9의 API 계약 전량 구현. 리네임·bundle id 통일(v0.5.0 계획/예정 — 현재 출하 정체성은 `RemotePairHost`/`com.x10lab.remote-pair-host` 유지). → architecture.md §9.
+> **구현 상태(2026-06-13)**: 구현됨. `client/cli/remote-pair-web`(python3 stdlib 브리지)·`client/cli/web/`(SPA) 완성. architecture.md §9의 API 계약 전량 구현. 리네임·bundle id 통일(v0.5.0 계획/예정 — 현재 출하 정체성은 `RemotePairHost`/`com.x10lab.remote-pair-host` 유지). → architecture.md §9.
 
 **어떻게 / 검증**:
-- 브리지는 `client/remote-pair-web`(python3 stdlib, 외부 의존 0). SPA는 `client/web/`(빌드·npm 불필요).
+- 브리지는 `client/cli/remote-pair-web`(python3 stdlib, 외부 의존 0). SPA는 `client/cli/web/`(빌드·npm 불필요).
 - 브리지는 **얇은 HTTP↔CLI 어댑터**다: `remote-pair` CLI에 shell-out + `status.json` 읽기만 한다. **설치/권한/approve 로직을 재구현하지 않는다**(불변식 §0.1). 검증: `tests/test_remote_pair_web.py`(브리지 단위 테스트), 그리고 브리지 소스에 설치 로직 부재.
 - 권한은 앱이 토글 못하므로(SIP), 마법사는 `POST /api/permissions/open {pane}`으로 **설정창만 연다**. 적용 여부는 `GET /api/status`(status.json)를 ~1.5초 폴링해 **앱 재시작 없이 ~2초 내** 반영.
 - 재grant 필요 여부는 `GET /api/regrant`가 현재 bundle id를 신/구 비교해 판단한다.
@@ -126,7 +126,7 @@
 - **보류 상태**. v0 = 기존 screencapture/InputServer 채널 재사용 또는 macOS 내장 VNC(화면공유). v1 = WebRTC(ScreenCaptureKit + VideoToolbox HW 인코딩, Input Monitoring 권한 추가).
 - 라이선스 주의: RustDesk는 AGPL-3.0이라 한 작업물로 묶으면 전염 → §올인원 오케스트레이션 규칙을 따른다.
 
-> **구현 상태(2026-06-13)**: 스캐폴드. `client/remote-pair-desktop`이 macOS Screen Sharing(VNC) arm's-length 런처(open/check/help 서브커맨드)를 구현하고, 브리지 `/api/desktop/open`이 이를 호출. 인-브라우저 스트리밍(WebRTC)은 스파이크 단계. → architecture.md §10-5.
+> **구현 상태(2026-06-13)**: 스캐폴드. `client/cli/remote-pair-desktop`이 macOS Screen Sharing(VNC) arm's-length 런처(open/check/help 서브커맨드)를 구현하고, 브리지 `/api/desktop/open`이 이를 호출. 인-브라우저 스트리밍(WebRTC)은 스파이크 단계. → architecture.md §10-5.
 
 ### 올인원 오케스트레이션 (후순위)
 **무엇**: RemotePair가 베스트 OSS를 **설치·구성·실행만** 시키는 "지휘자"가 된다. 소스는 안 건드리고 컴포넌트를 오케스트레이션한다(저결합 §0.1 유지).
@@ -160,7 +160,7 @@
 - 왜 웹 셸: GUI 시임(§0.3)을 그대로 재사용 — 웹 마법사가 쓰는 JSON API/127.0.0.1 패턴 위에 셸·에디터를 얹어, 나중에 네이티브 껍데기로 포팅할 때 프론트가 불변.
 
 > **구현 상태(2026-06-14)**:
-> - **M3 터미널 탭**: 구현됨. `client/web/`(xterm.js SPA)이 `/api/term/*`을 통해 SSH 경유 `capture-pane`/`send-keys`로 tmux-aqua 세션에 연결. alt-screen 한계(vim·htop 등 full-screen 앱은 그대로 캡처 안 됨)는 알려진 제약. → architecture.md §10-2.
+> - **M3 터미널 탭**: 구현됨. `client/cli/web/`(xterm.js SPA)이 `/api/term/*`을 통해 SSH 경유 `capture-pane`/`send-keys`로 tmux-aqua 세션에 연결. alt-screen 한계(vim·htop 등 full-screen 앱은 그대로 캡처 안 됨)는 알려진 제약. → architecture.md §10-2.
 > - **M4 IDE 프론트엔드**: **G001–G008 전부 구현·검증 완료**. VSCodium 포크(`remotepair-ide`)로 피벗. dev-CDP + 브랜드 빌드(m4, 7회) + 원격 E2E(gh-mac-m1 aqua tmux 소켓 → REMOTEPAIR_E2E_OK) 검증 완료. 남은 작업은 `vscode/src` 변경의 `patches/` 캡처(rebase-safety)뿐. 상세는 §1 IDE Frontend 참조. → `.omc/ultragoal/`
 
 ### IDE Frontend (RemotePair IDE) — M4 세부 사양
@@ -218,7 +218,7 @@
 
 권위 스펙: `remotepair-ide/.omc/specs/deep-interview-browser-multiroot-favorites-ux.md`. 네 컴포넌트:
 
-- **C1 — 루트/매핑 추가 UX (mount-first)**: Browser 폴더 리스트 *아래* 오프셋 버튼 "Add Root/Mapping"(맵 없으면 빈 공간에 동일 버튼, new-folder와 구분되는 아이콘). 클릭 → 호스트 폴더 지정 → **mount-first**: `remote-pair mount`(SMB 기본=맥 내장·커널확장 불필요; SSHFS 옵션 — `docs/m-mount.md`, 런처 `client/remote-pair-mount` 완성)로 마운트 → 마운트포인트(`~/.remote-pair/mounts/...`)를 FOLDER_MAP으로 가리켜 루트 추가. SMB/SSHFS는 실제 OS 마운트라 **Finder에도 자동 노출**. Syncthing 복사동기화는 **legacy**(`SYNC_BACKEND` 기본을 syncthing→mount). row-1 타이틀의 'Add Mapping' 제거(단일 진입점). Browser 루트 = FOLDER_MAPS clientDir만(실행 인자로 열린 비-매핑 워크스페이스 폴더는 표시 안 함).
+- **C1 — 루트/매핑 추가 UX (mount-first)**: Browser 폴더 리스트 *아래* 오프셋 버튼 "Add Root/Mapping"(맵 없으면 빈 공간에 동일 버튼, new-folder와 구분되는 아이콘). 클릭 → 호스트 폴더 지정 → **mount-first**: `remote-pair mount`(SMB 기본=맥 내장·커널확장 불필요; SSHFS 옵션 — `docs/m-mount.md`, 런처 `client/cli/remote-pair-mount` 완성)로 마운트 → 마운트포인트(`~/.remote-pair/mounts/...`)를 FOLDER_MAP으로 가리켜 루트 추가. SMB/SSHFS는 실제 OS 마운트라 **Finder에도 자동 노출**. Syncthing 복사동기화는 **legacy**(`SYNC_BACKEND` 기본을 syncthing→mount). row-1 타이틀의 'Add Mapping' 제거(단일 진입점). Browser 루트 = FOLDER_MAPS clientDir만(실행 인자로 열린 비-매핑 워크스페이스 폴더는 표시 안 함).
 - **C2 — Favorites 뷰**: Browser 컨테이너 하단에 별도 뷰(기존 Explorer의 OUTLINE/TIMELINE처럼). 폴더 별표 → Favorites 등록(workspace+global 영속). 항목/'+' 클릭 → 그 폴더에서 **새 Sessions 터미널 시작**(`openSessionInFolder` 재사용) = 빠른 세션 런처.
 - **C3 — 폴더행 인라인 컨트롤**: 모든 폴더 행(루트+모든 하위폴더) 우측에 **호버 시** 별표(Favorite 토글) + '+'(여기서 새 세션). 파일 행엔 없음. `MenuId.ExplorerContext` group:'inline' + `ExplorerFolderContext`.
 - **C4 — Browser = 메타-컨테이너 + 2행 헤더**: Browser는 Sessions와 동일한 *상위* 컨테이너로 하위 컨테이너(Explorer/Search/Extensions/…)를 담는다. **Row-1 버튼 = 하위 컨테이너 라우터**: 클릭 시 Browser 내부 콘텐츠만 교체(현행처럼 전체 창을 덮는 글로벌 뷰렛 이동 ❌, 같은 Browser 프레임 유지). Row-2 = 활성 하위 컨테이너 컨트롤(Explorer면 동적 루트-라벨[클릭한 하위폴더가 속한 루트] + 네이티브 새파일/새폴더/새로고침/접기). **최대 난도 항목** — Explorer/Search/Extensions를 한 컨테이너의 내부-라우팅 하위뷰로 중첩하는 방법을 아키텍트가 확정(후보: View로 등록 후 가시성 토글 / 커스텀 라우터로 각 뷰렛 pane을 Browser body에 호스팅[Sessions 임베드 EditorPart 패턴] / 통합 프레임 유지 composite-swap).
@@ -303,12 +303,12 @@
 ### 해결됨
 - ~~**brew cask appdir 불일치**~~ — Homebrew cask 기본 위치 `/Applications`에 맞춰 통일. `config.sh` `APP_PATH`·Updater·Installer 폴백·Permissions 안내·README를 모두 `/Applications`로 변경. 앱 자기설치 LaunchAgent는 `Bundle.main` 실제 경로를 써서 원래도 무관.
 - ~~**메인테이너 문서 버전 표기 불일치**~~ — README "For maintainers"를 실제 릴리스/cask와 정합(현재 0.5.0). `host/build-host.sh`의 `VERSION` 단일 출처와 일치.
-- ~~**정체성 통일(리네임 + bundle id + cask 토큰)**~~ — 코드/cask는 적용 완료: `config.sh` 기본값 `RemotePair`/`com.x10lab.remote-pair`, `Config.swift` `BUNDLE_ID` 폴백, `Installer.swift` legacy-shed, `client/remote-pair` dual-id 프로빙, `Casks/remote-pair.rb`(옛 cask 부재). 남은 일은 사용자 마이그레이션 안내(README 반영됨)와 소스 디렉터리명 정리(deferred).
+- ~~**정체성 통일(리네임 + bundle id + cask 토큰)**~~ — 코드/cask는 적용 완료: `config.sh` 기본값 `RemotePair`/`com.x10lab.remote-pair`, `Config.swift` `BUNDLE_ID` 폴백, `Installer.swift` legacy-shed, `client/cli/remote-pair` dual-id 프로빙, `Casks/remote-pair.rb`(옛 cask 부재). 남은 일은 사용자 마이그레이션 안내(README 반영됨)와 소스 디렉터리명 정리(deferred).
 - ~~**cert 전환(33849F → 898E32)**~~ — 리네임과 v0.5.0에 묶어 처리(재grant 1회). `build-host.sh`가 v0.5.0~ 정체성 변경 + 재grant 필요를 명시.
 - ~~**클라 머신 호스트 자기설치·중복 인스턴스**~~ — `Installer.swift` legacy-shed가 옛 LaunchAgent bootout + 옛 .app 제거로 두 메뉴바 인스턴스 차단(gh-mac-m4 사고 재발방지, 커밋 1ffb3bd).
 
 ### 열린 항목
-- **4개 pre-existing 런처 테스트 실패** — `tests/run.sh` 결과 159 passed / 4 failed. 실패 항목: `t_04_target` `target/remote-host+--local→local`, `t_07_resilience` `s1/reach-fail-no-tailscale`·`s2/exit-node-set`, `t_06`(혹은 동치) `s4/dir-ssherr`. **근본 원인**: `--local` 강제 또는 원격 도달 실패로 로컬 폴백 경로를 탈 때, 머신에 RemotePair 호스트가 없으면(`ensure_local_host` 거짓) 런처가 `tmux-aqua new-session` 대신 **plain `tmux new`/`tmux attach`** 를 호출한다(`client/remote-pair-launch:277-290`). 테스트는 `tmux-aqua`/`new-session`을 기대하므로 실패. 설계상 "tmux-aqua 없는 머신엔 computer-use 없음"이 의도지만, 테스트 기대와 어긋나므로 (a) 로컬 폴백도 tmux-aqua를 우선 시도하도록 런처를 고치거나 (b) 테스트 기대를 현재 설계에 맞추는 결정이 필요.
+- **4개 pre-existing 런처 테스트 실패** — `tests/run.sh` 결과 159 passed / 4 failed. 실패 항목: `t_04_target` `target/remote-host+--local→local`, `t_07_resilience` `s1/reach-fail-no-tailscale`·`s2/exit-node-set`, `t_06`(혹은 동치) `s4/dir-ssherr`. **근본 원인**: `--local` 강제 또는 원격 도달 실패로 로컬 폴백 경로를 탈 때, 머신에 RemotePair 호스트가 없으면(`ensure_local_host` 거짓) 런처가 `tmux-aqua new-session` 대신 **plain `tmux new`/`tmux attach`** 를 호출한다(`client/cli/remote-pair-launch:277-290`). 테스트는 `tmux-aqua`/`new-session`을 기대하므로 실패. 설계상 "tmux-aqua 없는 머신엔 computer-use 없음"이 의도지만, 테스트 기대와 어긋나므로 (a) 로컬 폴백도 tmux-aqua를 우선 시도하도록 런처를 고치거나 (b) 테스트 기대를 현재 설계에 맞추는 결정이 필요.
 - **host hot-update 권한 상속 충돌 스파이크(M6 선행, ⚠️)** — 앱을 재시작해 무중단 업데이트하면 tmux 부모가 launchd로 reparent되어 AX 상속이 깨질 수 있다(`tmux-aqua`가 reparent를 막는 전제가 앱 교체 시 흔들림). M6 hot-update 구현 전에 **권한 상속이 유지되는지 스파이크**로 먼저 검증해야 한다.
 - **RustDesk AGPL arm's-length 검증** — Remote Desktop에 RustDesk를 쓸 경우, 자기 배포물에 링크·포함되지 않고 별도 프로세스(사용자 설치/런타임 다운로드)로 분리됐는지 확인. 상용 배포 전 법률 자문.
 - **code-server 포크 유지보수 비용** — 포크·vendoring + surgical 패치 모델은 업스트림 추종 비용이 든다. 패치 표면 최소화 + 업스트림 리베이스 전략을 M3 착수 시 확정.

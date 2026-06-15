@@ -12,7 +12,7 @@
 # 검증 대상/레퍼런스 경로 — repo 루트 기준 상대(어느 머신/CI 체크아웃 경로든 동작; 절대경로 하드코딩 금지)
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(cd "$_LIB_DIR/.." && pwd)"
-LAUNCHER_SRC="${LAUNCHER_SRC:-$_REPO_ROOT/client/remote-pair-launch}"
+LAUNCHER_SRC="${LAUNCHER_SRC:-$_REPO_ROOT/client/cli/remote-pair-launch}"
 REFERENCE_SRC="${REFERENCE_SRC:-${HOME_REAL:-$HOME}/.claude/bin/claude-iterm-launch}"
 
 # 집계 카운터

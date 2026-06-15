@@ -4,7 +4,7 @@ Mount-based file access is an **alternative** to Syncthing for the RemotePair fi
 Instead of syncing a local copy, the client mounts the host folder directly so there is a single
 source of truth — no sync daemon, no conflict files, no `.sync-conflict-*` clutter.
 
-**Status:** `client/remote-pair-mount` launcher is complete and works for both backends (SMB and
+**Status:** `client/cli/remote-pair-mount` launcher is complete and works for both backends (SMB and
 SSHFS mount/unmount/status). Wizard, config, and doctor wiring are a follow-up pass (see
 Integration Contract below).
 
@@ -130,7 +130,7 @@ In the `--role client` install block, alongside `remote-pair-launch` and `remote
 install_file "$CLIENT_DIR/remote-pair-mount" "$LOCAL_BIN/remote-pair-mount" 755
 ```
 
-### (c) `client/remote-pair` — add `mount` subcommand
+### (c) `client/cli/remote-pair` — add `mount` subcommand
 
 In the main CLI's subcommand dispatch (wherever `desktop` delegates to `remote-pair-desktop`),
 add:
@@ -141,7 +141,7 @@ mount|unmount) exec "$LOCAL_BIN/remote-pair-mount" "$@" ;;
 
 So `remote-pair mount ...` and `remote-pair unmount ...` delegate to the launcher.
 
-### (d) Onboarding wizard (`client/web` + `remote-pair-web`)
+### (d) Onboarding wizard (`client/cli/web` + `remote-pair-web`)
 
 In the folder-mapping / Syncthing step, add a "File access method" choice:
 
@@ -168,5 +168,5 @@ When `SYNC_BACKEND=mount`:
 
 | Path | Role |
 |---|---|
-| `client/remote-pair-mount` | Launcher script (mount/unmount/status/help, SMB + SSHFS) |
+| `client/cli/remote-pair-mount` | Launcher script (mount/unmount/status/help, SMB + SSHFS) |
 | `docs/m-mount.md` | This document |

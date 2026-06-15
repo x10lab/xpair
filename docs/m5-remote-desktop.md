@@ -19,7 +19,7 @@ client and server, not third-party software.
 
 ## v0 — macOS Screen Sharing (current, arm's-length)
 
-**Script:** `client/remote-pair-desktop`
+**Script:** `client/cli/remote-pair-desktop`
 
 The script opens `vnc://<REMOTE_HOST>` via macOS's built-in Screen Sharing app
 (`/System/Library/CoreServices/Screen Sharing.app`). No extra software is installed on either side.
@@ -48,7 +48,7 @@ Sharing. The response is fire-and-forget (HTTP 200 + `{"status":"launched"}`).
 
 ### Install
 
-`install.sh --role client` copies `client/remote-pair-desktop` to `$LOCAL_BIN/remote-pair-desktop`
+`install.sh --role client` copies `client/cli/remote-pair-desktop` to `$LOCAL_BIN/remote-pair-desktop`
 (mode 755) alongside `remote-pair` and `remote-pair-launch`.
 
 ---
@@ -89,7 +89,7 @@ acceptable for a status/monitoring view. For interactive control, v1 is needed.
 
 | Layer | Contract |
 |---|---|
-| `install.sh --role client` | Copies `client/remote-pair-desktop` → `$LOCAL_BIN/remote-pair-desktop` (755) |
+| `install.sh --role client` | Copies `client/cli/remote-pair-desktop` → `$LOCAL_BIN/remote-pair-desktop` (755) |
 | `remote-pair` CLI | `desktop` subcommand delegates to `remote-pair-desktop "$@"` |
 | Web bridge (`remote-pair-web`) | `POST /api/desktop/open` → runs `remote-pair-desktop open` |
 | Web SPA | "Remote Desktop" tab button calls the above endpoint |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-White-box unit tests for client/remote-pair-web (HTTP<->CLI bridge).
+White-box unit tests for client/cli/remote-pair-web (HTTP<->CLI bridge).
 python3 stdlib only — no pip dependencies.
 
 Run:
@@ -23,7 +23,7 @@ import urllib.error
 # SourceFileLoader directly so Python treats the file as plain source.
 import importlib.machinery
 
-_BRIDGE = pathlib.Path(__file__).resolve().parent.parent / "client" / "remote-pair-web"
+_BRIDGE = pathlib.Path(__file__).resolve().parent.parent / "client" / "cli" / "remote-pair-web"
 _loader = importlib.machinery.SourceFileLoader("rpw", str(_BRIDGE))
 spec = importlib.util.spec_from_loader("rpw", _loader)
 rpw = importlib.util.module_from_spec(spec)

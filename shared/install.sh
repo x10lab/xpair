@@ -223,7 +223,7 @@ if is_client; then
     say "[client] web bridge → $LOCAL_BIN/remote-pair-web"
     install_file "$CLIENT_DIR/remote-pair-web" "$LOCAL_BIN/remote-pair-web" 755
   else
-    warn "client/remote-pair-web not found — skipping web bridge install ('remote-pair web' unavailable)"
+    warn "client/cli/remote-pair-web not found — skipping web bridge install ('remote-pair web' unavailable)"
   fi
   if [ -d "$CLIENT_DIR/web" ]; then
     say "[client] web assets → $WEB_DIR"
@@ -232,7 +232,7 @@ if is_client; then
       rel="${src#"$CLIENT_DIR/web/"}"; install_file "$src" "$WEB_DIR/$rel"
     done < <(find "$CLIENT_DIR/web" -type f)
   else
-    warn "client/web not found — skipping web assets install (wizard UI unavailable)"
+    warn "client/cli/web not found — skipping web assets install (wizard UI unavailable)"
   fi
 
   # ── Web-tab launchers: editor (M4 code-server) + desktop (M5 Screen Sharing). manifest-recorded → 가역. ──
@@ -240,20 +240,20 @@ if is_client; then
     say "[client] editor launcher → $LOCAL_BIN/remote-pair-editor"
     install_file "$CLIENT_DIR/remote-pair-editor" "$LOCAL_BIN/remote-pair-editor" 755
   else
-    warn "client/remote-pair-editor not found — skipping ('remote-pair editor' unavailable)"
+    warn "client/cli/remote-pair-editor not found — skipping ('remote-pair editor' unavailable)"
   fi
   if [ -f "$CLIENT_DIR/remote-pair-desktop" ]; then
     say "[client] desktop launcher → $LOCAL_BIN/remote-pair-desktop"
     install_file "$CLIENT_DIR/remote-pair-desktop" "$LOCAL_BIN/remote-pair-desktop" 755
   else
-    warn "client/remote-pair-desktop not found — skipping ('remote-pair desktop' unavailable)"
+    warn "client/cli/remote-pair-desktop not found — skipping ('remote-pair desktop' unavailable)"
   fi
   # ── Mount-based file access (alternative to Syncthing — see docs/m-mount.md). manifest-recorded → 가역. ──
   if [ -f "$CLIENT_DIR/remote-pair-mount" ]; then
     say "[client] mount launcher → $LOCAL_BIN/remote-pair-mount"
     install_file "$CLIENT_DIR/remote-pair-mount" "$LOCAL_BIN/remote-pair-mount" 755
   else
-    warn "client/remote-pair-mount not found — skipping ('remote-pair mount' unavailable)"
+    warn "client/cli/remote-pair-mount not found — skipping ('remote-pair mount' unavailable)"
   fi
   svc_src="$CLIENT_DIR/Launch Remote Pair.workflow"
   svc_dst="$SERVICES_DIR/Launch Remote Pair.workflow"

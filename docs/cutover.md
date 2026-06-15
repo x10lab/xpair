@@ -40,7 +40,7 @@ login → LaunchAgent(KeepAlive) → RemotePairHost.app (메뉴바, AX+SR grante
 ---
 
 ## 2. 이번 리팩터가 바꾼 것 (전부)
-1. **앱 분리/확장**: `RemotePairNative/main.swift`(단일 150줄) → `host/RemotePairHost/*.swift` 8파일
+1. **앱 분리/확장**: `RemotePairNative/main.swift`(단일 150줄) → `host/app/*.swift` 8파일
    (Config / HostManager(tmux child) / ApproveManager(router child) / Sessions(조회·detach·kill) /
    Permissions(AX·SR 상태+설정창) / SettingsWindow / Updater(GitHub Releases) / AppDelegate / main).
    메뉴바: 동적 세션목록 → 세션 클릭 시 **Detach all / Kill 모달**, Grant Permissions, Settings, Check

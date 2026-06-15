@@ -1,6 +1,6 @@
 # remote-pair-launch ↔ claude-iterm-launch 동일성 감사
 
-신규 `client/remote-pair-launch` 가 레퍼런스 `~/.claude/bin/claude-iterm-launch` 의 모든 동작을 재현하는지(1:1 연결 모델) 항목별로 검증한 결과. 테스트 근거: `tests/t_*.sh` (총 116 assertion, fail 0).
+신규 `client/cli/remote-pair-launch` 가 레퍼런스 `~/.claude/bin/claude-iterm-launch` 의 모든 동작을 재현하는지(1:1 연결 모델) 항목별로 검증한 결과. 테스트 근거: `tests/t_*.sh` (총 116 assertion, fail 0).
 
 ## 동작 매핑표
 

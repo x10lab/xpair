@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# t_09_app_resolution — white-box: client/remote-pair app/identity resolution + web wiring.
+# t_09_app_resolution — white-box: client/cli/remote-pair app/identity resolution + web wiring.
 #
-# 검증 대상 (client/remote-pair):
+# 검증 대상 (client/cli/remote-pair):
 #   app_pid()       launchctl list 에서 CURRENT(com.x10lab.remote-pair-host) 와 FORWARD(com.x10lab.remote-pair)
 #                   라벨을 둘 다 인식(0.5 flip 대비 dual-id probing). 실패 시 pgrep 폴백.
 #                   ※ 현재 출하 정체성은 com.x10lab.remote-pair-host / RemotePairHost. FORWARD 는 0.5 통일 id.
@@ -19,7 +19,7 @@
 
 cd "$(dirname "$0")"; . ./lib.sh
 
-CLI_SRC="${CLI_SRC:-$_REPO_ROOT/client/remote-pair}"
+CLI_SRC="${CLI_SRC:-$_REPO_ROOT/client/cli/remote-pair}"
 
 # run_cli [args...] — 샌드박스 + MOCKBIN-on-PATH 로 remote-pair CLI 실행.
 # CLI 는 PATH 를 손대지 않으므로 여기서 MOCKBIN 을 prepend 해 mock 이 실 명령을 가린다.

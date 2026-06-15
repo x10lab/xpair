@@ -18,7 +18,7 @@ RemotePair 모노레포(`remote-pair` 코어 · `ide/` VSCodium 포크 · `rs/` 
 | `ide/remotepair-ext/package.json` | `version` == `versions.ide` (product.json엔 version 없음 — 앱 버전은 빌드시 RELEASE_VERSION 주입) |
 | `Casks/remote-pair-host.rb` | `version` == `versions.host` |
 | `rs/remote-pair-screen/Cargo.toml` | `version` == `versions.screen-engine` |
-| `host/RemotePairHost/Config.swift` | `BUNDLE_ID` 기본값에 `components.host.bundleId` 존재 |
+| `host/app/Config.swift` | `BUNDLE_ID` 기본값에 `components.host.bundleId` 존재 |
 
 ## 사용
 ```bash

@@ -7,7 +7,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 S="$HERE/steps.json"
 command -v jq >/dev/null || { echo "jq required"; exit 2; }
 
-APP="$ROOT/client/web/app.js"
+APP="$ROOT/client/cli/web/app.js"
 PKG="$ROOT/client/ide/remotepair-ext/package.json"
 MEDIA="$ROOT/client/ide/remotepair-ext/media"
 
