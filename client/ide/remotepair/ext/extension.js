@@ -15,6 +15,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const net = require("net");
+const onboardingBridge = require("./onboarding-bridge.js");
 
 // --- constants -------------------------------------------------------------
 
@@ -44,13 +45,110 @@ const TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before th
 // argv-safe: prevents an attacker-controlled env from injecting ssh options).
 const HOST_RE = /^[A-Za-z0-9._-]+$/;
 
+// --- logging (US-006) ------------------------------------------------------
+// Conforms to docs/logging.md: line format `[<ISO>] [<LEVEL>] [ide] [<session>] <msg>`,
+// file persist to ~/.remote-pair/logs/ide.log (mode 0700), rotate-on-open at 5 MB
+// (keep .1/.2, max 3 files), level threshold REMOTEPAIR_LOG > info, redaction before sink.
+
+const LOG_DIR = path.join(os.homedir(), ".remote-pair", "logs");
+const LOG_FILE = path.join(LOG_DIR, "ide.log");
+const LOG_COMP = "ide";
+const LOG_MAX_BYTES = 5 * 1024 * 1024; // rotate-on-open threshold
+const LOG_LEVELS = { trace: 0, debug: 1, info: 2, warn: 3, error: 4 };
+
+// File default = INFO (docs/logging.md §4). REMOTEPAIR_LOG env overrides (highest precedence
+// available to this self-contained ext; the IDE-setting tier is resolved in the workbench).
+function resolveLogThreshold() {
+  const raw = (process.env.REMOTEPAIR_LOG || "").trim().toLowerCase();
+  if (raw && raw in LOG_LEVELS) return LOG_LEVELS[raw];
+  return LOG_LEVELS.info;
+}
+const LOG_THRESHOLD = resolveLogThreshold();
+
+// Local-tz ISO-8601 with offset, second precision (e.g. 2026-06-15T10:45:16+0900).
+function logTimestamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const off = -d.getTimezoneOffset(); // minutes east of UTC
+  const sign = off >= 0 ? "+" : "-";
+  const abs = Math.abs(off);
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+    `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`
+  );
+}
+
+/**
+ * Redact secrets before any sink (docs/logging.md §6):
+ *  - $HOME prefix → '~'
+ *  - the REMOTE_HOST value → '<host>'
+ * Best-effort + never throws (a redaction failure must not lose the log line).
+ */
+function redact(msg) {
+  let s = String(msg);
+  try {
+    const home = os.homedir();
+    if (home && home.length > 1) {
+      s = s.split(home).join("~");
+    }
+    const host = readRemoteHost();
+    if (host && host.length > 1) {
+      s = s.split(host).join("<host>");
+    }
+  } catch (_e) {
+    // fall through with whatever masking succeeded
+  }
+  return s;
+}
+
+// rotate-on-open: run ONCE per process so a long-lived extension host doesn't
+// re-stat on every line. (The long-lived mid-run guard from §7 is the host
+// daemon / Rust serve loop's job, not this short-burst extension logger.)
+let logRotateChecked = false;
+function rotateOnOpen() {
+  if (logRotateChecked) return;
+  logRotateChecked = true;
+  try {
+    const st = fs.statSync(LOG_FILE);
+    if (st.size <= LOG_MAX_BYTES) return;
+    // shift live → .1 → .2 (keep max 3: live + .1 + .2).
+    try { fs.renameSync(LOG_FILE + ".1", LOG_FILE + ".2"); } catch (_e) {}
+    try { fs.renameSync(LOG_FILE, LOG_FILE + ".1"); } catch (_e) {}
+  } catch (_e) {
+    // no file yet (ENOENT) or stat failed → nothing to rotate.
+  }
+}
+
+function appendToLogFile(line) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+    rotateOnOpen();
+    fs.appendFileSync(LOG_FILE, line + "\n");
+  } catch (_e) {
+    // file persistence is best-effort; the OutputChannel still has the line.
+  }
+}
+
 // --- small utilities -------------------------------------------------------
 
 let outputChannel;
-function log(msg) {
+/**
+ * @param {string} msg
+ * @param {("trace"|"debug"|"info"|"warn"|"error")} [level="info"]
+ */
+function log(msg, level) {
+  const lvl = level && level in LOG_LEVELS ? level : "info";
+  const safe = redact(msg);
+  // OutputChannel keeps the full human-facing trail (unchanged behavior + level tag).
   if (!outputChannel) outputChannel = vscode.window.createOutputChannel("RemotePair");
-  const ts = new Date().toISOString();
-  outputChannel.appendLine(`[${ts}] ${msg}`);
+  const ts = logTimestamp();
+  outputChannel.appendLine(`[${ts}] [${lvl.toUpperCase()}] ${safe}`);
+  // File sink honors the resolved threshold (REMOTEPAIR_LOG > info).
+  if (LOG_LEVELS[lvl] >= LOG_THRESHOLD) {
+    const session = process.env.RP_SESSION || "-";
+    appendToLogFile(`[${ts}] [${lvl.toUpperCase()}] [${LOG_COMP}] [${session}] ${safe}`);
+  }
 }
 
 /** Read REMOTE_HOST from ~/.remote-pair/client.env (KEY=VALUE lines). */
@@ -973,7 +1071,115 @@ async function addRoot() {
   );
 }
 
+// --- show logs (US-006) ----------------------------------------------------
+
+/**
+ * RemotePair: Show Logs. Reveal the logs dir in the OS file manager, and offer to
+ * run `remote-pair logs --collect` (tar/gzip $LOG_DIR for a bug report) in a terminal.
+ */
+async function showLogs() {
+  // Ensure the dir exists so reveal doesn't fail on a never-logged client.
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+  } catch (e) {
+    log(`showLogs: mkdir failed: ${e && e.message ? e.message : e}`, "warn");
+  }
+  const dirUri = vscode.Uri.file(LOG_DIR);
+  // Reveal the logs dir in the OS file manager (Finder). revealFileInOS opens the
+  // enclosing folder with the target selected; passing the dir reveals its contents.
+  try {
+    await vscode.commands.executeCommand("revealFileInOS", dirUri);
+  } catch (e) {
+    log(`showLogs: revealFileInOS failed, falling back to openExternal: ${e && e.message ? e.message : e}`, "warn");
+    try {
+      await vscode.env.openExternal(dirUri);
+    } catch (e2) {
+      log(`showLogs: openExternal failed: ${e2 && e2.message ? e2.message : e2}`, "error");
+    }
+  }
+  // Offer to collect logs into a shareable tarball for a bug report.
+  const COLLECT = "Collect logs (--collect)";
+  const picked = await vscode.window.showInformationMessage(
+    "RemotePair logs are in ~/.remote-pair/logs. Collect them into a tarball for a bug report?",
+    COLLECT
+  );
+  if (picked === COLLECT) {
+    try {
+      const term = vscode.window.createTerminal("RemotePair — Collect Logs");
+      term.show(true);
+      // Staged with auto-execute: a read-only collect is safe to run on Enter.
+      term.sendText("remote-pair logs --collect", true);
+    } catch (e) {
+      log(`showLogs: collect terminal failed: ${e && e.message ? e.message : e}`, "error");
+    }
+  }
+}
+
 // --- activation -------------------------------------------------------------
+
+// --- onboarding webview (IDE-embedded client onboarding) --------------------
+// Hosts the React onboarding (built to onboarding-webview/dist) in a webview and bridges its
+// postMessage RPC to onboarding-bridge.js (the Node <-> remote-pair CLI layer). Per §0.1 the CLI is
+// the brain; this panel only relays { id, method, args } to a bridge handler and posts back the result.
+let _onboardingPanel = null;
+
+function onboardingHtml(webview, distUri) {
+  let html;
+  try {
+    html = fs.readFileSync(path.join(distUri.fsPath, "index.html"), "utf8");
+  } catch (e) {
+    return `<!doctype html><html><body style="font-family:sans-serif;padding:2rem">Onboarding build missing — run <code>npm run build</code> in onboarding-webview/ (${e && e.message ? e.message : e}).</body></html>`;
+  }
+  const base = webview.asWebviewUri(distUri).toString().replace(/\/+$/, "");
+  html = html.replace(/(src|href)="\.?\/?(assets\/[^"]+)"/g, (_m, attr, p) => `${attr}="${base}/${p}"`);
+  const csp =
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; ` +
+    `img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; ` +
+    `script-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource} data:; ` +
+    `connect-src ${webview.cspSource};">`;
+  html = html.replace(/<head>/i, `<head>${csp}`);
+  return html;
+}
+
+function openOnboarding(extensionUri) {
+  if (_onboardingPanel) {
+    try { _onboardingPanel.reveal(vscode.ViewColumn.Active, false); } catch (_e) {}
+    return _onboardingPanel;
+  }
+  const distUri = vscode.Uri.joinPath(extensionUri, "onboarding-webview", "dist");
+  const panel = vscode.window.createWebviewPanel(
+    "remotepair.onboarding",
+    "RemotePair Onboarding",
+    { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [distUri] }
+  );
+  _onboardingPanel = panel;
+  panel.webview.html = onboardingHtml(panel.webview, distUri);
+
+  panel.webview.onDidReceiveMessage(async (msg) => {
+    if (!msg || typeof msg !== "object") return;
+    const { id, method, args } = msg;
+    if (method === "complete") {
+      try { panel.dispose(); } catch (_e) {}
+      return;
+    }
+    // Own-property guard: only the bridge's own handlers are callable (not inherited Object.prototype
+    // methods like constructor/toString), so { method } cannot reach arbitrary functions.
+    const fn = Object.prototype.hasOwnProperty.call(onboardingBridge, method) ? onboardingBridge[method] : undefined;
+    if (typeof fn !== "function") {
+      panel.webview.postMessage({ id, error: `unknown method: ${method}` });
+      return;
+    }
+    try {
+      const result = await fn.apply(onboardingBridge, Array.isArray(args) ? args : []);
+      panel.webview.postMessage({ id, result });
+    } catch (e) {
+      panel.webview.postMessage({ id, error: String(e && e.message ? e.message : e) });
+    }
+  });
+  panel.onDidDispose(() => { _onboardingPanel = null; });
+  return panel;
+}
 
 function activate(context) {
   log("RemotePair activating…");
@@ -1045,6 +1251,7 @@ function activate(context) {
   // 4) Commands.
   context.subscriptions.push(
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
+    vscode.commands.registerCommand("remotepair.openOnboarding", () => openOnboarding(context.extensionUri)),
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
@@ -1082,8 +1289,20 @@ function activate(context) {
     ),
     vscode.commands.registerCommand("remotepair.openSettings", () => {
       vscode.commands.executeCommand("workbench.action.openSettings");
-    })
+    }),
+    vscode.commands.registerCommand("remotepair.showLogs", () =>
+      showLogs().catch((e) => {
+        log(`showLogs: ${e && e.message ? e.message : e}`, "error");
+        vscode.window.showErrorMessage(`RemotePair: Show Logs failed. ${e && e.message ? e.message : e}`);
+      })
+    )
   );
+
+  // First-run: open the client onboarding once (guarded by globalState so it does not reopen each launch).
+  if (!context.globalState.get("remotepair.onboarding.shown")) {
+    context.globalState.update("remotepair.onboarding.shown", true);
+    try { openOnboarding(context.extensionUri); } catch (e) { log(`onboarding first-run open error: ${e}`); }
+  }
 
   // C1.D4 — Reconcile Browser roots on activation so a non-mapped launch-arg folder
   // (the phantom `/tmp/rp-test-folder`) is removed even before the user opens the Browser.

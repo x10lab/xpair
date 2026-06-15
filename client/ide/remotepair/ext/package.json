@@ -66,6 +66,15 @@
         "command": "remotepair.launchRemoteClaude",
         "title": "RemotePair: Launch Remote Claude (mosh+tmux+claude)",
         "icon": "$(play)"
+      },
+      {
+        "command": "remotepair.showLogs",
+        "title": "RemotePair: Show Logs",
+        "icon": "$(output)"
+      },
+      {
+        "command": "remotepair.openOnboarding",
+        "title": "RemotePair: Open Onboarding"
       }
     ],
     "menus": {
