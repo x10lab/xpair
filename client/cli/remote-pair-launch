@@ -33,6 +33,11 @@ MOSH_SERVER="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}"
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
 
+# Source the shared logger; no-op fallback for partially-updated clients.
+# shellcheck disable=SC1090
+[ -f "$RP_DIR/bin/logging.sh" ] && . "$RP_DIR/bin/logging.sh"
+type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; }
+
 # ── args ──
 TARGET_PREF=""; FRESH=0; RP_YES="${RP_YES:-0}"; DIR_ARG=""
 while [ $# -gt 0 ]; do case "$1" in
@@ -270,9 +275,11 @@ launch_local() {
       { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
       tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T"
     fi   # RemotePairHost subtree → computer-use
-    # host-side session-lifecycle log (local==host here; correlation id = session name)
-    _rotate_log "$RP_DIR/logs/remote-pair.log"
-    printf '%s SESSION: %s %s (client=%s local)\n' "$(date '+%FT%T%z')" "$([ "$NEED_CREATE" = 1 ] && echo created || echo attached)" "$SESS" "$LOCAL_HOST" >> "$RP_DIR/logs/remote-pair.log" 2>/dev/null || true
+    # host-side session-lifecycle log (local==host here; correlation id = session name).
+    # Export RP_SESSION so child claude processes stamp the same id in their log lines.
+    export RP_SESSION="$SESS"
+    # Route through rp_log host (uses shared lock $LOG_DIR/.remote-pair.log.lock, coordinated with Swift).
+    rp_log info host "SESSION: $([ "$NEED_CREATE" = 1 ] && echo created || echo attached) $SESS (client=$LOCAL_HOST local)"
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
@@ -458,10 +465,19 @@ if [ "\$NEED_CREATE" = 1 ]; then
   { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
   tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c '${HOST_DIR}' "bash \$T"
 fi
-# host-side session-lifecycle log (correlation id = session name; records which client attached)
-RPLOG="\$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "\$(dirname "\$RPLOG")"
-sz=\$(stat -f %z "\$RPLOG" 2>/dev/null || echo 0); [ "\$sz" -gt 5000000 ] && mv -f "\$RPLOG" "\$RPLOG.1" 2>/dev/null || true
-printf '%s SESSION: %s %s (client=%s)\n' "\$(date '+%FT%T%z')" "\$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached)" "\$SESSION" "${LOCAL_HOST}" >> "\$RPLOG"
+# host-side session-lifecycle log (correlation id = session name; records which client attached).
+# Use shared logger (shared lock $LOG_DIR/.remote-pair.log.lock, coordinated with Swift) if installed;
+# fall back to direct append for hosts without logging.sh yet.
+export RP_SESSION="\$SESSION"
+_rp_log="\$HOME/.remote-pair/bin/logging.sh"
+if [ -f "\$_rp_log" ]; then
+  . "\$_rp_log"
+  rp_log info host "SESSION: \$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached) \$SESSION (client=${LOCAL_HOST})"
+else
+  RPLOG="\$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "\$(dirname "\$RPLOG")"
+  sz=\$(stat -f %z "\$RPLOG" 2>/dev/null || echo 0); [ "\$sz" -gt 5000000 ] && mv -f "\$RPLOG" "\$RPLOG.1" 2>/dev/null || true
+  printf '%s SESSION: %s %s (client=%s)\n' "\$(date '+%FT%T%z')" "\$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached)" "\$SESSION" "${LOCAL_HOST}" >> "\$RPLOG"
+fi
 printf '__SESSION__:%s\n' "\$SESSION"
 EOF
 )
@@ -475,6 +491,8 @@ printf '%s\n' "$SSH_OUT" | grep -v '^__SESSION__:' || true
 ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | sed 's/^__SESSION__://')"
 [ "$SSH_RC" -ne 0 ] && die "remote setup failed (exit=$SSH_RC)" "$SSH_RC"
 [ -z "$ACTUAL_SESSION" ] && die "failed to extract remote session name" 12
+# Export RP_SESSION so any child processes on this side stamp the same correlation id.
+export RP_SESSION="$ACTUAL_SESSION"
 
 # Phase 2: attach via mosh (UDP-based — resilient to tmux freezes / network hiccups).
 # Fall back to ssh -t if mosh is unavailable.
