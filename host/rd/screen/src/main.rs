@@ -2,7 +2,7 @@
 //! Remote Desktop (the v1 high-performance path).
 //!
 //! STATUS: v1a (WS+JPEG software path). The `capture`/`info` paths prove the
-//! screen-capture foundation works license-clean (no RustDesk/AGPL anywhere in
+//! screen-capture foundation works license-clean (permissive deps only; AGPL only for our own crate,
 //! the dependency tree — see `deny.toml`). The `serve` path is now a REAL
 //! continuous-capture WebSocket JPEG frame server: it captures the primary
 //! display at a target fps, JPEG-encodes each frame, and pushes the bytes as

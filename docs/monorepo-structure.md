@@ -3,7 +3,7 @@
 > **이 문서가 현행 구조의 단일 진실(SoT)이다.** `docs/ide-merge-*.md`는 통합 *전* 계획이며,
 > 본 문서는 실제 실행 결과를 반영한다.
 > 브랜치: `refactor/monorepo` · 대상: `remote-pair`(코어) · `remotepair-ide`(IDE) · `remotepair-rs`(엔진).
-> **제외:** `-ide2`(RustDesk 임베드 트랙 — 별개, 병렬 진행).
+> 화면공유는 순수 자체 엔진(`host/rd/screen`). 외부 임베드 실험은 별개 레포(본 레포 대상 아님).
 
 ## 1. 구성 — 3 형제 레포 → 단일 모노레포
 

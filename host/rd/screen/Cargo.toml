@@ -9,7 +9,7 @@ publish = false
 
 # ---------------------------------------------------------------------------
 # DEPENDENCY LICENSE POLICY: PERMISSIVE ONLY (MIT / Apache-2.0 / BSD / ISC).
-# RemotePair is Apache-2.0. RustDesk is AGPL-3.0 and MUST NOT be a dependency.
+# RemotePair is AGPL-3.0-or-later; deps stay permissive (no copyleft) to keep dual-licensing.
 # The AGPL firewall is enforced by deny.toml (cargo-deny check licenses).
 # ---------------------------------------------------------------------------
 [dependencies]
@@ -24,7 +24,7 @@ publish = false
 #   * xcap (Apache-2.0)      — CHOSEN. Simple synchronous one-shot API
 #                              (`Monitor::all()` -> `monitor.capture_image()`),
 #                              no xcodebuild dependency, built cleanly on
-#                              macOS arm64, and is Apache-2.0 (same as RemotePair).
+#                              macOS arm64, and is Apache-2.0 (permissive).
 # xcap re-exports the `image` crate, so encode/decode versions stay in lockstep.
 xcap = "0.9.6"
 # CLI subcommands. MIT/Apache-2.0.

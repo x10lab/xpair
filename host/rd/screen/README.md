@@ -123,34 +123,25 @@ PNG with no version skew.
 
 ---
 
-## License rationale — the AGPL firewall
+## License — first-party engine, permissive deps only
 
-RemotePair is **Apache-2.0**. The obvious "just use RustDesk" shortcut is a
-**license trap**: RustDesk (and its capture crate `scrap`, server, and
-`hbb_common`) are **AGPL-3.0**. Linking AGPL code into an Apache-2.0 product, or
-shipping it as a network service, would force the whole product under AGPL. So:
-
-- **No RustDesk. No AGPL. No GPL. No LGPL-only crates.** Ever.
-- Every dependency is **MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode / MPL-2.0**.
-- The policy is enforced mechanically by **`cargo-deny`** (`deny.toml`):
-  - `[licenses] allow = [...]` — permissive allow-list; anything else fails.
-  - `[bans] deny = [...]` — explicitly bans `rustdesk`, `rustdesk-server`,
-    `scrap`, `hbb_common` by name as belt-and-suspenders.
+RemotePair is **AGPL-3.0-or-later** (dual-licensable — we own the copyright).
+This is pure first-party code. To keep the dual-licensing option, every
+dependency stays **permissive** (MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode /
+MPL-2.0); AGPL is allowed only for our own crate. The policy is enforced
+mechanically by **`cargo-deny`** (`deny.toml`):
 
 ```sh
 cargo install cargo-deny    # one-time (slow)
-cargo-deny check licenses   # the AGPL gate
+cargo-deny check licenses   # permissive-only allow-list (own crate excepted)
 cargo-deny check            # licenses + bans + sources + advisories
 ```
 
-> **Note:** `cargo-deny` is **not** required to build. It is the CI gate. A manual
-> audit of the locked 289-crate tree (via `cargo metadata`) confirms: zero
-> viral-GPL-only deps, zero RustDesk-family crates, zero unlicensed crates. The
-> only GPL token in the tree is `r-efi`'s `MIT OR Apache-2.0 OR LGPL-2.1-or-later`,
-> which resolves to a permissive option.
-
-Do **not** confuse `scap` (MIT, the crate we evaluated) with `scrap` (AGPL,
-RustDesk's capture crate). The latter is banned in `deny.toml`.
+> **Note:** `cargo-deny` is **not** required to build — it is the CI gate. A manual
+> audit of the locked crate tree (via `cargo metadata`) confirms permissive-only
+> dependencies; the only GPL token is `r-efi`'s `MIT OR Apache-2.0 OR
+> LGPL-2.1-or-later`, which resolves to a permissive option. Capture uses
+> `scap` (MIT).
 
 ---
 

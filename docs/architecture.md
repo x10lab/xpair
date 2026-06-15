@@ -266,7 +266,7 @@ client(gh-mac-m4)
 - 브리지의 `POST /api/desktop/open`이 `remote-pair-desktop open`에 shell-out.
 - **v0.5 계획**: Screen Recording primitive(`InputServer.shot`)를 재사용해 저지연 캡처 스트리밍 스파이크.
 - **v1 계획**: ScreenCaptureKit + VideoToolbox HW 인코딩 기반 WebRTC. Input Monitoring 권한 추가 필요.
-- RustDesk(AGPL-3.0) 사용 시 arm's-length 별도 프로세스 필수(requirements.md §라이선스 매트릭스 참조).
+- 화면공유 엔진은 순수 자체코드(`host/rd/screen`, AGPL-3.0-or-later, 허용형 deps만).
 - **현재 상태: 스캐폴드** — VNC launcher 트리거까지 구현. 인-브라우저 스트리밍(WebRTC)은 스파이크 단계.
 
 ---

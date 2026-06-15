@@ -43,14 +43,14 @@
 - 기존 호스트는 이 버전으로 업그레이드할 때 **AX/SR 재grant 1회**만 필요(cert + bundle id 변경이 동시 — 이후 grant 유지). README와 cask caveats에 명시 예정.
 - cask 토큰도 `remote-pair-host` → `remote-pair`로 전환 예정. 사용자 액션(0.5 출하 시): `brew uninstall --cask remote-pair-host && brew install --cask remote-pair`.
 
-## 7-1. 올인원 "지휘자" — Syncthing(e2e) + Tailscale/WireGuard + RustDesk (나중)
+## 7-1. 올인원 "지휘자" — Syncthing(e2e) + Tailscale/WireGuard + 자체 화면엔진
 RemotePair를 베스트 OSS들을 *오케스트레이션*하는 단일 셋업으로. 기존 저결합 철학(앱=권한데몬, CLI=두뇌, sync는 Syncthing에 위임) 그대로 — RemotePair는 컴포넌트를 **설치·구성·실행**만 시키고 소스는 안 건드린다.
 
 - **Syncthing e2e 매핑**: 현재는 사용자가 Syncthing 폴더를 수동 구성. → RemotePair가 **양쪽(host/client) Syncthing REST API로 폴더를 자동 추가 + `.stignore`(.git, .claude/projects 제외) 주입**해서 폴더 매핑을 e2e로 셋업. 선택적으로 `~/.claude` 동기화도 같은 메커니즘으로(현재 git 백본 opt-in 대체/보완). `.git`·기기-로컬 상태 제외 규칙은 유지([[syncthing-git-exclude]] 원칙).
 - **Tailscale/WireGuard 연결**: host↔client zero-config 도달성(수동 SSH/포트포워딩 제거). 온보딩 마법사가 Tailscale 설치/로그인 + 노드 확인까지 안내. (BSD-3/MIT — 자유 번들)
-- **RustDesk(또는 VNC/WebRTC) Remote Desktop**: M5와 연결.
+- **Remote Desktop(자체 `host/rd/screen` 엔진)**: M5와 연결.
 
-**라이선스 매트릭스(중요)**: Syncthing=MPL-2.0(consume/번들 OK, 코드 의무전파 X), Tailscale=BSD-3·WireGuard=MIT(퍼미시브), **RustDesk=AGPL-3.0(강카피레프트+네트워크조항)**. RemotePair는 Apache-2.0이고 Apache→AGPL은 단방향 호환이라, **RustDesk를 한 작업물로 묶으면 RemotePair 전체가 AGPL로 전염**된다. → RustDesk는 반드시 **arm's-length 별도 프로세스**(사용자 설치/런타임 다운로드, 자기 배포물에 링크·포함 X)로 두어 mere-aggregation 유지, 또는 macOS 화면공유/ScreenCaptureKit-WebRTC(Apple, 라이선스 0)로 대체. 상용 배포 전 법률 확인 권장.
+**라이선스**: RemotePair는 **AGPL-3.0-or-later**(순수 자체코드). 오케스트레이션으로 consume하는 OSS는 허용형/약카피레프트(Syncthing=MPL-2.0, Tailscale=BSD-3, WireGuard=MIT — 번들 OK). 화면공유는 외부 스택 대신 자체 `host/rd/screen` 엔진(허용형 deps만). 상용 배포 전 법률 확인 권장.
 
 ## 8. M6 — 2-레벨 hot-update + AX 상속 스파이크 (⚠️ 스파이크 선행 필수)
 

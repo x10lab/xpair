@@ -10,8 +10,8 @@ Cursor 같은 데스크톱 IDE. 핵심 동인은 **Claude Code + OpenAI Codex VS
 - Claude Code = Open VSX `Anthropic/claude-code` 2.1.177 ✓
 - OpenAI(Codex 포함) = Open VSX `openai/chatgpt` 26.5609.30741 ✓
 - open Remote-SSH = Open VSX `jeanp413/open-remote-ssh` 0.1.2 ✓
-- noVNC MPL-2.0 · websockify LGPL/BSD (번들 OK) · RustDesk=AGPL(**임베드 금지**, 퍼미시브 Rust 크레이트만)
-- RemotePair=Apache-2.0 · 빌드엔 **node 22.22.1 nvm 핀 필수**(시스템 node 25 아님)
+- noVNC MPL-2.0 · websockify LGPL/BSD (번들 OK) · 화면공유=자체 `host/rd/screen`(AGPL-3.0, 허용형 Rust 크레이트만)
+- RemotePair=AGPL-3.0-or-later · 빌드엔 **node 22.22.1 nvm 핀 필수**(시스템 node 25 아님)
 
 ## 불변식
 - host `.app` = 권한 데몬만(서버 안 넣음). CLI/브리지 = 두뇌. approve = CLI→라우터(앱 자식). IDE는 필요 시 CLI에 shell-out.

@@ -14,9 +14,9 @@
 # REMOTE_HOST comes from ~/.remote-pair/client.env (set by 'remote-pair config set host <alias>')
 #   or from the environment. It must be an ssh alias or hostname resolvable on the client.
 #
-# License note: RustDesk is AGPL-3.0; we are Apache-2.0 — bundling RustDesk would infect the project.
+# License: RemotePair is AGPL-3.0-or-later, pure first-party code (no external AGPL deps).
 #   macOS Screen Sharing (vnc://) is an OS-provided client: zero dependency, zero licensing risk.
-#   Any future RustDesk usage must remain a separate, user-installed process (arm's length only).
+#   Screen sharing uses our own host/rd/screen engine.
 #
 # Roadmap (see docs/m5-remote-desktop.md):
 #   v0   — this script (macOS Screen Sharing, arm's-length)

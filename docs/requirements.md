@@ -124,16 +124,16 @@
 
 ### Remote Desktop (M5, 보류)
 - **보류 상태**. v0 = 기존 screencapture/InputServer 채널 재사용 또는 macOS 내장 VNC(화면공유). v1 = WebRTC(ScreenCaptureKit + VideoToolbox HW 인코딩, Input Monitoring 권한 추가).
-- 라이선스 주의: RustDesk는 AGPL-3.0이라 한 작업물로 묶으면 전염 → §올인원 오케스트레이션 규칙을 따른다.
+- 라이선스: RemotePair는 AGPL-3.0-or-later(순수 자체코드). 화면공유는 자체 `host/rd/screen` 엔진.
 
 > **구현 상태(2026-06-13)**: 스캐폴드. `client/cli/remote-pair-desktop`이 macOS Screen Sharing(VNC) arm's-length 런처(open/check/help 서브커맨드)를 구현하고, 브리지 `/api/desktop/open`이 이를 호출. 인-브라우저 스트리밍(WebRTC)은 스파이크 단계. → architecture.md §10-5.
 
 ### 올인원 오케스트레이션 (후순위)
 **무엇**: RemotePair가 베스트 OSS를 **설치·구성·실행만** 시키는 "지휘자"가 된다. 소스는 안 건드리고 컴포넌트를 오케스트레이션한다(저결합 §0.1 유지).
-- **Syncthing**(파일 sync, MPL-2.0), **Tailscale/WireGuard**(zero-config 도달성, BSD-3/MIT), **RustDesk**(Remote Desktop, AGPL-3.0).
-**라이선스 매트릭스(중요)**: RemotePair는 Apache-2.0이고 Apache→AGPL은 단방향이라 —
-- Syncthing(MPL-2.0)·Tailscale(BSD-3)·WireGuard(MIT): consume·번들 자유.
-- **RustDesk(AGPL-3.0)**: 한 작업물로 묶으면 RemotePair 전체가 AGPL로 전염된다. → 반드시 **arm's-length 별도 프로세스**(사용자 설치 / 런타임 다운로드, 자기 배포물에 링크·포함 X)로 두어 mere-aggregation을 유지하거나, **macOS 화면공유(VNC) / ScreenCaptureKit-WebRTC(Apple, 라이선스 0)** 로 대체한다. 상용 배포 전 법률 확인.
+- **Syncthing**(파일 sync, MPL-2.0), **Tailscale/WireGuard**(zero-config 도달성, BSD-3/MIT). Remote Desktop은 자체 `host/rd/screen` 엔진.
+**라이선스**: RemotePair는 **AGPL-3.0-or-later**(순수 자체코드).
+- consume하는 OSS(Syncthing MPL-2.0·Tailscale BSD-3·WireGuard MIT): 번들 자유.
+- 화면공유는 외부 스택 미사용 — 자체 엔진(허용형 deps만). 상용 배포 전 법률 확인.
 
 ### client
 - `remote-pair ls`(host 세션 목록), `remote-pair launch <dir>`(폴더 매핑 해석 후 존재 분기).
@@ -211,7 +211,7 @@
 | 항목 | 상태 | 비고 |
 |---|---|---|
 | patches/ 캡처 (rebase-safety) | ✅ 캡처·검증 완료 | `vscode/src` 변경(G001–G008, 23파일 +1747/−42)을 `patches/zz-remotepair-ide-frontend.patch`로 캡처. 별도 worktree에 base+42 재구성→git diff로 추출(undo_telemetry·announcement 노이즈 제외). **gold 검증**: 실제 prepare_vscode 순서(json→root패치(zz 마지막)→osx→announcement→telemetry)로 적용 시 작업트리와 0 diff. top repo(remotepair-ide master) 커밋만 남음 |
-| RustDesk-protocol 사이드카 | future/low-priority | §1 Remote Desktop 참조 |
+| 화면공유 사이드카(`host/rd/screen`) | 구현됨 | §1 Remote Desktop 참조 |
 | 앱 id 통합 | deferred | `com.x10lab.remotepair-ide` → `com.x10lab.remote-pair` 통합은 후속 마일스톤 |
 
 #### G009 — Browser UX 개편 (신규, in-progress, 2026-06-14)
@@ -257,7 +257,7 @@
 ## 2. 비기능 요구사항 / 제약
 
 - **Apple Silicon macOS 전용**, macOS Ventura+ (Sequoia 권장).
-- 오픈소스 — 별도 배포 인프라 비용 없이 GitHub Releases 활용. 라이선스 **Apache-2.0**(AGPL 컴포넌트와 묶지 않음 — §올인원 라이선스 매트릭스).
+- 오픈소스 — 별도 배포 인프라 비용 없이 GitHub Releases 활용. 라이선스 **AGPL-3.0-or-later**(AGPL 컴포넌트와 묶지 않음 — §올인원 라이선스 매트릭스).
 - **`~/.remote-pair`가 상태의 단일 출처** — 기기 간 `~/.claude` 동기화 불요. RemotePair 자체 config은 `.claude` 밖 네임스페이스(기기별, sync 안 함).
 - **낮은 결합도 / 높은 응집도**(§0.1 불변식): 앱 = 권한 데몬만, CLI = 두뇌(SSOT 겸 메인 인터페이스), 마법사/웹/셸 = CLI 레이어. CLI엔 TCC/AX 코드 없음(앱에 위임). 앱이 CLI를 강제 설치하지 않음. 앱에 네트워크 서버 없음.
 - **GUI는 웹 우선, 네이티브는 껍데기**(§0.3) — JSON API 시임 고정, 브리지 구현만 교체 가능.
@@ -290,8 +290,8 @@
 - **(2026-06-13) 에디터는 code-server 포크 vendoring** — 설정 우선, 안 되는 것만 surgical 패치(점진적, Cursor식). from-scratch 아님. Claude Code 익스텐션은 Open VSX.
 - **(2026-06-14) M4 에디터를 VSCodium 포크(RemotePair IDE)로 피벗** — code-server 경로 폐기. Claude Code / Codex 익스텐션 호환성(Node API·마켓플레이스)이 실제 VS Code / Electron 엔진을 요구함. 백엔드(M1–M6)는 재사용. 전략: "코드 유지, UI 숨김"(composite-bar 허용목록 + `when=false`); 코어 터미널 동작 코드 불변(에지케이스 지뢰밭). 번들 id `com.x10lab.remotepair-ide`(앱 id 통합 deferred). dev-watch: nvm node 22.22.1 + `buildConfig.useEsbuildTranspile=true`(dev 전용).
 - **(2026-06-13) 온보딩 마법사를 M1 첫 마일스톤으로** — 역할→권한→재grant→SSH→매핑→Syncthing→검증. 브리지는 얇은 HTTP↔CLI 어댑터(설치 로직 재구현 금지).
-- **(2026-06-13) 올인원은 오케스트레이션만** — 베스트 OSS를 설치·구성·실행만. RustDesk(AGPL)는 arm's-length 별도 프로세스 또는 macOS VNC/WebRTC로 대체(전염 차단). 상용 배포 전 법률 확인.
-- **(2026-06-14) 파일 접근 기본을 mount-first로 전환** — Browser 루트/매핑 추가는 기본적으로 호스트 폴더를 **마운트**(`remote-pair mount`, SMB 기본=맥 내장, SSHFS 옵션; `docs/m-mount.md`)하고 마운트포인트를 FOLDER_MAP으로 가리킨다. 단일 source-of-truth·무충돌·Finder 자동 노출. Syncthing 복사동기화는 **legacy**로 유지(`SYNC_BACKEND` 기본 syncthing→mount). 런처는 완성, config/wizard/doctor wiring은 follow-up. RustDesk 사이드카(§1)는 사용자 직접 진행으로 본 스코프 제외.
+- **(2026-06-13) 올인원은 오케스트레이션만** — 베스트 OSS를 설치·구성·실행만. 화면공유는 자체 `host/rd/screen` 엔진(허용형 deps). 상용 배포 전 법률 확인.
+- **(2026-06-14) 파일 접근 기본을 mount-first로 전환** — Browser 루트/매핑 추가는 기본적으로 호스트 폴더를 **마운트**(`remote-pair mount`, SMB 기본=맥 내장, SSHFS 옵션; `docs/m-mount.md`)하고 마운트포인트를 FOLDER_MAP으로 가리킨다. 단일 source-of-truth·무충돌·Finder 자동 노출. Syncthing 복사동기화는 **legacy**로 유지(`SYNC_BACKEND` 기본 syncthing→mount). 런처는 완성, config/wizard/doctor wiring은 follow-up. 화면공유 사이드카는 자체 엔진(`host/rd/screen`)으로 구현됨.
 - **(2026-06-14) Browser는 메타-컨테이너** — Sessions와 대칭. Browser는 하위 컨테이너(Explorer/Search/Extensions/…)를 담는 상위 컨테이너이고 2행 헤더 Row-1이 하위뷰 라우터. 클릭 시 전체 창을 덮는 글로벌 뷰렛 이동이 아니라 Browser 내부 콘텐츠만 교체. 중첩 메커니즘은 아키텍트 확정(§1 G009).
 - **(2026-06-13) Remote Desktop 보류** — v0 screencapture 채널/VNC, v1 WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring 추가).
 - 버전 정책: pre-1.0 유지. 리네임·cert 전환은 v0.5.0 마이너 bump로 처리, 이후 패치 +0.0.1.
@@ -310,7 +310,7 @@
 ### 열린 항목
 - **4개 pre-existing 런처 테스트 실패** — `tests/run.sh` 결과 159 passed / 4 failed. 실패 항목: `t_04_target` `target/remote-host+--local→local`, `t_07_resilience` `s1/reach-fail-no-tailscale`·`s2/exit-node-set`, `t_06`(혹은 동치) `s4/dir-ssherr`. **근본 원인**: `--local` 강제 또는 원격 도달 실패로 로컬 폴백 경로를 탈 때, 머신에 RemotePair 호스트가 없으면(`ensure_local_host` 거짓) 런처가 `tmux-aqua new-session` 대신 **plain `tmux new`/`tmux attach`** 를 호출한다(`client/cli/remote-pair-launch:277-290`). 테스트는 `tmux-aqua`/`new-session`을 기대하므로 실패. 설계상 "tmux-aqua 없는 머신엔 computer-use 없음"이 의도지만, 테스트 기대와 어긋나므로 (a) 로컬 폴백도 tmux-aqua를 우선 시도하도록 런처를 고치거나 (b) 테스트 기대를 현재 설계에 맞추는 결정이 필요.
 - **host hot-update 권한 상속 충돌 스파이크(M6 선행, ⚠️)** — 앱을 재시작해 무중단 업데이트하면 tmux 부모가 launchd로 reparent되어 AX 상속이 깨질 수 있다(`tmux-aqua`가 reparent를 막는 전제가 앱 교체 시 흔들림). M6 hot-update 구현 전에 **권한 상속이 유지되는지 스파이크**로 먼저 검증해야 한다.
-- **RustDesk AGPL arm's-length 검증** — Remote Desktop에 RustDesk를 쓸 경우, 자기 배포물에 링크·포함되지 않고 별도 프로세스(사용자 설치/런타임 다운로드)로 분리됐는지 확인. 상용 배포 전 법률 자문.
+- **의존성 라이선스 검증** — 화면공유 엔진(`host/rd/screen`) deps가 허용형만인지 cargo-deny로 확인(RemotePair=AGPL-3.0). 상용 배포 전 법률 자문.
 - **code-server 포크 유지보수 비용** — 포크·vendoring + surgical 패치 모델은 업스트림 추종 비용이 든다. 패치 표면 최소화 + 업스트림 리베이스 전략을 M3 착수 시 확정.
 - **알림 포워딩 훅 부재** — 현재 host엔 approve-reminder 훅만 있고 Notification/Stop 포워딩 훅이 없다(M2에서 추가).
 - **glue 자동 업데이트** — cask가 .app만 자동 업데이트하고 approve 스킬·훅(glue)은 bootstrap 재실행이 필요. .app 번들 동봉 vs repo 재실행 모델 결정 대기. → [future.md](future.md).
@@ -333,5 +333,5 @@
 | **M2** | 알림 포워딩 | 구현됨 | host의 완료/Stop/질문/approve 알림이 client로 전달, 종류 토글. 신규 Notification/Stop 훅이 `doctor`에서 점검됨. | §1 알림 포워딩, architecture.md §10-3 |
 | **M3** | Web 셸 + 터미널 | 구현됨(alt-screen 한계 있음) | xterm.js 터미널이 `capture-pane`/`send-keys` SSH 경유로 tmux-aqua 세션에 연결. Detach/Attach 탭. JSON API 시임 재사용. | §1 Web 셸, architecture.md §10-2 |
 | **M4** | IDE 프론트엔드 (RemotePair IDE — VSCodium 포크) | **G001–G008 완료 + 브랜드 빌드·원격 E2E 검증** | 레일(Browser/Sessions/Settings), Sessions 임베드 EditorPart + 네이티브 탭 + in-tab picker(Claude/Shell/Codex/Gemini), 탭형 Session Manager(Attached/Detached/History, 활성 하이라이트+X), Host 버튼. 남은 작업: `patches/` 캡처(rebase-safety). | §1 IDE Frontend, `.omc/ultragoal/` |
-| **M5** | Remote Desktop | 스캐폴드(VNC launcher 구현, WebRTC는 스파이크) | v0: macOS Screen Sharing arm's-length 런처. v1: WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring). RustDesk 쓰면 arm's-length. | §1 Remote Desktop·올인원, architecture.md §10-5 |
+| **M5** | Remote Desktop | 스캐폴드(VNC launcher 구현, WebRTC는 스파이크) | v0: macOS Screen Sharing arm's-length 런처. v1: WebRTC(ScreenCaptureKit+VideoToolbox, Input Monitoring). | §1 Remote Desktop·올인원, architecture.md §10-5 |
 | **M6** | host hot-update | 설계 확정, AX 상속 스파이크 대기 | 무중단 앱 업데이트(L1 glue 핫스왑 + L2 네이티브 재실행). **⚠️ 선행 스파이크 필수**: 앱 재시작 시 tmux 부모가 launchd로 바뀌어 AX 상속이 깨지는지 먼저 검증. | §4 hot-update 스파이크, architecture.md §11 |

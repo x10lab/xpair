@@ -6,11 +6,11 @@ and integration contracts.
 
 ---
 
-## License rationale: why not bundle RustDesk
+## License: AGPL-3.0, first-party engine
 
-RustDesk is AGPL-3.0. Linking or bundling it into an Apache-2.0 project would require the combined
-work to be released under AGPL. We avoid this by keeping any RustDesk usage strictly arm's-length:
-the user installs RustDesk independently; our code never ships, invokes, or depends on it.
+RemotePair is AGPL-3.0-or-later. Remote Desktop is powered by our own engine
+(`host/rd/screen` — Rust/Swift, permissive dependencies only), not any third-party
+screen-share stack.
 
 The macOS-native path (Screen Sharing / `vnc://`) carries zero licensing risk — it is an OS-provided
 client and server, not third-party software.
