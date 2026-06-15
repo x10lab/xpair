@@ -106,9 +106,9 @@ async fn run_async(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("bind {addr}: {e}"))?;
-    eprintln!("screen serve-webrtc: signaling ws://{addr} (H.264/WebRTC UDP)");
-    eprintln!("  reach signaling over:  ssh -L {port}:127.0.0.1:{port} <host>");
-    eprintln!("  media flows P2P over UDP/ICE (host-candidate, loopback/LAN/VPN)");
+    tracing::info!("screen serve-webrtc: signaling ws://{addr} (H.264/WebRTC UDP)");
+    tracing::info!("  reach signaling over:  ssh -L {port}:127.0.0.1:{port} <host>");
+    tracing::info!("  media flows P2P over UDP/ICE (host-candidate, loopback/LAN/VPN)");
 
     // One browser (pair session is 1:1). Each signaling connection gets a fresh
     // PeerConnection + encoder pipeline; teardown on disconnect.
@@ -116,15 +116,15 @@ async fn run_async(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), 
         let (stream, peer) = match listener.accept().await {
             Ok(x) => x,
             Err(e) => {
-                eprintln!("serve-webrtc: accept error: {e}");
+                tracing::warn!("serve-webrtc: accept error: {e}");
                 continue;
             }
         };
-        eprintln!("serve-webrtc: signaling client {peer} connected");
+        tracing::info!("serve-webrtc: signaling client {peer} connected");
         if let Err(e) = handle_session(stream, fps, bitrate, scale).await {
-            eprintln!("serve-webrtc: session ended: {e}");
+            tracing::warn!("serve-webrtc: session ended: {e}");
         }
-        eprintln!("serve-webrtc: signaling client {peer} done");
+        tracing::info!("serve-webrtc: signaling client {peer} done");
     }
 }
 
@@ -191,7 +191,7 @@ async fn handle_session(
         }));
     }
     pc.on_peer_connection_state_change(Box::new(move |s| {
-        eprintln!("serve-webrtc: peer connection state: {s}");
+        tracing::info!("serve-webrtc: peer connection state: {s}");
         Box::pin(async {})
     }));
 
@@ -261,7 +261,7 @@ async fn handle_session(
                     for dc in [&ctl, &mv] {
                         let label = dc.label().to_string();
                         dc.on_open(Box::new(move || {
-                            eprintln!("serve-webrtc: input DataChannel '{label}' open");
+                            tracing::info!("serve-webrtc: input DataChannel '{label}' open");
                             Box::pin(async {})
                         }));
                         let tx = in_tx.clone();
@@ -277,7 +277,7 @@ async fn handle_session(
                     _input_dcs.push(mv);
                 }
             }
-            Err(e) => eprintln!(
+            Err(e) => tracing::warn!(
                 "serve-webrtc: input helper '{bin}' spawn failed (remote input disabled): {e}"
             ),
         }
@@ -360,7 +360,7 @@ fn spawn_screencap(
     au_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<CaptureHandle, String> {
     let bin = screencap_path();
-    eprintln!("serve-webrtc: capture+encode '{bin}' @ {fps}fps {bitrate}bps scale={scale}");
+    tracing::info!("serve-webrtc: capture+encode '{bin}' @ {fps}fps {bitrate}bps scale={scale}");
     let mut child = Command::new(&bin)
         .arg(fps.to_string())
         .arg(bitrate.to_string())

@@ -93,14 +93,12 @@ pub fn run(port: u16, fps: u32, quality: u8, scale: f32) -> Result<(), String> {
     let listener = TcpListener::bind(&addr)
         .map_err(|e| format!("could not bind {addr} (loopback): {e}"))?;
 
-    eprintln!(
+    tracing::info!(
         "screen serve: listening on ws://{addr} \
          (fps={fps}, jpeg quality={quality}, scale={scale}, loopback only)"
     );
-    eprintln!(
-        "  reach it from a client over:  ssh -L {port}:127.0.0.1:{port} <host>"
-    );
-    eprintln!("  the IDE webview then connects ws://127.0.0.1:{port}");
+    tracing::info!("  reach it from a client over:  ssh -L {port}:127.0.0.1:{port} <host>");
+    tracing::info!("  the IDE webview then connects ws://127.0.0.1:{port}");
 
     let clients: Clients = Arc::new(Mutex::new(Vec::new()));
     let latest: Latest = Arc::new(Mutex::new(None));
@@ -126,7 +124,7 @@ fn accept_loop(listener: TcpListener, clients: Clients, latest: Latest) {
         let stream = match stream {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("serve: accept error: {e}");
+                tracing::warn!("serve: accept error: {e}");
                 continue;
             }
         };
@@ -154,7 +152,7 @@ fn client_thread(id: u64, stream: TcpStream, clients: Clients, latest: Latest) {
     let mut websocket = match tungstenite::accept(stream) {
         Ok(ws) => ws,
         Err(e) => {
-            eprintln!("serve: client {id} ({peer}) handshake failed: {e}");
+            tracing::warn!("serve: client {id} ({peer}) handshake failed: {e}");
             return;
         }
     };
@@ -165,7 +163,7 @@ fn client_thread(id: u64, stream: TcpStream, clients: Clients, latest: Latest) {
     let (tx, rx) = sync_channel::<Arc<Vec<u8>>>(2);
 
     clients.lock().unwrap().push(Client { id, tx });
-    eprintln!("serve: client {id} ({peer}) connected");
+    tracing::info!("serve: client {id} ({peer}) connected");
 
     // Push the current screen immediately. On a static screen the capture loop
     // is not broadcasting (nothing changed), so without this a late joiner would
@@ -199,7 +197,7 @@ fn client_thread(id: u64, stream: TcpStream, clients: Clients, latest: Latest) {
 
     remove_client(&clients, id);
     let _ = websocket.close(None);
-    eprintln!("serve: client {id} ({peer}) disconnected");
+    tracing::info!("serve: client {id} ({peer}) disconnected");
 }
 
 /// Remove a client from the registry by id (idempotent).
@@ -225,6 +223,11 @@ fn capture_loop(
     scale: f32,
 ) {
     let mut warned_capture = false;
+    // Cheap mid-run rotation guard (contract §7 "long-lived guard"): this loop
+    // is the only long-lived process in the crate, so it must size-check the log
+    // periodically rather than relying on rotate-on-open alone.
+    let mut tick: u64 = 0;
+    const ROTATE_CHECK_EVERY: u64 = 300;
     // Previous frame's raw pixels, for change detection. Empty = "no frame yet".
     let mut prev_raw: Vec<u8> = Vec::new();
     // Whether the previous cycle had clients. Used to force a fresh frame when a
@@ -234,6 +237,13 @@ fn capture_loop(
 
     loop {
         let cycle_start = Instant::now();
+
+        // Long-lived rotation guard: stat the log every N cycles (cheap) and
+        // rotate mid-run if it has outgrown the cap.
+        tick = tick.wrapping_add(1);
+        if tick.is_multiple_of(ROTATE_CHECK_EVERY) {
+            crate::log::rotate_guard();
+        }
 
         // Snapshot the live senders. If nobody is connected, skip capture
         // entirely — no point exercising Screen Recording for zero viewers.
@@ -292,7 +302,7 @@ fn capture_loop(
                     }
                     Err(e) => {
                         if !warned_capture {
-                            eprintln!("serve: jpeg encode failed: {e}");
+                            tracing::error!("serve: jpeg encode failed: {e}");
                             warned_capture = true;
                         }
                     }
@@ -300,7 +310,7 @@ fn capture_loop(
             }
             Err(e) => {
                 if !warned_capture {
-                    eprintln!(
+                    tracing::error!(
                         "serve: capture failed (check Screen Recording \
                          permission for THIS binary): {e}"
                     );

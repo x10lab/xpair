@@ -25,6 +25,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use xcap::Monitor;
 
+mod log;
 mod serve;
 #[cfg(feature = "webrtc")]
 mod serve_webrtc;
@@ -33,6 +34,12 @@ mod serve_webrtc;
 #[derive(Parser, Debug)]
 #[command(name = "screen", version, about, long_about = None)]
 struct Cli {
+    /// Correlation session id for logs (the tmux session name). Falls back to
+    /// the `RP_SESSION` env var, then `-`. Used in the `[session]` column of
+    /// `~/.remote-pair/logs/rust.log` (see docs/logging.md).
+    #[arg(long, value_name = "NAME", global = true)]
+    session: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -101,6 +108,18 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    // Resolve the correlation session (--session > RP_SESSION > "-") and bring
+    // up the file logger as early as possible so even startup errors persist.
+    let session = cli
+        .session
+        .clone()
+        .or_else(|| std::env::var("RP_SESSION").ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "-".to_string());
+    log::set_session(session);
+    log::init();
+
     let result = match cli.command {
         Command::Capture { out } => cmd_capture(&out),
         Command::Info => cmd_info(),
@@ -122,7 +141,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {err}");
+            tracing::error!("{err}");
             ExitCode::FAILURE
         }
     }
@@ -160,7 +179,7 @@ fn cmd_capture(out: &PathBuf) -> Result<(), String> {
         .save(out)
         .map_err(|e| format!("failed to write PNG to {}: {e}", out.display()))?;
 
-    println!("captured {}x{} frame -> {}", width, height, out.display());
+    tracing::info!("captured {}x{} frame -> {}", width, height, out.display());
     Ok(())
 }
 
@@ -171,14 +190,14 @@ fn cmd_info() -> Result<(), String> {
         return Err("no displays found (is Screen Recording permission granted?)".to_string());
     }
 
-    println!("{} display(s):", monitors.len());
+    tracing::info!("{} display(s):", monitors.len());
     for (i, m) in monitors.iter().enumerate() {
         let name = m.name().unwrap_or_else(|_| "<unknown>".to_string());
         let width = m.width().unwrap_or(0);
         let height = m.height().unwrap_or(0);
         let scale = m.scale_factor().unwrap_or(1.0);
         let primary = m.is_primary().unwrap_or(false);
-        println!(
+        tracing::info!(
             "  [{i}] {name}: {width}x{height} @ {scale}x{}",
             if primary { " (primary)" } else { "" }
         );
