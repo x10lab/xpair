@@ -11,7 +11,9 @@ declare global {
       setHost: (host: string) => Promise<any>
       addMapping: (clientPath: string, hostPath: string) => Promise<any>
       setBackend: (sync: string, mount?: string) => Promise<any>
-      mount: (hostPath: string) => Promise<{ code: number; out: string; err: string; mountpoint: string }>
+      mount: (hostPath: string, mountpoint?: string) => Promise<{ code: number; out: string; err: string; mountpoint: string }>
+      hostPathExists: (p: string) => Promise<{ exists: boolean; err: string }>
+      defaultMountpoint: (hostPath: string) => Promise<string>
       sshKeygen: () => Promise<{ pubkey: string }>
       sshReachable: (host: string) => Promise<{ reachable: boolean; err: string }>
       tailscaleStatus: () => Promise<{ installed: boolean; up: boolean }>

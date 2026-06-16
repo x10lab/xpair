@@ -1,5 +1,5 @@
 import { Check } from "lucide-react";
-import type { Mapping } from "./StepMappings";
+import type { Mapping } from "./StepFileAccess";
 
 type Props = { host: string; mappings: Mapping[] };
 

@@ -22,14 +22,21 @@ function rpBin() {
   return fs.existsSync(local) ? local : "remote-pair";
 }
 
-/** Run argv-safe; resolve {code, out, err} (never rejects). */
+/** Run argv-safe; resolve {code, out, err} (never rejects).
+ *  When spawned from a GUI Electron app the inherited PATH is minimal; prepend the standard
+ *  user-tool locations so `tailscale`, `ssh`, etc. resolve without requiring a shell wrapper. */
 function run(cmd, args, opts = {}) {
   return new Promise((resolve) => {
     let out = "";
     let err = "";
     let child;
     try {
-      child = cp.spawn(cmd, args, { windowsHide: true, ...opts });
+      const richPath = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
+      child = cp.spawn(cmd, args, {
+        windowsHide: true,
+        env: { ...process.env, PATH: richPath },
+        ...opts,
+      });
     } catch (e) {
       return resolve({ code: -1, out: "", err: String(e && e.message ? e.message : e) });
     }
@@ -146,22 +153,60 @@ const bridge = {
     return { code: 0 };
   },
 
+  // Mappings — check whether a path exists on the remote host over SSH.
+  // Uses `test -e` which returns 0 if the path exists (file, dir, or symlink).
+  async hostPathExists(p) {
+    if (!p) return { exists: false, err: "no path" };
+    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    if (!host) return { exists: false, err: "REMOTE_HOST not set" };
+    const r = await run("ssh", [
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=5",
+      "-o", "StrictHostKeyChecking=accept-new",
+      host, "test", "-e", p,
+    ]);
+    return { exists: r.code === 0, err: r.err };
+  },
+
+  // Mappings — compute the default mountpoint the same way remote-pair-mount does, so the UI
+  // can pre-fill the field before the user clicks Mount.
+  //
+  // Mirrors remote-pair-mount default_mountpoint + sanitize_path exactly:
+  //   sanitize_path: strip leading '/', replace remaining '/' with '_',
+  //                  then replace every char not in [A-Za-z0-9._-] with '_'.
+  //   host_slug:     replace every char not in [A-Za-z0-9._-] with '_'.
+  //   result:        ~/.remote-pair/mounts/<host_slug>/<path_slug>
+  defaultMountpoint(hostPath) {
+    const cfg = parseEnv(CLIENT_ENV);
+    const remoteHost = cfg.REMOTE_HOST || "";
+    const hostSlug = remoteHost.replace(/[^A-Za-z0-9._-]/g, "_");
+    const pathSlug = hostPath
+      .replace(/^\//, "")          // strip leading /
+      .replace(/\//g, "_")         // remaining / → _
+      .replace(/[^A-Za-z0-9._-]/g, "_"); // non-safe chars → _
+    const mountsRoot = path.join(RP_DIR, "mounts");
+    return path.join(mountsRoot, hostSlug, pathSlug);
+  },
+
   // Mappings — actually mount a host folder. `remote-pair-mount` takes a SUBCOMMAND first, so via the
-  // wrapper this is `remote-pair mount mount <hostPath>` (1st "mount" = the remote-pair subcommand that
-  // execs remote-pair-mount; 2nd "mount" = its mount action). Returns the parsed Mountpoint for the map.
-  async mount(hostPath) {
+  // wrapper this is `remote-pair mount mount <hostPath> [mountpoint]` (1st "mount" = the remote-pair
+  // subcommand that execs remote-pair-mount; 2nd "mount" = its mount action).
+  // mountpoint is optional: when provided it overrides the default computed by remote-pair-mount.
+  // Returns the parsed Mountpoint from CLI output.
+  async mount(hostPath, mountpoint) {
     const h = String(hostPath || "").trim();
     if (!h) return { code: -1, out: "", err: "mount requires a host path", mountpoint: "" };
-    const r = await cli(["mount", "mount", h]);
-    let mountpoint = "";
+    const mp = String(mountpoint || "").trim();
+    const r = await cli(["mount", "mount", h, ...(mp ? [mp] : [])]);
+    let parsedMountpoint = "";
     for (const line of (r.out || "").split("\n")) {
       const m = line.match(/^\s*Mountpoint:\s*(\S.*?)\s*$/);
       if (m) {
-        mountpoint = m[1];
+        parsedMountpoint = m[1];
         break;
       }
     }
-    return { code: r.code, out: r.out, err: r.err, mountpoint };
+    return { code: r.code, out: r.out, err: r.err, mountpoint: parsedMountpoint };
   },
 
   // Mappings — manual add of a client→host mapping (hard-gate: >=1).
