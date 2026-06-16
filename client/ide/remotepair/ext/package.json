@@ -73,8 +73,9 @@
         "icon": "$(output)"
       },
       {
-        "command": "remotepair.openOnboarding",
-        "title": "RemotePair: Open Onboarding"
+        "command": "remotepair.runSetup",
+        "title": "RemotePair: Re-run setup",
+        "category": "RemotePair"
       }
     ],
     "menus": {

@@ -15,7 +15,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const net = require("net");
-const onboardingBridge = require("./onboarding-bridge.js");
 
 // --- constants -------------------------------------------------------------
 
@@ -1117,68 +1116,19 @@ async function showLogs() {
 
 // --- activation -------------------------------------------------------------
 
-// --- onboarding webview (IDE-embedded client onboarding) --------------------
-// Hosts the React onboarding (built to onboarding-webview/dist) in a webview and bridges its
-// postMessage RPC to onboarding-bridge.js (the Node <-> remote-pair CLI layer). Per §0.1 the CLI is
-// the brain; this panel only relays { id, method, args } to a bridge handler and posts back the result.
-let _onboardingPanel = null;
+// --- standalone setup launcher ---------------------------------------------
+// Launch the standalone RemotePair Setup (onboarding) app best-effort.
+// The final app bundle name is set during packaging; adjust APP_NAME below at build time.
+const SETUP_APP_NAME = "RemotePair Setup";
 
-function onboardingHtml(webview, distUri) {
-  let html;
-  try {
-    html = fs.readFileSync(path.join(distUri.fsPath, "index.html"), "utf8");
-  } catch (e) {
-    return `<!doctype html><html><body style="font-family:sans-serif;padding:2rem">Onboarding build missing — run <code>npm run build</code> in onboarding-webview/ (${e && e.message ? e.message : e}).</body></html>`;
-  }
-  const base = webview.asWebviewUri(distUri).toString().replace(/\/+$/, "");
-  html = html.replace(/(src|href)="\.?\/?(assets\/[^"]+)"/g, (_m, attr, p) => `${attr}="${base}/${p}"`);
-  const csp =
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; ` +
-    `img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; ` +
-    `script-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource} data:; ` +
-    `connect-src ${webview.cspSource};">`;
-  html = html.replace(/<head>/i, `<head>${csp}`);
-  return html;
-}
-
-function openOnboarding(extensionUri) {
-  if (_onboardingPanel) {
-    try { _onboardingPanel.reveal(vscode.ViewColumn.Active, false); } catch (_e) {}
-    return _onboardingPanel;
-  }
-  const distUri = vscode.Uri.joinPath(extensionUri, "onboarding-webview", "dist");
-  const panel = vscode.window.createWebviewPanel(
-    "remotepair.onboarding",
-    "RemotePair Onboarding",
-    { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
-    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [distUri] }
-  );
-  _onboardingPanel = panel;
-  panel.webview.html = onboardingHtml(panel.webview, distUri);
-
-  panel.webview.onDidReceiveMessage(async (msg) => {
-    if (!msg || typeof msg !== "object") return;
-    const { id, method, args } = msg;
-    if (method === "complete") {
-      try { panel.dispose(); } catch (_e) {}
-      return;
-    }
-    // Own-property guard: only the bridge's own handlers are callable (not inherited Object.prototype
-    // methods like constructor/toString), so { method } cannot reach arbitrary functions.
-    const fn = Object.prototype.hasOwnProperty.call(onboardingBridge, method) ? onboardingBridge[method] : undefined;
-    if (typeof fn !== "function") {
-      panel.webview.postMessage({ id, error: `unknown method: ${method}` });
-      return;
-    }
-    try {
-      const result = await fn.apply(onboardingBridge, Array.isArray(args) ? args : []);
-      panel.webview.postMessage({ id, result });
-    } catch (e) {
-      panel.webview.postMessage({ id, error: String(e && e.message ? e.message : e) });
-    }
-  });
-  panel.onDidDispose(() => { _onboardingPanel = null; });
-  return panel;
+function runSetup() {
+  // Try a known development build path first; fall back to the packaged app name.
+  // argv-safe: spawn('open', [...]) — never a shell string.
+  const devPath = path.join(os.homedir(), "Applications", `${SETUP_APP_NAME}.app`);
+  const appArg = fs.existsSync(devPath) ? devPath : SETUP_APP_NAME;
+  const child = cp.spawn("open", ["-a", appArg], { detached: true, stdio: "ignore" });
+  child.unref();
+  log(`runSetup: launched '${appArg}'`);
 }
 
 function activate(context) {
@@ -1251,7 +1201,7 @@ function activate(context) {
   // 4) Commands.
   context.subscriptions.push(
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
-    vscode.commands.registerCommand("remotepair.openOnboarding", () => openOnboarding(context.extensionUri)),
+    vscode.commands.registerCommand("remotepair.runSetup", () => runSetup()),
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
@@ -1297,12 +1247,6 @@ function activate(context) {
       })
     )
   );
-
-  // First-run: open the client onboarding once (guarded by globalState so it does not reopen each launch).
-  if (!context.globalState.get("remotepair.onboarding.shown")) {
-    context.globalState.update("remotepair.onboarding.shown", true);
-    try { openOnboarding(context.extensionUri); } catch (e) { log(`onboarding first-run open error: ${e}`); }
-  }
 
   // C1.D4 — Reconcile Browser roots on activation so a non-mapped launch-arg folder
   // (the phantom `/tmp/rp-test-folder`) is removed even before the user opens the Browser.
