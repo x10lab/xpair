@@ -11,8 +11,16 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { capture, EVENTS, PATHS, REASONS, type Reason, type ConnPath } from "@/lib/telemetry";
 
 export type ConnState = "idle" | "checking" | "reachable" | "failed";
+
+// Map a controlled-reason from the SSH probe outcome (NEVER the raw stderr string — that leaks
+// hostnames/paths). We only have a boolean + opaque err here, so failures bucket to host_unreachable
+// (the dominant cause for a BatchMode probe); the bridge re-coerces anything unknown to `unknown`.
+function reasonFromProbe(): Reason {
+  return REASONS.HOST_UNREACHABLE;
+}
 
 type Props = {
   host: string;
@@ -29,6 +37,10 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
   const [pubkey, setPubkey] = useState("");
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
+  // Telemetry inputs for ssh_config_completed: whether a fresh key was generated this run, and how
+  // the user transferred the pubkey to the host (auto = clicked the copy button; manual_paste = not).
+  const [keygenNew, setKeygenNew] = useState(false);
+  const [copyIdUsed, setCopyIdUsed] = useState(false);
 
   // On mount: probe Tailscale, generate/read the SSH key, and prefill the host.
   useEffect(() => {
@@ -42,7 +54,10 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
       }
       try {
         const k = await window.remotepair.sshKeygen();
-        if (active) setPubkey(k.pubkey);
+        if (active) {
+          setPubkey(k.pubkey);
+          setKeygenNew(!!k.keygenNew);
+        }
       } catch {
         /* keygen failure surfaces as an empty pubkey block */
       }
@@ -63,21 +78,44 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
     ? `echo '${pubkey}' >> ~/.ssh/authorized_keys`
     : "";
 
+  // Real connection path used today: `.ts.net` host name or an up tailnet → tailscale, else lan.
+  // (Bonjour LAN discovery does not exist yet, so `lan` = "not a tailnet name", not discovered.)
+  const connPath = (): ConnPath =>
+    /\.ts\.net$/i.test(host.trim()) || (tailscale?.installed && tailscale?.up)
+      ? PATHS.TAILSCALE
+      : PATHS.LAN;
+
   const check = async () => {
     setErr("");
     setState("checking");
+    const startedAt = Date.now();
+    const path = connPath();
     try {
       const r = await window.remotepair.sshReachable(host.trim());
       if (r.reachable) {
         await window.remotepair.setHost(host.trim());
         setState("reachable");
+        // host_connected: SSH session established (connect_ms measured around the probe).
+        capture(EVENTS.HOST_CONNECTED, { path, connect_ms: Date.now() - startedAt });
+        // ssh_config_completed: keygen + reachable config done. copy_id_method reflects whether the
+        // user used the auto copy-id button (auto) or transferred the key by hand (manual_paste).
+        capture(EVENTS.SSH_CONFIG_COMPLETED, {
+          keygen_new: keygenNew,
+          copy_id_method: copyIdUsed ? "auto" : "manual_paste",
+        });
       } else {
         setErr(r.err || "Host did not respond.");
         setState("failed");
+        // host_connect_failed + ssh_config_failed: enum reason only (never the raw r.err string).
+        const reason = reasonFromProbe();
+        capture(EVENTS.HOST_CONNECT_FAILED, { path, reason });
+        capture(EVENTS.SSH_CONFIG_FAILED, { reason });
       }
     } catch (e) {
       setErr(String(e));
       setState("failed");
+      capture(EVENTS.HOST_CONNECT_FAILED, { path, reason: REASONS.UNKNOWN });
+      capture(EVENTS.SSH_CONFIG_FAILED, { reason: REASONS.UNKNOWN });
     }
   };
 
@@ -143,6 +181,7 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
                 onClick={() => {
                   navigator.clipboard?.writeText(addCmd);
                   setCopied(true);
+                  setCopyIdUsed(true); // auto copy-id transfer (vs. manual_paste).
                   setTimeout(() => setCopied(false), 1500);
                 }}
                 className="shrink-0 text-muted-foreground hover:text-foreground"

@@ -25,7 +25,7 @@
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -295,6 +295,135 @@ fn redact(s: &str) -> String {
     r
 }
 
+/// Compiled-once regexes backing [`scrub_outbound`]. Kept behind the
+/// `crash-report` feature because only the Sentry `before_send` path needs the
+/// strict (over-)masking; local logs deliberately keep full paths (see the
+/// module/`redact` docs and `docs/logging.md` §6). Each pattern is anchored on
+/// word/segment boundaries so it masks the secret without eating surrounding
+/// punctuation.
+#[cfg(feature = "crash-report")]
+struct OutboundRes {
+    /// `*.ts.net` tailnet hostnames (matched FIRST, before the IP/path passes,
+    /// so a `host-7.tailnet.ts.net` collapses to `<host>` as one unit).
+    ts_net: regex::Regex,
+    /// IPv6 literals (full, `::`-compressed, and `fe80::1`-style link-local).
+    /// Run before IPv4 so an IPv4-mapped tail does not get half-masked.
+    ipv6: regex::Regex,
+    /// Dotted-quad IPv4 literals.
+    ipv4: regex::Regex,
+    /// Absolute filesystem paths: the named macOS/Linux roots plus a generic
+    /// `/<seg>/<seg>/…` fallback. Run AFTER the host/IP passes so it cannot eat
+    /// an already-substituted `<ip>`/`<host>` token (those have no leading `/`).
+    abs_path: regex::Regex,
+}
+
+#[cfg(feature = "crash-report")]
+fn outbound_res() -> &'static OutboundRes {
+    static RES: OnceLock<OutboundRes> = OnceLock::new();
+    RES.get_or_init(|| OutboundRes {
+        // tailnet: <label>.…(.<label>)+.ts.net  → <host>. `(?i-u)` = ASCII-only
+        // case-insensitivity (the char classes are ASCII), avoiding the regex
+        // crate's `unicode-case` feature.
+        ts_net: regex::Regex::new(r"(?i-u)\b[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.ts\.net\b")
+            .expect("ts.net regex"),
+        // IPv6: a hex-group/`::` run with at least one `:` pair, optionally a
+        // `%zone` or `/prefix` suffix. Broad on purpose (outbound = mask-heavy).
+        // `(?i-u)`: ASCII-only case-insensitivity (hex digits are ASCII).
+        ipv6: regex::Regex::new(
+            r"(?i-u)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}(?:%[0-9a-z]+)?\b|\b(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4})?\b|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}\b",
+        )
+        .expect("ipv6 regex"),
+        // IPv4 dotted quad.
+        ipv4: regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("ipv4 regex"),
+        // Absolute paths. Named roots first (so /private/var/folders/… and
+        // /Users/<name>/… collapse whole), then a generic 2+-segment abs path.
+        // `[^\s:"']` segments stop at whitespace/quotes/colon so a "path: x"
+        // label or a `file:line` suffix is not swallowed.
+        abs_path: regex::Regex::new(
+            r#"(?:/private/var/folders|/var/folders|/Users|/home|/tmp|/private/tmp)(?:/[^\s:"'<>]+)+|/[^\s:"'<>/]+/[^\s:"'<>/]+(?:/[^\s:"'<>]*)*"#,
+        )
+        .expect("abs_path regex"),
+    })
+}
+
+/// Strict OUTBOUND scrubber — the last line of defense before any telemetry /
+/// Sentry payload leaves the machine. **Composes the local-log [`redact`]**
+/// (`$HOME` -> `~`, `REMOTE_HOST` -> `<host>`) and then additionally masks the
+/// classes that `redact` deliberately does NOT touch (so local debug logs keep
+/// full paths, per `docs/logging.md` §6):
+///
+///   * `*.ts.net` tailnet hostnames -> `<host>`
+///   * IPv6 + IPv4 literals          -> `<ip>`
+///   * absolute paths (`/Users/<name>`, `/home/<name>`,
+///     `/private/var/folders/..`, `/var/folders/..`, `/tmp/..`, and any generic
+///     `/<seg>/<seg>/..`) -> `<path>`
+///
+/// Pass order is deliberate: `redact` (turns the local `$HOME` into `~` so it is
+/// not re-masked as a generic `<path>`), then hostnames, then IPv6, then IPv4,
+/// then absolute paths (which therefore cannot eat an already-substituted
+/// `<ip>`/`<host>`). This is intentionally aggressive — over-masking an outbound
+/// crash report is acceptable; leaking an IP/path is not.
+#[cfg(feature = "crash-report")]
+fn scrub_outbound(s: &str) -> String {
+    let res = outbound_res();
+    let r = redact(s);
+    let r = res.ts_net.replace_all(&r, "<host>");
+    let r = res.ipv6.replace_all(&r, "<ip>");
+    let r = res.ipv4.replace_all(&r, "<ip>");
+    let r = res.abs_path.replace_all(&r, "<path>");
+    r.into_owned()
+}
+
+/// Read a single `KEY=value` line from `~/.remote-pair/client.env` (the same
+/// file [`remote_host`] parses), honoring quotes. `None` if absent/empty. Used
+/// for the telemetry consent + DSN settings, mirroring the env>file>default
+/// precedent of `REMOTEPAIR_LOG`/`REMOTE_HOST`. Only the crash reporter consumes
+/// these settings, so they are compiled only when that feature is enabled.
+#[cfg(feature = "crash-report")]
+fn client_env_value(key: &str) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let path = std::path::Path::new(&home).join(".remote-pair/client.env");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("{key}=");
+    for line in raw.lines() {
+        if let Some(v) = line.trim().strip_prefix(&prefix) {
+            let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a telemetry setting: env var wins, else `client.env`, else `None`
+/// (precedent: `REMOTE_HOST`/`REMOTEPAIR_LOG` — env > file > default).
+#[cfg(feature = "crash-report")]
+fn telemetry_setting(key: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(key) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    client_env_value(key)
+}
+
+/// `crash_report_consent` (spec: gates Sentry; **default false / opt-in**).
+/// Read from `CRASH_REPORT_CONSENT` (env > `~/.remote-pair/client.env`). Truthy
+/// = `1`/`true`/`yes`/`on` (case-insensitive). Anything else (including absent)
+/// => `false` => Sentry is never initialized => ZERO network calls.
+#[cfg(feature = "crash-report")]
+fn crash_report_consent() -> bool {
+    match telemetry_setting("CRASH_REPORT_CONSENT") {
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        None => false,
+    }
+}
+
 /// The custom layer: formats and persists the unified contract line for every
 /// event whose level passes the `EnvFilter`.
 struct RemotePairLayer;
@@ -360,9 +489,286 @@ pub fn init() {
         Err(_) => return,
     }
 
+    // Crash reporting (Sentry) MUST init before the local panic hook so the
+    // hook chain ends up [local dump -> sentry capture -> default]: see
+    // `init_crash_reporter` + `install_panic_hook`. No-op when consent is off,
+    // the DSN is absent, or the `crash-report` feature is disabled.
+    init_crash_reporter();
+    install_panic_hook();
+
     let _ = tracing_subscriber::registry()
         .with(RemotePairLayer.with_filter(build_filter()))
         .try_init();
+}
+
+/// Seconds since the Unix epoch — used to name crash-dump files uniquely.
+fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Keep the Sentry client guard alive for the whole process. Dropping it would
+/// flush + disable the client; storing it in a process-global keeps crash
+/// reporting active until exit (the guard's `Drop` then flushes pending events).
+#[cfg(feature = "crash-report")]
+static SENTRY_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
+
+/// Scrub every PII-bearing string in a Sentry [`Event`] through the strict
+/// outbound scrubber [`scrub_outbound`] (which composes the local-log [`redact`]
+/// with IPv4/IPv6 -> `<ip>`, broad absolute paths -> `<path>`, and `*.ts.net` ->
+/// `<host>`). This is the `before_send` last line of defense: panic messages and
+/// backtrace frame paths are the usual leak, but a raw IPv4/IPv6, a tailnet
+/// `*.ts.net` name, or an other-user `/Users/<name>/…` path can ride along too,
+/// so we mask aggressively over **every** free-text surface:
+///   * message / culprit / transaction / logger / log entry
+///   * every exception value + module + frame string field
+///   * every thread frame and the deprecated top-level stacktrace
+///   * breadcrumb messages
+///   * `contexts` string values (the hardware `device` context is DROPPED — the
+///     `device_arch` super-property already carries the only useful bit and the
+///     model id is a fingerprint), `extra` values, and `tags` values
+///
+/// It also CLEARS `user` and `request` (they only carry PII — ip/email/cookies/
+/// headers) and force-nulls `server_name`. The `server_name = None` here is
+/// **load-bearing**, not merely defensive: Sentry's `ContextIntegration`
+/// repopulates `server_name` (the hostname) *after* client init, so clearing it
+/// only at `ClientOptions` build time is insufficient — `before_send` is the one
+/// place that runs after that integration.
+#[cfg(feature = "crash-report")]
+fn scrub_event(mut event: sentry::protocol::Event<'static>) -> sentry::protocol::Event<'static> {
+    fn scrub_opt(s: &mut Option<String>) {
+        if let Some(v) = s {
+            *v = scrub_outbound(v);
+        }
+    }
+    fn scrub_frames(st: &mut sentry::protocol::Stacktrace) {
+        for f in &mut st.frames {
+            scrub_opt(&mut f.function);
+            scrub_opt(&mut f.symbol);
+            scrub_opt(&mut f.module);
+            scrub_opt(&mut f.package);
+            scrub_opt(&mut f.filename);
+            scrub_opt(&mut f.abs_path);
+            scrub_opt(&mut f.context_line);
+            for line in &mut f.pre_context {
+                *line = scrub_outbound(line);
+            }
+            for line in &mut f.post_context {
+                *line = scrub_outbound(line);
+            }
+        }
+    }
+    // Recursively scrub every string leaf of a serde_json value in place (used
+    // for `extra` values and the serialized form of each `contexts` entry).
+    fn scrub_json(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::String(s) => *s = scrub_outbound(s),
+            serde_json::Value::Array(a) => a.iter_mut().for_each(scrub_json),
+            serde_json::Value::Object(o) => o.values_mut().for_each(scrub_json),
+            _ => {}
+        }
+    }
+
+    // Never ship a server/host name. Load-bearing: ContextIntegration sets this
+    // AFTER init, so the init-time `server_name: None` alone is not enough — this
+    // `before_send` clear is the one that actually wins.
+    event.server_name = None;
+
+    // Drop PII-only carriers wholesale (ip_address/email/username, request
+    // url/cookies/headers/env). Nothing here is useful for crash triage.
+    event.user = None;
+    event.request = None;
+
+    scrub_opt(&mut event.message);
+    scrub_opt(&mut event.culprit);
+    scrub_opt(&mut event.transaction);
+    scrub_opt(&mut event.logger);
+    if let Some(le) = &mut event.logentry {
+        le.message = scrub_outbound(&le.message);
+    }
+
+    for ex in &mut event.exception.values {
+        scrub_opt(&mut ex.value);
+        scrub_opt(&mut ex.module);
+        if let Some(st) = &mut ex.stacktrace {
+            scrub_frames(st);
+        }
+        if let Some(st) = &mut ex.raw_stacktrace {
+            scrub_frames(st);
+        }
+    }
+
+    for th in &mut event.threads.values {
+        if let Some(st) = &mut th.stacktrace {
+            scrub_frames(st);
+        }
+        if let Some(st) = &mut th.raw_stacktrace {
+            scrub_frames(st);
+        }
+    }
+
+    if let Some(st) = &mut event.stacktrace {
+        scrub_frames(st);
+    }
+
+    // Breadcrumbs are not produced by this sidecar today, but scrub any message
+    // defensively in case future code adds them before a panic.
+    for bc in &mut event.breadcrumbs.values {
+        bc.message = bc.message.as_deref().map(scrub_outbound);
+    }
+
+    // Contexts: DROP the hardware `device` fingerprint context (the
+    // `device_arch` super-property covers the only useful bit), then scrub every
+    // remaining context's string values. We round-trip each context through
+    // serde_json so this covers os/app/runtime/`Other` string fields generically
+    // without matching on every typed field by hand.
+    event.contexts.remove("device");
+    for ctx in event.contexts.values_mut() {
+        if let Ok(mut val) = serde_json::to_value(&*ctx) {
+            scrub_json(&mut val);
+            if let Ok(scrubbed) = serde_json::from_value(val) {
+                *ctx = scrubbed;
+            }
+        }
+    }
+
+    // Extra: arbitrary user-attached values — scrub every string leaf.
+    for val in event.extra.values_mut() {
+        scrub_json(val);
+    }
+
+    // Tags: e.g. the `rp_session` correlation tag; scrub the values (keys are
+    // our own static identifiers).
+    for tag in event.tags.values_mut() {
+        *tag = scrub_outbound(tag);
+    }
+
+    event
+}
+
+/// Initialize Sentry crash reporting (crashes ONLY — the AGPL Rust core never
+/// emits PostHog/product analytics). **Gated at runtime on `crash_report_consent`
+/// (default OFF) AND a configured DSN**; if either is missing this is a no-op and
+/// **no network client is ever created** => zero outbound calls (spec acceptance:
+/// both consent flags OFF => zero network).
+///
+/// Privacy posture (spec / OSS audit):
+///   * `send_default_pii = false`
+///   * `server_name = None` at init AND force-cleared in [`scrub_event`]. The
+///     `before_send` clear is load-bearing: Sentry's `ContextIntegration`
+///     repopulates `server_name` (the hostname) after init, so the init-time
+///     `None` alone would be undone.
+///   * `before_send = scrub_event` runs the strict [`scrub_outbound`] scrubber
+///     (composes [`redact`] + IPv4/IPv6 + broad absolute paths + `*.ts.net`)
+///     over the message, every backtrace frame, contexts/extra/tags, and clears
+///     user/request — so IPs, tailnet names, and `$HOME`/other-user paths never
+///     leave the machine.
+///
+/// DSN + `release` come from config (env/`client.env`), never hardcoded.
+#[cfg(feature = "crash-report")]
+fn init_crash_reporter() {
+    if !crash_report_consent() {
+        return; // opt-in default OFF => no client, no network.
+    }
+    let dsn = match telemetry_setting("SENTRY_DSN") {
+        Some(d) => d,
+        None => return, // DSN absent => do not init (spec).
+    };
+
+    // release = crate version; environment from config or "production".
+    let release = sentry::release_name!();
+    let environment = telemetry_setting("RP_TELEMETRY_ENV")
+        .map(std::borrow::Cow::Owned)
+        .unwrap_or(std::borrow::Cow::Borrowed("production"));
+
+    let options = sentry::ClientOptions {
+        release,
+        environment: Some(environment),
+        send_default_pii: false,
+        server_name: None,
+        // Attach a backtrace to error-level non-panic events too; panics already
+        // carry one via the panic integration. Frames are scrubbed in before_send.
+        attach_stacktrace: true,
+        // Last-line PII scrub over every outgoing event.
+        before_send: Some(std::sync::Arc::new(|event| Some(scrub_event(event)))),
+        ..Default::default()
+    };
+
+    // `(dsn, options)` -> ClientOptions via IntoDsn; an unparseable DSN yields a
+    // disabled client (no network) rather than a panic.
+    let guard = sentry::init((dsn, options));
+    let _ = SENTRY_GUARD.set(guard);
+
+    // Correlation tag: the process-global session (the tmux session id, or `-`).
+    // NOTE: ScreenServer.spawn() does not pass RP_SESSION to the sidecar today,
+    // so this is `-` until that is wired (see followups).
+    sentry::configure_scope(|scope| {
+        scope.set_tag("rp_session", current_session());
+        scope.set_tag("component", COMP);
+    });
+}
+
+/// No-op build of the crash reporter when the `crash-report` feature is off.
+/// Keeps [`init`] free of `cfg` noise and the crate compilable with
+/// `--no-default-features` (license-firewall fallback path).
+#[cfg(not(feature = "crash-report"))]
+fn init_crash_reporter() {}
+
+/// Install a panic hook that persists a local crash dump (contract §10) so a
+/// panic is recoverable from `remote-pair logs --collect` even though no remote
+/// telemetry is sent. Writes the panic message + location + a full backtrace
+/// (`force_capture`, independent of `RUST_BACKTRACE`) to
+/// `~/.remote-pair/logs/crash-rust-<epoch>.log` (mode 0600), drops a one-line
+/// ERROR pointer into `rust.log`, then chains the previous hook (keeps the
+/// default stderr message / abort behavior). Panics are not async-signal
+/// contexts, so allocation + [`redact`] are safe here.
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let ts = iso8601_now();
+        let sess = current_session();
+        let bt = std::backtrace::Backtrace::force_capture();
+
+        let body = redact(&format!(
+            "=== RemotePair CRASH (rust panic) ===\n\
+             [{ts}] [PANIC] [{COMP}] [{sess}] {msg} at {loc}\n\n{bt}\n"
+        ));
+        let path = log_dir().join(format!("crash-{COMP}-{}.log", epoch_secs()));
+        let _ = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut f| f.write_all(body.as_bytes()));
+
+        // One-line pointer into the normal log so `remote-pair logs` shows it inline.
+        if let Some(file) = FILE.get() {
+            if let Ok(mut f) = file.lock() {
+                let _ = f.write_all(
+                    redact(&format!(
+                        "[{ts}] [ERROR] [{COMP}] [{sess}] PANIC {msg} at {loc} (dump: {})\n",
+                        path.display()
+                    ))
+                    .as_bytes(),
+                );
+            }
+        }
+
+        prev(info);
+    }));
 }
 
 /// Mid-run rotation guard for long-lived loops (the serve frame loop). Cheap:
@@ -380,5 +786,107 @@ pub fn rotate_guard() {
         if let Ok(mut guard) = slot.lock() {
             *guard = f;
         }
+    }
+}
+
+#[cfg(all(test, feature = "crash-report"))]
+mod tests {
+    use super::*;
+    use sentry::protocol::{Context, Event, Exception, Frame, Stacktrace};
+
+    /// The five PII classes the outbound scrubber MUST mask (privacy audit):
+    /// IPv4, IPv6 (incl. link-local), a `/private/var/folders` macOS temp path,
+    /// an other-user `/Users/<name>` path, and a `*.ts.net` tailnet hostname.
+    const SECRETS: &[&str] = &[
+        "1.2.3.4",
+        "fe80::1",
+        "/private/var/folders/x/y",
+        "/Users/alice/secret",
+        "/opt/company/key.pem",
+        "host-7.tailnet.ts.net",
+    ];
+
+    fn assert_all_masked(s: &str, where_: &str) {
+        for secret in SECRETS {
+            assert!(
+                !s.contains(secret),
+                "outbound scrub leaked {secret:?} in {where_}: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrub_outbound_masks_every_class() {
+        let raw = "ip4=1.2.3.4 ip6=fe80::1 tmp=/private/var/folders/x/y \
+                   home=/Users/alice/secret opt=/opt/company/key.pem host=host-7.tailnet.ts.net";
+        let out = scrub_outbound(raw);
+        assert_all_masked(&out, "scrub_outbound");
+        // Sanity: the masks are actually applied (not just deletion).
+        assert!(out.contains("<ip>"), "expected <ip> token: {out:?}");
+        assert!(out.contains("<path>"), "expected <path> token: {out:?}");
+        assert!(out.contains("<host>"), "expected <host> token: {out:?}");
+    }
+
+    #[test]
+    fn scrub_event_masks_message_and_frame_and_meta() {
+        let blob = "1.2.3.4 fe80::1 /private/var/folders/x/y \
+                    /Users/alice/secret /opt/company/key.pem host-7.tailnet.ts.net";
+
+        let frame = Frame {
+            filename: Some(format!("{blob} fname")),
+            abs_path: Some(format!("{blob} abspath")),
+            function: Some(format!("{blob} fn")),
+            context_line: Some(format!("{blob} ctx")),
+            ..Default::default()
+        };
+        let stacktrace = Stacktrace {
+            frames: vec![frame],
+            ..Default::default()
+        };
+        let exception = Exception {
+            ty: "Panic".into(),
+            value: Some(format!("{blob} exval")),
+            stacktrace: Some(stacktrace),
+            ..Default::default()
+        };
+
+        let mut event = Event {
+            message: Some(format!("{blob} msg")),
+            ..Default::default()
+        };
+        event.exception.values.push(exception);
+        // contexts / extra / tags carriers + the device fingerprint that must be dropped.
+        let mut ctx_map = sentry::protocol::Map::new();
+        ctx_map.insert("note".into(), serde_json::Value::String(blob.into()));
+        event
+            .contexts
+            .insert("custom".into(), Context::Other(ctx_map));
+        event.contexts.insert(
+            "device".into(),
+            Context::Other({
+                let mut m = sentry::protocol::Map::new();
+                m.insert("model".into(), serde_json::Value::String(blob.into()));
+                m
+            }),
+        );
+        event
+            .extra
+            .insert("k".into(), serde_json::Value::String(blob.into()));
+        event.tags.insert("rp_session".into(), blob.into());
+
+        let scrubbed = scrub_event(event);
+
+        // Re-serialize the whole event and assert no secret survives anywhere.
+        let json = serde_json::to_string(&scrubbed).expect("serialize scrubbed event");
+        assert_all_masked(&json, "serialized scrub_event output");
+
+        // server_name force-nulled; device context dropped; user/request cleared.
+        assert!(scrubbed.server_name.is_none(), "server_name must be None");
+        assert!(
+            !scrubbed.contexts.contains_key("device"),
+            "device context must be dropped"
+        );
+        assert!(scrubbed.user.is_none(), "user must be cleared");
+        assert!(scrubbed.request.is_none(), "request must be cleared");
     }
 }

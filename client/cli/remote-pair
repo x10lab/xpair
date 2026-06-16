@@ -10,6 +10,9 @@
 #                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal).
 #   remote-pair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   remote-pair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
+#   remote-pair discover [--json] [--timeout S]   Discover RemotePair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
+#   remote-pair pair --host <addr> --pin <pin> --fp <SHA256:..> [--alias N] [--user U]   PAKE-pair with a host (no account password); writes ~/.ssh/config + sets host.
+#   remote-pair install-host [--host <a>] [--account <u>] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
 #   remote-pair doctor         Check SSH key connection, host app, tmux + guidance
 #   remote-pair approve [--for "<what>"] [--type "key:..|ocr:.."] [--timeout S]   Handle a blocked approval dialog
 #                              --for: which dialog (alias-tolerant)  ·  --type: how to approve — agent decides (key:<combo>|ocr:<label>)
@@ -790,6 +793,395 @@ _resolve_client_tool() {
   return 1
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Discovery / pairing / remote-install (components ②④ — plan C1–C5).
+# Shared, security-sensitive helpers live here so cmd_discover/cmd_pair/
+# cmd_install_host reuse ONE implementation. The CLI is the brain; the Electron
+# bridge (onboarding-bridge.js) just shells these verbs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── shared SSH-key helpers (factored from cmd_onboard keygen path :391) ──
+# Echo the path to the client's ed25519 public key, generating the keypair
+# (passphrase-less, like cmd_onboard :391) if none exists. id_ed25519 is the key
+# the ssh-config block (C4) pins, so we standardize on it.
+rp_ssh_pubkey() {
+  local key="$HOME/.ssh/id_ed25519" pub="$HOME/.ssh/id_ed25519.pub"
+  if [ ! -f "$pub" ]; then
+    # Reuse an existing ed25519 pubkey under a non-default name if present.
+    local existing; existing="$(ls "$HOME"/.ssh/id_ed25519*.pub 2>/dev/null | head -1 || true)"
+    if [ -n "$existing" ]; then printf '%s' "$existing"; return 0; fi
+    mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh" 2>/dev/null || true
+    ssh-keygen -t ed25519 -f "$key" -N "" </dev/null >/dev/null 2>&1 \
+      || { err "ssh-keygen failed"; return 1; }
+  fi
+  printf '%s' "$pub"
+}
+
+# Locate the bundled askpass helper (sibling of this CLI / installed copy).
+rp_askpass_path() { _resolve_client_tool remote-pair-askpass 2>/dev/null || true; }
+
+# Locate the Rust PAKE client binary (built by the parallel agent; see plan P3).
+rp_pake_path() { _resolve_client_tool remote-pair-pake 2>/dev/null || true; }
+
+# ── C4. ~/.ssh/config managed-block writer (NET-NEW) ──
+# Idempotently upsert a sentinel-delimited managed block for one Host alias.
+# Atomic (temp+rename), preserves file mode, never touches lines outside the
+# per-alias sentinels, and leaves foreign Host*/Include/Match blocks untouched.
+#   rp_ssh_config_write <alias> <hostname> <user> [identity_file]
+RP_SSH_CFG="${RP_SSH_CFG:-$HOME/.ssh/config}"
+rp_ssh_config_write() {
+  local alias="$1" hostname="$2" user="$3" identity="${4:-$HOME/.ssh/id_ed25519}"
+  [ -n "$alias" ] && [ -n "$hostname" ] && [ -n "$user" ] || { err "rp_ssh_config_write: alias/hostname/user required"; return 2; }
+  local cfg="$RP_SSH_CFG" dir; dir="$(dirname "$cfg")"
+  mkdir -p "$dir"; chmod 700 "$dir" 2>/dev/null || true
+  [ -f "$cfg" ] || { : > "$cfg"; chmod 600 "$cfg" 2>/dev/null || true; }
+
+  # Per-alias sentinels so multiple managed hosts coexist; one block per alias.
+  local beg="# >>> remote-pair: $alias >>>"
+  local end="# <<< remote-pair: $alias <<<"
+  local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/rp-sshcfg.XXXXXX")" || { err "mktemp failed"; return 1; }
+
+  # Copy everything EXCEPT the existing managed block for this alias (drop it; we re-emit).
+  awk -v b="$beg" -v e="$end" '
+    $0==b {skip=1; next}
+    $0==e {skip=0; next}
+    skip!=1 {print}
+  ' "$cfg" > "$tmp" 2>/dev/null || { rm -f "$tmp"; err "awk failed"; return 1; }
+
+  # Append the freshly-rendered managed block.
+  {
+    printf '%s\n' "$beg"
+    printf 'Host %s\n' "$alias"
+    printf '  HostName %s\n' "$hostname"
+    printf '  User %s\n' "$user"
+    printf '  IdentityFile %s\n' "$identity"
+    printf '  AddKeysToAgent yes\n'
+    printf '  UseKeychain yes\n'
+    printf '  HostKeyAlgorithms ssh-ed25519\n'
+    printf '%s\n' "$end"
+  } >> "$tmp"
+
+  # Preserve mode, atomic replace.
+  local mode; mode="$(stat -f '%Lp' "$cfg" 2>/dev/null || echo 600)"
+  mv "$tmp" "$cfg" && chmod "$mode" "$cfg" 2>/dev/null || { err "ssh-config write failed"; return 1; }
+  return 0
+}
+
+# Normalize a fingerprint to the canonical "SHA256:…" form (accept bare base64).
+rp_norm_fp() { case "$1" in SHA256:*) printf '%s' "$1" ;; *) printf 'SHA256:%s' "$1" ;; esac; }
+
+# ── C1. remote-pair discover [--json] [--timeout S] ──
+# Concurrent LAN (Bonjour via dns-sd) + Tailscale discovery → normalized JSON
+# peer list on stdout (the Electron bridge calls this). Schema per peer:
+#   {"name","addrs":[…],"source":"lan|tailscale|ssh","fp":"SHA256:…"|null,
+#    "status":"reconnect|connect|setup"}
+# Dedup by host-key fingerprint; cross-reference ~/.ssh/config + client.env.
+RP_BONJOUR_TYPE="_remotepair._tcp"
+# Auto-detect the Tailscale CLI across install layouts (App Store sandbox, brew, manual).
+rp_tailscale_bin() {
+  local p
+  for p in \
+    /Applications/Tailscale.app/Contents/MacOS/Tailscale \
+    /opt/homebrew/bin/tailscale \
+    /usr/local/bin/tailscale ; do
+    [ -x "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  p="$(command -v tailscale 2>/dev/null || true)"; [ -n "$p" ] && { printf '%s' "$p"; return 0; }
+  return 1
+}
+
+# Is <name-or-host> already in ~/.ssh/config (managed or foreign Host alias)?
+_rp_in_ssh_config() {
+  local q="$1"; [ -f "$RP_SSH_CFG" ] || return 1
+  awk -v q="$q" 'BEGIN{IGNORECASE=1} /^[[:space:]]*Host([[:space:]]|=)/ {for(i=2;i<=NF;i++) if($i==q) {f=1}} END{exit f?0:1}' "$RP_SSH_CFG"
+}
+# status for a peer: reconnect (known in config / REMOTE_HOST), else connect (RemotePair role), else setup.
+_rp_peer_status() {
+  local name="$1" addr="$2" role="$3"
+  if [ -n "$name" ] && _rp_in_ssh_config "$name"; then printf 'reconnect'; return; fi
+  if [ -n "$addr" ] && _rp_in_ssh_config "$addr"; then printf 'reconnect'; return; fi
+  if [ -n "${REMOTE_HOST:-}" ] && { [ "$REMOTE_HOST" = "$name" ] || [ "$REMOTE_HOST" = "$addr" ]; }; then printf 'reconnect'; return; fi
+  # A peer advertising the RemotePair service (any role) → PIN/PAKE connect; otherwise plain SSH setup.
+  case "$role" in host|both|client) printf 'connect' ;; *) printf 'setup' ;; esac
+}
+
+cmd_discover() {
+  # JSON is the only output mode (the Electron bridge consumes it); --json is
+  # accepted for an explicit, self-documenting bridge contract but is the default.
+  local timeout=4 _fp_host=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --json) shift ;;
+    --timeout) timeout="${2:-4}"; shift 2 ;;
+    --fingerprint) _fp_host="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac; done
+  case "$timeout" in (''|*[!0-9]*) timeout=4 ;; esac
+
+  # --fingerprint <host>: fetch ONE host's ed25519 key fingerprint via ssh-keyscan, for the
+  # Electron bridge's hostKeyFingerprint() on the manual-entry path (host not in the Bonjour/
+  # Tailscale peer list, so no advertised TXT fp to TOFU against). Emits {"fp":"SHA256:…"} or
+  # {"fp":null,"err":"…"}. Matches `ssh-keygen -lf` form (same as the host's advertised fp).
+  if [ -n "$_fp_host" ]; then
+    local _ks _fpv=""
+    _ks="$(ssh-keyscan -t ed25519 -T "$timeout" "$_fp_host" 2>/dev/null)" || true
+    [ -n "$_ks" ] && _fpv="$(printf '%s\n' "$_ks" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' | head -1)"
+    if [ -n "$_fpv" ]; then printf '{"fp":"%s"}\n' "$_fpv"
+    else printf '{"fp":null,"err":"could not fetch host key for %s"}\n' "$_fp_host"; fi
+    return 0
+  fi
+
+  # Collect peers as tab-separated records: name \t addr \t source \t fp \t role
+  # then dedup by fp (fall back to name) and emit JSON. We use a temp file rather
+  # than a subshell pipe so the awk emitter sees the whole set.
+  local rec; rec="$(mktemp "${TMPDIR:-/tmp}/rp-disc.XXXXXX")" || { err "mktemp failed"; return 1; }
+  # shellcheck disable=SC2064
+  trap "rm -f '$rec'" RETURN
+
+  # ── LAN: Bonjour browse → resolve TXT (hn/v/role/fp) ──
+  if command -v dns-sd >/dev/null 2>&1; then
+    local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
+    # dns-sd has no built-in exit; run bounded in the background and kill it.
+    ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & local bpid=$!
+    ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
+    wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
+    # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>"
+    local svcname
+    while IFS= read -r line; do
+      case "$line" in *" Add "*) ;; *) continue ;; esac
+      svcname="$(printf '%s' "$line" | sed -n 's/.*'"$RP_BONJOUR_TYPE"'\.[[:space:]]*\(.*\)$/\1/p')"
+      [ -n "$svcname" ] || continue
+      # Resolve TXT + host for this instance.
+      local lk; lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
+      ( dns-sd -t "$timeout" -L "$svcname" "$RP_BONJOUR_TYPE" >"$lk" 2>/dev/null ) & local lpid=$!
+      ( sleep "$timeout"; kill "$lpid" 2>/dev/null ) >/dev/null 2>&1 & local lkid=$!
+      wait "$lpid" 2>/dev/null || true; kill "$lkid" 2>/dev/null || true
+      # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
+      local txt hn fp role addr
+      txt="$(cat "$lk" 2>/dev/null)"
+      addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
+      hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
+      fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
+      role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
+      [ -n "$hn" ] || hn="$svcname"
+      [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
+      rm -f "$lk"
+    done < "$browse"
+    rm -f "$browse"
+  fi
+
+  # ── Tailscale: parse `tailscale status --json` peers ──
+  local ts; ts="$(rp_tailscale_bin || true)"
+  if [ -n "$ts" ] && command -v python3 >/dev/null 2>&1; then
+    "$ts" status --json 2>/dev/null | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for p in (d.get("Peer") or {}).values():
+    name = (p.get("DNSName") or p.get("HostName") or "").rstrip(".")
+    if not name: continue
+    addrs = p.get("TailscaleIPs") or []
+    addr = addrs[0] if addrs else name
+    online = "online" if p.get("Online") else "offline"
+    # name, addr, source, fp(empty), role(empty); status hint via role col left blank
+    print("%s\t%s\t%s\t%s\t%s" % (name, addr, "tailscale", "", online))
+' >> "$rec" 2>/dev/null || true
+  fi
+
+  # ── Dedup by fp (fallback name) + cross-reference config; emit JSON array ──
+  python3 - "$rec" <<'PY'
+import json, sys, subprocess, os, re
+recfile = sys.argv[1]
+peers = {}
+order = []
+def load_cfg_aliases():
+    cfg = os.environ.get("RP_SSH_CFG") or os.path.expanduser("~/.ssh/config")
+    al = set()
+    try:
+        for ln in open(cfg):
+            m = re.match(r"\s*Host[\s=]+(.*)", ln, re.I)
+            if m:
+                for tok in m.group(1).split():
+                    al.add(tok)
+    except Exception:
+        pass
+    return al
+cfg_aliases = load_cfg_aliases()
+remote_host = os.environ.get("REMOTE_HOST", "")
+
+def status_for(name, addr, role):
+    if name in cfg_aliases or addr in cfg_aliases or name == remote_host or addr == remote_host:
+        return "reconnect"
+    if role in ("host", "both", "client"):
+        return "connect"
+    return "setup"
+
+try:
+    lines = open(recfile).read().splitlines()
+except Exception:
+    lines = []
+for ln in lines:
+    if not ln.strip():
+        continue
+    parts = ln.split("\t")
+    while len(parts) < 5:
+        parts.append("")
+    name, addr, source, fp, role = parts[:5]
+    key = fp if fp else ("name:" + name)
+    if key not in peers:
+        peers[key] = {"name": name, "addrs": [], "sources": [], "fp": fp or None, "_role": role}
+        order.append(key)
+    p = peers[key]
+    if addr and addr not in p["addrs"]:
+        p["addrs"].append(addr)
+    if source and source not in p["sources"]:
+        p["sources"].append(source)
+    if (not p["fp"]) and fp:
+        p["fp"] = fp
+    if (not p["_role"]) and role in ("host", "both", "client"):
+        p["_role"] = role
+
+out = []
+for key in order:
+    p = peers[key]
+    name = p["name"]
+    addr = p["addrs"][0] if p["addrs"] else name
+    src = p["sources"][0] if p["sources"] else "ssh"
+    out.append({
+        "name": name,
+        "addrs": p["addrs"],
+        "source": src,
+        "sources": p["sources"],
+        "fp": p["fp"],
+        "status": status_for(name, addr, p["_role"]),
+    })
+print(json.dumps(out))
+PY
+}
+
+# ── C2. remote-pair pair --host <addr> --pin <pin> --fp <SHA256:…> [--alias N] ──
+# Client side of the PAKE. Shells to the Rust remote-pair-pake binary (P3), which
+# performs SPAKE2 + pubkey handoff bound to the host-key fp. On success: write the
+# ssh-config block (C4) and persist REMOTE_HOST.
+cmd_pair() {
+  local host="" pin="" fp="" alias="" user="${USER:-$(id -un)}"
+  while [ $# -gt 0 ]; do case "$1" in
+    --host)  host="${2:-}"; shift 2 ;;
+    --pin)   pin="${2:-}"; shift 2 ;;
+    --fp|--expect-fp) fp="${2:-}"; shift 2 ;;
+    --alias) alias="${2:-}"; shift 2 ;;
+    --user)  user="${2:-}"; shift 2 ;;
+    *) echo "pair --host <addr> --pin <pin> --fp <SHA256:…> [--alias N] [--user U]" >&2; return 2 ;;
+  esac; done
+  [ -n "$host" ] && [ -n "$pin" ] && [ -n "$fp" ] || { err "pair requires --host, --pin and --fp"; return 2; }
+  fp="$(rp_norm_fp "$fp")"
+  [ -n "$alias" ] || alias="$host"
+
+  local pub; pub="$(rp_ssh_pubkey)" || return 1
+  local pake; pake="$(rp_pake_path)"
+  [ -n "$pake" ] || { err "remote-pair-pake binary not found (PAKE helper not installed)"; return 1; }
+
+  # The PAKE binary owns the full handshake: SPAKE2 with the PIN, host-key fp
+  # cross-check (TOFU), and the pubkey handoff on MAC success. The PIN is passed
+  # only as an argv to this dedicated process — it never reaches a log or telemetry.
+  c "pairing with $host (PAKE) …"
+  if "$pake" --host "$host" --pin "$pin" --expect-fp "$fp" --pubkey "$pub"; then
+    ok "PAKE success — key authorized on $host"
+  else
+    err "pairing failed (wrong/expired PIN, fp mismatch, or host re-armed)"
+    return 1
+  fi
+
+  rp_ssh_config_write "$alias" "$host" "$user" "$HOME/.ssh/id_ed25519" || return 1
+  ok "ssh config written: Host $alias → $host"
+  rp_set REMOTE_HOST "$alias"; REMOTE_HOST="$alias"
+  ok "host set: $alias"
+}
+
+# ── C3. remote-pair install-host [--host <addr>] [--account <user>] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
+# Idempotent, integrity-verified remote install-or-repair over SSH.
+#   default: scp the locally-built, already-signed build/RemotePairHost.app and
+#            run shared/install.sh --role host against it (integrity by signature).
+#   --bootstrap: explicit opt-in to curl|bash; REQUIRES --sha256 of the fetched
+#                script and a pinned --ref; aborts before any host exec on mismatch.
+cmd_install_host() {
+  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main"
+  while [ $# -gt 0 ]; do case "$1" in
+    --host)      host="${2:-}"; shift 2 ;;
+    --account)   account="${2:-}"; shift 2 ;;
+    --bootstrap) use_bootstrap=1; shift ;;
+    --sha256)    sha="${2:-}"; shift 2 ;;
+    --ref)       ref="${2:-main}"; shift 2 ;;
+    *) echo "install-host [--host <addr>] [--account <user>] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
+  esac; done
+  [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
+  local target="$host"; [ -n "$account" ] && target="$account@$host"
+
+  # SSH with NO controlling TTY so SSH_ASKPASS_REQUIRE=force routes any password
+  # prompt to the helper (C5), never the terminal. setsid -w detaches the TTY.
+  local askpass; askpass="$(rp_askpass_path)"
+  local SSHENV=()
+  if [ -n "$askpass" ]; then SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0"); fi
+  # Detached-ssh wrapper: no stdin tty, askpass forced. Requires OpenSSH 8.4+.
+  _rp_ssh() {
+    if command -v setsid >/dev/null 2>&1; then
+      "${SSHENV[@]}" setsid -w ssh -o ConnectTimeout=8 "$@" </dev/null
+    else
+      "${SSHENV[@]}" ssh -o ConnectTimeout=8 "$@" </dev/null
+    fi
+  }
+
+  # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
+  c "checking $target for an existing $APP_NAME install …"
+  if _rp_ssh -o BatchMode=yes "$target" "[ -d ~/Applications/$APP_NAME.app ] || [ -d /Applications/$APP_NAME.app ]" 2>/dev/null; then
+    ok "$APP_NAME already installed on $target → re-registering (no reinstall)"
+    _rp_ssh "$target" "launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX 2>/dev/null || open -a $APP_NAME 2>/dev/null || true" 2>/dev/null || true
+  else
+    # ── 2. Install with integrity ──
+    local repo_root here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    repo_root="$(cd "$here/../.." 2>/dev/null && pwd)"
+    if [ "$use_bootstrap" = 1 ]; then
+      # Opt-in curl|bash: pin a ref + verify a published SHA256 BEFORE any host exec.
+      [ -n "$sha" ] || { err "--bootstrap requires --sha256 <hex> (no unverified curl|bash)"; return 2; }
+      c "fetching bootstrap.sh @ $ref and verifying SHA256 before remote exec …"
+      local btmp; btmp="$(mktemp "${TMPDIR:-/tmp}/rp-boot.XXXXXX")"
+      curl -fsSL "https://raw.githubusercontent.com/${GH_REPO:-ghyeongl/remote-pair}/$ref/shared/bootstrap.sh" -o "$btmp" \
+        || { err "bootstrap fetch failed"; rm -f "$btmp"; return 1; }
+      local got; got="$(shasum -a 256 "$btmp" 2>/dev/null | awk '{print $1}')"
+      if [ "$got" != "$sha" ]; then
+        err "SHA256 mismatch — aborting before any host exec (expected $sha, got $got)"; rm -f "$btmp"; return 1
+      fi
+      ok "checksum verified — running pinned bootstrap on $target"
+      _rp_ssh "$target" "ROLE=host BRANCH=$ref bash -s" < "$btmp" || { rm -f "$btmp"; err "remote bootstrap failed"; return 1; }
+      rm -f "$btmp"
+    else
+      # Default: scp the locally-built SIGNED .app + install.sh; integrity = signature.
+      local appsrc="$repo_root/host/build/$APP_NAME.app"
+      [ -d "$appsrc" ] || { err "no local signed app: $appsrc — run host/build-host.sh first (or use --bootstrap --sha256)"; return 1; }
+      c "scp signed $APP_NAME.app → $target (integrity by code signature) …"
+      _rp_ssh "$target" "mkdir -p ~/.cache/remote-pair/build" 2>/dev/null || true
+      # rsync over the detached ssh wrapper would need -e plumbing; scp -r is sufficient and uses the same askpass env.
+      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$appsrc" "$target:~/.cache/remote-pair/build/" </dev/null \
+        || { err "scp of signed app failed"; return 1; }
+      # Run install.sh --role host against the staged build dir (REPO_ROOT points at the staged tree).
+      "${SSHENV[@]}" scp -o ConnectTimeout=8 "$repo_root/shared/install.sh" "$target:~/.cache/remote-pair/install.sh" </dev/null \
+        || { err "scp of install.sh failed"; return 1; }
+      _rp_ssh "$target" "cd ~/.cache/remote-pair && mkdir -p build && RP_YES=1 bash install.sh --role host" \
+        || { err "remote install.sh failed"; return 1; }
+      ok "signed app installed on $target"
+    fi
+  fi
+
+  # ── 3. Post-install: TCC handoff + GUI-session account warning ──
+  local guiuser; guiuser="$(_rp_ssh -o BatchMode=yes "$target" 'stat -f%Su /dev/console 2>/dev/null' 2>/dev/null | tr -d '\r')"
+  if [ -n "$account" ] && [ -n "$guiuser" ] && [ "$account" != "$guiuser" ]; then
+    warn "target account '$account' ≠ host GUI-session account '$guiuser' — TCC grant must be done while logged in as the GUI user on the host's screen."
+  fi
+  c "Next, on the HOST's physical screen: System Settings → Privacy & Security →"
+  printf '   turn %s ON for Accessibility + Screen Recording (macOS cannot grant these remotely).\n' "$APP_NAME"
+  ok "install-host complete for $target"
+}
+
 # remote-pair editor — code-server launcher (M4). Thin pass-through to remote-pair-editor.
 cmd_editor() {
   local tool; tool="$(_resolve_client_tool remote-pair-editor)" \
@@ -978,6 +1370,9 @@ case "${1:-help}" in
   config)  shift; cmd_config "$@" ;;
   onboard) cmd_onboard ;;
   open-gui) shift; cmd_open_gui "$@" ;;
+  discover) shift; cmd_discover "$@" ;;
+  pair)    shift; cmd_pair "$@" ;;
+  install-host) shift; cmd_install_host "$@" ;;
   doctor)  cmd_doctor ;;
   approve) shift; cmd_approve "$@" ;;
   status)  cmd_status ;;
@@ -989,6 +1384,6 @@ case "${1:-help}" in
   self-update) shift; cmd_self_update "$@" ;;
   update)  shift; cmd_update "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,26p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,26p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,28p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,28p' "$0"; exit 2 ;;
 esac

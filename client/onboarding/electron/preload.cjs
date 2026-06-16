@@ -17,6 +17,18 @@ contextBridge.exposeInMainWorld('remotepair', {
   sshKeygen: () => rp('sshKeygen'),
   sshReachable: (host) => rp('sshReachable', [host]),
   tailscaleStatus: () => rp('tailscaleStatus'),
+  // Discovery / pairing (component ⑤). The PIN is the only secret that transits here (renderer →
+  // CLI argv); passwords/passphrases are collected only by the askpass helper, never via IPC.
+  discover: () => rp('discover'),
+  pair: (opts) => rp('pair', [opts]),
+  installHost: (opts) => rp('installHost', [opts]),
+  hostKeyFingerprint: (host) => rp('hostKeyFingerprint', [host]),
+  // Telemetry (consent-gated PostHog; no-ops until opt-in). The webview fires Phase-1 funnel
+  // events and reads/writes the two consent flags through these.
+  tCapture: (event, props) => rp('tCapture', [event, props]),
+  tCatalog: () => rp('tCatalog'),
+  tGetConsent: () => rp('tGetConsent'),
+  tSetConsent: (telemetry, crashReport) => rp('tSetConsent', [telemetry, crashReport]),
   // `complete` is fire-and-forget: main launches the IDE and quits, so no result returns.
   complete: () => {
     ipcRenderer.invoke('onboarding:complete')

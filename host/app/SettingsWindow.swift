@@ -7,6 +7,8 @@ import Cocoa
 final class SettingsWindowController: NSWindowController {
     private var infoLabel: NSTextField!
     private var autoUpdate: NSButton!
+    private var telemetryConsent: NSButton!
+    private var crashConsent: NSButton!
 
     static let autoUpdateKey = "RPAutoUpdateCheck"
 
@@ -51,6 +53,16 @@ final class SettingsWindowController: NSWindowController {
         autoUpdate.state = UserDefaults.standard.bool(forKey: Self.autoUpdateKey) ? .on : .off
         stack.addArrangedSubview(autoUpdate)
 
+        // Privacy: dual opt-in telemetry consent (both default OFF — registered in AppDelegate). Default OFF
+        // means zero network calls (TelemetryClient.capture / SentryBridge no-op until the matching flag is ON).
+        telemetryConsent = NSButton(checkboxWithTitle: "Share anonymous usage analytics (PostHog)", target: self, action: #selector(toggleTelemetry))
+        telemetryConsent.state = UserDefaults.standard.bool(forKey: TelemetryClient.consentKey) ? .on : .off
+        stack.addArrangedSubview(telemetryConsent)
+
+        crashConsent = NSButton(checkboxWithTitle: "Send anonymized crash reports (Sentry)", target: self, action: #selector(toggleCrash))
+        crashConsent.state = UserDefaults.standard.bool(forKey: SentryBridge.consentKey) ? .on : .off
+        stack.addArrangedSubview(crashConsent)
+
         let row = NSStackView()
         row.orientation = .horizontal; row.spacing = 8
         // CLIENT = access-only: omit the 'Grant Permissions' button (host/both only). The rest are identical.
@@ -71,6 +83,13 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func toggleAuto() {
         UserDefaults.standard.set(autoUpdate.state == .on, forKey: Self.autoUpdateKey)
+    }
+    @objc private func toggleTelemetry() {
+        UserDefaults.standard.set(telemetryConsent.state == .on, forKey: TelemetryClient.consentKey)
+    }
+    @objc private func toggleCrash() {
+        // Takes effect on next launch (SentryBridge.setupIfConsented runs at startup); no live re-init here.
+        UserDefaults.standard.set(crashConsent.state == .on, forKey: SentryBridge.consentKey)
     }
     @objc private func grant() { Permissions.requestAndOpen(); refresh() }
     @objc private func update() { Updater.checkForUpdates(interactive: true) }

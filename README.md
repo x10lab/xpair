@@ -243,6 +243,40 @@ The current shipping identity is **`RemotePairHost`** / `com.x10lab.remote-pair-
 
 ---
 
+## Telemetry — opt-in, off by default
+
+RemotePair ships **no telemetry that is on by default**. Both reporting channels below are
+**opt-in** — they stay completely silent unless you explicitly turn them on, and even then they
+never carry anything that could identify you or your work. The code is open; audit it yourself.
+
+**Two independent switches, both default OFF:**
+
+| Switch | What it does | When ON |
+|---|---|---|
+| Product analytics (`telemetry_consent` → PostHog) | anonymous activation-funnel events, so we can see where setup breaks | sends 7 anonymous events (e.g. "onboarding started", "host connected", "first session started") with timing |
+| Crash reports (`crash_report_consent` → Sentry) | uploads scrubbed crash/error reports | sends a redacted stack trace when something crashes (local crash dumps are written either way) |
+
+Each can be on without the other. You choose at first run (two unchecked checkboxes) and can flip
+either later in settings.
+
+**What is collected (only when you opt in):** an anonymous random install id (a UUID generated
+once on this machine — not tied to any account), app version, OS version, CPU architecture, and a
+small set of funnel events with timings. Failures are reported as a fixed set of reason codes
+(`timeout`, `auth_denied`, `host_unreachable`, …), never raw error text.
+
+**What is NEVER collected:** repository names, file paths, command contents, IP addresses, your
+hostnames or ssh aliases, or any personal data. Every payload is run through the same `redact()`
+filter used for local logs before it leaves the machine, and crash reports have Apple/Sentry PII
+collection disabled.
+
+**Default OFF means zero network calls** — with both switches off, RemotePair makes no connection
+to any analytics or crash endpoint. Analytics currently routes to PostHog Cloud (EU region);
+crash reports to Sentry. The endpoint is configurable and we plan to move analytics to self-hosted
+infrastructure later. See [docs/logging.md §11](docs/logging.md) for the full event catalog and
+privacy contract.
+
+---
+
 ## Troubleshooting & reporting bugs
 
 Hit something broken? Work through this before filing:

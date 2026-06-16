@@ -9,6 +9,7 @@ import Cocoa
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let host = HostManager()
     let approve = ApproveManager()
+    let advertiser = BonjourAdvertiser()   // ① LAN discovery: advertise _remotepair._tcp (host role only)
     var statusItem: NSStatusItem!
     var menu: NSMenu!
     var hostTimer: Timer?
@@ -17,6 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
+        // Telemetry consent flags — both default OFF (opt-in). Registered so a never-toggled key reads false
+        // (zero network calls by default). Toggled in SettingsWindow.
+        UserDefaults.standard.register(defaults: [
+            TelemetryClient.consentKey: false,
+            SentryBridge.consentKey: false,
+        ])
+        // On next launch after a signal crash, upload any appended crash-host-signal.log as a Sentry envelope
+        // (local dump kept). No-op unless crash reporting is active (consent ON + DSN + SDK linked).
+        SentryBridge.uploadPendingSignalCrashIfAny()
         // Single-instance guard: prevent the churn (the gh-mac-m4 incident) where two instances
         // (LaunchAgent + manual open) reap each other's _keeper on the same tmux-aqua socket.
         // I yield and terminate **only when an older (lower-pid) instance exists**.
@@ -48,7 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         log("launched (RemotePairHost v\(APP_VERSION), repo=\(GH_REPO))")
         host.ensureServer()
-        hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.host.ensureServer() }
+        if isHostRole { advertiser.ensureAdvertising() }   // ① advertise on launch (host/both only)
+        hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.host.ensureServer()
+            if isHostRole { self.advertiser.ensureAdvertising() }   // ① watchdog: re-advertise if listener died
+        }
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         // (legacy v0 InputServer 0.1s main-thread polling removed — screencapture's synchronous blocking froze the menu bar.
         //  Screen sharing/input are replaced by v1/v2 (remote-pair-screen serve-webrtc + rp-input-inject).)
@@ -77,6 +92,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(withTitle: "Grant Permissions…", action: #selector(grantPermissions), keyEquivalent: "")
         }
         menu.addItem(.separator())
+
+        // ③ pairing: show the on-screen PIN while armed; otherwise offer to arm (host/both only).
+        if isHostRole {
+            let d = PairingServer.readDisplay()
+            if d.armed && !d.pin.isEmpty {
+                let mins = d.secondsLeft / 60, secs = d.secondsLeft % 60
+                // "Pairing code: 482 173 (1:58)" — grouped for readability, on the host screen only.
+                let grouped = d.pin.count == 6
+                    ? "\(d.pin.prefix(3)) \(d.pin.suffix(3))" : d.pin
+                let it = NSMenuItem(title: "Pairing code: \(grouped)  (\(mins):\(String(format: "%02d", secs)))",
+                                    action: nil, keyEquivalent: "")
+                it.isEnabled = false
+                menu.addItem(it)
+                if !d.message.isEmpty {
+                    let m = NSMenuItem(title: "  \(d.message)", action: nil, keyEquivalent: "")
+                    m.isEnabled = false
+                    menu.addItem(m)
+                }
+                menu.addItem(withTitle: "Stop pairing", action: #selector(stopPairing), keyEquivalent: "")
+            } else {
+                if !d.message.isEmpty {
+                    let m = NSMenuItem(title: d.message, action: nil, keyEquivalent: "")
+                    m.isEnabled = false
+                    menu.addItem(m)
+                }
+                menu.addItem(withTitle: "Pair a new Mac…", action: #selector(pairNewMac), keyEquivalent: "")
+            }
+            menu.addItem(.separator())
+        }
 
         // session list (server status + each session → modal on click)
         let serverUp = Sessions.serverUp()
@@ -150,6 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do { try "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8) }
         catch { log(.debug, "heartbeat write failed: \(error)") }   // ignorable: next tick (1s) retries
         writeStatus()   // write app liveness + AX/SR/FDA grant facts to status.json — so the agent reads them without guessing
+        if isHostRole { PairingServer.shared.tick() }   // ③ expire/refresh the on-screen PIN countdown (pairing.json)
         if FileManager.default.fileExists(atPath: TRIGGER) {
             do { try FileManager.default.removeItem(atPath: TRIGGER) }
             catch { log(.warn, "approve: removing trigger \(TRIGGER) failed (router may re-fire): \(error)") }
@@ -173,6 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Installer.install(force: true, refreshResources: true)
         }
     }
+
+    // ③ pairing menu actions (host/both only; arming is the explicit on-screen action).
+    @objc func pairNewMac() { if isHostRole { PairingServer.shared.arm() } }
+    @objc func stopPairing() { PairingServer.shared.disarm() }
 
     @objc func grantPermissions() { Permissions.requestAndOpen() }
     @objc func approveNow() { approve.run() }

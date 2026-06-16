@@ -11,6 +11,10 @@ const os = require("os");
 const fs = require("fs");
 const path = require("path");
 
+// Zero-dep telemetry (PostHog capture + consent). Shared with the extension host. Consent is
+// opt-in (default OFF) → all capture() calls below are no-ops until the user opts in.
+const telemetry = require("./telemetry.js");
+
 const HOME = os.homedir();
 const RP_DIR = path.join(HOME, ".remote-pair");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
@@ -116,9 +120,12 @@ const bridge = {
   },
 
   // Connection — full SSH-assist: generate ed25519 if missing, return the pubkey to add to the host.
+  // `keygenNew` tells the UI whether a fresh key was created (feeds ssh_config_completed.keygen_new).
   async sshKeygen() {
+    let keygenNew = false;
     if (!fs.existsSync(SSH_KEY)) {
       await run("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", SSH_KEY, "-q"]);
+      keygenNew = fs.existsSync(SSH_KEY);
     }
     let pubkey = "";
     try {
@@ -126,7 +133,7 @@ const bridge = {
     } catch {
       /* keygen may have failed */
     }
-    return { pubkey };
+    return { pubkey, keygenNew };
   },
 
   // Connection — real reachability check (hard-gate for the Connect step).
@@ -212,6 +219,99 @@ const bridge = {
   // Mappings — manual add of a client→host mapping (hard-gate: >=1).
   async addMapping(clientPath, hostPath) {
     return cli(["map", "add", clientPath, hostPath]);
+  },
+
+  // --- Discovery / pairing (component ⑤ — shells to the CLI brain) -----------------------------
+  //
+  // SECURITY (Principle 2): NONE of these methods ever receives or returns a password or key
+  // passphrase — those are collected ONLY by the separate askpass helper (the renderer never
+  // sees them). The 6-digit PIN is the ONE secret that transits here (renderer → CLI argv);
+  // it is bound to a 120s TTL on the host, never logged by this bridge, and never passed to any
+  // telemetry.capture() call. Do NOT add a tCapture/telemetry call inside discover/pair/installHost.
+
+  // Discovery — concurrent Bonjour + Tailscale sweep via the CLI. Returns a deduped peer array
+  // (deduped by host-key fingerprint inside the CLI; the UI dedups again as a backstop).
+  // Each peer: {name, addrs[], source, sources[], fp, status("reconnect"|"connect"|"setup")}.
+  async discover() {
+    const r = await cli(["discover", "--json"]);
+    if (r.code !== 0) return { peers: [], err: r.err };
+    let peers = [];
+    try {
+      const parsed = JSON.parse(r.out || "[]");
+      if (Array.isArray(parsed)) peers = parsed;
+    } catch (e) {
+      return { peers: [], err: "discover: bad JSON: " + String(e && e.message ? e.message : e) };
+    }
+    return { peers, err: "" };
+  },
+
+  // Pairing (PIN path) — runs the client side of the PAKE through the CLI. `pin` is the 6-digit
+  // code the user read off the host's physical screen; it is NEVER logged or telemetered here.
+  // `fp` is the host-key fingerprint shown to the user for TOFU; it is passed as --expect-fp so
+  // the CLI fails closed on a mismatched host key. Returns {ok, err}.
+  async pair({ host, pin, fp } = {}) {
+    if (!host || !pin) return { ok: false, err: "pair requires host and pin" };
+    const args = ["pair", "--host", String(host), "--pin", String(pin)];
+    if (fp) args.push("--expect-fp", String(fp));
+    const r = await cli(args);
+    // r.out/r.err deliberately NOT echoed into any telemetry payload (could contain the PIN).
+    return { ok: r.code === 0, err: r.code === 0 ? "" : (r.err || "pairing failed") };
+  },
+
+  // Setup (password path) — remote install over SSH. The account password is collected ONLY by
+  // the askpass helper the CLI spawns (detached TTY); this method passes NO secret. Returns
+  // {ok, out, err} where `out` carries the redacted progress stream for StepInstalling.
+  async installHost({ host, user } = {}) {
+    if (!host) return { ok: false, out: "", err: "installHost requires host" };
+    const args = ["install-host", "--host", String(host)];
+    if (user) args.push("--account", String(user));
+    const r = await cli(args);
+    return { ok: r.code === 0, out: r.out, err: r.code === 0 ? "" : (r.err || "install failed") };
+  },
+
+  // TOFU display — fetch the host-key fingerprint the CLI observes for `host`, so the pairing
+  // step can show "Matches what <host> shows?" before any key is trusted. Returns {fp, err}.
+  async hostKeyFingerprint(host) {
+    if (!host) return { fp: "", err: "no host" };
+    const r = await cli(["discover", "--fingerprint", String(host)]);
+    return { fp: r.code === 0 ? r.out.trim() : "", err: r.code === 0 ? "" : r.err };
+  },
+
+  // --- Telemetry (consent-gated PostHog; all no-ops until the user opts in) -------------------
+
+  // Fire a Phase-1 PostHog event from the webview. The bridge re-validates the event name and
+  // re-coerces reason/path to the controlled enums (defense in depth — the webview can NEVER
+  // push a raw error string or an unknown path into a payload). Returns {ok:true} regardless
+  // (fire-and-forget); consent/key gating + redaction happen inside telemetry.capture.
+  tCapture(event, props) {
+    const p = { ...(props || {}) };
+    if ("reason" in p) p.reason = telemetry.normalizeReason(p.reason);
+    if ("path" in p) p.path = telemetry.normalizePath(p.path);
+    // host_connected cardinality = ONCE PER INSTALL (Insight A/B count installs, not IDE
+    // restarts). The same shared client.env stamp is honored by extension.js probeHost(), so a
+    // host_connected fires at most once whether the webview or the extension observes it first.
+    if (event === telemetry.EVENTS.HOST_CONNECTED && !telemetry.claimHostConnectedOnce()) {
+      return { ok: true }; // already counted this install — drop the duplicate.
+    }
+    telemetry.capture(event, p);
+    return { ok: true };
+  },
+
+  // Phase-1 event-name + enum catalog, so the webview references frozen constants (no string typos).
+  tCatalog() {
+    return {
+      EVENTS: telemetry.EVENTS,
+      REASONS: telemetry.REASONS,
+      PATHS: telemetry.PATHS,
+    };
+  },
+
+  // Consent flags for the first-run consent UI (both default false / opt-in).
+  tGetConsent() {
+    return telemetry.getConsent();
+  },
+  tSetConsent(telemetryOn, crashReportOn) {
+    return telemetry.setConsent(!!telemetryOn, !!crashReportOn);
   },
 };
 

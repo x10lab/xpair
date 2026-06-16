@@ -11,6 +11,75 @@ const bridge = require(path.join(
   __dirname, '..', '..', 'ide', 'remotepair', 'ext', 'onboarding-bridge.js',
 ))
 
+// Zero-dep telemetry helper (PostHog capture + consent + Sentry config). Same module the bridge
+// and extension host use; co-located in ext/.
+const telemetry = require(path.join(
+  __dirname, '..', '..', 'ide', 'remotepair', 'ext', 'telemetry.js',
+))
+
+// Client-side crash reporting (Electron main + renderer) via @sentry/electron — SINGLE init here.
+// Gated on CRASH_REPORT_CONSENT + a configured SENTRY_DSN (both default OFF / absent → no init,
+// ZERO network calls). The SDK is dynamically required so a clean checkout without the dep (keys
+// not provisioned yet) still builds and runs. sendDefaultPii=false, serverName disabled, and
+// beforeSend scrubs $HOME/REMOTE_HOST/paths via the shared redactor before any event is sent.
+function initSentry() {
+  let cfg
+  try {
+    cfg = telemetry.sentryConfig()
+  } catch {
+    return
+  }
+  if (!cfg || !cfg.consent || !cfg.dsn) return // opt-in gate + no-DSN => do not init.
+  let Sentry
+  try {
+    Sentry = require('@sentry/electron/main')
+  } catch {
+    // SDK not installed (keys/dep not provisioned). Stay silent — no crash reporting, no crash.
+    return
+  }
+  try {
+    Sentry.init({
+      dsn: cfg.dsn,
+      release: cfg.release,
+      sendDefaultPii: false,
+      serverName: undefined, // disable server_name (PII/hostname leak).
+      beforeSend(event) {
+        try {
+          // Scrub every string in the event through the shared redactor before transmission.
+          return scrubEvent(event)
+        } catch {
+          return event
+        }
+      },
+    })
+  } catch {
+    /* init failure must never crash onboarding */
+  }
+}
+
+// Strict OUTBOUND scrub of a Sentry event (defense in depth on top of sendDefaultPii=false).
+// Uses telemetry.strictScrubDeep — the SEPARATE strict scrubber (redactor + IPv4/IPv6 +
+// *.ts.net + absolute paths), NOT the narrow local redact() — because a JS Error stack / crash
+// message can carry raw IPs, tailnet names, or other-user/system paths. Falls back to the narrow
+// redactor only if the strict one is unavailable (older module), then to identity.
+function scrubEvent(value) {
+  if (typeof telemetry.strictScrubDeep === 'function') {
+    return telemetry.strictScrubDeep(value)
+  }
+  const redact = telemetry.redact || ((s) => s)
+  const walk = (v) => {
+    if (typeof v === 'string') return redact(v)
+    if (Array.isArray(v)) return v.map(walk)
+    if (v && typeof v === 'object') {
+      const out = {}
+      for (const k of Object.keys(v)) out[k] = walk(v[k])
+      return out
+    }
+    return v
+  }
+  return walk(value)
+}
+
 // Built RemotePair IDE app candidates (prod identity first, then local).
 const IDE_APP_CANDIDATES = [
   path.join(__dirname, '..', '..', 'ide', 'dist', 'VSCode-darwin-arm64', 'RemotePair.app'),
@@ -80,6 +149,16 @@ function isOnboarded() {
 }
 
 app.whenReady().then(() => {
+  // Stamp the install creation time at FIRST RUN, INDEPENDENT of consent (bare epoch-ms, no id =
+  // not PII). Gives time_to_wow_ms a real first-launch → first-session base instead of ~0 even
+  // when the onboarding lane is the user's first contact with RemotePair. Idempotent + safe.
+  try {
+    telemetry.firstRunStamp()
+  } catch {
+    /* telemetry must never block startup */
+  }
+  initSentry() // no-op unless CRASH_REPORT_CONSENT + SENTRY_DSN are both set.
+
   if (isOnboarded()) {
     // Already set up: open the IDE directly and quit — no onboarding window (US-004).
     launchIDE()
@@ -122,6 +201,17 @@ ipcMain.handle('rp', async (_e, msg) => {
 
 // Completion: launch the IDE and quit the onboarding app (US-005).
 ipcMain.handle('onboarding:complete', () => {
+  // WOW moment for the Electron onboarding path: launching the IDE = first session live.
+  // time_to_wow_ms = now − install_id creation time (omit if the base is unknown). No-op unless
+  // TELEMETRY_CONSENT is ON.
+  try {
+    const wowBase = telemetry.installTs()
+    telemetry.capture(telemetry.EVENTS.FIRST_SESSION_STARTED, {
+      ...(wowBase ? { time_to_wow_ms: Date.now() - wowBase } : {}),
+    })
+  } catch {
+    /* telemetry must never block completion */
+  }
   launchIDE()
   app.quit()
 })

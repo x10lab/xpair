@@ -1,5 +1,6 @@
 import { Check } from "lucide-react";
 import type { Mapping } from "./StepFileAccess";
+import { ConsentControls } from "./ConsentControls";
 
 type Props = { host: string; mappings: Mapping[] };
 
@@ -30,6 +31,12 @@ export function StepDone({ host, mappings }: Props) {
           <span className="text-muted-foreground">Mappings</span>
           <span className="text-foreground">{mappings.length}</span>
         </div>
+      </div>
+
+      {/* Consent re-toggle — same two opt-in flags first surfaced on StepWelcome (default OFF).
+          Reflects/persists the user's earlier choice; also changeable later in settings. */}
+      <div className="mt-4">
+        <ConsentControls variant="summary" />
       </div>
     </div>
   );

@@ -16,6 +16,10 @@ const os = require("os");
 const path = require("path");
 const net = require("net");
 
+// Telemetry: zero-dep PostHog capture + Sentry envelope (consent-gated, opt-in default OFF).
+// Self-contained stdlib-only module — does NOT add an external npm dependency.
+const telemetry = require("./telemetry.js");
+
 // --- constants -------------------------------------------------------------
 
 // Build-time generated from the monorepo shared/ SoT (screen-protocol + identity).
@@ -100,6 +104,10 @@ function redact(msg) {
   }
   return s;
 }
+
+// Reuse THIS extension's redactor for all telemetry payloads (no payload leaves the machine
+// without $HOME→'~' and REMOTE_HOST→'<host>' masking — logging.md §6 / privacy constraint).
+telemetry.setRedactor(redact);
 
 // rotate-on-open: run ONCE per process so a long-lived extension host doesn't
 // re-stat on every line. (The long-lived mid-run guard from §7 is the host
@@ -622,6 +630,12 @@ async function _doConnectHost(host) {
     });
     await vscode.commands.executeCommand("vscode.openFolder", uri, { forceNewWindow: true });
     log(`connectHost: opened ${uri.toString()}`);
+    // WOW moment: remote host filesystem opened = first session live. time_to_wow_ms is measured
+    // from install_id creation time (0 base => omit so we never report a bogus duration).
+    const wowBase = telemetry.installTs();
+    telemetry.capture(telemetry.EVENTS.FIRST_SESSION_STARTED, {
+      ...(wowBase ? { time_to_wow_ms: Date.now() - wowBase } : {}),
+    });
     return;
   } catch (e) {
     log(`connectHost: vscode.openFolder failed: ${e && e.message ? e.message : e}`);
@@ -1131,10 +1145,56 @@ function runSetup() {
   log(`runSetup: launched '${appArg}'`);
 }
 
+// Register extension-host crash hooks ONCE. The handlers delegate to telemetry.sentryCapture,
+// which itself gates on CRASH_REPORT_CONSENT + SENTRY_DSN (so with consent OFF this is inert —
+// no DSN read succeeds, no network call). We do NOT swallow the errors: we only observe them,
+// preserving the host's existing behavior. unhandledRejection logs but does not exit.
+let sentryHooksInstalled = false;
+function installSentryHooks() {
+  if (sentryHooksInstalled) return;
+  sentryHooksInstalled = true;
+  try {
+    process.on("uncaughtException", (err) => {
+      try { telemetry.sentryCapture(err, { kind: "uncaughtException" }); } catch (_e) {}
+      log(`uncaughtException: ${err && err.message ? err.message : err}`, "error");
+    });
+    process.on("unhandledRejection", (reason) => {
+      try { telemetry.sentryCapture(reason instanceof Error ? reason : new Error(String(reason)), { kind: "unhandledRejection" }); } catch (_e) {}
+      log(`unhandledRejection: ${reason && reason.message ? reason.message : reason}`, "error");
+    });
+  } catch (e) {
+    log(`installSentryHooks: ${e && e.message ? e.message : e}`, "warn");
+  }
+}
+
 function activate(context) {
   log("RemotePair activating…");
 
   const state = { inputEnabled: true };
+
+  // 0) Telemetry (opt-in, both consent flags default OFF → zero network calls). Two side effects:
+  //    a) app_first_launch{is_fresh_install} — fired ONCE, gated by a globalState stamp.
+  //    b) Sentry init for the extension host — a no-op unless CRASH_REPORT_CONSENT + SENTRY_DSN
+  //       are both present (init just registers process error hooks that re-check consent on fire).
+  try {
+    // Stamp the install creation time at FIRST RUN, INDEPENDENT of consent. A bare epoch-ms with
+    // no id is not PII, so this is safe pre-consent and gives time_to_wow_ms a real elapsed base
+    // (first launch → first session) instead of ~0. Idempotent across activations.
+    telemetry.firstRunStamp();
+    const FIRST_LAUNCH_KEY = "remotepair.installTimestamp";
+    const stampedAt = context.globalState.get(FIRST_LAUNCH_KEY);
+    const isFresh = !stampedAt;
+    if (isFresh) {
+      context.globalState.update(FIRST_LAUNCH_KEY, Date.now());
+    }
+    // Fire once per install (the stamp guards repeats across activations).
+    telemetry.capture(telemetry.EVENTS.APP_FIRST_LAUNCH, { is_fresh_install: isFresh });
+  } catch (e) {
+    log(`telemetry first-launch: ${e && e.message ? e.message : e}`, "warn");
+  }
+  // Extension-host crash reporting: forward uncaught errors to Sentry (consent-gated inside).
+  // Raw HTTP envelope (no SDK) preserves the zero-dep rule. Registered once.
+  installSentryHooks();
 
   // 1) First-run: ensure the 3 AI extensions (best-effort, swallow errors).
   ensureExtensions(false).catch((e) => log(`ensureExtensions error: ${e}`));
@@ -1154,6 +1214,11 @@ function activate(context) {
   context.subscriptions.push(hostBtn);
 
   let hostReachable = null; // null = unknown/probing, true/false = last probe result
+  // Telemetry: classify the real connection path used today (Bonjour LAN discovery does not
+  // exist yet, so a `.ts.net` host = tailscale, otherwise the manual/LAN path). Reported as
+  // host_connected{path}. NOTE: `lan` here means "not a tailnet name", not Bonjour-discovered.
+  const classifyPath = (host) =>
+    /\.ts\.net$/i.test(String(host || "")) ? telemetry.PATHS.TAILSCALE : telemetry.PATHS.LAN;
   const renderHostButton = () => {
     const host = getValidHost();
     if (!host) {
@@ -1179,6 +1244,7 @@ function activate(context) {
 
   // Reachability probe: BatchMode ssh `true` over the persistent ControlMaster
   // connection (no password prompt; fails fast if unreachable / no agent key).
+  // Fires host_connected / host_connect_failed only on a STATE TRANSITION (not every 20s tick).
   const probeHost = async () => {
     const host = getValidHost();
     if (!host) {
@@ -1186,13 +1252,38 @@ function activate(context) {
       renderHostButton();
       return;
     }
+    const prev = hostReachable;
+    const startedAt = Date.now();
+    let ok = false;
+    let probeReason = telemetry.REASONS.UNKNOWN;
     try {
       const r = await sshRun(host, "true", { timeoutMs: 6000 });
-      hostReachable = r.code === 0;
+      ok = r.code === 0;
+      if (!ok) probeReason = r.code === -2 ? telemetry.REASONS.TIMEOUT : telemetry.REASONS.HOST_UNREACHABLE;
     } catch (_e) {
-      hostReachable = false;
+      ok = false;
+      probeReason = telemetry.REASONS.HOST_UNREACHABLE;
     }
+    hostReachable = ok;
     renderHostButton();
+    // Edge-trigger telemetry: only on a change to/from reachable (prev !== current).
+    // host_connected cardinality = ONCE PER INSTALL (Insight A/B count installs, not IDE
+    // restarts): claimHostConnectedOnce() is a shared client.env stamp honored by BOTH this
+    // probe and the webview check() emitter, so only the first observed reachability across the
+    // whole install emits. host_connect_failed stays edge-triggered (per-failure is intended).
+    if (ok && prev !== true) {
+      if (telemetry.claimHostConnectedOnce()) {
+        telemetry.capture(telemetry.EVENTS.HOST_CONNECTED, {
+          path: classifyPath(host),
+          connect_ms: Date.now() - startedAt,
+        });
+      }
+    } else if (!ok && prev === true) {
+      telemetry.capture(telemetry.EVENTS.HOST_CONNECT_FAILED, {
+        path: classifyPath(host),
+        reason: telemetry.normalizeReason(probeReason),
+      });
+    }
   };
   probeHost();
   const hostProbeTimer = setInterval(probeHost, 20000);

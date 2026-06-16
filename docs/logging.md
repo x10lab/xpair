@@ -5,7 +5,8 @@ The single source of truth for how every RemotePair component logs. All 6 compon
 conform to **this** format/level/rotation spec — do not invent per-component variants.
 
 Goal: maintainer debugging now, production diagnostics (collect/redact) later. Logs are
-**local only** (never shipped automatically).
+**local only** (never shipped automatically). Telemetry (§11) is a separate, **opt-in**
+additive layer that is **OFF by default** and does not touch these log files.
 
 ## 1. Log directory
 
@@ -113,3 +114,104 @@ follow-up.
 - `remote-pair logs` — tail `$LOG_DIR/*.log` (`--host` correlates over ssh; `-f` follow).
 - `remote-pair logs --collect` — tar/gzip `$LOG_DIR` → `remote-pair-logs-<stamp>.tgz` for bug reports.
 - IDE: `RemotePair: Show Logs` — reveal `$LOG_DIR` / invoke `--collect`.
+
+## 10. Crash dumps (local-only)
+
+Crashes are captured to disk under `$LOG_DIR`. Local capture is **always on and is the
+default**; remote crash reporting (§11, Sentry) is **opt-in and OFF by default** — with the
+consent flag off, crashes stay disk-local exactly as described here. Because `--collect`
+tars all of `$LOG_DIR` (and the files match the `*.log` glob), a crash is recoverable from a bug
+report without any external service. Dump files are mode `0600` inside the `0700` dir.
+
+| comp | trigger | file | mechanism |
+|------|---------|------|-----------|
+| `host` | Obj-C/AppKit exception | `crash-host-<epoch>.log` | `NSSetUncaughtExceptionHandler` → `callStackSymbols`, redacted (§6) |
+| `host` | fatal signal (SIGSEGV/ABRT/ILL/BUS/FPE/TRAP) | `crash-host-signal.log` | async-signal-safe handler → `backtrace_symbols_fd(3)` to a pre-opened fd, then re-raise to `SIG_DFL` |
+| `rust` | panic | `crash-rust-<epoch>.log` | `std::panic::set_hook` → `Backtrace::force_capture` (independent of `RUST_BACKTRACE`), redacted (§6); chains the previous hook |
+
+Loggers home: Swift in `host/app/CrashReporter.swift` (installed from `main.swift` after
+`ensureDirs()`); Rust in `host/rd/screen/src/log.rs` (`install_panic_hook`, installed by `init`).
+
+**Redaction caveat:** the NSException and Rust-panic paths run `redact()` on the dump, but the
+fatal-signal path cannot (a signal handler must stay async-signal-safe — no string/alloc work), so
+`crash-host-signal.log` ships a raw backtrace. Backtraces are symbol/offset frames, not message
+bodies, so leak surface is low, but treat collected dumps as sensitive (§6 posture).
+
+## 11. Remote telemetry (opt-in, OFF by default)
+
+§10's "logs are local only" remains the **default**. As of Phase 1 (2026-06-16) RemotePair adds
+an **opt-in, privacy-safe** remote observability layer on top — two independent services, each
+behind its own consent flag, **both default `false`**. With both flags off there is **zero**
+network traffic to any telemetry endpoint; nothing here changes the local-only posture above.
+
+Funnel/KPI definitions and the frozen event catalog live in
+[`.omc/specs/deep-interview-telemetry-funnel.md`](../.omc/specs/deep-interview-telemetry-funnel.md);
+this section is the logging-contract summary.
+
+### 11.1 Two services, two consent flags
+
+| Service | Purpose | Consent flag (default `false`) | Client storage | Host storage |
+|---------|---------|-------------------------------|----------------|--------------|
+| **PostHog** | anonymous activation-funnel product analytics | `telemetry_consent` | `TELEMETRY_CONSENT` in `~/.remote-pair/client.env` | `UserDefaults RPTelemetryConsent` |
+| **Sentry** | crash/error reporting (additive to §10's local dumps) | `crash_report_consent` | `CRASH_REPORT_CONSENT` in `~/.remote-pair/client.env` | `UserDefaults RPCrashReportConsent` |
+
+Each flag is independent — either can be on without the other. Consent is surfaced at first run
+(two unchecked checkboxes) and re-toggleable in settings.
+
+### 11.2 Anonymous identity
+
+- `distinct_id` = `install_id` = an anonymous **UUID v4** generated once on first run and
+  disk-persisted. No account linkage, no PII, ever.
+- Client: `TELEMETRY_ANON_ID` in `~/.remote-pair/client.env`. Host: `UserDefaults RPTelemetryAnonId`,
+  mirrored to `~/.remote-pair/host.env` for reinstall continuity.
+- **Super properties** attached to every PostHog event: `app_version`, `os_version`,
+  `device_arch`, `install_id`, `telemetry_consent`.
+
+### 11.3 Phase-1 PostHog events (the only 7 that fire now)
+
+Gated on `telemetry_consent`. Property values for `reason` are the controlled enum in §11.5.
+
+| # | Event | Properties |
+|---|-------|------------|
+| 1 | `app_first_launch` | `is_fresh_install` |
+| 2 | `onboarding_started` | — |
+| 3 | `ssh_config_completed` | `keygen_new:bool`, `copy_id_method:"auto"\|"manual_paste"` |
+| 4 | `ssh_config_failed` | `reason:<enum>` |
+| 5 | `host_connected` | `path:"lan"\|"tailscale"`, `connect_ms` |
+| 6 | `host_connect_failed` | `path`, `reason:<enum>` |
+| 7 | `first_session_started` | `time_to_wow_ms` |
+
+### 11.4 Reserved Phase-2 event names (NOT fired yet)
+
+The names are frozen now so nothing is renamed later, but these are **not emitted** until the
+golden-path features (Bonjour LAN discovery, Tailscale-as-fallback, hosted waitlist) land:
+`host_discovery_started`, `host_discovered`, `host_discovery_empty`, `tailscale_fallback_started`,
+`tailscale_auth_completed`, `tailscale_host_reachable`, `hosted_cta_shown`,
+`hosted_waitlist_submitted`.
+
+### 11.5 Privacy guarantees (OSS audit will verify)
+
+- **Never transmitted:** repository names, file paths, command contents, IP addresses. No PII,
+  no account linkage. Hash if a value is genuinely needed (e.g. a bucketed count — never the host).
+- **All telemetry + Sentry payloads pass the existing `redact()` / `logRedact()` (§6)** before
+  any send — masks `$HOME`, the `REMOTE_HOST` value, and ssh aliases. Reuse the existing
+  redactor; do not invent a new one.
+- **`reason` is a controlled enum, never raw stderr:** `timeout`, `auth_denied`,
+  `host_unreachable`, `dns_failed`, `keygen_error`, `permission_denied`, `unknown`. Raw stderr
+  is forbidden (it leaks hostnames/IPs/paths).
+- **Sentry PII off:** `sendDefaultPii=false` (Swift/Cocoa & Electron) / `send_default_pii=false`
+  (Rust); `server_name` disabled; `beforeSend` strips local paths/`$HOME`/host/IP via the shared
+  redactor. Rust panic backtraces are scrubbed before upload. Local crash dumps (§10) are still
+  written in parallel.
+
+### 11.6 Transport & config (no hardcoded secrets)
+
+- **PostHog:** raw HTTPS `POST` to a config-provided endpoint (Cloud EU default
+  `https://eu.i.posthog.com`, path `/capture/`); fire-and-forget, gated on `telemetry_consent`.
+  The extension uses a raw HTTPS capture POST (no `posthog-node` bundling — `extension.js` stays
+  vscode-API + node-stdlib only). Project key from config (host: `Info.plist RPPostHogKey`;
+  client: `client.env` or build-injected). **If the key/endpoint is absent → silent no-op.**
+- **Sentry:** SDK per runtime, DSN from config, gated on `crash_report_consent`. **If the DSN is
+  absent → do not init.**
+- The endpoint is config-agnostic by design: **PostHog Cloud EU now → self-host later** via a
+  config swap, no code change. Keys/DSN are not yet provisioned and **must never be hardcoded**.

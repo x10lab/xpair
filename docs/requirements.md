@@ -274,6 +274,7 @@ Parallel fixes (applied, dev-verified, awaiting the next branded build):
 - **`.git` is excluded from Syncthing sync** (`.stignore`) — the two sides' git states differ, risking erroneous commit/push. Sync the working tree only; keep `.git` device-local.
 - The `.claude/projects/` folder is `.gitignore`d + removed from git history (size/privacy) + excluded from Syncthing.
 - Traceable logging (5MB rotation), pause on failure.
+- **Telemetry / activation funnel + KPIs** — the activation funnel and its KPIs are now defined by [`.omc/specs/deep-interview-telemetry-funnel.md`](../.omc/specs/deep-interview-telemetry-funnel.md) (PostHog product analytics + Sentry crash reporting, both **opt-in, default OFF**; anonymous `install_id`, no PII/repo/path/command/IP, all payloads through `redact()` — see [logging.md §11](logging.md)). Phase 1 ships the 7 events whose firing points already exist; the 8 reserved Phase-2 events depend on the not-yet-built golden-path features (**Bonjour LAN discovery / Tailscale-as-fallback / hosted waitlist** — see [future.md §7-1](future.md)) and are documented (names frozen) but not fired.
 - Security: the onboarding runs inside the native Electron shell and reaches the brain through the shell's bridge to the `remote-pair` CLI / `status.json` — no network server is added to the host app, so there is nothing that binds externally (§0.1).
 - This project's conversations are in **Korean**. Avoid translationese and cruft.
 

@@ -133,7 +133,7 @@ let LOG_THRESHOLD: Level = {
 
 /// §3 timestamp: local-tz ISO-8601 to second precision with numeric offset, e.g. 2026-06-15T10:45:16+0900.
 /// (ISO8601DateFormatter emits a `Z`/UTC by default and a colon in the offset; the contract example is `+0900`.)
-private let logTSFormatter: DateFormatter = {
+let logTSFormatter: DateFormatter = {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
     f.timeZone = TimeZone.current
@@ -203,9 +203,68 @@ private let logRemoteHost: String? = {
 
 /// §6 redaction: mask the home dir → ~ and REMOTE_HOST → <host> before any sink (logs may be shipped
 /// via `remote-pair logs --collect`). Best-effort, msg body only.
+///
+/// SCOPE: this is the LOCAL-LOG redactor. Local logs legitimately keep full absolute paths (other than
+/// $HOME) for debugging, so this deliberately does NOT mask IPs, arbitrary paths, or other hostnames.
+/// For anything that LEAVES the machine (PostHog props, Sentry crash payloads) use `outboundScrub()`.
 func logRedact(_ s: String) -> String {
     var r = s.replacingOccurrences(of: HOME, with: "~")
     if let h = logRemoteHost { r = r.replacingOccurrences(of: h, with: "<host>") }
+    return r
+}
+
+// MARK: - Strict OUTBOUND scrubber (telemetry / Sentry only — NOT local logs)
+
+/// Precompiled regexes for the outbound scrubber. Order matters at apply time:
+/// hostnames (*.ts.net) and IPs are masked BEFORE generic absolute paths so a token never gets
+/// half-masked. Compiled once; a nil (pattern bug) entry is simply skipped (fail-open to logRedact()).
+private enum OutboundScrubPatterns {
+    // IPv4 dotted-quad. Bounded by non-digit/dot edges so we don't bite version strings mid-number.
+    // (A loose octet match is fine — over-masking an outbound value is acceptable; under-masking is not.)
+    static let ipv4 = try? NSRegularExpression(
+        pattern: #"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])"#)
+    // IPv6: a run of hex/':' that contains EITHER a '::' compression (e.g. fe80::1, 2001:db8::ff00)
+    // OR ≥2 ':'-separated hex groups (e.g. 1:2:3:4:5:6:7:8), with an optional %zone id. The two alts
+    // cover compressed and full forms; bare hex words (no ':' run) are not matched. Edges bounded so we
+    // don't eat surrounding text. Over-masking is acceptable (design rule: never under-mask outbound).
+    static let ipv6 = try? NSRegularExpression(
+        pattern: #"(?<![\w:.])(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:%[0-9A-Za-z]+)?|(?<![\w:.])(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f]{1,4}(?:%[0-9A-Za-z]+)?(?![\w:])"#)
+    // Tailnet MagicDNS names: <host>.<tailnet>.ts.net (and the *.tailscale.net variant). Mask whole FQDN.
+    static let tsNet = try? NSRegularExpression(
+        pattern: #"(?<![\w.-])[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.ts\.net\b"#)
+    // Known absolute-path roots that carry usernames / temp scratch: /Users/<name>, /home/<name>,
+    // /private/var/folders/.., /var/folders/.., /tmp/.. — mask the root AND the rest of the path segment run.
+    static let knownPaths = try? NSRegularExpression(
+        pattern: #"(?:/Users|/home|/private/var/folders|/var/folders|/tmp)(?:/[^\s"':,;)\]}]*)*"#)
+    // Generic absolute path: two-or-more leading segments (so we don't mask a bare "/" or "/x"). Runs after
+    // the specific roots above. Bounded by whitespace/quote/punct so JSON/text around it survives.
+    static let genericPath = try? NSRegularExpression(
+        pattern: #"(?<![\w/])/[A-Za-z0-9._-]+(?:/[^\s"':,;)\]}]*)+"#)
+}
+
+private func outboundReplace(_ s: String, _ re: NSRegularExpression?, _ repl: String) -> String {
+    guard let re = re else { return s }   // pattern failed to compile → skip (still has logRedact() base)
+    let range = NSRange(s.startIndex..<s.endIndex, in: s)
+    return re.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: repl)
+}
+
+/// STRICT outbound scrubber for EVERY value that leaves the machine (PostHog properties, Sentry crash
+/// payloads / panic messages / backtrace frames / JS Error stacks). Composes the local `logRedact()`
+/// ($HOME → ~, REMOTE_HOST → <host>) and ADDS, in privacy-safe order:
+///   • *.ts.net (tailnet MagicDNS) → <host>
+///   • IPv6 and IPv4 literals       → <ip>
+///   • /Users/<name>, /home/<name>, /private/var/folders/.., /var/folders/.., /tmp/.. → <path>
+///   • any other absolute path (≥2 segments) → <path>
+///
+/// Deliberately over-masks (a too-aggressive outbound mask is acceptable; a leak is not). Does NOT change
+/// `logRedact()` — local logs keep their full paths for debugging.
+func outboundScrub(_ s: String) -> String {
+    var r = logRedact(s)                                         // base: $HOME, REMOTE_HOST
+    r = outboundReplace(r, OutboundScrubPatterns.tsNet, "<host>")        // hostnames before IP/path
+    r = outboundReplace(r, OutboundScrubPatterns.ipv6, "<ip>")          // IPv6 before IPv4 (longer match)
+    r = outboundReplace(r, OutboundScrubPatterns.ipv4, "<ip>")
+    r = outboundReplace(r, OutboundScrubPatterns.knownPaths, "<path>")  // specific roots before generic
+    r = outboundReplace(r, OutboundScrubPatterns.genericPath, "<path>")
     return r
 }
 

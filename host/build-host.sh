@@ -26,18 +26,36 @@ else
   SIGN_ID="-"; echo "⚠ signing: ad-hoc (cert '$SIGN_CN' missing → re-toggle on every rebuild). ./host/make-signing-cert.sh recommended"
 fi
 
+# ── ③ PAKE staticlib (Rust libpake) — linked into the host for PairingServer.swift ──
+# Crypto (SPAKE2) lives in host/rd/pake; Swift links the C-ABI staticlib (pake-bridge.h).
+# The P agent's `cargo build --release -p pake` produces target/release/libpake.a; if it is
+# not present yet we build it here so the host build is self-contained.
+export PATH="$HOME/.cargo/bin:$PATH"
+PAKE_MANIFEST=host/rd/pake/Cargo.toml
+PAKE_LIB=host/rd/pake/target/release/libpake.a
+if [ ! -f "$PAKE_LIB" ]; then
+  echo "=== build PAKE staticlib (cargo build --release -p pake) ==="
+  command -v cargo >/dev/null || { echo "✗ cargo missing — Rust toolchain required for the PAKE staticlib" >&2; exit 1; }
+  cargo build --release --manifest-path "$PAKE_MANIFEST" \
+    || { echo "✗ pake staticlib cargo build failed" >&2; exit 1; }
+fi
+[ -f "$PAKE_LIB" ] || { echo "✗ libpake.a missing after cargo build: $PAKE_LIB" >&2; exit 1; }
+PAKE_BRIDGE="$SRC_DIR/pake-bridge.h"
+# Link flags shared by both compile attempts: import the C ABI header + link the staticlib.
+PAKE_FLAGS=(-import-objc-header "$PAKE_BRIDGE" -L "$(dirname "$PAKE_LIB")" -lpake)
+
 # ── SDK selection (fall back to 14.x when the CLT + new-SDK combination breaks) ──
 compile() { # $1=out
   local out="$1" sdk
   # 1) try the default toolchain
-  if xcrun swiftc -O "$SRC_DIR"/*.swift -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
+  if xcrun swiftc -O "$SRC_DIR"/*.swift "${PAKE_FLAGS[@]}" -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
   # 2) fallback: probe for a compatible SDK (avoid the Swift 5.10 CLT + MacOSX15 swiftinterface mismatch)
   for sdk in /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk \
              /Library/Developer/CommandLineTools/SDKs/MacOSX14.sdk \
              /Library/Developer/CommandLineTools/SDKs/MacOSX13.3.sdk; do
     [ -d "$sdk" ] || continue
     echo "  (default compile failed → SDK fallback: $(basename "$sdk"))"
-    if xcrun swiftc -O -sdk "$sdk" -target arm64-apple-macos13.0 "$SRC_DIR"/*.swift -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
+    if xcrun swiftc -O -sdk "$sdk" -target arm64-apple-macos13.0 "$SRC_DIR"/*.swift "${PAKE_FLAGS[@]}" -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
   done
   echo "✗ Swift compile failed:"; cat /tmp/rp-swiftc.err >&2; return 1
 }
@@ -65,6 +83,8 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>RPGitHubRepo</key><string>${GH_REPO}</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSBonjourServices</key><array><string>_remotepair._tcp</string></array>
+<key>NSLocalNetworkUsageDescription</key><string>RemotePair advertises this Mac on your local network so your RemotePair client can discover and pair with it.</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleIconName</key><string>AppIcon</string>
 </dict></plist>

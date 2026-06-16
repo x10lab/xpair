@@ -1,0 +1,46 @@
+# LICENSE-GATE PROBE manifest (rev 1). Final lib/bin targets are filled in
+# below once `cargo deny check licenses` confirms the SPAKE2 dependency tree is
+# permissive-only (the one residual decision for Component P, ADR Fork #1).
+[package]
+name = "pake"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "License-clean SPAKE2 PAKE helper for RemotePair PIN pairing (host C-ABI staticlib + client binary), bound by one wire-format spec + committed interop vectors."
+repository = "https://github.com/x10lab/remote-pair"
+publish = false
+
+# ---------------------------------------------------------------------------
+# DEPENDENCY LICENSE POLICY: PERMISSIVE ONLY (MIT / Apache-2.0 / BSD / ISC).
+# Mirrors host/rd/screen — enforced by deny.toml (cargo-deny check licenses).
+# ---------------------------------------------------------------------------
+[dependencies]
+# SPAKE2 PAKE (RustCrypto ecosystem). MIT OR Apache-2.0 — permissive.
+# This is the crate the LICENSE GATE must clear before any crypto is written.
+spake2 = "0.4"
+# Transcript / fingerprint hashing + confirmation MAC + KDF. RustCrypto, MIT OR Apache-2.0.
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+# Constant-time MAC comparison (fail-closed, no timing leak). MIT OR Apache-2.0.
+subtle = "2"
+# Lowercase hex for the line-oriented wire framing + committed vectors. MIT OR Apache-2.0.
+hex = "0.4"
+# RNG trait surface shared with `spake2` (RustCrypto rand_core 0.6). MIT OR Apache-2.0.
+# `getrandom` feature gives `OsRng` for the production (non-vector) paths; the
+# seeded vector RNG implements the same traits for reproducible interop vectors.
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[lib]
+name = "pake"
+# rlib    — consumed by the `remote-pair-pake` client binary (P3) in-tree.
+# staticlib — linked by the Swift host PairingServer.swift (P2) via the C ABI.
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "remote-pair-pake"
+path = "src/bin/remote-pair-pake.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

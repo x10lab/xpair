@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { WizardShell } from "@/components/onboarding/WizardShell";
 import { AnimatedStep } from "@/components/onboarding/AnimatedStep";
 import { useWizard } from "@/components/onboarding/useWizard";
@@ -13,11 +13,18 @@ import {
   type Mapping,
 } from "@/components/onboarding/client/StepFileAccess";
 import { StepDone } from "@/components/onboarding/client/StepDone";
+import { capture, EVENTS } from "@/lib/telemetry";
 
 const STEP_TITLES = ["Welcome", "Connect", "File access & mapping", "Done"];
 
 export default function App() {
   const w = useWizard(4);
+
+  // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
+  // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
+  useEffect(() => {
+    capture(EVENTS.ONBOARDING_STARTED);
+  }, []);
 
   // Connect (US-004)
   const [host, setHost] = useState("");
