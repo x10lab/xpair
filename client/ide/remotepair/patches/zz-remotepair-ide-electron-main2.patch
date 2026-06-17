@@ -1,7 +1,7 @@
 diff --git a/src/main.ts b/src/main.ts
 --- a/src/main.ts
 +++ b/src/main.ts
-@@ -53,6 +53,15 @@ if (args['sandbox'] &&
+@@ -53,6 +53,16 @@ if (args['sandbox'] &&
  	app.commandLine.appendSwitch('disable-gpu-sandbox');
  }
 
@@ -11,7 +11,8 @@ diff --git a/src/main.ts b/src/main.ts
 +// no Keychain prompt appears. Prod/CI keep the Keychain. Onboarding/pairing secrets go via
 +// askpass/CLI (not safeStorage), so basic store is safe here. Must run before app 'ready'.
 +if (product.nameShort && product.nameShort.endsWith('Local')) {
-+	app.commandLine.appendSwitch('password-store', 'basic');
++	app.commandLine.appendSwitch('password-store', 'basic'); // Linux secret-store backend
++	app.commandLine.appendSwitch('use-mock-keychain'); // macOS: os_crypt bypasses the real Keychain (password-store is Linux-only)
 +}
 +
  // Set userData path before app 'ready' event
