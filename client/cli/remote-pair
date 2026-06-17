@@ -933,8 +933,15 @@ cmd_discover() {
   # Tailscale peer list, so no advertised TXT fp to TOFU against). Emits {"fp":"SHA256:…"} or
   # {"fp":null,"err":"…"}. Matches `ssh-keygen -lf` form (same as the host's advertised fp).
   if [ -n "$_fp_host" ]; then
-    local _ks _fpv=""
-    _ks="$(ssh-keyscan -t ed25519 -T "$timeout" "$_fp_host" 2>/dev/null)" || true
+    local _ks _fpv="" _scan_host _scan_port
+    # ssh-keyscan does NOT honor ssh_config Host aliases (it resolves the literal string via DNS),
+    # so an alias like "gh-mac-m1" (HostName 192.168.x) would fail to scan. Resolve the alias to its
+    # real HostName + Port via `ssh -G` first; fall back to the literal for a bare host/IP.
+    _scan_host="$(ssh -G "$_fp_host" 2>/dev/null | awk '/^hostname /{print $2; exit}')"
+    [ -n "$_scan_host" ] || _scan_host="$_fp_host"
+    _scan_port="$(ssh -G "$_fp_host" 2>/dev/null | awk '/^port /{print $2; exit}')"
+    [ -n "$_scan_port" ] || _scan_port=22
+    _ks="$(ssh-keyscan -t ed25519 -T "$timeout" -p "$_scan_port" "$_scan_host" 2>/dev/null)" || true
     [ -n "$_ks" ] && _fpv="$(printf '%s\n' "$_ks" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' | head -1)"
     if [ -n "$_fpv" ]; then printf '{"fp":"%s"}\n' "$_fpv"
     else printf '{"fp":null,"err":"could not fetch host key for %s"}\n' "$_fp_host"; fi
