@@ -155,6 +155,9 @@ const bridge = {
   async sshKeygen() {
     let keygenNew = false;
     if (!fs.existsSync(SSH_KEY)) {
+      const sshDir = path.join(HOME, ".ssh");
+      fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(sshDir, 0o700);
       await run("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", SSH_KEY, "-q"]);
       keygenNew = fs.existsSync(SSH_KEY);
     }
@@ -305,7 +308,13 @@ const bridge = {
   async hostKeyFingerprint(host) {
     if (!host) return { fp: "", err: "no host" };
     const r = await cli(["discover", "--fingerprint", String(host)]);
-    return { fp: r.code === 0 ? r.out.trim() : "", err: r.code === 0 ? "" : r.err };
+    if (r.code !== 0) return { fp: "", err: r.err };
+    try {
+      const parsed = JSON.parse(r.out.trim());
+      return { fp: parsed.fp || "", err: parsed.err || "" };
+    } catch {
+      return { fp: "", err: "fingerprint: bad JSON: " + r.out.trim() };
+    }
   },
 
   // --- Telemetry (consent-gated PostHog; all no-ops until the user opts in) -------------------
