@@ -34,7 +34,9 @@ INJECTED_EXT="$VENDOR/vscode/extensions/remotepair"
 # is then unambiguous). Bumped once per build; stamped into the packaged product.json below
 # (before re-sign). Override with RP_BUILD_VER=…; bump RP_BUILD_BASE when cutting a real release.
 RP_BUILD_BASE="${RP_BUILD_BASE:-0.5.0a}"
-COUNTER_FILE="$RP/.build-counter"
+# LOCKSTEP with the host build: both read+bump the SAME shared counter (repo shared/.build-counter)
+# so the project has a single monotonic 0.5.0aN sequence across host + client.
+COUNTER_FILE="$HERE/../../shared/.build-counter"
 _n=$(( $(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))
 echo "$_n" > "$COUNTER_FILE"
 RP_BUILD_VER="${RP_BUILD_VER:-${RP_BUILD_BASE}${_n}}"
