@@ -18,6 +18,7 @@ import { StepDone } from "@/components/onboarding/client/StepDone";
 import { StepDiscover } from "@/components/onboarding/client/StepDiscover";
 import { StepConnectPin, type PinState } from "@/components/onboarding/client/StepConnectPin";
 import { StepSetupPassword } from "@/components/onboarding/client/StepSetupPassword";
+import { StepGrantPermissions } from "@/components/onboarding/client/StepGrantPermissions";
 import {
   StepInstalling,
   type InstallState,
@@ -27,13 +28,15 @@ import { capture, EVENTS } from "@/lib/telemetry";
 
 // Step indices for the discovery flow:
 //   0 Welcome → 1 Before you start (consent) → 2 Discover → 3 Connect/Setup (auto-branch)
-//   → 4 Installing (setup path only) → 5 File access & mapping → 6 Done (liveness-gated on every path).
+//   → 4 Installing (setup path only, auto-advances) → 5 Grant permissions (setup path only)
+//   → 6 File access & mapping → 7 Done (liveness-gated on every path).
 const STEP_TITLES = [
   "Welcome",
   "Before you start",
   "Find your host",
   "Connect",
   "Set up host",
+  "Grant permissions",
   "File access & mapping",
   "Done",
 ];
@@ -44,14 +47,15 @@ const S = {
   DISCOVER: 2,
   CONNECT: 3,
   INSTALL: 4,
-  MAPPINGS: 5,
-  DONE: 6,
+  GRANT: 5,
+  MAPPINGS: 6,
+  DONE: 7,
 } as const;
 
 type LiveState = "idle" | "checking" | "reachable" | "rekeyed" | "offline";
 
 export default function App() {
-  const w = useWizard(7);
+  const w = useWizard(8);
 
   // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
   // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
@@ -67,6 +71,8 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [pinState, setPinState] = useState<PinState>("idle");
   const [installState, setInstallState] = useState<InstallState>("idle");
+  // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
+  const [grantReady, setGrantReady] = useState(false);
   const [live, setLive] = useState<LiveState>("idle");
 
   // Manual-entry fallback reuses the existing StepConnect machine.
@@ -137,13 +143,12 @@ export default function App() {
     : isSetup
     ? true // Setup path: Next moves on to Installing.
     : pinState === "paired";
-  const installReady = installState === "done";
   const mappingsReady = mappings.length >= 1;
 
   const nextDisabled =
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
     (w.index === S.CONNECT && !connectReady) ||
-    (w.index === S.INSTALL && !installReady) ||
+    (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
     (w.index === S.MAPPINGS && !mappingsReady);
 
   // Custom Next routing: Mappings → run liveness check before Done; Connect (non-setup) skips the
@@ -161,13 +166,14 @@ export default function App() {
     w.next();
   };
 
-  // Prev routing: from Mappings, go back to Installing (setup) or Connect (others).
+  // Prev routing: from Mappings, go back to Grant (setup) or Connect (others); Grant and Installing
+  // both fall back to the setup/password step.
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
-      w.goTo(isSetup && !manual ? S.INSTALL : S.CONNECT, "prev");
+      w.goTo(isSetup && !manual ? S.GRANT : S.CONNECT, "prev");
       return;
     }
-    if (w.index === S.INSTALL) {
+    if (w.index === S.GRANT || w.index === S.INSTALL) {
       w.goTo(S.CONNECT, "prev");
       return;
     }
@@ -187,7 +193,9 @@ export default function App() {
       step={w.index}
       totalSteps={w.totalSteps}
       onPrev={onPrev}
-      onNext={w.isLast || w.index === S.DISCOVER ? undefined : onNext}
+      onNext={
+        w.isLast || w.index === S.DISCOVER || w.index === S.INSTALL ? undefined : onNext
+      }
       nextDisabled={nextDisabled || live === "checking"}
       nextLabel={nextLabel}
       centerSlot={
@@ -246,7 +254,15 @@ export default function App() {
             setPassword={setPassword}
             state={installState}
             setState={setInstallState}
+            onDone={() => {
+              setGrantReady(false);
+              w.goTo(S.GRANT, "next");
+            }}
+            onFail={() => w.goTo(S.CONNECT, "prev")}
           />
+        )}
+        {w.index === S.GRANT && peer && (
+          <StepGrantPermissions peer={peer} user={account} onReady={setGrantReady} />
         )}
         {w.index === S.MAPPINGS && (
           <StepFileAccess mappings={mappings} setMappings={setMappings} />
