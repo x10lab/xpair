@@ -13,15 +13,22 @@ import Cocoa
 import WebKit
 
 final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandlerWithReply {
+    /// `runGate` = the launch-time hard gate (full flow; dismissing while ungranted quits the app).
+    /// `grantOnly` = the menu-bar "Grant Permissions…" entry: deep-link to the Permissions step on a
+    /// still-running app; closing the window NEVER quits.
+    enum Mode { case runGate, grantOnly }
+
     private var window: NSWindow!
     private var webView: WKWebView!
     private let onComplete: () -> Void
+    private let mode: Mode
     // Set true once the React side calls complete() (Screen Recording granted). Distinguishes a
     // legitimate finish from the user dismissing the window while still ungranted (→ hard gate quit).
     private var completed = false
 
     /// onComplete is invoked on the main thread when the React onboarding signals completion.
-    init(onComplete: @escaping () -> Void) {
+    init(mode: Mode = .runGate, onComplete: @escaping () -> Void) {
+        self.mode = mode
         self.onComplete = onComplete
         super.init()
     }
@@ -56,6 +63,14 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
                                   injectionTime: .atDocumentStart,
                                   forMainFrameOnly: true)
         controller.addUserScript(script)
+        // Grant-only: deep-link the React onboarding straight to the Permissions step. Injected
+        // atDocumentStart (before the app bundle runs) so App.tsx reads it on first render.
+        if mode == .grantOnly {
+            let stepScript = WKUserScript(source: "window.__rp_initialStep = 'permissions';",
+                                          injectionTime: .atDocumentStart,
+                                          forMainFrameOnly: true)
+            controller.addUserScript(stepScript)
+        }
         controller.addScriptMessageHandler(self, contentWorld: .page, name: "rpbridge")
         config.userContentController = controller
 
@@ -198,11 +213,19 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
     // MARK: - NSWindowDelegate (hard gate)
 
     func windowWillClose(_ notification: Notification) {
-        // If the window is dismissed while AX/SR are still ungranted and the user did not complete
-        // the flow, enforce the hard run-gate: the app quits. (allGranted = axTrusted && srGranted.)
-        if !completed && !Permissions.allGranted() {
-            log(.warn, "onboarding dismissed without Accessibility+Screen Recording — quitting (hard gate)")
-            NSApp.terminate(nil)
+        switch mode {
+        case .runGate:
+            // Launch gate: dismissing while AX/SR are still ungranted (and not completed) quits the
+            // app. (allGranted = axTrusted && srGranted.)
+            if !completed && !Permissions.allGranted() {
+                log(.warn, "onboarding dismissed without Accessibility+Screen Recording — quitting (hard gate)")
+                NSApp.terminate(nil)
+            }
+        case .grantOnly:
+            // Menu-bar "Grant Permissions…": the app is already running — closing must NOT quit it.
+            // Just revert the temporary .regular activation policy show() set back to menu-bar-only
+            // (finish() already does this on the completed path).
+            if !completed { NSApp.setActivationPolicy(.accessory) }
         }
     }
 }

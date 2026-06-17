@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var tickTimer: Timer?
     var settings: SettingsWindowController?
     var onboarding: OnboardingWindow?   // shown while Screen Recording is ungranted (hard run-gate)
+    var grantWindow: OnboardingWindow?  // menu-bar "Grant Permissions…" — onboarding deep-linked to the Permissions step
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
@@ -256,7 +257,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func pairNewMac() { if isHostRole { PairingServer.shared.arm() } }
     @objc func stopPairing() { PairingServer.shared.disarm() }
 
-    @objc func grantPermissions() { Permissions.requestAndOpen() }
+    @objc func grantPermissions() {
+        // Open the in-app onboarding deep-linked to the Permissions step. Grant-only mode: the app is
+        // already running, so closing the window does NOT quit it (unlike the launch run-gate). Pre-
+        // register the TCC entries so the user only flips the toggles in System Settings.
+        Permissions.request("ax"); Permissions.request("sr")
+        let ob = OnboardingWindow(mode: .grantOnly, onComplete: { [weak self] in self?.grantWindow = nil })
+        grantWindow = ob
+        ob.show()
+    }
     @objc func approveNow() { approve.run() }
     @objc func restartHost() {
         // true restart (reap server+sessions, then relaunch) — if there are active sessions, warn about disconnection before proceeding.

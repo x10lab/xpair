@@ -15,7 +15,14 @@ import { StepDone } from "@/components/onboarding/host/StepDone";
 const STEP_TITLES = ["Welcome", "Permissions", "Done"];
 
 export default function App() {
-  const w = useWizard(3);
+  // The host can deep-link this onboarding straight to the Permissions step (menu-bar
+  // "Grant Permissions…"): OnboardingWindow injects window.__rp_initialStep before app code runs.
+  const initialStep =
+    typeof window !== "undefined" &&
+    (window as unknown as { __rp_initialStep?: string }).__rp_initialStep === "permissions"
+      ? 1
+      : 0;
+  const w = useWizard(3, initialStep);
   const [perm, setPerm] = useState<PermState>({
     ax: "pending",
     sr: "pending",
