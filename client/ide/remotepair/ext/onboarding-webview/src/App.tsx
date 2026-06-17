@@ -152,13 +152,13 @@ export default function App() {
     : isReconnect
     ? reconnectReady // Reconnect path: gate on the host answering over the existing key.
     : pinState === "paired";
-  const mappingsReady = mappings.length >= 1;
-
   const nextDisabled =
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
     (w.index === S.CONNECT && !connectReady) ||
-    (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
-    (w.index === S.MAPPINGS && !mappingsReady);
+    (w.index === S.GRANT && !grantReady); // wait until host AX + SR are granted
+  // Folder mappings are OPTIONAL — you can attach to a host for screen share / terminal without
+  // mapping any folders and add them later from the IDE ("Add Root"), so the Mappings step never
+  // blocks Next.
 
   // Custom Next routing: Mappings → run liveness check before Done; Connect (non-setup) skips the
   // Installing step.
@@ -192,7 +192,11 @@ export default function App() {
   // Unified action label — always "Next" (no step-specific phrases); only the in-flight liveness
   // check on the Mappings step swaps in a transient "Checking…".
   const nextLabel =
-    w.index === S.MAPPINGS && live === "checking" ? "Checking…" : "Next";
+    w.index === S.MAPPINGS && live === "checking"
+      ? "Checking…"
+      : w.index === S.MAPPINGS && mappings.length === 0
+      ? "Skip for now"
+      : "Next";
 
   return (
     <>

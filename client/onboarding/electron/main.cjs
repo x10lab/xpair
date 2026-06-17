@@ -147,7 +147,9 @@ function launchIDE() {
   }
 }
 
-/** "onboarded" ⇔ REMOTE_HOST set AND FOLDER_MAPS has >=1 non-empty entry (split on ';'). */
+/** "onboarded" ⇔ REMOTE_HOST is set. Folder mappings are OPTIONAL (attach for screen share /
+ *  terminal with zero folders and add them later from the IDE), so a connected-but-unmapped client
+ *  still counts as onboarded — otherwise the hard guard would re-show onboarding forever. */
 function isOnboarded() {
   const file = path.join(os.homedir(), '.remote-pair', 'client.env')
   let txt = ''
@@ -161,12 +163,7 @@ function isOnboarded() {
     const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/)
     if (m) env[m[1]] = m[2].replace(/^["']/, '').replace(/["']\s*$/, '')
   }
-  const host = (env.REMOTE_HOST || '').trim()
-  const maps = (env.FOLDER_MAPS || '')
-    .split(';')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  return host.length > 0 && maps.length >= 1
+  return (env.REMOTE_HOST || '').trim().length > 0
 }
 
 app.whenReady().then(() => {

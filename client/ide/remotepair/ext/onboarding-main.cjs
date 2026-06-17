@@ -36,7 +36,10 @@ function clearForceOnboardingSentinel() {
   try { fs.rmSync(FORCE_ONBOARDING_SENTINEL, { force: true }) } catch { /* ignore */ }
 }
 
-/** "onboarded" ⇔ REMOTE_HOST set AND >=1 FOLDER_MAPS entry in ~/.remote-pair/client.env. */
+/** "onboarded" ⇔ REMOTE_HOST is set. Folder mappings are OPTIONAL (you can attach to a host for
+ *  screen share / terminal with no folders mapped and add them later from the IDE), so a connected
+ *  but unmapped client still counts as onboarded — otherwise the hard guard would re-show onboarding
+ *  forever for anyone who skipped mapping. */
 function isOnboarded() {
   const file = path.join(os.homedir(), '.remote-pair', 'client.env')
   let txt = ''
@@ -46,9 +49,7 @@ function isOnboarded() {
     const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/)
     if (m) env[m[1]] = m[2].replace(/^["']/, '').replace(/["']\s*$/, '')
   }
-  const host = (env.REMOTE_HOST || '').trim()
-  const maps = (env.FOLDER_MAPS || '').split(';').map((s) => s.trim()).filter(Boolean)
-  return host.length > 0 && maps.length >= 1
+  return (env.REMOTE_HOST || '').trim().length > 0
 }
 
 /** Should the onboarding window show on this launch? `RP_FORCE_ONBOARDING=1` / `--force`, or the
