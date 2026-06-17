@@ -1,8 +1,12 @@
 # RemotePair Sidecar WebRTC Design Document
 
-> Status: Draft (2026-06-14)
-> Target version: v1b (VideoToolbox HW encode + webrtc-rs transport)
-> Current status: v1a — xcap capture + tungstenite WebSocket, JPEG frames ~10fps
+> Status: IMPLEMENTED (updated 2026-06-17)
+> Shipped: v2 — `rp-screencap` (ScreenCaptureKit + VideoToolbox HW H.264) +
+>   webrtc-rs transport (DTLS/SRTP over UDP/ICE) + input DataChannels
+>   (`rp-ctl`/`rp-move` → `rp-input-inject` AX). Shipping in 0.5.0; verified
+>   end-to-end from the IDE Remote Desktop panel (loopback peer "connected", 30fps).
+> v1a (xcap + tungstenite WS, JPEG ~10fps) remains a license-clean fallback (`serve`).
+> Still future: TWCC/GCC bitrate adaptation, HEVC/AV1, ICE-restart (sections d/e below).
 > License: AGPL-3.0-or-later (no AGPL contamination allowed)
 
 ---
