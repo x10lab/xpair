@@ -22,6 +22,7 @@ RP="$HERE/remotepair"
 
 INJECTED_PATCH="$VENDOR/patches/zz-remotepair-ide-frontend.patch"
 INJECTED_PATCH_MAIN="$VENDOR/patches/zz-remotepair-ide-electron-main.patch"
+INJECTED_PATCH_MAIN2="$VENDOR/patches/zz-remotepair-ide-electron-main2.patch"
 PRODUCT_BAK="$VENDOR/product.json.rp-orig"
 # Builtin extension inject target. The vscode source lives at $VENDOR/vscode/ and the gulp recipe
 # auto-discovers every dir under extensions/ via glob.sync('extensions/*/package.json') — so a dir
@@ -43,6 +44,7 @@ cleanup() {
   # restore pristine vendor (so `git subtree pull` stays conflict-free)
   rm -f "$INJECTED_PATCH"
   rm -f "$INJECTED_PATCH_MAIN"
+  rm -f "$INJECTED_PATCH_MAIN2"
   rm -rf "$INJECTED_EXT"
   [ -f "$PRODUCT_BAK" ] && mv -f "$PRODUCT_BAK" "$VENDOR/product.json"
   rm -f "$VENDOR/dev/build.env"
@@ -55,6 +57,10 @@ trap cleanup EXIT INT TERM
 #    src/vs/code/electron-main/app.ts (US-B). They touch disjoint files, so order between them is moot.
 cp "$RP/patches/zz-remotepair-ide-frontend.patch" "$INJECTED_PATCH"
 cp "$RP/patches/zz-remotepair-ide-electron-main.patch" "$INJECTED_PATCH_MAIN"
+#    main2 = local-identity safeStorage fix: forces --password-store=basic for nameShort ending in
+#    'Local' (src/main.ts), so the self-signed local build stops re-prompting for Keychain access.
+#    Prod/CI (nameShort != *Local) keep the Keychain. Disjoint file (src/main.ts) from the others.
+cp "$RP/patches/zz-remotepair-ide-electron-main2.patch" "$INJECTED_PATCH_MAIN2"
 
 # 1b) The RemotePair VS Code extension is injected as a BUILTIN (vscode/extensions/remotepair) INSIDE
 #     dev-build.sh — AFTER source prep, right before gulp. It CANNOT be copied here: dev-build.sh wipes
