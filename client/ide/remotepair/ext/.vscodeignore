@@ -4,3 +4,6 @@
 **/*.vsix
 node_modules/**
 **/.DS_Store
+.omc/**
+**/*.test.js
+generate-contracts.mjs

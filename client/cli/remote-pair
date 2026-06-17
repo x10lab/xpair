@@ -150,9 +150,19 @@ is_mapped() { local d="$1" c pair IFS=';'; for pair in $FOLDER_MAPS; do [ -n "$p
 
 cmd_map() {
   case "${1:-list}" in
-    list|"") printf 'Folder mappings (client → host):\n'
-             local pair IFS=';'; for pair in $FOLDER_MAPS; do [ -n "$pair" ] && printf '  %s  →  %s\n' "$(map_client_of "$pair")" "$(map_host_of "$pair")"; done
-             [ -z "$FOLDER_MAPS" ] && echo "  (none)" ;;
+    list|"") local pair IFS=';'
+             if [ "${2:-}" = "--json" ]; then
+               # SSOT machine-readable form for the onboarding bridge (clean client::host, no shell escaping).
+               local sep=''; printf '['
+               for pair in $FOLDER_MAPS; do [ -n "$pair" ] || continue
+                 printf '%s{"client":"%s","host":"%s"}' "$sep" "$(map_client_of "$pair")" "$(map_host_of "$pair")"; sep=','
+               done
+               printf ']\n'
+             else
+               printf 'Folder mappings (client → host):\n'
+               for pair in $FOLDER_MAPS; do [ -n "$pair" ] && printf '  %s  →  %s\n' "$(map_client_of "$pair")" "$(map_host_of "$pair")"; done
+               [ -z "$FOLDER_MAPS" ] && echo "  (none)"
+             fi ;;
     add) local cd hd
          cd="$(cd "${2:?clientDir required}" 2>/dev/null && pwd)" || { echo "client path not found: ${2:-}" >&2; return 1; }
          hd="${3:-$cd}"
@@ -1105,14 +1115,15 @@ cmd_pair() {
 #   --bootstrap: explicit opt-in to curl|bash; REQUIRES --sha256 of the fetched
 #                script and a pinned --ref; aborts before any host exec on mismatch.
 cmd_install_host() {
-  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main"
+  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0
   while [ $# -gt 0 ]; do case "$1" in
     --host)      host="${2:-}"; shift 2 ;;
     --account)   account="${2:-}"; shift 2 ;;
     --bootstrap) use_bootstrap=1; shift ;;
     --sha256)    sha="${2:-}"; shift 2 ;;
     --ref)       ref="${2:-main}"; shift 2 ;;
-    *) echo "install-host [--host <addr>] [--account <user>] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
+    --force)     force=1; shift ;;   # reinstall even if an install is detected (re-setup / version swap)
+    *) echo "install-host [--host <addr>] [--account <user>] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
   esac; done
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
   local target="$host"; [ -n "$account" ] && target="$account@$host"
@@ -1133,7 +1144,7 @@ cmd_install_host() {
 
   # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
   c "checking $target for an existing $APP_NAME install …"
-  if _rp_ssh -o BatchMode=yes "$target" "[ -d ~/Applications/$APP_NAME.app ] || [ -d /Applications/$APP_NAME.app ]" 2>/dev/null; then
+  if [ "$force" != 1 ] && _rp_ssh -o BatchMode=yes "$target" "[ -d ~/Applications/$APP_NAME.app ] || [ -d /Applications/$APP_NAME.app ]" 2>/dev/null; then
     ok "$APP_NAME already installed on $target → re-registering (no reinstall)"
     _rp_ssh "$target" "launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX 2>/dev/null || open -a $APP_NAME 2>/dev/null || true" 2>/dev/null || true
   else
@@ -1156,17 +1167,27 @@ cmd_install_host() {
       rm -f "$btmp"
     else
       # Default: scp the locally-built SIGNED .app + install.sh; integrity = signature.
+      # build-host.sh writes build/<app> relative to its CWD: host/build/ when run from host/, or
+      # build/ when run from the repo root. Accept either so a repo-root build is found too.
       local appsrc="$repo_root/host/build/$APP_NAME.app"
-      [ -d "$appsrc" ] || { err "no local signed app: $appsrc — run host/build-host.sh first (or use --bootstrap --sha256)"; return 1; }
-      c "scp signed $APP_NAME.app → $target (integrity by code signature) …"
-      _rp_ssh "$target" "mkdir -p ~/.cache/remote-pair/build" 2>/dev/null || true
-      # rsync over the detached ssh wrapper would need -e plumbing; scp -r is sufficient and uses the same askpass env.
-      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$appsrc" "$target:~/.cache/remote-pair/build/" </dev/null \
+      [ -d "$appsrc" ] || appsrc="$repo_root/build/$APP_NAME.app"
+      [ -d "$appsrc" ] || { err "no local signed app: $repo_root/{host/,}build/$APP_NAME.app — run host/build-host.sh first (or use --bootstrap --sha256)"; return 1; }
+      c "scp signed $APP_NAME.app + install tree → $target (integrity by code signature) …"
+      # Stage a MINIMAL repo mirror so install.sh --role host resolves its deps: it sources config.sh +
+      # lib.sh from its own dir, and config.sh sets REPO_ROOT = <stage>/shared/.. = <stage>, so build/
+      # and host/ must live under <stage>. rsync over the detached-ssh wrapper needs -e plumbing; scp -r
+      # is sufficient and reuses the same askpass env.
+      _rp_ssh "$target" "rm -rf ~/.cache/remote-pair/stage && mkdir -p ~/.cache/remote-pair/stage/shared ~/.cache/remote-pair/stage/host ~/.cache/remote-pair/stage/client ~/.cache/remote-pair/stage/build" 2>/dev/null || true
+      "${SSHENV[@]}" scp -o ConnectTimeout=8 "$repo_root"/shared/*.sh "$target:~/.cache/remote-pair/stage/shared/" </dev/null \
+        || { err "scp of shared/ failed"; return 1; }
+      # role=host also (re)installs the client CLI tools from client/cli/ — stage them too.
+      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$repo_root/client/cli" "$target:~/.cache/remote-pair/stage/client/" </dev/null \
+        || { err "scp of client/cli failed"; return 1; }
+      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$repo_root/host/rules.txt" "$repo_root/host/skills" "$repo_root/host/hooks" "$target:~/.cache/remote-pair/stage/host/" </dev/null \
+        || { err "scp of host resources failed"; return 1; }
+      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$appsrc" "$target:~/.cache/remote-pair/stage/build/" </dev/null \
         || { err "scp of signed app failed"; return 1; }
-      # Run install.sh --role host against the staged build dir (REPO_ROOT points at the staged tree).
-      "${SSHENV[@]}" scp -o ConnectTimeout=8 "$repo_root/shared/install.sh" "$target:~/.cache/remote-pair/install.sh" </dev/null \
-        || { err "scp of install.sh failed"; return 1; }
-      _rp_ssh "$target" "cd ~/.cache/remote-pair && mkdir -p build && RP_YES=1 bash install.sh --role host" \
+      _rp_ssh "$target" "cd ~/.cache/remote-pair/stage && RP_YES=1 bash shared/install.sh --role host" \
         || { err "remote install.sh failed"; return 1; }
       ok "signed app installed on $target"
     fi

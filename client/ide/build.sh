@@ -21,19 +21,47 @@ RP="$HERE/remotepair"
 }
 
 INJECTED_PATCH="$VENDOR/patches/zz-remotepair-ide-frontend.patch"
+INJECTED_PATCH_MAIN="$VENDOR/patches/zz-remotepair-ide-electron-main.patch"
 PRODUCT_BAK="$VENDOR/product.json.rp-orig"
+# Builtin extension inject target. The vscode source lives at $VENDOR/vscode/ and the gulp recipe
+# auto-discovers every dir under extensions/ via glob.sync('extensions/*/package.json') — so a dir
+# dropped here becomes a builtin with NO product.json wiring. Basename MUST stay 'remotepair' so the
+# US-B onboarding hook (app.ts: builtinExtensionsPath/['x10lab.remotepair','remotepair']) resolves.
+INJECTED_EXT="$VENDOR/vscode/extensions/remotepair"
+
+# Auto-incrementing dev build marker so each rebuild is visibly distinct in About (stale vs fresh
+# is then unambiguous). Bumped once per build; stamped into the packaged product.json below
+# (before re-sign). Override with RP_BUILD_VER=…; bump RP_BUILD_BASE when cutting a real release.
+RP_BUILD_BASE="${RP_BUILD_BASE:-0.5.0a}"
+COUNTER_FILE="$RP/.build-counter"
+_n=$(( $(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))
+echo "$_n" > "$COUNTER_FILE"
+RP_BUILD_VER="${RP_BUILD_VER:-${RP_BUILD_BASE}${_n}}"
+echo "→ RemotePair build marker: $RP_BUILD_VER  (About → version; counter: $COUNTER_FILE)"
 
 cleanup() {
   # restore pristine vendor (so `git subtree pull` stays conflict-free)
   rm -f "$INJECTED_PATCH"
+  rm -f "$INJECTED_PATCH_MAIN"
+  rm -rf "$INJECTED_EXT"
   [ -f "$PRODUCT_BAK" ] && mv -f "$PRODUCT_BAK" "$VENDOR/product.json"
   rm -f "$VENDOR/dev/build.env"
 }
 trap cleanup EXIT INT TERM
 
-# 1) inject the RemotePair frontend patch — prepare_vscode.sh applies ../patches/*.patch (glob,
-#    name-sorted); zz- sorts last so it lands after all stock + RemotePair-needed patches.
+# 1) inject the RemotePair patches — prepare_vscode.sh applies ../patches/*.patch (glob, name-sorted);
+#    zz- sorts last so they land after all stock + RemotePair-needed patches. The frontend patch is
+#    workbench(renderer)-only; the electron-main patch is the single-app onboarding hook in
+#    src/vs/code/electron-main/app.ts (US-B). They touch disjoint files, so order between them is moot.
 cp "$RP/patches/zz-remotepair-ide-frontend.patch" "$INJECTED_PATCH"
+cp "$RP/patches/zz-remotepair-ide-electron-main.patch" "$INJECTED_PATCH_MAIN"
+
+# 1b) The RemotePair VS Code extension is injected as a BUILTIN (vscode/extensions/remotepair) INSIDE
+#     dev-build.sh — AFTER source prep, right before gulp. It CANNOT be copied here: dev-build.sh wipes
+#     vscode/ on SKIP_SOURCE=no (`rm -rf vscode*` + re-clone) and resets it on SKIP_SOURCE=yes
+#     (`git add . && git reset --hard HEAD`), either of which would delete a pre-build copy. gulp
+#     glob-discovers extensions/*/package.json → ships it as builtin 'remotepair' (matches US-B probe).
+#     The cleanup trap above still rm -rf's $INJECTED_EXT so vendor ends byte-pristine.
 
 # 2) inject the branding overlay — prepare_vscode.sh:128 merges the in-vscode/ stock product.json
 #    with ../product.json (= vendor/vscodium/product.json), our overlay winning on key conflicts.
@@ -80,6 +108,22 @@ for out in "$VENDOR"/VSCode-darwin-*/ "$VENDOR"/VSCode-linux-*/ "$VENDOR"/VSCode
   rm -rf "$HERE/dist/$(basename "$out")"
   mv "$out" "$HERE/dist/"
   echo "→ build output: client/ide/dist/$(basename "$out")"
+done
+shopt -u nullglob
+
+# 4.5) stamp the auto-incrementing build marker into the packaged product.json (BEFORE re-sign, so
+#      the signature covers it). Shows in About → version, making stale-vs-fresh unambiguous.
+shopt -s nullglob
+for pj in "$HERE"/dist/VSCode-darwin-*/*.app/Contents/Resources/app/product.json \
+          "$HERE"/dist/VSCode-linux-*/resources/app/product.json \
+          "$HERE"/dist/VSCode-win32-*/resources/app/product.json; do
+  [ -f "$pj" ] || continue
+  _t="$(mktemp)"
+  # Stamp ONLY remotePairBuild — do NOT clobber .version: VSCode's version must stay valid semver
+  # (its update compareBuild() throws on '0.5.0a8') AND keep the 1.x major so extensions'
+  # engines.vscode (^1.x) stay compatible. Build identity lives in the dedicated field.
+  jq --arg v "$RP_BUILD_VER" '.remotePairBuild=$v' "$pj" > "$_t" && mv "$_t" "$pj"
+  echo "→ stamped build marker $RP_BUILD_VER into $pj"
 done
 shopt -u nullglob
 

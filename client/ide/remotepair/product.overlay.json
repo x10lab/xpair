@@ -641,6 +641,9 @@
       "default": false
     }
   },
+  "configurationDefaults": {
+    "workbench.startupEditor": "none"
+  },
   "nameShort": "RemotePair",
   "nameLong": "RemotePair",
   "applicationName": "remotepair",

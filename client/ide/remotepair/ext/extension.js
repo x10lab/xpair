@@ -398,14 +398,32 @@ class RemoteDesktopPanel {
         localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
       }
     );
+    this._adopt(panel);
+    // Pin so it behaves like a permanent tab (wireframe: RD is a pinned editor tab).
+    // Await so the pin lands on RD before anything else steals editor focus
+    // (e.g. setupLayout opening a terminal tab right after).
+    try {
+      await vscode.commands.executeCommand("workbench.action.pinEditor");
+    } catch (_e) {}
+    if (this.visible) this._startStream();
+  }
+
+  /** Adopt a webview panel (freshly created OR restored by VSCode across a reload) as THE single
+   *  RD panel. If a singleton already exists, the incoming one is a restore-duplicate → dispose it
+   *  so there is never a second "RD" tab. This is the fix for the pre-existing "RD opens twice"
+   *  bug: without a WebviewPanelSerializer, a reload restores the old RD tab AND startup reveal()
+   *  creates a new one. The serializer (registered in activate) routes restores through here. */
+  _adopt(panel) {
+    if (this.panel && this.panel !== panel) {
+      try { panel.dispose(); } catch (_e) {}
+      return;
+    }
     this.panel = panel;
     try {
       panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "media", "icon.svg");
     } catch (_e) {}
     panel.webview.html = this.getHtml(panel.webview);
-
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
-
     panel.onDidChangeViewState(() => {
       if (!this.panel) return;
       if (panel.visible) {
@@ -421,16 +439,19 @@ class RemoteDesktopPanel {
       this._stopAll();
       this.panel = null;
     });
-
     this.visible = panel.visible;
     this.postInputState();
-    // Pin so it behaves like a permanent tab (wireframe: RD is a pinned editor tab).
-    // Await so the pin lands on RD before anything else steals editor focus
-    // (e.g. setupLayout opening a terminal tab right after).
+  }
+
+  /** Restore handler for VSCode's WebviewPanelSerializer — adopt the restored RD (or drop a dup). */
+  restore(panel) {
     try {
-      await vscode.commands.executeCommand("workbench.action.pinEditor");
+      panel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+      };
     } catch (_e) {}
-    if (this.visible) this._startStream();
+    this._adopt(panel);
   }
 
   /** Entry point: start the v2 WebRTC stream. */
@@ -1130,19 +1151,25 @@ async function showLogs() {
 
 // --- activation -------------------------------------------------------------
 
-// --- standalone setup launcher ---------------------------------------------
-// Launch the standalone RemotePair Setup (onboarding) app best-effort.
-// The final app bundle name is set during packaging; adjust APP_NAME below at build time.
-const SETUP_APP_NAME = "RemotePair Setup";
-
+// --- re-run setup ----------------------------------------------------------
+// Single-app model (spec: single-app onboarding): onboarding is hosted by the IDE MAIN process as a
+// pre-workbench window on first run — there is NO separate "RemotePair Setup" Electron app to launch
+// (that 2nd process is removed). "Re-run setup" therefore makes the NEXT launch onboard again
+// (the main-process hook shows onboarding when not onboarded) and asks the user to restart, instead
+// of spawning a second app/process.
 function runSetup() {
-  // Try a known development build path first; fall back to the packaged app name.
-  // argv-safe: spawn('open', [...]) — never a shell string.
-  const devPath = path.join(os.homedir(), "Applications", `${SETUP_APP_NAME}.app`);
-  const appArg = fs.existsSync(devPath) ? devPath : SETUP_APP_NAME;
-  const child = cp.spawn("open", ["-a", appArg], { detached: true, stdio: "ignore" });
-  child.unref();
-  log(`runSetup: launched '${appArg}'`);
+  log("runSetup: re-onboarding requested — main process onboards on next launch");
+  vscode.window
+    .showInformationMessage(
+      "RemotePair setup will run when you restart the app.",
+      "Restart now",
+    )
+    .then((choice) => {
+      if (choice === "Restart now") {
+        // Relaunch the SAME app (one process); the main-process hook shows onboarding on next start.
+        vscode.commands.executeCommand("workbench.action.quit");
+      }
+    });
 }
 
 // Register extension-host crash hooks ONCE. The handlers delegate to telemetry.sentryCapture,
@@ -1202,6 +1229,21 @@ function activate(context) {
   // 2) Remote Desktop = a pinned editor tab ("RD") in the main editor area
   //    (NOT a left activity-bar view).
   const panel = new RemoteDesktopPanel(context.extensionUri, state);
+
+  // Auto-open the Remote Desktop on launch so it is the default surface (v2 RD). This regressed
+  // when the onboarding / session-picker UX changed the startup view: the panel was created but
+  // never revealed, so it only appeared via the command. Restore the launch-time reveal.
+  panel.reveal().catch((e) => log(`RD auto-open error: ${e}`));
+
+  // Route VSCode's webview restore (across a window reload) through the singleton so a restored RD
+  // reattaches instead of opening a SECOND "RD" tab (fixes the pre-existing "RD opens twice" bug).
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("remotepair.remoteDesktop", {
+      async deserializeWebviewPanel(restored) {
+        panel.restore(restored);
+      },
+    })
+  );
 
   // 3) Status bar Host button (always visible, high priority = left-most).
   //    Shows the configured host NAME + live reachability status instead of the

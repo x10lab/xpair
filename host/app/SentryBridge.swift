@@ -61,7 +61,7 @@ struct SentryCrashReporter: CrashReporting {
         let exc = Exception(value: reason ?? name, type: name)
         // Map each pre-scrubbed backtrace line to a frame's function field (it is symbolicated text, not a
         // file path). beforeSend re-scrubs function/fileName/package, so this is privacy-safe either way.
-        let stack = Stacktrace(frames: frames.map { line in
+        let stack = SentryStacktrace(frames: frames.map { line in
             let f = Frame()
             f.function = line
             return f
@@ -110,7 +110,8 @@ enum SentryBridge {
         SentrySDK.start { o in
             o.dsn = dsn
             o.sendDefaultPii = false              // spec: PII off
-            o.serverName = nil                    // spec: disable server_name (defense in depth: also in beforeSend)
+            // spec: disable server_name. SentryOptions has no serverName setter — server_name is suppressed
+            // per-event in beforeSend (event.serverName = nil) below, which is what actually gets sent.
             o.releaseName = APP_VERSION           // spec: release = app_version
             // CrashReporter.swift OWNS the async-signal-safe signal handler. sentry-cocoa's own crash /
             // watchdog handlers must NOT fight it — we want ONLY NSException capture + manual envelopes +

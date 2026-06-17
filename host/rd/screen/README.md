@@ -3,27 +3,34 @@
 License-clean screen-capture sidecar for **RemotePair Remote Desktop** — the v1
 high-performance path that replaces the v0 `ssh` + InputServer screenshot polling.
 
-> **Status: v1a shipped (WS + JPEG continuous capture).**
-> `serve` is now a REAL continuous-capture WebSocket JPEG frame server: it
-> captures the primary display at a target fps, JPEG-encodes each frame, and
-> pushes the bytes as binary WebSocket messages to loopback clients. This is the
-> first streaming path and replaces the v0 ssh-screenshot polling.
-> It is **not** the final webrtc/HW-encode product — that is **v1b** (webrtc-rs
-> + VideoToolbox), still future work; see the roadmap below.
+> **Status: v2 (WebRTC) SHIPPED — `serve-webrtc` is the product path.**
+> `serve-webrtc` captures the primary display via `rp-screencap` (ScreenCaptureKit
+> + VideoToolbox **hardware** H.264, one process, IOSurface zero-copy, GPU-scaled,
+> on-change), streams it over **webrtc-rs** (DTLS/SRTP, UDP/ICE host candidates —
+> loopback/LAN/VPN) into the IDE's `<video>`, and forwards keyboard/mouse over two
+> DataChannels (`rp-ctl` reliable / `rp-move` lossy) into `rp-input-inject` (AX text
+> insert, IME-aware so Korean composes exactly). Verified end-to-end from the real
+> IDE (RD panel → peer "connected" → 30fps H.264 → input channels open).
+>
+> `serve` (v1a: WS + JPEG continuous capture) remains as a license-clean fallback
+> and capture-foundation proof, but the shipping Remote Desktop is **v2**.
+> Still future (see roadmap): TWCC/GCC bitrate adaptation, HEVC/AV1, ICE-restart
+> reconnection, and finishing shortcut/mouse input parity.
 
 ---
 
 ## What this is (and is not)
 
-| | v0 (shipped) | **v1a (this crate, now)** | v1b (planned) |
+| | v0 (legacy) | v1a (fallback) | **v2 (SHIPPED — product path)** |
 |---|---|---|---|
-| Path | `ssh` + InputServer **screenshot polling** | **WebSocket + JPEG, continuous capture** | Native capture → HW encode → WebRTC |
-| Lives in | the IDE extension | this Rust sidecar (`screen serve`) | this sidecar (behind `webrtc` feature) |
-| Encode | per-frame PNG | per-frame **JPEG** (software, quality knob) | VideoToolbox H.264/HEVC (hardware) |
-| Transport | poll over `ssh` | **WS binary frames over `ssh -L` tunnel** | WebRTC (SRTP/DTLS) over `ssh -L` |
-| Latency | high (poll + PNG per frame) | medium (~10fps continuous stream) | low (HW codec, continuous) |
-| Client renders | polled PNGs | JPEG frames into a `<canvas>`/`<img>` | a live `<video>` element |
-| Status | **done** | **done (this PR)** | **TODO** |
+| Path | `ssh` + InputServer **screenshot polling** | WebSocket + JPEG, continuous capture | **Native capture → HW encode → WebRTC** |
+| Lives in | the IDE extension | this Rust sidecar (`screen serve`) | this sidecar (`screen serve-webrtc`, `webrtc` feature) |
+| Encode | per-frame PNG | per-frame JPEG (software, quality knob) | **VideoToolbox H.264 (hardware), `rp-screencap`** |
+| Transport | poll over `ssh` | WS binary frames over `ssh -L` tunnel | **WebRTC (SRTP/DTLS, UDP/ICE); signaling WS over `ssh -L`** |
+| Input | InputServer | — | **`rp-ctl`/`rp-move` DataChannels → `rp-input-inject` (AX)** |
+| Latency | high (poll + PNG per frame) | medium (~10fps continuous stream) | **low (HW codec, continuous, ~30fps)** |
+| Client renders | polled PNGs | JPEG frames into a `<canvas>`/`<img>` | **a live `<video>` element (native H.264 decode)** |
+| Status | superseded | **done** (fallback) | **done — shipping in 0.5.0** |
 
 The v0 path (in production in the IDE extension) takes a screenshot on the host,
 ships it over `ssh`, and the client repaints — simple but high-latency and
@@ -187,15 +194,24 @@ loopback + `ssh -L` deployment shape.
 - [x] WebSocket transport (`tungstenite`, MIT) over std `TcpListener`/threads,
       loopback bind, binary frames, skip-when-idle, clean connect/disconnect.
 
-### v1b — HW encode + WebRTC (TODO, multi-week)
+### v2 — HW encode + WebRTC (SHIPPED in 0.5.0)
 
-- [ ] VideoToolbox hardware H.264/HEVC encode (replace software JPEG).
-- [ ] **WebRTC transport via `webrtc-rs`** (MIT/Apache-2.0) behind the existing
-      `webrtc` feature flag in `Cargo.toml`. Signaling, ICE, SRTP.
-- [ ] Client `<video>` rendering + the v1a → v1b cutover in the IDE extension.
-- [ ] Inter-frame change detection / damage regions to cut bandwidth.
-- [ ] Input forwarding parity with the v0 InputServer path.
-- [ ] Per-binary Screen Recording TCC grant + code signing in the release flow.
+- [x] VideoToolbox hardware H.264 encode via `rp-screencap` (SCK + VT, one process).
+- [x] **WebRTC transport via `webrtc-rs`** (MIT/Apache-2.0) behind the `webrtc`
+      feature flag in `Cargo.toml`. Signaling WS, ICE (host candidates), DTLS/SRTP.
+- [x] Client `<video>` rendering in the IDE extension (`media/remote-desktop.js`).
+- [x] On-change capture / GPU scale in `rp-screencap` to cut bandwidth.
+- [x] Input forwarding: `rp-ctl`/`rp-move` DataChannels → `rp-input-inject` (AX
+      text insert, IME-aware). Text landing verified; keyboard-shortcut + mouse
+      parity is the remaining polish (see `../rpmedia/INPUT-FINDINGS.md`).
+- [x] Per-binary Screen Recording / Accessibility TCC grants on the signed bundle
+      helpers (`rp-screencap`, `rp-input-inject`), preserved across cask updates.
+
+### v2.x — robustness / quality (future)
+
+- [ ] TWCC/GCC bitrate adaptation; HEVC/AV1 codecs.
+- [ ] ICE-restart + full-reconnect on network change.
+- [ ] Finish keyboard-shortcut (System Events) + mouse (CGEvent) input parity.
 
 ---
 

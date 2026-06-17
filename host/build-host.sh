@@ -40,29 +40,23 @@ if [ ! -f "$PAKE_LIB" ]; then
     || { echo "✗ pake staticlib cargo build failed" >&2; exit 1; }
 fi
 [ -f "$PAKE_LIB" ] || { echo "✗ libpake.a missing after cargo build: $PAKE_LIB" >&2; exit 1; }
-PAKE_BRIDGE="$SRC_DIR/pake-bridge.h"
-# Link flags shared by both compile attempts: import the C ABI header + link the staticlib.
-PAKE_FLAGS=(-import-objc-header "$PAKE_BRIDGE" -L "$(dirname "$PAKE_LIB")" -lpake)
+# NOTE: the PAKE C-ABI header import + staticlib link is now declared in host/Package.swift
+# (-import-objc-header app/pake-bridge.h ; -L rd/pake/target/release -lpake). The flat swiftc compile
+# was replaced by `swift build` so the host can LINK sentry-cocoa (SentryBridge.swift). libpake.a must
+# exist before `swift build` runs — guaranteed by the cargo build above.
 
-# ── SDK selection (fall back to 14.x when the CLT + new-SDK combination breaks) ──
-compile() { # $1=out
-  local out="$1" sdk
-  # 1) try the default toolchain
-  if xcrun swiftc -O "$SRC_DIR"/*.swift "${PAKE_FLAGS[@]}" -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
-  # 2) fallback: probe for a compatible SDK (avoid the Swift 5.10 CLT + MacOSX15 swiftinterface mismatch)
-  for sdk in /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk \
-             /Library/Developer/CommandLineTools/SDKs/MacOSX14.sdk \
-             /Library/Developer/CommandLineTools/SDKs/MacOSX13.3.sdk; do
-    [ -d "$sdk" ] || continue
-    echo "  (default compile failed → SDK fallback: $(basename "$sdk"))"
-    if xcrun swiftc -O -sdk "$sdk" -target arm64-apple-macos13.0 "$SRC_DIR"/*.swift "${PAKE_FLAGS[@]}" -o "$out" 2>/tmp/rp-swiftc.err; then return 0; fi
-  done
-  echo "✗ Swift compile failed:"; cat /tmp/rp-swiftc.err >&2; return 1
-}
-
-echo "=== compile (Swift, multi-file) ==="
+# ── compile (SwiftPM) — `swift build -c release` resolves+links sentry-cocoa + the PAKE staticlib ──
+# host/Package.swift declares the executable target (all of host/app/*.swift) + the Sentry dependency.
+# `swift build` fetches sentry-cocoa from GitHub on first run (network) and statically links it. The built
+# product is copied into the bundle below; the rest of the bundle/sign flow is unchanged.
+echo "=== compile (SwiftPM: swift build -c release — links sentry-cocoa + libpake) ==="
 mkdir -p build
-compile "build/$EXEC"
+swift build --package-path host -c release \
+  || { echo "✗ swift build -c release failed (host/Package.swift)" >&2; exit 1; }
+SPM_BIN_DIR="$(swift build --package-path host -c release --show-bin-path)"
+SPM_BIN="$SPM_BIN_DIR/$EXEC"
+[ -x "$SPM_BIN" ] || { echo "✗ swift build produced no executable at $SPM_BIN" >&2; exit 1; }
+cp "$SPM_BIN" "build/$EXEC"
 xcrun swiftc -O host/ocr-find.swift -o host/ocr-find 2>/dev/null \
   || xcrun swiftc -O -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk -target arm64-apple-macos13.0 host/ocr-find.swift -o host/ocr-find
 
@@ -89,6 +83,14 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>CFBundleIconName</key><string>AppIcon</string>
 </dict></plist>
 P
+# Inject RPSentryDSN only when RP_SENTRY_DSN env var is set and non-empty.
+# Absent key => setupIfConsented() stays NoopCrashReporter (zero network). Never hardcode the DSN.
+if [ -n "${RP_SENTRY_DSN:-}" ]; then
+  /usr/libexec/PlistBuddy -c "Add :RPSentryDSN string ${RP_SENTRY_DSN}" "$APP/Contents/Info.plist"
+  echo "  RPSentryDSN injected into Info.plist (from RP_SENTRY_DSN)"
+else
+  echo "  RPSentryDSN not set — crash reporting stays Noop (set RP_SENTRY_DSN=<dsn> to enable)"
+fi
 
 echo "=== embed helpers → Contents/Helpers ==="
 HELP="$APP/Contents/Helpers"; mkdir -p "$HELP"

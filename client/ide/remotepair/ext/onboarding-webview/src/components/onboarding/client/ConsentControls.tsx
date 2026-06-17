@@ -9,7 +9,14 @@ import { BarChart3, Bug } from "lucide-react";
 
 type Variant = "prompt" | "summary";
 
-export function ConsentControls({ variant }: { variant: Variant }) {
+export function ConsentControls({
+  variant,
+  showHeader = true,
+}: {
+  variant: Variant;
+  // When false, the card omits its own eyebrow + description (the host step provides the heading).
+  showHeader?: boolean;
+}) {
   const [telemetryOn, setTelemetryOn] = useState(false);
   const [crashOn, setCrashOn] = useState(false);
 
@@ -47,13 +54,17 @@ export function ConsentControls({ variant }: { variant: Variant }) {
 
   return (
     <div className="w-full max-w-sm rounded-xl border border-border bg-muted/30 p-4 text-left">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {heading}
-      </div>
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        Off by default. Anonymous only — never your files, paths, repo names, or IP. Change anytime
-        in settings.
-      </p>
+      {showHeader && (
+        <>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {heading}
+          </div>
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Off by default. Anonymous only — never your files, paths, repo names, or IP. Change
+            anytime in settings.
+          </p>
+        </>
+      )}
 
       <ConsentRow
         icon={<BarChart3 className="h-4 w-4" />}

@@ -1,14 +1,15 @@
 //! screen — license-clean screen-capture sidecar for RemotePair
 //! Remote Desktop (the v1 high-performance path).
 //!
-//! STATUS: v1a (WS+JPEG software path). The `capture`/`info` paths prove the
-//! screen-capture foundation works license-clean (permissive deps only; AGPL only for our own crate,
-//! the dependency tree — see `deny.toml`). The `serve` path is now a REAL
-//! continuous-capture WebSocket JPEG frame server: it captures the primary
-//! display at a target fps, JPEG-encodes each frame, and pushes the bytes as
-//! binary WebSocket messages to connected loopback clients. This replaces the
-//! v0 ssh-screenshot polling. The webrtc/VideoToolbox HW-encode path (v1b) is
-//! still future work — see README.md.
+//! STATUS: v2 (WebRTC) SHIPPED. `serve-webrtc` is the product Remote Desktop path:
+//! `rp-screencap` (ScreenCaptureKit + VideoToolbox hardware H.264) → webrtc-rs
+//! (DTLS/SRTP over UDP/ICE) → IDE `<video>`, with keyboard/mouse over `rp-ctl`/
+//! `rp-move` DataChannels into `rp-input-inject` (AX text insert, IME-aware).
+//! Built behind the `webrtc` feature; shipping in 0.5.0 and verified end-to-end
+//! from the IDE. `serve` (v1a WS+JPEG software path) remains a license-clean
+//! fallback, and `capture`/`info` prove the capture foundation is license-clean
+//! (permissive deps only; AGPL only for our own crate — see `deny.toml`).
+//! Future (README roadmap): TWCC/GCC adaptation, HEVC/AV1, ICE-restart.
 //!
 //! Capture backend: `xcap` (Apache-2.0). `scap` (MIT) was tried first per the
 //! original plan but its ScreenCaptureKit backend invokes `xcodebuild` in its

@@ -135,6 +135,17 @@ if [[ "${SKIP_BUILD}" == "no" ]]; then
     cp ./build/osx/include.gypi ~/.gyp/include.gypi
   fi
 
+  # RemotePair: inject the RemotePair extension as a builtin AFTER source prep, right before gulp.
+  # MUST be here (not pre-build in build.sh): SKIP_SOURCE=no wipes vscode/ (line ~85 `rm -rf vscode*`
+  # + re-clone) and SKIP_SOURCE=yes resets it (`git add .` + `git reset --hard HEAD`), either of which
+  # deletes a pre-build copy. gulp glob-discovers extensions/*/package.json, so dropping the ext into
+  # vscode/extensions/remotepair here ships it as the builtin 'remotepair' (matches the US-B onboarding
+  # hook probe). CWD here is the recipe root ($VENDOR); the ext source is alongside this script.
+  _RP_EXT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ext"
+  rm -rf vscode/extensions/remotepair
+  cp -R "$_RP_EXT_SRC" vscode/extensions/remotepair
+  echo "→ injected RemotePair builtin extension → vscode/extensions/remotepair"
+
   . build.sh
 
   if [[ -f "./include_${OS_NAME}.gypi" ]]; then

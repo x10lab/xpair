@@ -1,5 +1,4 @@
 import { Laptop } from "lucide-react";
-import { ConsentControls } from "./ConsentControls";
 
 export function StepWelcome() {
   return (
@@ -19,12 +18,6 @@ export function StepWelcome() {
         <Bullet>Choose a file-access backend</Bullet>
         <Bullet>Map folders between host and client</Bullet>
       </ul>
-
-      {/* First-run consent prompt — decided BEFORE the funnel fires (host_connected /
-          first_session_started). Both default OFF; re-toggleable on StepDone + in settings. */}
-      <div className="mt-6">
-        <ConsentControls variant="prompt" />
-      </div>
     </div>
   );
 }

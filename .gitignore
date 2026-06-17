@@ -26,3 +26,8 @@ context/
 
 # MCP browser artifacts
 .playwright-mcp/
+
+# SwiftPM build artifacts (host/Package.swift — links sentry-cocoa). Package.resolved IS tracked
+# (pins the dependency for reproducible builds); only the build dir + local working state are ignored.
+.build/
+.swiftpm/

@@ -26,6 +26,20 @@ function rpBin() {
   return fs.existsSync(local) ? local : "remote-pair";
 }
 
+/** Resolve the tailscale binary path (macOS .app / brew / std locations), or null if absent.
+ *  Sync existsSync probe — Tailscale on macOS often has NO `tailscale` on PATH, only the .app. */
+function resolveTailscale() {
+  const cands = [
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    "/opt/homebrew/bin/tailscale",
+    "/usr/local/bin/tailscale",
+  ];
+  for (const c of cands) {
+    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
+  }
+  return null;
+}
+
 /** Run argv-safe; resolve {code, out, err} (never rejects).
  *  When spawned from a GUI Electron app the inherited PATH is minimal; prepend the standard
  *  user-tool locations so `tailscale`, `ssh`, etc. resolve without requiring a shell wrapper. */
@@ -101,21 +115,38 @@ const bridge = {
   },
 
   // Current client config (real state, not hardcoded).
-  getConfig() {
+  // SSOT: mappings come from the CLI (`map list --json`), NOT from re-parsing client.env here.
+  // rp_set shell-escapes FOLDER_MAPS (e.g. `a::b\;c::d`); the CLI `.`-sources it (unescaping),
+  // while parseEnv reads it literally — so a local re-parse split on ';' diverges from the CLI
+  // and the UI shows zero/garbled mappings. Re-derive a clean `client::host;...` from the CLI.
+  async getConfig() {
     const e = parseEnv(CLIENT_ENV);
+    let folderMaps = e.FOLDER_MAPS || "";
+    try {
+      const r = await cli(["map", "list", "--json"]);
+      if (r.code === 0 && r.out) {
+        const arr = JSON.parse(r.out);
+        if (Array.isArray(arr)) folderMaps = arr.map((m) => `${m.client}::${m.host}`).join(";");
+      }
+    } catch {
+      /* CLI unavailable — fall back to the raw env value */
+    }
     return {
       remoteHost: e.REMOTE_HOST || "",
-      folderMaps: e.FOLDER_MAPS || "",
+      folderMaps,
       syncBackend: e.SYNC_BACKEND || "",
       mountBackend: e.MOUNT_BACKEND || "",
     };
   },
 
-  // Connection — Tailscale-first reachability probe.
+  // Connection — Tailscale-first reachability probe. On macOS Tailscale commonly ships ONLY as
+  // /Applications/Tailscale.app (no `tailscale` on PATH), so a naive `which tailscale` false-negatives
+  // ("not installed" despite being installed). Probe the app/brew binary too — matching the CLI's
+  // cmd_discover probe — so this agrees with `remote-pair discover`.
   async tailscaleStatus() {
-    const which = await run("which", ["tailscale"]);
-    if (which.code !== 0) return { installed: false, up: false };
-    const st = await run("tailscale", ["status"]);
+    const bin = resolveTailscale();
+    if (!bin) return { installed: false, up: false };
+    const st = await run(bin, ["status"]);
     return { installed: true, up: st.code === 0 };
   },
 

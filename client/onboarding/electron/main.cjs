@@ -17,6 +17,17 @@ const telemetry = require(path.join(
   __dirname, '..', '..', 'ide', 'remotepair', 'ext', 'telemetry.js',
 ))
 
+// Single-instance: a second launch (accidental double-open, or a relaunch before the old one
+// exits) focuses the existing window instead of spawning a duplicate onboarding window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const w = BrowserWindow.getAllWindows()[0]
+    if (w) { if (w.isMinimized()) w.restore(); w.show(); w.focus() }
+  })
+}
+
 // Client-side crash reporting (Electron main + renderer) via @sentry/electron — SINGLE init here.
 // Gated on CRASH_REPORT_CONSENT + a configured SENTRY_DSN (both default OFF / absent → no init,
 // ZERO network calls). The SDK is dynamically required so a clean checkout without the dep (keys
@@ -93,6 +104,7 @@ function createWindow() {
     width: 720,
     height: 560,
     resizable: false,
+    show: false,                 // show on ready-to-show so it appears focused, not behind
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
     backgroundColor: '#ffffff',
@@ -101,6 +113,15 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  })
+
+  // Grab focus on macOS: an app launched via `open`/spawn often opens behind the caller. Show the
+  // window only when ready, raise it, and steal app focus (Dock activate) so the user sees it front.
+  win.once('ready-to-show', () => {
+    try { app.dock?.show?.() } catch { /* not on macOS / no dock */ }
+    win.show()
+    win.focus()
+    try { app.focus({ steal: true }) } catch { app.focus?.() }
   })
 
   // Load the REAL onboarding UI — the built onboarding-webview React app (base './'), not
@@ -159,7 +180,12 @@ app.whenReady().then(() => {
   }
   initSentry() // no-op unless CRASH_REPORT_CONSENT + SENTRY_DSN are both set.
 
-  if (isOnboarded()) {
+  // Force the onboarding window even when already set up — for re-onboarding / testing the flow.
+  // `RP_FORCE_ONBOARDING=1` or `--force` in argv bypasses the isOnboarded() shortcut.
+  const forceOnboarding =
+    process.env.RP_FORCE_ONBOARDING === '1' || process.argv.includes('--force')
+
+  if (!forceOnboarding && isOnboarded()) {
     // Already set up: open the IDE directly and quit — no onboarding window (US-004).
     launchIDE()
     app.quit()

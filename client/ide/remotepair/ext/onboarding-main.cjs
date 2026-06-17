@@ -1,0 +1,141 @@
+// onboarding-main.cjs — single-app onboarding window, hosted by the IDE's MAIN process.
+//
+// One app, one main process (spec .omc/specs/deep-interview-single-app-onboarding.md): the VSCodium
+// electron-main calls shouldOnboard()/openOnboardingWindow() on first run and shows this
+// PRE-WORKBENCH BrowserWindow INSTEAD of creating the workbench window; on completion the window
+// closes and the caller-provided onComplete() opens the workbench (RD auto-opens there). This
+// REPLACES the old standalone client/onboarding 2nd-process Electron wrapper — no second app, no
+// app.quit, no IDE re-launch.
+//
+// Self-contained in the extension dir: the bridge, telemetry, preload, and onboarding-webview dist
+// all resolve via __dirname, so the same paths work in the repo and inside the built app bundle.
+
+const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
+
+const bridge = require('./onboarding-bridge.js')
+let telemetry = null
+try { telemetry = require('./telemetry.js') } catch { /* telemetry optional */ }
+
+const WEBVIEW_INDEX = path.join(__dirname, 'onboarding-webview', 'dist', 'index.html')
+const PRELOAD = path.join(__dirname, 'onboarding-preload.cjs')
+
+/** "onboarded" ⇔ REMOTE_HOST set AND >=1 FOLDER_MAPS entry in ~/.remote-pair/client.env. */
+function isOnboarded() {
+  const file = path.join(os.homedir(), '.remote-pair', 'client.env')
+  let txt = ''
+  try { txt = fs.readFileSync(file, 'utf8') } catch { return false }
+  const env = {}
+  for (const line of txt.split('\n')) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/)
+    if (m) env[m[1]] = m[2].replace(/^["']/, '').replace(/["']\s*$/, '')
+  }
+  const host = (env.REMOTE_HOST || '').trim()
+  const maps = (env.FOLDER_MAPS || '').split(';').map((s) => s.trim()).filter(Boolean)
+  return host.length > 0 && maps.length >= 1
+}
+
+/** Should the onboarding window show on this launch? `RP_FORCE_ONBOARDING=1` / `--force` forces it. */
+function shouldOnboard(argv = process.argv) {
+  if (process.env.RP_FORCE_ONBOARDING === '1' || (Array.isArray(argv) && argv.includes('--force'))) {
+    return true
+  }
+  return !isOnboarded()
+}
+
+let _ipcWired = false
+function wireIpc(ipcMain, onComplete) {
+  if (_ipcWired) return
+  _ipcWired = true
+  // Data calls → onboarding-bridge.js (own-property guard; argv-safe; never throws to the renderer).
+  ipcMain.handle('rp', async (_e, msg) => {
+    const method = msg && msg.method
+    if (!method || !Object.prototype.hasOwnProperty.call(bridge, method)) {
+      return { error: 'unknown method: ' + method }
+    }
+    const fn = bridge[method]
+    if (typeof fn !== 'function') return { error: 'unknown method: ' + method }
+    try {
+      const args = Array.isArray(msg.args) ? msg.args : []
+      return await fn.apply(bridge, args)
+    } catch (e) {
+      return { error: String(e && e.message ? e.message : e) }
+    }
+  })
+  // Completion → close the onboarding window and hand control back to electron-main to open the
+  // workbench (SAME process; no second app, no app.quit). onComplete() is provided by the hook.
+  ipcMain.handle('onboarding:complete', () => {
+    _completed = true
+    try {
+      if (telemetry && telemetry.EVENTS) {
+        const wowBase = telemetry.installTs && telemetry.installTs()
+        telemetry.capture(telemetry.EVENTS.FIRST_SESSION_STARTED, {
+          ...(wowBase ? { time_to_wow_ms: Date.now() - wowBase } : {}),
+        })
+      }
+    } catch { /* telemetry must never block completion */ }
+    try { if (_win && !_win.isDestroyed()) _win.close() } catch { /* ignore */ }
+    try { if (typeof onComplete === 'function') onComplete() } catch { /* main opens workbench */ }
+  })
+}
+
+let _win = null
+let _completed = false
+
+/**
+ * Open the pre-workbench onboarding BrowserWindow (loads the onboarding-webview UI). The IDE's
+ * electron-main calls this on first run INSTEAD of creating the workbench window; on completion the
+ * window closes and `onComplete` is invoked so electron-main opens the workbench.
+ * @param {object}  o
+ * @param {typeof import('electron')} o.electron   the electron module from the main process
+ * @param {() => void} o.onComplete                opens the workbench window (same process)
+ * @returns {import('electron').BrowserWindow}
+ */
+function openOnboardingWindow({ electron, onComplete }) {
+  const { app, BrowserWindow, ipcMain, shell } = electron
+  try { if (telemetry && telemetry.firstRunStamp) telemetry.firstRunStamp() } catch { /* */ }
+  wireIpc(ipcMain, onComplete)
+
+  _win = new BrowserWindow({
+    width: 720,
+    height: 560,
+    resizable: false,
+    show: false, // show on ready-to-show so it appears focused, not behind
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 18 },
+    backgroundColor: '#ffffff',
+    webPreferences: {
+      // Own session partition so this window escapes the IDE main's defaultSession security
+      // interceptors (VSCode blocks raw file:// via security.promptForLocalFileProtocolHandling and
+      // restricts vscode-file:// to registered editor windows — neither of which our pre-workbench
+      // onboarding window is). A fresh partition has no such interceptors, so loadFile() works.
+      partition: 'remotepair-onboarding',
+      preload: PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  _win.once('ready-to-show', () => {
+    try { app.dock && app.dock.show && app.dock.show() } catch { /* not macOS */ }
+    _win.show()
+    _win.focus()
+    try { app.focus({ steal: true }) } catch { try { app.focus() } catch { /* */ } }
+  })
+
+  _win.loadFile(WEBVIEW_INDEX)
+  _win.webContents.setWindowOpenHandler(({ url }) => {
+    try { shell.openExternal(url) } catch { /* */ }
+    return { action: 'deny' }
+  })
+  // If the user closes the onboarding window WITHOUT completing (traffic-light), don't leave the app
+  // running window-less: fall through to opening the workbench so they still land in the IDE.
+  _win.on('closed', () => {
+    _win = null
+    if (!_completed) { try { if (typeof onComplete === 'function') onComplete() } catch { /* */ } }
+  })
+  return _win
+}
+
+module.exports = { isOnboarded, shouldOnboard, openOnboardingWindow }
