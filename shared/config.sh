@@ -89,8 +89,11 @@ SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$REPO_ROOT/client/cli"   # laptop-side artifacts: remote-pair CLI, launcher, Service, hangul-romanize
 HOST_DIR="$REPO_ROOT/host"       # computer-use machine: app sources, build scripts, approve rules, skills
+# Recorded into client.env so the INSTALLED CLI (a COPY in ~/.local/bin, with no repo beside it) can
+# still locate the repo tree for `install-host` staging — onboarding always runs the installed copy.
+RP_REPO_ROOT="${RP_REPO_ROOT:-$REPO_ROOT}"
 
 # Per-role persistence key groups (install writes only to its own file)
 COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)
 HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN GH_REPO APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE RULES_FILE)
-CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND)
+CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND RP_REPO_ROOT)

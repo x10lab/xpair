@@ -34,3 +34,5 @@ context/
 
 # RemotePair IDE per-build marker counter (changes every build)
 client/ide/remotepair/.build-counter
+
+shared/.build-counter
