@@ -35,8 +35,6 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
 
 /// Locate a helper binary that sits **next to this executable** (the bundle
 /// `Contents/Helpers/` layout). `current_exe()` is `canonicalize()`d first so a
@@ -51,24 +49,6 @@ fn sibling_helper(name: &str) -> Option<String> {
         return sibling.to_str().map(|s| s.to_string());
     }
     None
-}
-
-/// Resolve the remote-input injector helper (`rp-input-inject`).
-/// Order: `$RP_INPUT_INJECT` → bundle sibling (`current_exe` dir) →
-/// `~/.remote-pair/bin` → PATH.
-fn input_helper_path() -> String {
-    if let Ok(p) = std::env::var("RP_INPUT_INJECT") {
-        return p;
-    }
-    if let Some(p) = sibling_helper("rp-input-inject") {
-        return p;
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    let deployed = format!("{home}/.remote-pair/bin/rp-input-inject");
-    if std::path::Path::new(&deployed).exists() {
-        return deployed;
-    }
-    "rp-input-inject".to_string()
 }
 
 /// Resolve the SCK capture+encode helper (`rp-screencap`). It self-captures via
@@ -196,9 +176,19 @@ async fn handle_session(
         Box::pin(async {})
     }));
 
-    // --- encoder pipeline (spawned once we know dimensions) ---
+    // --- encoder pipeline ---
+    // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
+    // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
+    // stdin. We then ONLY do WebRTC transport — no rp-screencap spawn. stdout is
+    // the control channel back to the app ({"capture":"start"|"stop"}\n).
+    // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
     let (au_tx, mut au_rx) = mpsc::channel::<Vec<u8>>(16);
-    let cap_handle = spawn_screencap(fps, bitrate, scale, au_tx)?;
+    let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
+    let cap_handle: CaptureSource = if au_stdin_mode {
+        CaptureSource::Stdin(spawn_au_stdin_reader(au_tx))
+    } else {
+        CaptureSource::Child(spawn_screencap(fps, bitrate, scale, au_tx)?)
+    };
 
     // rtp task: forward access units to the track as H264 samples
     let track_w = track.clone();
@@ -222,74 +212,6 @@ async fn handle_session(
             }
         }
     });
-
-    // --- remote input: spawn injector helper + TWO DataChannels BEFORE the offer ---
-    // host creates both channels so the m=application (SCTP) section is in the
-    // first offer (no renegotiation); the client only uses `ondatachannel` (B3).
-    // rp-ctl = reliable/ordered (text/keys/clicks); rp-move = unreliable/unordered
-    // (mousemove — stale positions are worthless, dropping is correct) (B4).
-    let mut _input_dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>> = Vec::new();
-    {
-        let bin = input_helper_path();
-        match Command::new(&bin)
-            .stdin(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    // writer thread: frame [4B BE len | json] -> helper stdin (blocking)
-                    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-                    std::thread::Builder::new()
-                        .name("rp-input-writer".into())
-                        .spawn(move || {
-                            while let Ok(json) = in_rx.recv() {
-                                let len = (json.len() as u32).to_be_bytes();
-                                if stdin.write_all(&len).is_err() || stdin.write_all(&json).is_err() {
-                                    break;
-                                }
-                            }
-                            let _ = child.kill();
-                        })
-                        .ok();
-
-                    let ctl = pc
-                        .create_data_channel("rp-ctl", None)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let mv_init = RTCDataChannelInit {
-                        ordered: Some(false),
-                        max_retransmits: Some(0),
-                        ..Default::default()
-                    };
-                    let mv = pc
-                        .create_data_channel("rp-move", Some(mv_init))
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    for dc in [&ctl, &mv] {
-                        let label = dc.label().to_string();
-                        dc.on_open(Box::new(move || {
-                            tracing::info!("serve-webrtc: input DataChannel '{label}' open");
-                            Box::pin(async {})
-                        }));
-                        let tx = in_tx.clone();
-                        dc.on_message(Box::new(move |msg: DataChannelMessage| {
-                            let tx = tx.clone();
-                            Box::pin(async move {
-                                let _ = tx.send(msg.data.to_vec());
-                            })
-                        }));
-                    }
-                    // keep channels alive for the session (dropped when handle_session returns)
-                    _input_dcs.push(ctl);
-                    _input_dcs.push(mv);
-                }
-            }
-            Err(e) => tracing::warn!(
-                "serve-webrtc: input helper '{bin}' spawn failed (remote input disabled): {e}"
-            ),
-        }
-    }
 
     // --- create offer, send to browser ---
     let offer = pc.create_offer(None).await.map_err(|e| e.to_string())?;
@@ -344,6 +266,87 @@ async fn handle_session(
     cap_handle.stop();
     let _ = pc.close().await;
     Ok(())
+}
+
+/// Per-session capture source: either a spawned `rp-screencap` child (default
+/// standalone mode) or an AU-from-stdin reader thread (`RP_AU_STDIN=1`, the
+/// in-app capture path). Both feed the same `au_tx`; `stop()` ends the session.
+enum CaptureSource {
+    Child(CaptureHandle),
+    Stdin(StdinReaderHandle),
+}
+impl CaptureSource {
+    fn stop(&self) {
+        match self {
+            CaptureSource::Child(h) => h.stop(),
+            CaptureSource::Stdin(h) => h.stop(),
+        }
+    }
+}
+
+/// Write a one-line control message to **stdout** (the control channel to the
+/// parent app in `RP_AU_STDIN=1` mode) and flush. stdout is reserved for these
+/// control lines — the logger never writes to stdout, so this stays clean.
+fn write_control(line: &str) {
+    let mut out = std::io::stdout();
+    if out.write_all(line.as_bytes()).is_err() || out.flush().is_err() {
+        tracing::warn!("serve-webrtc: failed to write control line to stdout");
+    }
+}
+
+/// Handle to stop the AU-from-stdin reader. The reader thread exits on EOF/error
+/// or when `stop()` flips the shared flag; `stop()` also emits `{"capture":"stop"}`
+/// to the parent so it can stop the in-app CaptureEngine for this session.
+struct StdinReaderHandle {
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+impl StdinReaderHandle {
+    fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        write_control("{\"capture\":\"stop\"}\n");
+    }
+}
+
+/// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. Emits
+/// `{"capture":"start"}` to stdout (the parent app then begins in-app capture),
+/// then reads `[4B BE len][Annex-B AU]` frames from stdin and forwards each AU
+/// into `au_tx` — the SAME framing/guard/`blocking_send` as `spawn_screencap`'s
+/// reader thread. The thread returns on EOF/error or when `stop()` is called.
+fn spawn_au_stdin_reader(au_tx: mpsc::Sender<Vec<u8>>) -> StdinReaderHandle {
+    tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); requesting capture start");
+    write_control("{\"capture\":\"start\"}\n");
+
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped_thread = stopped.clone();
+    std::thread::Builder::new()
+        .name("au-stdin-reader".into())
+        .spawn(move || {
+            let mut stdin = std::io::stdin();
+            let mut len_buf = [0u8; 4];
+            loop {
+                if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                if stdin.read_exact(&mut len_buf).is_err() {
+                    break;
+                }
+                let len = u32::from_be_bytes(len_buf) as usize;
+                if len == 0 || len > 64 * 1024 * 1024 {
+                    break;
+                }
+                let mut au = vec![0u8; len];
+                if stdin.read_exact(&mut au).is_err() {
+                    break;
+                }
+                if au_tx.blocking_send(au).is_err() {
+                    break;
+                }
+            }
+        })
+        .ok();
+
+    StdinReaderHandle { stopped }
 }
 
 /// Handle to stop the capture/encode helper process.

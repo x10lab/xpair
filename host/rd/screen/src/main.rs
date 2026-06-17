@@ -3,8 +3,8 @@
 //!
 //! STATUS: v2 (WebRTC) SHIPPED. `serve-webrtc` is the product Remote Desktop path:
 //! `rp-screencap` (ScreenCaptureKit + VideoToolbox hardware H.264) → webrtc-rs
-//! (DTLS/SRTP over UDP/ICE) → IDE `<video>`, with keyboard/mouse over `rp-ctl`/
-//! `rp-move` DataChannels into `rp-input-inject` (AX text insert, IME-aware).
+//! (DTLS/SRTP over UDP/ICE) → IDE `<video>`. View-only screen share: there is no
+//! remote keyboard/mouse injection (RemotePair streams the screen, not control).
 //! Built behind the `webrtc` feature; shipping in 0.5.0 and verified end-to-end
 //! from the IDE. `serve` (v1a WS+JPEG software path) remains a license-clean
 //! fallback, and `capture`/`info` prove the capture foundation is license-clean

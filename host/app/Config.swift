@@ -53,7 +53,7 @@ let STATUS_FILE = "\(LOG_DIR)/status.json"                            // ground 
 let RULES_FILE = "\(RP_DIR)/rules.txt"                                // approve router rules
 let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy) /approve skill touch → old router fallback
 // (legacy v0 InputServer file channel INPUT_REQ/INPUT_RES removed — its 0.1s main-thread polling froze
-//  the menu bar. Screen sharing and input are replaced by v1/v2: remote-pair(screen) serve-webrtc + rp-input-inject.)
+//  the menu bar. Screen sharing is replaced by v1/v2: remote-pair(screen) serve-webrtc (view-only, no remote input).)
 
 // Display version + update target (Info.plist is the single source; populated by build-host.sh)
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
