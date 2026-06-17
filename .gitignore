@@ -31,3 +31,6 @@ context/
 # (pins the dependency for reproducible builds); only the build dir + local working state are ignored.
 .build/
 .swiftpm/
+
+# RemotePair IDE per-build marker counter (changes every build)
+client/ide/remotepair/.build-counter
