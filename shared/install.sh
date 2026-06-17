@@ -240,6 +240,31 @@ if is_client; then
   else
     warn "client/cli/remote-pair-mount not found — skipping ('remote-pair mount' unavailable)"
   fi
+  # ── askpass helper (sibling launcher used by 'remote-pair install-host' over SSH). ──
+  if [ -f "$CLIENT_DIR/remote-pair-askpass" ]; then
+    say "[client] askpass helper → $LOCAL_BIN/remote-pair-askpass"
+    install_file "$CLIENT_DIR/remote-pair-askpass" "$LOCAL_BIN/remote-pair-askpass" 755
+  else
+    warn "client/cli/remote-pair-askpass not found — skipping (SSH askpass prompts unavailable)"
+  fi
+  # ── PAKE PIN-pairing helper (Rust). 'remote-pair pair' shells to this binary; without it
+  #    every PIN pairing fails with "PAKE helper not installed". Source: host/rd/pake (cargo). ──
+  pake_bin="$REPO_ROOT/host/rd/pake/target/release/remote-pair-pake"
+  if [ ! -x "$pake_bin" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+      say "[client] building remote-pair-pake (cargo build --release) …"
+      ( export PATH="$HOME/.cargo/bin:$PATH"
+        cargo build --release --manifest-path "$REPO_ROOT/host/rd/pake/Cargo.toml" --bin remote-pair-pake ) \
+        || warn "remote-pair-pake build failed — PIN pairing ('remote-pair pair') will be unavailable until built"
+    else
+      warn "cargo not found — cannot build remote-pair-pake (PIN pairing unavailable; install Rust then re-run)"
+    fi
+  fi
+  if [ -x "$pake_bin" ]; then
+    say "[client] PAKE helper → $LOCAL_BIN/remote-pair-pake"
+    install_file "$pake_bin" "$LOCAL_BIN/remote-pair-pake" 755
+  fi
+
   svc_src="$CLIENT_DIR/Launch Remote Pair.workflow"
   svc_dst="$SERVICES_DIR/Launch Remote Pair.workflow"
   if [ -d "$svc_src" ]; then

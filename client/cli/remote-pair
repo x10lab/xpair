@@ -770,7 +770,7 @@ cmd_logs() {
 # Self-update the client (launcher/CLI/romanize) to the latest from GitHub — prevents version drift with the host app (e.g. unrecognized --type).
 cmd_self_update() {
   local repo="${GH_REPO:-ghyeongl/remote-pair}" ref="${1:-main}"
-  local base="https://raw.githubusercontent.com/$repo/$ref/client"
+  local base="https://raw.githubusercontent.com/$repo/$ref/client/cli"
   c "self-update ← $repo@$ref"
   local tmp; tmp="$(mktemp -d)" || { warn "mktemp failed"; return 1; }
   local got=0 f
@@ -1137,6 +1137,10 @@ cmd_pair() {
   [ -n "$alias" ] || alias="$host"
 
   local pub; pub="$(rp_ssh_pubkey)" || return 1
+  # rp_ssh_pubkey prints the pubkey FILE PATH; remote-pair-pake --pubkey wants the
+  # public-key LINE itself (it forwards the arg verbatim to the host). Read contents.
+  local pubdata; pubdata="$(cat "$pub" 2>/dev/null)" || { err "could not read pubkey: $pub"; return 1; }
+  [ -n "$pubdata" ] || { err "empty pubkey: $pub"; return 1; }
   local pake; pake="$(rp_pake_path)"
   [ -n "$pake" ] || { err "remote-pair-pake binary not found (PAKE helper not installed)"; return 1; }
 
@@ -1144,7 +1148,7 @@ cmd_pair() {
   # cross-check (TOFU), and the pubkey handoff on MAC success. The PIN is passed
   # only as an argv to this dedicated process — it never reaches a log or telemetry.
   c "pairing with $host (PAKE) …"
-  if "$pake" --host "$host" --pin "$pin" --expect-fp "$fp" --pubkey "$pub"; then
+  if "$pake" --host "$host" --pin "$pin" --expect-fp "$fp" --pubkey "$pubdata"; then
     ok "PAKE success — key authorized on $host"
   else
     err "pairing failed (wrong/expired PIN, fp mismatch, or host re-armed)"
@@ -1377,8 +1381,10 @@ cmd_update() {
   esac; done
 
   # Locate the repo/source layout. Glue hot-swap re-runs the installer scoped to the client glue.
+  # CLI lives at <repo>/client/cli/remote-pair, so the repo root (the dir that
+  # contains shared/) is two levels up from here, not one.
   local repo_root="" here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-  if [ -f "$here/../shared/install.sh" ]; then repo_root="$(cd "$here/.." 2>/dev/null && pwd)"; fi
+  if [ -f "$here/../../shared/install.sh" ]; then repo_root="$(cd "$here/../.." 2>/dev/null && pwd)"; fi
 
   # ── Detect glue-only vs native binary mismatch ──
   # Running app version (status.json ground truth).
