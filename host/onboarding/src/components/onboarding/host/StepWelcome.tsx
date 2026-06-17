@@ -1,4 +1,5 @@
 import { Server } from "lucide-react";
+import { ConsentControls } from "@/components/onboarding/host/ConsentControls";
 
 export function StepWelcome() {
   return (
@@ -14,12 +15,16 @@ export function StepWelcome() {
         client. Setup takes about a minute.
       </p>
       <p className="mt-2 text-xs text-muted-foreground">
-        Tap <span className="font-medium text-foreground">Begin setup</span> to install the helper.
+        Tap <span className="font-medium text-foreground">Begin setup</span> to grant the screen permission.
       </p>
       <ul className="mt-6 w-full max-w-sm space-y-2 text-left text-sm text-muted-foreground">
-        <Bullet>Grant three macOS permissions</Bullet>
-        <Bullet>Wait for your client to connect</Bullet>
+        <Bullet>Grant Screen Recording (required)</Bullet>
+        <Bullet>Optionally grant Full Disk Access</Bullet>
       </ul>
+      {/* Consent decided up-front (opt-in, both default OFF). Re-toggleable on the Done step. */}
+      <div className="mt-6">
+        <ConsentControls variant="prompt" />
+      </div>
     </div>
   );
 }

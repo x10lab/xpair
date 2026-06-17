@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var hostTimer: Timer?
     var tickTimer: Timer?
     var settings: SettingsWindowController?
+    var onboarding: OnboardingWindow?   // shown while Screen Recording is ungranted (hard run-gate)
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
@@ -57,6 +58,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
 
         log("launched (RemotePairHost v\(APP_VERSION), repo=\(GH_REPO))")
+
+        // The tick loop (heartbeat + writeStatus + approve/onboarding triggers) ALWAYS runs — even while
+        // gated — because writeStatus() drives status.json, which the onboarding WKWebView polls for the
+        // Screen Recording grant. Serving (HostManager/ScreenServer/pairing/advertising) is gated below.
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        // (legacy v0 InputServer 0.1s main-thread polling removed — screencapture's synchronous blocking froze the menu bar.
+        //  Screen sharing is replaced by v1/v2 (remote-pair-screen serve-webrtc, view-only, no remote input).)
+
+        // Hard run-gate. The host needs BOTH Accessibility (approve auto-click via cliclick/System
+        // Events) AND Screen Recording (screen-share + approve OCR). If either is ungranted, show the
+        // in-process onboarding window and DO NOT start serving until the React flow completes (both
+        // granted). Dismissing the window while still ungranted terminates the app (enforced in
+        // OnboardingWindow.windowWillClose). `allGranted()` = axTrusted() && srGranted().
+        if !Permissions.allGranted() {
+            log(.warn, "Accessibility/Screen Recording not granted — showing onboarding (serving gated)")
+            // Pre-register the app in the Accessibility + Screen Recording TCC lists so the user only
+            // has to flip the toggle ON in System Settings (no "+"/drag-in). request() calls
+            // AXIsProcessTrustedWithOptions / CGRequestScreenCaptureAccess, which add the (off) entries.
+            Permissions.request("ax")
+            Permissions.request("sr")
+            let ob = OnboardingWindow(onComplete: { [weak self] in
+                self?.onboarding = nil
+                self?.startServing()
+            })
+            onboarding = ob
+            ob.show()
+        } else {
+            startServing()
+        }
+    }
+
+    /// Begins the serving path: tmux host, screen sidecar (via HostManager), LAN advertising, and the 5 s
+    /// watchdog. Called at launch when Screen Recording is already granted, or from the onboarding
+    /// onComplete once the user grants it. Idempotent enough to call once per launch.
+    private func startServing() {
         host.ensureServer()
         if isHostRole { advertiser.ensureAdvertising() }   // ① advertise on launch (host/both only)
         hostTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -64,9 +100,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.host.ensureServer()
             if isHostRole { self.advertiser.ensureAdvertising() }   // ① watchdog: re-advertise if listener died
         }
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
-        // (legacy v0 InputServer 0.1s main-thread polling removed — screencapture's synchronous blocking froze the menu bar.
-        //  Screen sharing/input are replaced by v1/v2 (remote-pair-screen serve-webrtc + rp-input-inject).)
 
         if UserDefaults.standard.bool(forKey: SettingsWindowController.autoUpdateKey) {
             Updater.checkForUpdates(interactive: false)

@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
-import { Accessibility, Check, Download, ExternalLink, HardDrive, Loader2, Monitor } from "lucide-react";
+import { Accessibility, Check, ExternalLink, HardDrive, Loader2, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { InstallProgressBar } from "@/components/onboarding/InstallProgressBar";
 
+// Host permissions: Accessibility (required — approve auto-click via cliclick/System Events),
+// Screen Recording (required — screen-share + approve OCR), Full Disk Access (recommended).
 export type PermKey = "ax" | "sr" | "fda";
 export type PermState = Record<PermKey, "pending" | "opening" | "granted">;
 
@@ -14,19 +15,19 @@ const ROWS: Array<{
 }> = [
   {
     key: "ax",
-    name: "Accessibility",
-    desc: "Lets the host send clicks and keystrokes for computer-use.",
+    name: "Accessibility (required)",
+    desc: "Lets the host auto-approve prompts (clicks/keys) for computer-use.",
     icon: Accessibility,
   },
   {
     key: "sr",
-    name: "Screen Recording",
+    name: "Screen Recording (required)",
     desc: "Captures screenshots so Claude can see the screen.",
     icon: Monitor,
   },
   {
     key: "fda",
-    name: "Full Disk Access",
+    name: "Full Disk Access (recommended)",
     desc: "Allows reading project files across protected locations.",
     icon: HardDrive,
   },
@@ -35,12 +36,9 @@ const ROWS: Array<{
 type Props = {
   state: PermState;
   setState: (s: PermState) => void;
-  installStarted: boolean;
-  installLabel: string;
-  installPct: number;
 };
 
-export function StepPermissions({ state, setState, installStarted, installLabel, installPct }: Props) {
+export function StepPermissions({ state, setState }: Props) {
   // Keep a ref to the latest state so the poll reads current values without
   // re-subscribing the interval on every state change.
   const stateRef = useRef(state);
@@ -97,8 +95,8 @@ export function StepPermissions({ state, setState, installStarted, installLabel,
               row={r}
               status={state[r.key]}
               onOpen={() => {
-                // Register the host in the TCC list (AXIsProcessTrustedWithOptions /
-                // CGRequestScreenCaptureAccess) AND open the relevant Settings pane.
+                // Register the host in the TCC list (CGRequestScreenCaptureAccess)
+                // AND open the relevant Settings pane.
                 window.remotepair.requestPermission(r.key);
                 window.remotepair.openPermissionPane(r.key);
                 setState({ ...state, [r.key]: "opening" });
@@ -106,23 +104,6 @@ export function StepPermissions({ state, setState, installStarted, installLabel,
             />
           ))}
         </div>
-
-        {installStarted && (
-          <div className="rounded-xl border border-border bg-card p-4">
-            <div className="mb-2 flex items-center gap-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                <Download className="h-4 w-4" />
-              </div>
-              <div>
-                <div className="text-sm font-medium text-foreground">Installing helper</div>
-                <div className="text-[10px] text-muted-foreground">
-                  Runs in the background while you grant permissions.
-                </div>
-              </div>
-            </div>
-            <InstallProgressBar label={installLabel} percent={installPct} />
-          </div>
-        )}
       </div>
     </div>
   );
