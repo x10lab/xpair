@@ -13,7 +13,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."                       # repo root
 . shared/config.sh                            # SSOT: APP_NAME·BUNDLE_PREFIX·SIGN_CN·GH_REPO
 
-VERSION="${RP_VERSION:-0.5.0}"                # single source of truth for the version (baked into Info.plist). Release tag = v$VERSION. (pre-1.0, patch +0.0.1)
+# Version: shared monotonic alpha counter (LOCKSTEP with the client IDE build — same 0.5.0a base +
+# the SAME shared/.build-counter). Each build (host OR client) bumps the one counter so the project
+# has a single 0.5.0aN sequence; each build is verifiably distinct. Override with RP_VERSION=… for a
+# pinned release. (cwd is the repo root — set by the `cd` above.)
+RP_BUILD_BASE="${RP_BUILD_BASE:-0.5.0a}"
+RP_COUNTER_FILE="shared/.build-counter"
+_rpn=$(( $(cat "$RP_COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))
+echo "$_rpn" > "$RP_COUNTER_FILE"
+VERSION="${RP_VERSION:-${RP_BUILD_BASE}${_rpn}}"
+echo "→ build marker: $VERSION  (shared counter: $RP_COUNTER_FILE)"
 SRC_DIR=host/app
 APP="build/${APP_NAME}.app"
 EXEC="$APP_NAME"
@@ -44,6 +53,17 @@ fi
 # (-import-objc-header app/pake-bridge.h ; -L rd/pake/target/release -lpake). The flat swiftc compile
 # was replaced by `swift build` so the host can LINK sentry-cocoa (SentryBridge.swift). libpake.a must
 # exist before `swift build` runs — guaranteed by the cargo build above.
+
+# ── build the in-process onboarding (React) — bundled into Contents/Resources/onboarding ──
+# The onboarding is no longer a standalone Electron app; it is loaded by OnboardingWindow.swift in a
+# WKWebView. vite base is './' so the build is relocatable under file://. Build it here so the bundle
+# step below can copy host/onboarding/dist/ into the .app.
+echo "=== build onboarding (React: npm install + vite build) ==="
+command -v npm >/dev/null || { echo "✗ npm missing — Node toolchain required to build the onboarding UI" >&2; exit 1; }
+( cd host/onboarding && npm install --silent && npm run build ) \
+  || { echo "✗ onboarding React build failed (host/onboarding)" >&2; exit 1; }
+[ -f host/onboarding/dist/index.html ] \
+  || { echo "✗ onboarding build produced no dist/index.html" >&2; exit 1; }
 
 # ── compile (SwiftPM) — `swift build -c release` resolves+links sentry-cocoa + the PAKE staticlib ──
 # host/Package.swift declares the executable target (all of host/app/*.swift) + the Sentry dependency.
@@ -111,15 +131,14 @@ cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
 [ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua bundle embed verification failed: $HELP/tmux-aqua" >&2; exit 1; }
 echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + remote-pair-approve-router.sh + ocr-find"
 
-# ── the 3 screenshare binaries (screen sidecar + rp-screencap/rp-input-inject helpers) → Contents/Helpers ──
-# Since the SSH deploy channel was retired, this bundle is the only delivery path for the three binaries.
+# ── the 2 screenshare binaries (screen sidecar + rp-screencap helper) → Contents/Helpers ──
+# Since the SSH deploy channel was retired, this bundle is the only delivery path for the two binaries.
 #   • screen           v1 (JPEG/WS) + v2 (WebRTC/H.264) sidecar. v2 requires --features webrtc.
 #   • rp-screencap     SCK+VT H.264 capture (Screen Recording permission)
-#   • rp-input-inject  remote keyboard/cursor injection (Accessibility permission)
-# All three are individually inside-out signed with the stable cert (below) so the TCC grant is bound to the designated requirement
+# Both are individually inside-out signed with the stable cert (below) so the TCC grant is bound to the designated requirement
 # and survives .app updates. The resolver (serve_webrtc.rs) probes the current_exe() sibling path first, so
-# when screen starts from Helpers/ it auto-discovers the sibling rp-screencap/rp-input-inject.
-echo "=== build + embed screenshare binaries (screen + rp-screencap + rp-input-inject) ==="
+# when screen starts from Helpers/ it auto-discovers the sibling rp-screencap.
+echo "=== build + embed screenshare binaries (screen + rp-screencap) ==="
 # Ensure cargo (+rustc): the rustup shell may not have put the toolchain on PATH, so put ~/.cargo/bin first.
 export PATH="$HOME/.cargo/bin:$PATH"
 command -v cargo >/dev/null || { echo "✗ cargo missing — Rust toolchain required (rustup). Cannot build the screen sidecar." >&2; exit 1; }
@@ -132,7 +151,7 @@ cp host/rd/screen/target/release/screen "$HELP/screen"; chmod +x "$HELP/screen"
 # Confirm the v2 path (serve-webrtc subcommand) actually made it in — if the webrtc feature is missing, v2 silently disappears.
 "$HELP/screen" serve-webrtc --help >/dev/null 2>&1 \
   || { echo "✗ screen has no serve-webrtc — --features webrtc build failed" >&2; exit 1; }
-# rp-screencap / rp-input-inject — single Swift file, same toolchain/fallback strategy as compile().
+# rp-screencap — single Swift file, same toolchain/fallback strategy as compile().
 compile_helper() { # $1=src $2=out
   local src="$1" out="$2" sdk
   if xcrun swiftc -O "$src" -o "$out" 2>/tmp/rp-helper.err; then return 0; fi
@@ -146,15 +165,23 @@ compile_helper() { # $1=src $2=out
   echo "✗ Swift helper compile failed ($src):"; cat /tmp/rp-helper.err >&2; return 1
 }
 compile_helper host/rd/rpmedia/rp-screencap.swift    "$HELP/rp-screencap";    chmod +x "$HELP/rp-screencap"
-compile_helper host/rd/rpmedia/rp-input-inject.swift "$HELP/rp-input-inject"; chmod +x "$HELP/rp-input-inject"
-[ -x "$HELP/rp-screencap" ] && [ -x "$HELP/rp-input-inject" ] \
-  || { echo "✗ rp-screencap/rp-input-inject bundle embed verification failed" >&2; exit 1; }
-echo "  embedded: screen ($("$HELP/screen" --version 2>/dev/null || echo '?')) + rp-screencap + rp-input-inject"
+[ -x "$HELP/rp-screencap" ] \
+  || { echo "✗ rp-screencap bundle embed verification failed" >&2; exit 1; }
+echo "  embedded: screen ($("$HELP/screen" --version 2>/dev/null || echo '?')) + rp-screencap"
 
 RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (for the icon; populated below)
 # NOTE: keep coupling low — the app bundle holds only what the app uses directly at runtime (Helpers: tmux-aqua·router·ocr-find).
 #   skills (the claude harness), rules.txt (approve config), and the CLI are not embedded/self-installed here.
 #   That is handled by the single CLI/README install (shared/install.sh).
+
+# ── embed the onboarding React build → Contents/Resources/onboarding ──
+# OnboardingWindow.swift loads Contents/Resources/onboarding/index.html in a WKWebView (vite base './').
+echo "=== embed onboarding (React dist) → Contents/Resources/onboarding ==="
+rm -rf "$RES/onboarding"; mkdir -p "$RES/onboarding"
+cp -R host/onboarding/dist/. "$RES/onboarding/"
+[ -f "$RES/onboarding/index.html" ] \
+  || { echo "✗ onboarding bundle embed verification failed: $RES/onboarding/index.html" >&2; exit 1; }
+echo "  embedded: onboarding/index.html (+ assets)"
 
 echo "=== embed app icon + menu-bar template → Contents/Resources ==="
 if [ -f assets/icon/AppIcon-1024.png ]; then
@@ -179,8 +206,8 @@ done
 # ── signing: inside-out individual signing (Apple-recommended; not reliant on --deep) ──
 # --deep is for verification and can miss or mis-sign nested code, destabilizing the TCC designated requirement.
 # Sign each Helpers entry individually with the stable cert first (--options runtime for Mach-O), then sign the outer .app.
-# Done this way, the Authority of the 3 screenshare binaries (screen·rp-screencap·rp-input-inject) is baked in with the stable cert
-# so the Screen Recording / Accessibility grant survives .app updates (designated requirement = cert leaf).
+# Done this way, the Authority of the 2 screenshare binaries (screen·rp-screencap) is baked in with the stable cert
+# so the Screen Recording grant survives .app updates (designated requirement = cert leaf).
 # The shell script (approve-router.sh) must also be signed individually so that --verify --strict passes after the outer non-deep signing.
 for bin in "$HELP"/*; do
   [ -f "$bin" ] || continue
@@ -196,8 +223,8 @@ done
 codesign -s "$SIGN_ID" --force "$APP"
 echo "built + signed (inside-out): $APP (v$VERSION, $BUNDLE_PREFIX)"
 codesign -dv "$APP" 2>&1 | grep -iE 'Authority|^Identifier' || true
-# Check the Authority of the 3 screenshare binaries (AC2): it must be the stable cert for the grant to survive. If ad-hoc ('-'), report only (the build still passes).
-for b in screen rp-screencap rp-input-inject; do
+# Check the Authority of the 2 screenshare binaries (AC2): it must be the stable cert for the grant to survive. If ad-hoc ('-'), report only (the build still passes).
+for b in screen rp-screencap; do
   echo "  helper $b: $(codesign -dvv "$HELP/$b" 2>&1 | grep -i 'Authority=' | head -1 || echo 'unsigned?')"
 done
 codesign --verify --strict "$APP" && echo "verify OK ✓"
