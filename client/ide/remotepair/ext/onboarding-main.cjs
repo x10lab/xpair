@@ -21,6 +21,21 @@ try { telemetry = require('./telemetry.js') } catch { /* telemetry optional */ }
 const WEBVIEW_INDEX = path.join(__dirname, 'onboarding-webview', 'dist', 'index.html')
 const PRELOAD = path.join(__dirname, 'onboarding-preload.cjs')
 
+/** Sentinel that forces onboarding on the next launch (written by the IDE's "Re-run setup"
+ *  command, which can't pass an env var across an app quit+relaunch). Deleted once onboarding
+ *  actually opens, so it forces exactly one run. */
+const FORCE_ONBOARDING_SENTINEL = path.join(os.homedir(), '.remote-pair', '.force-onboarding')
+
+/** @returns {boolean} true if the force-onboarding sentinel file exists. */
+function forceOnboardingSentinelExists() {
+  try { return fs.existsSync(FORCE_ONBOARDING_SENTINEL) } catch { return false }
+}
+
+/** Remove the force-onboarding sentinel (best-effort; safe if absent). */
+function clearForceOnboardingSentinel() {
+  try { fs.rmSync(FORCE_ONBOARDING_SENTINEL, { force: true }) } catch { /* ignore */ }
+}
+
 /** "onboarded" ⇔ REMOTE_HOST set AND >=1 FOLDER_MAPS entry in ~/.remote-pair/client.env. */
 function isOnboarded() {
   const file = path.join(os.homedir(), '.remote-pair', 'client.env')
@@ -36,9 +51,13 @@ function isOnboarded() {
   return host.length > 0 && maps.length >= 1
 }
 
-/** Should the onboarding window show on this launch? `RP_FORCE_ONBOARDING=1` / `--force` forces it. */
+/** Should the onboarding window show on this launch? `RP_FORCE_ONBOARDING=1` / `--force`, or the
+ *  force-onboarding sentinel (written by "Re-run setup") forces it. */
 function shouldOnboard(argv = process.argv) {
   if (process.env.RP_FORCE_ONBOARDING === '1' || (Array.isArray(argv) && argv.includes('--force'))) {
+    return true
+  }
+  if (forceOnboardingSentinelExists()) {
     return true
   }
   return !isOnboarded()
@@ -94,6 +113,9 @@ let _completed = false
  */
 function openOnboardingWindow({ electron, onComplete }) {
   const { app, BrowserWindow, ipcMain, shell } = electron
+  // Onboarding is actually opening now, so consume the one-shot force sentinel (if any). This
+  // guarantees exactly one forced run — a later normal launch won't re-trigger onboarding.
+  clearForceOnboardingSentinel()
   try { if (telemetry && telemetry.firstRunStamp) telemetry.firstRunStamp() } catch { /* */ }
   wireIpc(ipcMain, onComplete)
 

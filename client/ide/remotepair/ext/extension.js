@@ -41,7 +41,7 @@ const SSH_CONNECT_TIMEOUT = 6; // seconds
 
 // v2 WebRTC signaling (shared/screen-protocol → generated contracts)
 const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // host `screen serve-webrtc` signaling port
-const TUNNEL_SETTLE_MS = 1200; // wait for ssh -fN tunnel to establish before the webview connects
+const TUNNEL_SETTLE_MS = 1200; // wait for ssh -N tunnel to establish before the webview connects
 
 // REMOTE_HOST must be a bare ssh host alias / hostname. Validate hard before
 // it ever reaches a spawned process (defense in depth even though spawn is
@@ -331,16 +331,21 @@ function getFreePort() {
 }
 
 /**
- * Spawn an ssh local-forward tunnel (non-blocking: ssh -fN).
+ * Spawn an ssh local-forward tunnel (foreground: ssh -N).
  * argv-safe: host is validated, ports are integers.
  *
- * Returns the child process — child.kill() to teardown.
- * The caller should wait TUNNEL_SETTLE_MS before connecting.
+ * Returns the child process — child.kill() to teardown.  We deliberately do NOT pass `-f`:
+ * with `-f`, ssh forks into the background and the foreground (this Node child) exits
+ * immediately, so child.kill() would target an already-dead parent and leak the real tunnel.
+ * Staying in the foreground keeps THIS child as the actual tunnel process so _stopV2()'s
+ * kill() truly terminates it. Readiness is not inferred from process exit — the caller waits
+ * TUNNEL_SETTLE_MS before connecting.
  * Forwards the v2 WebRTC signaling port (media itself flows over UDP/ICE, not this TCP tunnel).
  */
 function spawnTunnel(host, localPort, remotePort) {
-  // -fN: go to background, no remote command.  ControlMaster=auto reuses
-  // the existing authenticated master so there's no new key prompt.
+  // -N: no remote command (forward only). NO -f: stay in the foreground so the returned child
+  // IS the tunnel and can be killed. ControlMaster=auto reuses the existing authenticated
+  // master so there's no new key prompt.
   const rport = remotePort;
   const args = [
     "-o", "BatchMode=yes",
@@ -349,11 +354,11 @@ function spawnTunnel(host, localPort, remotePort) {
     "-o", "ControlMaster=auto",
     "-o", "ControlPath=/tmp/rp-cm-%C",
     "-o", "ControlPersist=300",
-    "-fN",
+    "-N",
     "-L", `${localPort}:127.0.0.1:${rport}`,
     host, // validated HOST_RE element
   ];
-  log(`tunnel: ssh -fN -L ${localPort}:127.0.0.1:${rport} ${host}`);
+  log(`tunnel: ssh -N -L ${localPort}:127.0.0.1:${rport} ${host}`);
   const child = cp.spawn("ssh", args, { windowsHide: true, detached: false });
   child.stderr.on("data", (d) => log(`tunnel stderr: ${d.toString().trim()}`));
   child.on("error", (e) => log(`tunnel spawn error: ${e.message}`));
@@ -374,7 +379,7 @@ class RemoteDesktopPanel {
     this.visible = false;
 
     // v2 WebRTC signaling tunnel state
-    this._tunnelChild = null;   // ssh -fN child process
+    this._tunnelChild = null;   // ssh -N child process (foreground; killable)
     this._tunnelPort = null;    // local signaling port in use
     this._v2Active = false;     // true while the v2 signaling tunnel is up
   }
@@ -1150,6 +1155,17 @@ async function showLogs() {
 // of spawning a second app/process.
 function runSetup() {
   log("runSetup: re-onboarding requested — main process onboards on next launch");
+  // An already-onboarded user has REMOTE_HOST + folder maps in client.env, so shouldOnboard()
+  // would return false on relaunch and skip straight to the workbench. A quit+relaunch can't carry
+  // an env var (RP_FORCE_ONBOARDING), so persist a one-shot sentinel that onboarding-main.cjs's
+  // shouldOnboard() honors (and clears on next open). Path MUST match FORCE_ONBOARDING_SENTINEL
+  // in onboarding-main.cjs.
+  try {
+    fs.mkdirSync(path.join(os.homedir(), ".remote-pair"), { recursive: true });
+    fs.writeFileSync(path.join(os.homedir(), ".remote-pair", ".force-onboarding"), "");
+  } catch (e) {
+    log(`runSetup: could not write force-onboarding sentinel: ${e && e.message ? e.message : e}`, "warn");
+  }
   vscode.window
     .showInformationMessage(
       "RemotePair setup will run when you restart the app.",
