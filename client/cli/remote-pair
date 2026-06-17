@@ -1149,8 +1149,17 @@ cmd_install_host() {
     _rp_ssh "$target" "launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX 2>/dev/null || open -a $APP_NAME 2>/dev/null || true" 2>/dev/null || true
   else
     # ── 2. Install with integrity ──
-    local repo_root here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-    repo_root="$(cd "$here/../.." 2>/dev/null && pwd)"
+    # repo_root: the INSTALLED CLI (~/.local/bin/remote-pair) is a COPY, so $0/../.. is $HOME — NOT
+    # the repo. The onboarding bridge always invokes the installed copy, so resolve the real tree:
+    # RP_REPO_ROOT (env, or auto-sourced from client.env at startup) wins; else the run-from-repo
+    # location ($0/../..). Validate the candidate actually holds shared/install.sh.
+    local repo_root here cand; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    repo_root=""
+    for cand in "${RP_REPO_ROOT:-}" "$here/../.."; do
+      [ -n "$cand" ] || continue
+      cand="$(cd "$cand" 2>/dev/null && pwd)" || continue
+      [ -f "$cand/shared/install.sh" ] && { repo_root="$cand"; break; }
+    done
     if [ "$use_bootstrap" = 1 ]; then
       # Opt-in curl|bash: pin a ref + verify a published SHA256 BEFORE any host exec.
       [ -n "$sha" ] || { err "--bootstrap requires --sha256 <hex> (no unverified curl|bash)"; return 2; }
@@ -1167,6 +1176,7 @@ cmd_install_host() {
       rm -f "$btmp"
     else
       # Default: scp the locally-built SIGNED .app + install.sh; integrity = signature.
+      [ -n "$repo_root" ] || { err "install-host: cannot locate the RemotePair repo tree (no shared/install.sh via RP_REPO_ROOT or \$0/../..). Set RP_REPO_ROOT=<repo> in ~/.remote-pair/client.env, run from the repo, or use --bootstrap --sha256 <hex> for a release install."; return 1; }
       # build-host.sh writes build/<app> relative to its CWD: host/build/ when run from host/, or
       # build/ when run from the repo root. Accept either so a repo-root build is found too.
       local appsrc="$repo_root/host/build/$APP_NAME.app"
