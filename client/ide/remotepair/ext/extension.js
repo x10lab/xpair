@@ -6,8 +6,8 @@
 // Remote Desktop is a single WebRTC path (v2): an ssh local-forward tunnel carries
 // only the signaling WebSocket (ws://127.0.0.1:<port> → host `screen serve-webrtc`).
 // The H.264 media itself flows P2P over UDP/RTP/ICE and is decoded natively by the
-// webview. Input (cursor/keyboard) is captured in the webview and sent over WebRTC
-// DataChannels (rp-ctl / rp-move) — not through this extension.
+// webview. This Remote Desktop view is PERMANENTLY view-only: no cursor/keyboard
+// input is captured or forwarded (display/video only, no remote control).
 
 const vscode = require("vscode");
 const cp = require("child_process");
@@ -368,9 +368,8 @@ function spawnTunnel(host, localPort, remotePort) {
 
 class RemoteDesktopPanel {
   /** @param {vscode.Uri} extensionUri */
-  constructor(extensionUri, state) {
+  constructor(extensionUri) {
     this.extensionUri = extensionUri;
-    this.state = state; // shared mutable: { inputEnabled }
     this.panel = null;
     this.visible = false;
 
@@ -440,7 +439,6 @@ class RemoteDesktopPanel {
       this.panel = null;
     });
     this.visible = panel.visible;
-    this.postInputState();
   }
 
   /** Restore handler for VSCode's WebviewPanelSerializer — adopt the restored RD (or drop a dup). */
@@ -507,17 +505,10 @@ class RemoteDesktopPanel {
     this._tunnelPort = null;
   }
 
-  postInputState() {
-    if (this.panel) {
-      this.panel.webview.postMessage({ type: "inputState", enabled: !!this.state.inputEnabled });
-    }
-  }
-
   onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
 
     if (msg.type === "ready") {
-      this.postInputState();
       return;
     }
     if (msg.type === "refresh") {
@@ -526,8 +517,8 @@ class RemoteDesktopPanel {
       this._startStream();
       return;
     }
-    // v2 (WebRTC) feedback from webview. Input (cursor/keyboard) is sent directly
-    // over WebRTC DataChannels in the webview, so the extension only handles status.
+    // v2 (WebRTC) feedback from webview. This view is view-only (no input
+    // forwarding), so the extension only handles status/first-frame events.
     if (msg.type === "v2FirstFrame") {
       log(`v2: media track rendering`);
       return;
@@ -590,7 +581,7 @@ class RemoteDesktopPanel {
       <div id="overlay-title">RemotePair</div>
       <div id="overlay-msg">Connecting to host…</div>
     </div>
-    <div id="badge" class="off" title="Input forwarding">input: off</div>
+    <div id="badge" class="off" title="View-only (no remote control)">view-only</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -1197,8 +1188,6 @@ function installSentryHooks() {
 function activate(context) {
   log("RemotePair activating…");
 
-  const state = { inputEnabled: true };
-
   // 0) Telemetry (opt-in, both consent flags default OFF → zero network calls). Two side effects:
   //    a) app_first_launch{is_fresh_install} — fired ONCE, gated by a globalState stamp.
   //    b) Sentry init for the extension host — a no-op unless CRASH_REPORT_CONSENT + SENTRY_DSN
@@ -1228,7 +1217,7 @@ function activate(context) {
 
   // 2) Remote Desktop = a pinned editor tab ("RD") in the main editor area
   //    (NOT a left activity-bar view).
-  const panel = new RemoteDesktopPanel(context.extensionUri, state);
+  const panel = new RemoteDesktopPanel(context.extensionUri);
 
   // Auto-open the Remote Desktop on launch so it is the default surface (v2 RD). This regressed
   // when the onboarding / session-picker UX changed the startup view: the panel was created but
@@ -1338,14 +1327,6 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
-    vscode.commands.registerCommand("remotepair.remoteDesktop.toggleInput", () => {
-      state.inputEnabled = !state.inputEnabled;
-      panel.postInputState();
-      vscode.window.setStatusBarMessage(
-        `RemotePair input forwarding: ${state.inputEnabled ? "ON" : "OFF"}`,
-        2000
-      );
-    }),
     vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
     vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),
     vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true)),

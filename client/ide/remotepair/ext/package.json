@@ -38,11 +38,6 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "remotepair.remoteDesktop.toggleInput",
-        "title": "RemotePair: Toggle Input Forwarding",
-        "icon": "$(record-keys)"
-      },
-      {
         "command": "remotepair.ensureExtensions",
         "title": "RemotePair: Install AI Extensions"
       },
@@ -84,11 +79,6 @@
           "command": "remotepair.remoteDesktop.refresh",
           "when": "activeWebviewPanelId == 'remotepair.remoteDesktop'",
           "group": "navigation@1"
-        },
-        {
-          "command": "remotepair.remoteDesktop.toggleInput",
-          "when": "activeWebviewPanelId == 'remotepair.remoteDesktop'",
-          "group": "navigation@2"
         },
         {
           "command": "remotepair.connectHost",
