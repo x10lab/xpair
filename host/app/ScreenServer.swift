@@ -179,6 +179,11 @@ final class ScreenServer {
         } else if line.contains("\"capture\":\"stop\"") || line.contains("\"capture\": \"stop\"") {
             log("SCREEN: control stop -> stop in-app capture")
             captureEngine.stop()
+        } else if line.contains("\"keyframe\":true") || line.contains("\"keyframe\": true") {
+            // Client signalled picture loss (RTCP PLI/FIR) via the sidecar — force an IDR
+            // so a viewer that lost the original keyframe can recover from a black frame.
+            log("SCREEN: control keyframe -> force keyframe")
+            captureEngine.requestKeyframe()
         } else {
             log(.warn, "SCREEN: unknown control line: \(line)")
         }

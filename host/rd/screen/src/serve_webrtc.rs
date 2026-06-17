@@ -146,9 +146,36 @@ async fn handle_session(
         "video".to_owned(),
         "remotepair-screen".to_owned(),
     ));
-    pc.add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+    let rtp_sender = pc
+        .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .map_err(|e| e.to_string())?;
+
+    // RTCP reader: the client sends PictureLossIndication / FullIntraRequest when it
+    // loses a keyframe (e.g. a packet of the 76KB IDR dropped on a lossy link). Forward
+    // that as a {"keyframe":true} control line so the parent app forces a fresh IDR —
+    // otherwise the remote viewer stays BLACK forever. read_rtcp() returning Err ends
+    // the task (session over). In standalone mode (no RP_AU_STDIN) the parent ignores
+    // the control line harmlessly; the loop still drains RTCP as webrtc-rs expects.
+    {
+        let rtp_sender = rtp_sender.clone();
+        tokio::spawn(async move {
+            use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+            use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+            while let Ok((packets, _attrs)) = rtp_sender.read_rtcp().await {
+                for pkt in packets {
+                    let any = pkt.as_any();
+                    if any.downcast_ref::<PictureLossIndication>().is_some()
+                        || any.downcast_ref::<FullIntraRequest>().is_some()
+                    {
+                        tracing::info!("serve-webrtc: RTCP PLI/FIR -> requesting keyframe");
+                        write_control("{\"keyframe\":true}\n");
+                    }
+                }
+            }
+            tracing::info!("serve-webrtc: RTCP reader ended (sender closed)");
+        });
+    }
 
     // --- ICE candidate trickle: PC -> browser (via an mpsc to the WS writer) ---
     let (sig_tx, mut sig_rx) = mpsc::unbounded_channel::<String>();
@@ -201,6 +228,11 @@ async fn handle_session(
             frames = frames.wrapping_add(1);
             if frames.is_multiple_of(300) {
                 crate::log::rotate_guard();
+            }
+            // DIAG: confirm the host actually forwards encoded frames to RTP (first few + every 30th).
+            // AU size also tells keyframe (large) vs delta (small) — helps diagnose a black viewer.
+            if frames <= 3 || frames.is_multiple_of(30) {
+                tracing::info!("serve-webrtc: rtp frame #{frames} ({} bytes au)", au.len());
             }
             let sample = Sample {
                 data: Bytes::from(au),
@@ -287,9 +319,15 @@ impl CaptureSource {
 /// Write a one-line control message to **stdout** (the control channel to the
 /// parent app in `RP_AU_STDIN=1` mode) and flush. stdout is reserved for these
 /// control lines — the logger never writes to stdout, so this stays clean.
+///
+/// Concurrency: control lines are emitted from several places — the capture
+/// start/stop writers AND the RTCP reader task ({"keyframe":true}) — possibly on
+/// different threads. We take an explicit lock on the process-wide `Stdout` for the
+/// whole write+flush so a control line is never interleaved/corrupted by another.
 fn write_control(line: &str) {
-    let mut out = std::io::stdout();
-    if out.write_all(line.as_bytes()).is_err() || out.flush().is_err() {
+    let out = std::io::stdout();
+    let mut guard = out.lock();
+    if guard.write_all(line.as_bytes()).is_err() || guard.flush().is_err() {
         tracing::warn!("serve-webrtc: failed to write control line to stdout");
     }
 }

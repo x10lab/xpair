@@ -34,6 +34,18 @@ final class CaptureEngine {
     private var bitrate = 4_000_000
     private var sink: ((Data) -> Void)?
 
+    // Keyframe forcing. A 76KB IDR can lose a packet on a lossy link → undecodable;
+    // with no further keyframe the remote viewer stays BLACK forever. We force a
+    // keyframe: (1) on the first frame after start, (2) periodically (~every 1s), and
+    // (3) on demand when the client signals PictureLossIndication/FIR via the sidecar.
+    // `forceKeyframeFlag` is set from ScreenServer's control-reader thread but consumed
+    // on SCK's sample queue, so it is guarded by `keyframeLock`. `frameCount` is only
+    // touched on the sample queue (and reset under the lock in start()/stop()).
+    private let keyframeLock = NSLock()
+    private var forceKeyframeFlag = false
+    private var frameCount: UInt64 = 0
+    private let periodicKeyframeInterval: UInt64 = 30 // ~1s @ 30fps
+
     /// Start capturing the first display and encoding to H.264. `sink` receives one
     /// `[4B BE len][Annex-B AU]` Data per encoded frame, on SCK's sample queue (the
     /// caller must serialize any shared writes). Idempotent: a no-op if already running.
@@ -42,6 +54,11 @@ final class CaptureEngine {
         self.fps = fps
         self.bitrate = bitrate
         self.sink = sink
+        // Fresh per-session keyframe state: force a keyframe on the first encoded frame.
+        keyframeLock.lock()
+        frameCount = 0
+        forceKeyframeFlag = false
+        keyframeLock.unlock()
 
         SCShareableContent.getWithCompletionHandler { [weak self] content, err in
             guard let self = self else { return }
@@ -92,6 +109,20 @@ final class CaptureEngine {
         session = nil
         au.removeAll(keepingCapacity: false)
         sink = nil
+        keyframeLock.lock()
+        frameCount = 0
+        forceKeyframeFlag = false
+        keyframeLock.unlock()
+    }
+
+    /// Request that the next encoded frame be a keyframe (IDR). Called from another
+    /// thread (ScreenServer's control reader) when the client signals picture loss
+    /// (RTCP PLI/FIR). Thread-safe: guarded by `keyframeLock`. The flag is consumed
+    /// and cleared on the SCK sample queue in the encode path.
+    func requestKeyframe() {
+        keyframeLock.lock()
+        forceKeyframeFlag = true
+        keyframeLock.unlock()
     }
 
     // ---- VT encoder (created once we know dimensions) ----
@@ -149,6 +180,20 @@ final class CaptureEngine {
         }
     }
 
+    /// Decide whether the frame about to be encoded should be forced to a keyframe,
+    /// and advance/consume the per-session keyframe state atomically. Runs on the SCK
+    /// sample queue; `forceKeyframeFlag` may be set concurrently by requestKeyframe().
+    private func shouldForceKeyframe() -> Bool {
+        keyframeLock.lock()
+        defer { keyframeLock.unlock() }
+        let isFirst = frameCount == 0
+        let periodic = frameCount % periodicKeyframeInterval == 0
+        let onDemand = forceKeyframeFlag
+        forceKeyframeFlag = false // consume the on-demand request
+        frameCount &+= 1
+        return isFirst || periodic || onDemand
+    }
+
     private func encOutput(_ status: OSStatus, _ sample: CMSampleBuffer?) {
         guard status == noErr, let sample = sample, CMSampleBufferDataIsReady(sample) else { return }
         au.removeAll(keepingCapacity: true)
@@ -181,7 +226,12 @@ final class CaptureEngine {
             engine.ensureEncoder(w, h)
             guard let sess = engine.session else { return }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            VTCompressionSessionEncodeFrame(sess, imageBuffer: pb, presentationTimeStamp: pts, duration: .invalid, frameProperties: nil, sourceFrameRefcon: nil, infoFlagsOut: nil)
+            // Force a keyframe on the first/periodic/on-demand (PLI/FIR) frame so a lost
+            // IDR packet on a lossy link can recover instead of leaving the viewer black.
+            let frameProps: CFDictionary? = engine.shouldForceKeyframe()
+                ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
+                : nil
+            VTCompressionSessionEncodeFrame(sess, imageBuffer: pb, presentationTimeStamp: pts, duration: .invalid, frameProperties: frameProps, sourceFrameRefcon: nil, infoFlagsOut: nil)
         }
     }
 }
