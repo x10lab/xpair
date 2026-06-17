@@ -62,6 +62,9 @@ export default function App() {
   // Discovery / pairing state.
   const [peer, setPeer] = useState<Peer | null>(null);
   const [account, setAccount] = useState("");
+  // Account password typed on the setup step → consumed by StepInstalling (handed to the CLI over a
+  // pipe, never argv/log), then cleared. Empty ⇒ install authenticates by SSH key.
+  const [password, setPassword] = useState("");
   const [pinState, setPinState] = useState<PinState>("idle");
   const [installState, setInstallState] = useState<InstallState>("idle");
   const [live, setLive] = useState<LiveState>("idle");
@@ -225,7 +228,13 @@ export default function App() {
               setState={setConnState}
             />
           ) : isSetup ? (
-            <StepSetupPassword peer={peer} user={account} setUser={setAccount} />
+            <StepSetupPassword
+              peer={peer}
+              user={account}
+              setUser={setAccount}
+              password={password}
+              setPassword={setPassword}
+            />
           ) : (
             <StepConnectPin peer={peer} state={pinState} setState={setPinState} />
           ))}
@@ -233,6 +242,8 @@ export default function App() {
           <StepInstalling
             peer={peer}
             user={account}
+            password={password}
+            setPassword={setPassword}
             state={installState}
             setState={setInstallState}
           />

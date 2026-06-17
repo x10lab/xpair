@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Loader2, Lock, ShieldCheck } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Loader2, Lock, ShieldCheck } from "lucide-react";
 import type { Peer } from "@/global";
 
 export type PinState = "idle" | "pairing" | "paired" | "failed";
@@ -151,20 +151,35 @@ export function FingerprintPanel({
   fp: string | null;
   firstTime?: boolean;
 }) {
+  // Collapsed by default — the fingerprint is a verification detail most users glance past. The
+  // header is a toggle; expand to read the full key and confirm it matches the host.
+  const [open, setOpen] = useState(false);
   return (
-    <div className="mt-5 w-full rounded-xl border border-border bg-muted/30 p-3.5 text-left">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+    <div className="mt-5 w-full overflow-hidden rounded-xl border border-border bg-muted/30 text-left">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-1.5 p-3.5 text-[10px] uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
+        aria-expanded={open}
+      >
         <Lock className="h-3.5 w-3.5" />
         Host key fingerprint
-      </div>
-      <div className="mt-1.5 break-all font-mono text-[12.5px] leading-relaxed text-foreground">
-        {fp || "fetching…"}
-      </div>
-      <div className="mt-2 text-[11.5px] text-muted-foreground">
-        {firstTime
-          ? `First time connecting — confirm this is the right Mac.`
-          : `Matches what ${host} shows? You're connecting to the right Mac.`}
-      </div>
+        <ChevronDown
+          className={"ml-auto h-3.5 w-3.5 transition-transform " + (open ? "rotate-180" : "")}
+        />
+      </button>
+      {open && (
+        <div className="px-3.5 pb-3.5">
+          <div className="break-all font-mono text-[12.5px] leading-relaxed text-foreground">
+            {fp || "fetching…"}
+          </div>
+          <div className="mt-2 text-[11.5px] text-muted-foreground">
+            {firstTime
+              ? `First time connecting — confirm this is the right Mac.`
+              : `Matches what ${host} shows? You're connecting to the right Mac.`}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

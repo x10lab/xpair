@@ -178,17 +178,15 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
         Add folders one at a time — each can use a different access method.
       </p>
 
-      {/* Existing mappings list (source of truth re-read from config) */}
-      <div className="mt-6 space-y-3">
-        {mappings.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-10 text-center">
-            <FolderTree className="h-7 w-7 text-muted-foreground/60" />
-            <p className="mt-3 text-sm text-muted-foreground">
-              No mappings yet. Add your first below.
-            </p>
+      {/* Existing mappings list — only when there ARE mappings. With none, the big empty-state box
+          just wasted space above the form, so we skip it and let the add form lead (you're adding
+          your first). The list (and its header) appears once the first mapping lands. */}
+      {mappings.length > 0 && (
+        <div className="mt-6 space-y-3">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Mapped folders
           </div>
-        ) : (
-          mappings.map((m, i) => (
+          {mappings.map((m, i) => (
             <div
               key={`${m.clientPath}::${m.hostPath}::${i}`}
               className="flex items-center gap-2 rounded-xl border border-border bg-card p-3 text-xs"
@@ -212,12 +210,18 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
                 {m.hostPath}
               </span>
             </div>
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* Add form: method toggle + inputs, no folder picker */}
-      <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3">
+      <div className="mt-6 rounded-xl border border-border bg-muted/30 p-3">
+        {mappings.length === 0 && (
+          <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+            <FolderTree className="h-4 w-4 text-muted-foreground/70" />
+            Add your first folder mapping.
+          </div>
+        )}
         {/* Method toggle sits above the path inputs */}
         <div className="mb-3 grid gap-2 sm:grid-cols-2">
           <MethodCard
