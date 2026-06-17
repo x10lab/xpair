@@ -1179,6 +1179,29 @@ function runSetup() {
     });
 }
 
+// Non-destructive re-onboarding. Bound to the bottom-left host status-bar button. RemotePair
+// sessions PERSIST across restart (detach/reattach), so this is NOT "ending a session" — it drops
+// the same one-shot .force-onboarding sentinel runSetup() uses and quits, so the next launch
+// re-enters onboarding and the user reattaches right back. No scary "end session" modal: a single
+// light positive confirm (the action quits the app, so one click of confirmation is warranted).
+function endSessionReonboard() {
+  vscode.window
+    .showInformationMessage("Set up RemotePair again? Your sessions stay attached.", "Set up again")
+    .then((choice) => {
+      if (choice !== "Set up again") {
+        return;
+      }
+      log("endSessionReonboard: re-onboarding on next launch (sessions persist)");
+      try {
+        fs.mkdirSync(path.join(os.homedir(), ".remote-pair"), { recursive: true });
+        fs.writeFileSync(path.join(os.homedir(), ".remote-pair", ".force-onboarding"), "");
+      } catch (e) {
+        log(`endSessionReonboard: sentinel write failed: ${e && e.message ? e.message : e}`, "warn");
+      }
+      vscode.commands.executeCommand("workbench.action.quit");
+    });
+}
+
 // Register extension-host crash hooks ONCE. The handlers delegate to telemetry.sentryCapture,
 // which itself gates on CRASH_REPORT_CONSENT + SENTRY_DSN (so with consent OFF this is inert —
 // no DSN read succeeds, no network call). We do NOT swallow the errors: we only observe them,
@@ -1257,8 +1280,19 @@ function activate(context) {
   //    "Set host" affordance when none is configured. Click still opens the
   //    endpoint quickpick (remotepair.connectHost).
   const hostBtn = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100000000);
-  hostBtn.command = "remotepair.connectHost";
+  // Click = non-destructive re-onboarding (detach/reattach; sessions persist) — the canonical
+  // "set up / switch host" action. The button still DISPLAYS host name + reachability below.
+  hostBtn.command = "remotepair.endSessionReonboard";
   context.subscriptions.push(hostBtn);
+  // C3(b): a panel-toggle control in the status bar, just left of the notification bell (the bell is
+  // RIGHT/NEGATIVE_INFINITY, so any small finite RIGHT priority lands adjacent-left of it). Toggles
+  // the bottom Session Manager panel collapsed/expanded.
+  const panelToggleBtn = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1);
+  panelToggleBtn.text = "$(layout-panel)";
+  panelToggleBtn.tooltip = "RemotePair: toggle the Session Manager panel";
+  panelToggleBtn.command = "workbench.action.togglePanel";
+  panelToggleBtn.show();
+  context.subscriptions.push(panelToggleBtn);
 
   let hostReachable = null; // null = unknown/probing, true/false = last probe result
   // Telemetry: classify the real connection path used today (Bonjour LAN discovery does not
@@ -1340,6 +1374,7 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
     vscode.commands.registerCommand("remotepair.runSetup", () => runSetup()),
+    vscode.commands.registerCommand("remotepair.endSessionReonboard", () => endSessionReonboard()),
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
@@ -1397,7 +1432,16 @@ function activate(context) {
   panel
     .reveal()
     .then(() => setupLayout(context, false))
-    .catch((e) => log(`setupLayout error: ${e}`));
+    // C3(a): force the bottom Session Manager panel OPEN with the ATTACHED tab on EVERY launch (no
+    // persisted collapse memory). The auto-registered view-focus command (id = <attached view id>
+    // + '.focus') opens the panel part AND switches to the Attached composite. Runs after
+    // setupLayout regardless of its one-time gate, so it re-opens the panel on every activation.
+    .then(() =>
+      vscode.commands.executeCommand("remotepair.sessions.attached.view.focus", {
+        preserveFocus: true,
+      }),
+    )
+    .catch((e) => log(`setupLayout / force-open Sessions panel error: ${e}`));
 
   log("RemotePair activated.");
 }
