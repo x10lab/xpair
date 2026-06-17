@@ -17,6 +17,7 @@ import {
 import { StepDone } from "@/components/onboarding/client/StepDone";
 import { StepDiscover } from "@/components/onboarding/client/StepDiscover";
 import { StepConnectPin, type PinState } from "@/components/onboarding/client/StepConnectPin";
+import { StepReconnect } from "@/components/onboarding/client/StepReconnect";
 import { StepSetupPassword } from "@/components/onboarding/client/StepSetupPassword";
 import { StepGrantPermissions } from "@/components/onboarding/client/StepGrantPermissions";
 import {
@@ -73,6 +74,8 @@ export default function App() {
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
+  // Reconnect reachability, lifted from the Reconnect step so Next gates until the host answers.
+  const [reconnectReady, setReconnectReady] = useState(false);
   const [live, setLive] = useState<LiveState>("idle");
 
   // Manual-entry fallback reuses the existing StepConnect machine.
@@ -92,6 +95,9 @@ export default function App() {
   }, []);
 
   const isSetup = peer?.status === "setup";
+  // Reconnect: this client already paired with the host (ssh-config entry) and the app is installed,
+  // so there's nothing to PIN-pair — just re-persist REMOTE_HOST and confirm reachability.
+  const isReconnect = peer?.status === "reconnect";
 
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
@@ -100,6 +106,7 @@ export default function App() {
       setPeer(p);
       setPinState("idle");
       setInstallState("idle");
+      setReconnectReady(false);
       setLive("idle");
       w.goTo(S.CONNECT, "next");
     },
@@ -142,6 +149,8 @@ export default function App() {
     ? manualReady
     : isSetup
     ? true // Setup path: Next moves on to Installing.
+    : isReconnect
+    ? reconnectReady // Reconnect path: gate on the host answering over the existing key.
     : pinState === "paired";
   const mappingsReady = mappings.length >= 1;
 
@@ -243,6 +252,8 @@ export default function App() {
               password={password}
               setPassword={setPassword}
             />
+          ) : isReconnect ? (
+            <StepReconnect peer={peer} onReady={setReconnectReady} />
           ) : (
             <StepConnectPin peer={peer} state={pinState} setState={setPinState} />
           ))}
