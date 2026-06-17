@@ -15,9 +15,11 @@ const APP_VERSION = (() => {
     return '0.5.0a'
   }
 })()
-// Build stamp = version + a fresh timestamp, so a launched window shows the 0.5.0aN naming AND is
-// verifiably the latest build (re-evaluated on each `vite build`). e.g. "0.5.0a1 · 06-17 10:40:12".
-const BUILD_ID = `${APP_VERSION} · ${new Date().toISOString().slice(5, 19).replace('T', ' ')}`
+// Build stamp = version + a fresh timestamp in KST (Asia/Seoul, UTC+9 — the team's timezone), so a
+// launched window shows the 0.5.0aN naming AND is verifiably the latest build (re-evaluated on each
+// `vite build`). Shift UTC by +9h then format the wall-clock. e.g. "0.5.0a1 · 06-17 19:40:12 KST".
+const _kst = new Date(Date.now() + 9 * 60 * 60 * 1000)
+const BUILD_ID = `${APP_VERSION} · ${_kst.toISOString().slice(5, 19).replace('T', ' ')} KST`
 
 export default defineConfig({
   base: './',

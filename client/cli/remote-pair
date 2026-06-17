@@ -1317,6 +1317,42 @@ cmd_install_host() {
   ok "install-host complete for $target"
 }
 
+# ── host-permissions [--host <addr>] ──
+# SSH-read the host app's status.json (HOST:~/.remote-pair/logs/status.json, rewritten every ~1s by
+# the app's tick loop) and emit {alive,ax,sr,fda} as JSON. The onboarding's post-install step polls
+# this to show whether the user has granted Accessibility / Screen Recording / Full Disk Access on
+# the host's own screen (macOS forbids granting these remotely). Key auth only + bounded + anti-hang
+# so it never prompts: TOFU + any password already happened at install.
+cmd_host_permissions() {
+  local host="${REMOTE_HOST:-}"
+  while [ $# -gt 0 ]; do case "$1" in
+    --host) host="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac; done
+  [ -n "$host" ] || { printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no host"}\n'; return 0; }
+  local raw
+  raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
+             -o ControlMaster=no -o ControlPath=none \
+             -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 \
+             -o StrictHostKeyChecking=accept-new -T -n "$host" \
+             'cat ~/.remote-pair/logs/status.json 2>/dev/null' </dev/null 2>/dev/null)" || true
+  if [ -z "$raw" ]; then
+    printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no status.json (host app not running?)"}\n'
+    return 0
+  fi
+  printf '%s' "$raw" | python3 -c '
+import json, sys, time
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(json.dumps({"alive": False, "ax": False, "sr": False, "fda": False, "err": "bad status.json"})); sys.exit(0)
+ts = d.get("ts", 0) or 0
+# The host rewrites status.json every ~1s while alive; treat a stamp within 10s as live.
+alive = bool(d.get("pid")) and (time.time() - ts) < 10
+print(json.dumps({"alive": alive, "ax": bool(d.get("ax")), "sr": bool(d.get("sr")), "fda": bool(d.get("fda")), "err": ""}))
+'
+}
+
 # remote-pair editor — code-server launcher (M4). Thin pass-through to remote-pair-editor.
 cmd_editor() {
   local tool; tool="$(_resolve_client_tool remote-pair-editor)" \
@@ -1510,6 +1546,7 @@ case "${1:-help}" in
   discover) shift; cmd_discover "$@" ;;
   pair)    shift; cmd_pair "$@" ;;
   install-host) shift; cmd_install_host "$@" ;;
+  host-permissions) shift; cmd_host_permissions "$@" ;;
   doctor)  cmd_doctor ;;
   approve) shift; cmd_approve "$@" ;;
   status)  cmd_status ;;

@@ -44,9 +44,22 @@ declare global {
         ok: boolean
         err: string
       }>
-      installHost: (opts: { host: string; user?: string }) => Promise<{
+      // `password` is the account password the user typed into the onboarding (no separate dialog).
+      // It is handed to the CLI over an inherited pipe (never argv/log/disk). Omit when the host
+      // already trusts the client key — the install then authenticates by key.
+      installHost: (opts: { host: string; user?: string; password?: string }) => Promise<{
         ok: boolean
         out: string
+        err: string
+      }>
+      // Post-install TCC grant status read from the host app's status.json over SSH. AX/SR/FDA must
+      // be granted on the host's own screen (macOS forbids remote grants); the install step polls
+      // this to confirm. `alive` = the host app is running and writing status.
+      hostPermissions: (opts: { host: string }) => Promise<{
+        alive: boolean
+        ax: boolean
+        sr: boolean
+        fda: boolean
         err: string
       }>
       hostKeyFingerprint: (host: string) => Promise<{ fp: string; err: string }>
