@@ -1039,24 +1039,34 @@ remote_host = os.environ.get("REMOTE_HOST", "")
 def host_app_present(target):
     # Is RemotePairHost.app actually installed on this host? ssh-config presence only means
     # "we can reach it" — a host whose app was removed/never-installed must show 'setup' (needs
-    # install), not 'reconnect'. Returns True/False, or None when unreachable (don't downgrade).
+    # install), not 'reconnect'. Returns True (confirmed present), False (confirmed absent), or
+    # None (couldn't verify within budget — slow/cold link, auth-only-via-agent, etc.).
+    #
+    # The probe targets the ssh-config alias's HOSTNAME (often a LAN IP), which can be cold/slow to
+    # connect (ARP, sleeping host) even when ultimately reachable. Hardened ssh opts keep it from
+    # hanging on a stale ControlMaster socket or password/keyboard-interactive fallback, and a tight
+    # ConnectTimeout + subprocess cap bound the wait. On timeout we return None (NOT False) so the
+    # caller can decide; status_for treats "couldn't confirm" as 'setup' (idempotent (re)install).
     try:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o",
-             "StrictHostKeyChecking=accept-new", target,
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "ConnectionAttempts=1",
+             "-o", "ControlMaster=no", "-o", "ControlPath=none",
+             "-o", "PreferredAuthentications=publickey", "-o", "NumberOfPasswordPrompts=0",
+             "-o", "StrictHostKeyChecking=accept-new", "-T", "-n", target,
              "[ -d /Applications/RemotePairHost.app ] || [ -d $HOME/Applications/RemotePairHost.app ]"],
-            timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            timeout=6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return r.returncode == 0
     except Exception:
         return None
 
 def status_for(name, addr, role):
     if name in cfg_aliases or addr in cfg_aliases or name == remote_host or addr == remote_host:
-        # Known in ssh config — but only 'reconnect' if the host app is actually installed.
+        # Known in ssh config. Only claim 'reconnect' when the host app is CONFIRMED installed; a
+        # confirmed-absent OR unverifiable host shows 'setup' so the user lands on the (idempotent)
+        # install path instead of a misleading reconnect that would fail. (host_app_present returns
+        # None when the probe times out on a cold/slow link — treat that as "not confirmed".)
         present = host_app_present(name if name in cfg_aliases else addr)
-        if present is False:
-            return "setup"   # reachable but app missing -> needs (re)install
-        return "reconnect"
+        return "reconnect" if present is True else "setup"
     if role in ("host", "both", "client"):
         return "connect"
     return "setup"
