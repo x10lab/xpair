@@ -948,23 +948,36 @@ cmd_discover() {
   trap "rm -f '$rec'" RETURN
 
   # ── LAN: Bonjour browse → resolve TXT (hn/v/role/fp) ──
+  # dns-sd never exits on its own, so each phase is run bounded-then-killed. The browse needs the
+  # full window to collect every advertiser, but a `-L` resolve returns its TXT near-instantly — so
+  # resolves use a SHORT cap and run in PARALLEL (one bg job per instance) instead of serially. This
+  # turns the old browse(timeout) + N×resolve(timeout) cost into browse(timeout) + 1×resolve_to,
+  # cutting a multi-host discover from ~17s to ~5s. (BUG #5)
   if command -v dns-sd >/dev/null 2>&1; then
+    local resolve_to=1   # TXT comes back immediately; only the kill is bounded
     local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
-    # dns-sd has no built-in exit; run bounded in the background and kill it.
     ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & local bpid=$!
     ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
     wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
-    # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>"
-    local svcname
+    # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>". Collect unique instance
+    # names, then fan out one resolve per name into its own temp file, all at once.
+    local svcname lk; local -a _lpids=() _lfiles=() _lnames=()
     while IFS= read -r line; do
       case "$line" in *" Add "*) ;; *) continue ;; esac
       svcname="$(printf '%s' "$line" | sed -n 's/.*'"$RP_BONJOUR_TYPE"'\.[[:space:]]*\(.*\)$/\1/p')"
       [ -n "$svcname" ] || continue
-      # Resolve TXT + host for this instance.
-      local lk; lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
-      ( dns-sd -t "$timeout" -L "$svcname" "$RP_BONJOUR_TYPE" >"$lk" 2>/dev/null ) & local lpid=$!
-      ( sleep "$timeout"; kill "$lpid" 2>/dev/null ) >/dev/null 2>&1 & local lkid=$!
-      wait "$lpid" 2>/dev/null || true; kill "$lkid" 2>/dev/null || true
+      case " ${_lnames[*]:-} " in *" $svcname "*) continue ;; esac   # dedup browse repeats
+      lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
+      ( dns-sd -t "$resolve_to" -L "$svcname" "$RP_BONJOUR_TYPE" >"$lk" 2>/dev/null ) & local _p=$!
+      ( sleep "$resolve_to"; kill "$_p" 2>/dev/null ) >/dev/null 2>&1 &
+      _lpids+=("$_p"); _lfiles+=("$lk"); _lnames+=("$svcname")
+    done < "$browse"
+    rm -f "$browse"
+    # Barrier: wait for every parallel resolve to finish (or be killed), then parse each TXT.
+    local _i
+    for _i in "${!_lpids[@]}"; do wait "${_lpids[$_i]}" 2>/dev/null || true; done
+    for _i in "${!_lfiles[@]}"; do
+      lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
       # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
       local txt hn fp role addr
       txt="$(cat "$lk" 2>/dev/null)"
@@ -976,8 +989,7 @@ cmd_discover() {
       [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
       printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
       rm -f "$lk"
-    done < "$browse"
-    rm -f "$browse"
+    done
   fi
 
   # ── Tailscale: parse `tailscale status --json` peers ──
@@ -988,6 +1000,11 @@ import json, sys
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 for p in (d.get("Peer") or {}).values():
+    # RemotePairHost is a macOS app — never surface iOS/iPadOS/Linux/Windows/Android tailnet
+    # devices (iPhone, iPad, Raspberry Pi, …) as installable host candidates. Only skip when the
+    # OS is KNOWN-non-macOS (keep unknown/empty to avoid dropping a real Mac with missing metadata).
+    os_ = (p.get("OS") or "").strip().lower()
+    if os_ and os_ != "macos": continue
     name = (p.get("DNSName") or p.get("HostName") or "").rstrip(".")
     if not name: continue
     addrs = p.get("TailscaleIPs") or []
@@ -1019,8 +1036,26 @@ def load_cfg_aliases():
 cfg_aliases = load_cfg_aliases()
 remote_host = os.environ.get("REMOTE_HOST", "")
 
+def host_app_present(target):
+    # Is RemotePairHost.app actually installed on this host? ssh-config presence only means
+    # "we can reach it" — a host whose app was removed/never-installed must show 'setup' (needs
+    # install), not 'reconnect'. Returns True/False, or None when unreachable (don't downgrade).
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o",
+             "StrictHostKeyChecking=accept-new", target,
+             "[ -d /Applications/RemotePairHost.app ] || [ -d $HOME/Applications/RemotePairHost.app ]"],
+            timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    except Exception:
+        return None
+
 def status_for(name, addr, role):
     if name in cfg_aliases or addr in cfg_aliases or name == remote_host or addr == remote_host:
+        # Known in ssh config — but only 'reconnect' if the host app is actually installed.
+        present = host_app_present(name if name in cfg_aliases else addr)
+        if present is False:
+            return "setup"   # reachable but app missing -> needs (re)install
         return "reconnect"
     if role in ("host", "both", "client"):
         return "connect"
@@ -1051,10 +1086,24 @@ for ln in lines:
     if (not p["_role"]) and role in ("host", "both", "client"):
         p["_role"] = role
 
+def alias_for(name, addrs):
+    # Prefer an ssh-config Host alias for this peer (matched by full name, the short
+    # first label of a tailnet FQDN like 'gh-mac-m1.tailXXXX.ts.net' -> 'gh-mac-m1', or
+    # any addr). Using the alias makes install/connect/tunnel use the alias's IdentityFile
+    # + User (key auth) instead of a bare tailnet FQDN/IP that needs a password or fails.
+    short = name.split(".")[0]
+    for cand in [name, short] + list(addrs):
+        if cand and cand in cfg_aliases:
+            return cand
+    return None
+
 out = []
 for key in order:
     p = peers[key]
     name = p["name"]
+    alias = alias_for(name, p["addrs"])
+    if alias and alias != name:
+        name = alias  # surface the ssh-config alias as the connect/install target
     addr = p["addrs"][0] if p["addrs"] else name
     src = p["sources"][0] if p["sources"] else "ssh"
     out.append({
