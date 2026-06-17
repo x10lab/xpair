@@ -3637,3 +3637,75 @@ index 483589b3..d4310749 100644
          "group": "5_scm@10"
        }
      ]
+diff --git a/src/vs/workbench/browser/actions/workspaceActions.ts b/src/vs/workbench/browser/actions/workspaceActions.ts
+index 795ac6e0..54a64cbd 100644
+--- a/src/vs/workbench/browser/actions/workspaceActions.ts
++++ b/src/vs/workbench/browser/actions/workspaceActions.ts
+@@ -353,7 +353,8 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 		title: localize({ key: 'miOpenFolder', comment: ['&& denotes a mnemonic'] }, "Open &&Folder...")
+ 	},
+ 	order: 2,
+-	when: OpenFolderWorkspaceSupportContext
++	// RemotePair: not a local IDE — hide the stock "Open Folder" from the File menu (Add Root mounts host folders).
++	when: ContextKeyExpr.false()
+ });
+ 
+ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+@@ -363,7 +364,8 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 		title: localize({ key: 'miOpenFolder', comment: ['&& denotes a mnemonic'] }, "Open &&Folder...")
+ 	},
+ 	order: 2,
+-	when: ContextKeyExpr.and(OpenFolderWorkspaceSupportContext.toNegated(), WorkbenchStateContext.isEqualTo('workspace'))
++	// RemotePair: hide the stock "Open Folder" (workspace fallback) from the File menu.
++	when: ContextKeyExpr.false()
+ });
+ 
+ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+@@ -373,7 +375,8 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 		title: localize({ key: 'miOpen', comment: ['&& denotes a mnemonic'] }, "&&Open...")
+ 	},
+ 	order: 1,
+-	when: ContextKeyExpr.and(IsMacNativeContext, OpenFolderWorkspaceSupportContext)
++	// RemotePair: hide the stock macOS "Open..." (file-or-folder) from the File menu.
++	when: ContextKeyExpr.false()
+ });
+ 
+ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+@@ -383,7 +386,8 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 		title: localize({ key: 'miOpenWorkspace', comment: ['&& denotes a mnemonic'] }, "Open Wor&&kspace from File...")
+ 	},
+ 	order: 3,
+-	when: EnterMultiRootWorkspaceSupportContext
++	// RemotePair: hide the stock "Open Workspace from File..." from the File menu.
++	when: ContextKeyExpr.false()
+ });
+ 
+ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+diff --git a/src/vs/workbench/browser/actions/windowActions.ts b/src/vs/workbench/browser/actions/windowActions.ts
+index 9db25c4a..0bb4bb9d 100644
+--- a/src/vs/workbench/browser/actions/windowActions.ts
++++ b/src/vs/workbench/browser/actions/windowActions.ts
+@@ -517,4 +517,6 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 	submenu: MenuId.MenubarRecentMenu,
+ 	group: '2_open',
+ 	order: 4,
++	// RemotePair: not a local IDE — hide the stock "Open Recent" submenu from the File menu.
++	when: ContextKeyExpr.false()
+ });
+diff --git a/src/vs/workbench/contrib/markers/browser/markers.contribution.ts b/src/vs/workbench/contrib/markers/browser/markers.contribution.ts
+index 43a883c5..df321091 100644
+--- a/src/vs/workbench/contrib/markers/browser/markers.contribution.ts
++++ b/src/vs/workbench/contrib/markers/browser/markers.contribution.ts
+@@ -689,7 +689,11 @@ class MarkersStatusBarContributions extends Disposable implements IWorkbenchCont
+ 	}
+ }
+ 
+-workbenchRegistry.registerWorkbenchContribution(MarkersStatusBarContributions, LifecyclePhase.Restored);
++// RemotePair C4(b): hide the native "Problems" status bar item — do NOT register the status-bar
++// contribution (the Problems panel/view, file decorations, and marker activity badge are
++// independent and unaffected). `void` keeps the class referenced so noUnusedLocals stays happy.
++void MarkersStatusBarContributions;
++// workbenchRegistry.registerWorkbenchContribution(MarkersStatusBarContributions, LifecyclePhase.Restored);
+ 
+ registerWorkbenchContribution2(MarkerChatContextContribution.ID, MarkerChatContextContribution, WorkbenchPhase.AfterRestored);
+ 
