@@ -28,7 +28,7 @@ export function StepConnectPin({ peer, state, setState }: Props) {
     if (fp) return;
     let alive = true;
     void window.remotepair
-      .hostKeyFingerprint(peer.addrs[0] || peer.name)
+      .hostKeyFingerprint(peer.target || peer.addrs[0] || peer.name)
       .then((r) => {
         if (alive && r.fp) setFp(r.fp);
       })
@@ -47,7 +47,7 @@ export function StepConnectPin({ peer, state, setState }: Props) {
     setState("pairing");
     let alive = true;
     void window.remotepair
-      .pair({ host: peer.addrs[0] || peer.name, pin, fp })
+      .pair({ host: peer.target || peer.addrs[0] || peer.name, pin, fp })
       .then((r) => {
         if (!alive) return;
         setState(r.ok ? "paired" : "failed");

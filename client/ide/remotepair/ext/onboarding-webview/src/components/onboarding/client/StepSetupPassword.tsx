@@ -22,7 +22,7 @@ export function StepSetupPassword({ peer, user, setUser }: Props) {
     if (fp) return;
     let alive = true;
     void window.remotepair
-      .hostKeyFingerprint(peer.addrs[0] || peer.name)
+      .hostKeyFingerprint(peer.target || peer.addrs[0] || peer.name)
       .then((r) => {
         if (alive && r.fp) setFp(r.fp);
       })

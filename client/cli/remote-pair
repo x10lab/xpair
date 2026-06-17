@@ -1116,9 +1116,15 @@ for key in order:
         name = alias  # surface the ssh-config alias as the connect/install target
     addr = p["addrs"][0] if p["addrs"] else name
     src = p["sources"][0] if p["sources"] else "ssh"
+    # The canonical SSH target for install/connect/pair. When the peer matches an ssh-config Host
+    # alias, that alias is the ONLY target that carries an IdentityFile + User (key auth) — a bare
+    # discovered address (e.g. a tailnet 100.x IP not in ssh config) would fall back to password
+    # auth and hang the GUI askpass. So: alias-known -> the alias name; otherwise the address.
+    target = name if (name in cfg_aliases or name == remote_host) else (addr or name)
     out.append({
         "name": name,
         "addrs": p["addrs"],
+        "target": target,
         "source": src,
         "sources": p["sources"],
         "fp": p["fp"],

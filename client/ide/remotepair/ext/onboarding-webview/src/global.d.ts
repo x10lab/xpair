@@ -5,6 +5,12 @@ export type PeerSource = "lan" | "tailscale" | "ssh"
 export interface Peer {
   name: string
   addrs: string[]
+  // Canonical SSH target for install/connect/pair: the ssh-config alias name when this peer is
+  // config-known (carries IdentityFile + User → key auth), otherwise a discovered address. Always
+  // prefer this over addrs[0] for any window.remotepair call that SSHes — a bare tailnet/LAN IP
+  // not in ssh config falls back to password auth and hangs the GUI askpass. Optional for
+  // back-compat with an older CLI that did not emit it (fall back to addrs[0] || name).
+  target?: string
   source: PeerSource
   sources: PeerSource[]
   fp: string | null

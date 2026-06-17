@@ -42,7 +42,7 @@ export function StepInstalling({ peer, user, state, setState }: Props) {
     }, 1200);
 
     void window.remotepair
-      .installHost({ host: peer.addrs[0] || peer.name, user })
+      .installHost({ host: peer.target || peer.addrs[0] || peer.name, user })
       .then((r) => {
         if (!alive) return;
         clearInterval(adv);

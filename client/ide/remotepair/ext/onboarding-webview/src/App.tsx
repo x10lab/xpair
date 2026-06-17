@@ -106,7 +106,7 @@ export default function App() {
   // Liveness gate before Done: ssh true + host-app/server reachability. Blocks landing Done on a
   // stale config to an offline host; flags a re-keyed host (TOFU mismatch) for re-pairing.
   const runLivenessCheck = useCallback(async () => {
-    const target = manual ? host : peer?.addrs?.[0] || peer?.name || "";
+    const target = manual ? host : peer?.target || peer?.addrs?.[0] || peer?.name || "";
     if (!target) {
       setLive("offline");
       return;
