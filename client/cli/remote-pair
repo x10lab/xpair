@@ -817,9 +817,10 @@ _resolve_client_tool() {
 rp_ssh_pubkey() {
   local key="$HOME/.ssh/id_ed25519" pub="$HOME/.ssh/id_ed25519.pub"
   if [ ! -f "$pub" ]; then
-    # Reuse an existing ed25519 pubkey under a non-default name if present.
-    local existing; existing="$(ls "$HOME"/.ssh/id_ed25519*.pub 2>/dev/null | head -1 || true)"
-    if [ -n "$existing" ]; then printf '%s' "$existing"; return 0; fi
+    # Always generate/use the DEFAULT id_ed25519 — cmd_pair/rp_ssh_config_write pin
+    # IdentityFile ~/.ssh/id_ed25519, so the authorized key MUST be that same keypair.
+    # (No alternate id_ed25519*.pub fallback: it would authorize a key the ssh-config
+    # alias never offers → reconnect fails.)
     mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh" 2>/dev/null || true
     ssh-keygen -t ed25519 -f "$key" -N "" </dev/null >/dev/null 2>&1 \
       || { err "ssh-keygen failed"; return 1; }
@@ -1197,19 +1198,31 @@ cmd_install_host() {
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
   local target="$host"; [ -n "$account" ] && target="$account@$host"
 
-  # SSH with NO controlling TTY so SSH_ASKPASS_REQUIRE=force routes any password
-  # prompt to the helper (C5), never the terminal. setsid -w detaches the TTY.
+  # SSH with NO controlling TTY (stdin </dev/null) so SSH_ASKPASS_REQUIRE=force routes any password
+  # prompt to the helper (C5), never the terminal.
   local askpass; askpass="$(rp_askpass_path)"
   local SSHENV=()
-  if [ -n "$askpass" ]; then SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0"); fi
-  # Detached-ssh wrapper: no stdin tty, askpass forced. Requires OpenSSH 8.4+.
-  _rp_ssh() {
-    if command -v setsid >/dev/null 2>&1; then
-      "${SSHENV[@]}" setsid -w ssh -o ConnectTimeout=8 "$@" </dev/null
-    else
-      "${SSHENV[@]}" ssh -o ConnectTimeout=8 "$@" </dev/null
-    fi
-  }
+  if [ -n "$askpass" ]; then
+    SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0")
+    # The onboarding hands us the account password on an inherited pipe FD (RP_ASKPASS_FD) so the
+    # askpass helper reads it from the pipe (Path 1) instead of popping a SEPARATE GUI dialog — the
+    # password is collected INSIDE the onboarding window. Propagate the FD number through
+    # env → ssh → askpass (the descriptor itself is inherited, never re-opened or written to disk).
+    [ -n "${RP_ASKPASS_FD:-}" ] && SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
+  fi
+  # Multiplex the WHOLE install over ONE SSH connection: authenticate once (by key, or the password
+  # read a SINGLE time from the pipe), then reuse the master for every rm/scp/install.sh. This makes
+  # a one-shot password pipe sufficient (no repeated prompt → no half-installed dead-end) and is
+  # faster. A unique ControlPath avoids colliding with any stale mux socket; it is torn down on
+  # return. StrictHostKeyChecking=accept-new because the host key was already confirmed (TOFU) in the
+  # onboarding fingerprint step — so a first connect never blocks on an interactive host-key prompt
+  # (which, with askpass forced, would otherwise hang a GUI dialog and fail the install).
+  local RP_CM; RP_CM="$(mktemp -u "${TMPDIR:-/tmp}/rp-cm-XXXXXX")"
+  local RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
+                    -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
+  # shellcheck disable=SC2064
+  trap "ssh -O exit -o 'ControlPath=$RP_CM' '$target' >/dev/null 2>&1; rm -f '$RP_CM'" RETURN
+  _rp_ssh() { "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$@" </dev/null; }
 
   # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
   c "checking $target for an existing $APP_NAME install …"
@@ -1257,20 +1270,42 @@ cmd_install_host() {
       # and host/ must live under <stage>. rsync over the detached-ssh wrapper needs -e plumbing; scp -r
       # is sufficient and reuses the same askpass env.
       _rp_ssh "$target" "rm -rf ~/.cache/remote-pair/stage && mkdir -p ~/.cache/remote-pair/stage/shared ~/.cache/remote-pair/stage/host ~/.cache/remote-pair/stage/client ~/.cache/remote-pair/stage/build" 2>/dev/null || true
-      "${SSHENV[@]}" scp -o ConnectTimeout=8 "$repo_root"/shared/*.sh "$target:~/.cache/remote-pair/stage/shared/" </dev/null \
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" "$repo_root"/shared/*.sh "$target:~/.cache/remote-pair/stage/shared/" </dev/null \
         || { err "scp of shared/ failed"; return 1; }
       # role=host also (re)installs the client CLI tools from client/cli/ — stage them too.
-      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$repo_root/client/cli" "$target:~/.cache/remote-pair/stage/client/" </dev/null \
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" -r "$repo_root/client/cli" "$target:~/.cache/remote-pair/stage/client/" </dev/null \
         || { err "scp of client/cli failed"; return 1; }
-      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$repo_root/host/rules.txt" "$repo_root/host/skills" "$repo_root/host/hooks" "$target:~/.cache/remote-pair/stage/host/" </dev/null \
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" -r "$repo_root/host/rules.txt" "$repo_root/host/skills" "$repo_root/host/hooks" "$target:~/.cache/remote-pair/stage/host/" </dev/null \
         || { err "scp of host resources failed"; return 1; }
-      "${SSHENV[@]}" scp -o ConnectTimeout=8 -r "$appsrc" "$target:~/.cache/remote-pair/stage/build/" </dev/null \
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" -r "$appsrc" "$target:~/.cache/remote-pair/stage/build/" </dev/null \
         || { err "scp of signed app failed"; return 1; }
       _rp_ssh "$target" "cd ~/.cache/remote-pair/stage && RP_YES=1 bash shared/install.sh --role host" \
         || { err "remote install.sh failed"; return 1; }
       ok "signed app installed on $target"
+
+      # Authorize the client's key on the host over the SAME askpass (password) SSH
+      # connection. Without this, BatchMode=yes (key-only) calls below — and every
+      # later editor/desktop/notify call — would fail despite a "successful" install.
+      local pubpath; pubpath="$(rp_ssh_pubkey)" || { err "could not resolve client pubkey"; return 1; }
+      local pubdata; pubdata="$(cat "$pubpath" 2>/dev/null)"
+      [ -n "$pubdata" ] || { err "empty client pubkey: $pubpath"; return 1; }
+      c "authorizing client key on $target (over the password connection) …"
+      # ssh-copy-id-style append: idempotent (grep -qxF guard), correct perms. Rides the
+      # SAME multiplexed master (RP_SSHOPTS/SSHENV) the install authenticated — so no
+      # re-auth, no separate password prompt, no host-key prompt. The pubkey is piped
+      # into ssh and read via $(cat) on the host; we do NOT use _rp_ssh (it hardcodes
+      # </dev/null, which would drop the piped key).
+      local rp_authcmd='umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys; key=$(cat); grep -qxF "$key" ~/.ssh/authorized_keys || printf "%s\n" "$key" >> ~/.ssh/authorized_keys'
+      printf '%s\n' "$pubdata" | "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "$rp_authcmd" \
+        || { err "failed to authorize client key on $target"; return 1; }
+      ok "client key authorized on $target"
     fi
   fi
+
+  # Persist the host so the extension/CLI (which read client.env) find a configured
+  # host after onboarding — mirrors the pair path's rp_set REMOTE_HOST.
+  rp_set REMOTE_HOST "$host"; REMOTE_HOST="$host"
+  ok "host set: $host"
 
   # ── 3. Post-install: TCC handoff + GUI-session account warning ──
   local guiuser; guiuser="$(_rp_ssh -o BatchMode=yes "$target" 'stat -f%Su /dev/console 2>/dev/null' 2>/dev/null | tr -d '\r')"
