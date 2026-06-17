@@ -21,6 +21,8 @@
 
 import Foundation
 import Network
+import Security
+import Darwin
 
 // ── on-screen state shared with the menu (NEVER the network / logs / telemetry) ──
 
@@ -121,6 +123,19 @@ final class PairingServer {
     private func _teardownListener() {
         inFlight?.cancel(); inFlight = nil
         listener?.cancel(); listener = nil
+    }
+
+    /// Burn the PIN and stop advertising/accepting NEW pairing connections promptly, but DO NOT
+    /// cancel the already-authenticated in-flight connection: it must finish receiving the client
+    /// pubkey and persist it to authorized_keys before anything tears it down (see step3). The
+    /// in-flight connection is cleaned up by finishConnection() once the handshake completes.
+    private func _burnPinKeepInFlight(message: String) {
+        pinBurned = true
+        pin = ""
+        armedUntil = .distantPast
+        lastMessage = message
+        listener?.cancel(); listener = nil   // stop accepting NEW connections; leave inFlight alone
+        _writeDisplay()
     }
 
     private func _tick() {
@@ -385,8 +400,11 @@ final class PairingServer {
                 self.sendResult(conn, ok: false, msg: "pairing failed, re-arm on host")
             }
         }
-        // Burn the PIN now that a connection has authenticated (one PIN, one successful pairing).
-        q.async { [weak self] in self?._disarm(message: "") }
+        // Burn the PIN and stop accepting NEW connections now that a connection has authenticated
+        // (one PIN, one successful pairing). Do NOT cancel the in-flight connection here — it is
+        // still awaiting the client pubkey above; tearing it down now would drop the authenticated
+        // handshake before authorized_keys is written. finishConnection() cancels it once done.
+        q.async { [weak self] in self?._burnPinKeepInFlight(message: "") }
     }
 
     private func finishConnection(_ conn: NWConnection) {
