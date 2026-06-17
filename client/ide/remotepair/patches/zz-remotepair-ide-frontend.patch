@@ -575,7 +575,7 @@ index cdd90d95..291e7956 100644
  		if (this.getCompositeBarPosition() === CompositeBarPosition.TITLE) {
  			const viewsSubmenuAction = this.getViewsSubmenuAction();
 diff --git a/src/vs/workbench/contrib/files/browser/explorerViewlet.ts b/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
-index ecc6af48..e80ad65c 100644
+index ecc6af48..285e075b 100644
 --- a/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
 +++ b/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
 @@ -144,7 +144,13 @@ export class ExplorerViewletViewsContribution extends Disposable implements IWor
@@ -620,6 +620,28 @@ index ecc6af48..e80ad65c 100644
  	ctorDescriptor: new SyncDescriptor(ExplorerViewPaneContainer),
  	storageId: 'workbench.explorer.views.state',
  	icon: explorerViewIcon,
+@@ -327,6 +342,11 @@ viewsRegistry.registerViewWelcomeContent(EmptyView.ID, {
+ 	content: localize({ key: 'noFolderButEditorsHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
+ 		"You have not yet opened a folder.\n{0}\nOpening a folder will close all currently open editors. To keep them open, {1} instead.", openFolderButton, addAFolderButton),
+ 	when: ContextKeyExpr.and(
++		// RemotePair: this is not a local IDE — the empty Browser offers "Add Root" (mount a host
++		// folder), not the native "Open Folder". Gate the native local no-folder welcomes off the
++		// 'empty' workbench state (the only state EmptyView appears in for a RemotePair client) so
++		// only the RemotePair Add Root welcome shows.
++		WorkbenchStateContext.notEqualsTo('empty'),
+ 		// editors are opened
+ 		ContextKeyExpr.has('editorIsOpen'),
+ 		ContextKeyExpr.or(
+@@ -344,6 +364,9 @@ viewsRegistry.registerViewWelcomeContent(EmptyView.ID, {
+ 	content: localize({ key: 'noFolderHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
+ 		"You have not yet opened a folder.\n{0}", openFolderButton),
+ 	when: ContextKeyExpr.and(
++		// RemotePair: see noFolderButEditorsHelp above — suppress the native "Open Folder" welcome in
++		// the 'empty' state so only the RemotePair Add Root welcome shows.
++		WorkbenchStateContext.notEqualsTo('empty'),
+ 		// no editor is open
+ 		ContextKeyExpr.has('editorIsOpen')?.negate(),
+ 		ContextKeyExpr.or(
 diff --git a/src/vs/workbench/contrib/files/browser/files.contribution.ts b/src/vs/workbench/contrib/files/browser/files.contribution.ts
 index 574c2d8e..60ac1f4c 100644
 --- a/src/vs/workbench/contrib/files/browser/files.contribution.ts
