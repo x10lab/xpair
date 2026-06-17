@@ -3617,3 +3617,23 @@ index 0000000..58a8aad
 +		}
 +	}
 +});
+diff --git a/extensions/git/package.json b/extensions/git/package.json
+index 483589b3..d4310749 100644
+--- a/extensions/git/package.json
++++ b/extensions/git/package.json
+@@ -4366,13 +4366,13 @@
+       {
+         "view": "explorer",
+         "contents": "%view.workbench.cloneRepository%",
+-        "when": "config.git.enabled && git.state == initialized && scm.providerCount == 0",
++        "when": "config.git.enabled && git.state == initialized && scm.providerCount == 0 && workbenchState != 'empty'",
+         "group": "5_scm@1"
+       },
+       {
+         "view": "explorer",
+         "contents": "%view.workbench.learnMore%",
+-        "when": "config.git.enabled && git.state == initialized && scm.providerCount == 0",
++        "when": "config.git.enabled && git.state == initialized && scm.providerCount == 0 && workbenchState != 'empty'",
+         "group": "5_scm@10"
+       }
+     ]
