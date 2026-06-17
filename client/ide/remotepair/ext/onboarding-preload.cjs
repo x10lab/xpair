@@ -18,11 +18,14 @@ contextBridge.exposeInMainWorld('remotepair', {
   sshKeygen: () => rp('sshKeygen'),
   sshReachable: (host) => rp('sshReachable', [host]),
   tailscaleStatus: () => rp('tailscaleStatus'),
-  // Discovery / pairing. The PIN is the only secret that transits here (renderer → CLI argv);
-  // passwords/passphrases are collected only by the askpass helper, never via IPC.
+  // Discovery / pairing. Secrets that transit here (renderer → main, NEVER argv/log): the 6-digit
+  // PIN (pair) and the account password (installHost) — main hands the password to the CLI over an
+  // inherited pipe, never the command line. hostPermissions SSH-reads the host's grant status
+  // (status.json) so the Grant step can confirm AX/SR were granted on the host's screen.
   discover: () => rp('discover'),
   pair: (opts) => rp('pair', [opts]),
   installHost: (opts) => rp('installHost', [opts]),
+  hostPermissions: (opts) => rp('hostPermissions', [opts]),
   hostKeyFingerprint: (host) => rp('hostKeyFingerprint', [host]),
   // Telemetry (consent-gated PostHog; no-ops until opt-in).
   tCapture: (event, props) => rp('tCapture', [event, props]),
