@@ -951,7 +951,7 @@ new file mode 100644
 index 00000000..d5f156ec
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/media/remotePairSessionManager.css
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,124 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair session tabs: each bottom-panel tab (Attached / Detached / History) renders ONLY
 + *  its own category as a single horizontally-scrolling row of session cards. Since only one
@@ -1027,20 +1027,31 @@ index 00000000..d5f156ec
 +	outline-offset: -1px;
 +}
 +
-+/* Native-style close "X": small, right-aligned codicon. Shown on hover or when the card is active. */
++/* Close "X": always visible (muted) with a real click target. RemotePair C3(c): the old rule used
++ * opacity:0 + a zero-area bare glyph, so the X was effectively un-clickable ("does nothing"). Give
++ * it padding + a min hit box and a visible-but-muted default; full opacity on hover/active. */
 +.monaco-workbench .remotepair-session-card .remotepair-session-card-close {
 +	flex: 0 0 auto;
 +	margin-left: 6px;
 +	font-size: 14px;
-+	line-height: 18px;
-+	opacity: 0;
++	line-height: 16px;
++	display: flex;
++	align-items: center;
++	justify-content: center;
++	min-width: 18px;
++	min-height: 18px;
++	padding: 2px;
++	border-radius: 4px;
++	opacity: 0.55;
 +	cursor: pointer;
 +	color: inherit;
++	pointer-events: auto;
++	position: relative;
 +}
 +.monaco-workbench .remotepair-session-card:hover .remotepair-session-card-close,
 +.monaco-workbench .remotepair-session-card:focus .remotepair-session-card-close,
 +.monaco-workbench .remotepair-session-card.remotepair-session-card-active .remotepair-session-card-close {
-+	opacity: 0.8;
++	opacity: 1;
 +}
 +.monaco-workbench .remotepair-session-card .remotepair-session-card-close:hover {
 +	opacity: 1;
