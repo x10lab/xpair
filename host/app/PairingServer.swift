@@ -384,7 +384,8 @@ final class PairingServer {
         log("PAIRING: PAKE verified — receiving client pubkey")
         recvFramed(conn) { [weak self] data in
             guard let self else { return }
-            defer { self.q.async { self.finishConnection(conn) } }
+            // NOTE: do NOT cancel the connection here. sendResult() tears it down from the final
+            // frame's send-completion so the result bytes are flushed before the connection closes.
             guard let pubData = data, let pubLine = String(data: Data(pubData), encoding: .utf8) else {
                 self.sendResult(conn, ok: false, msg: "no pubkey")
                 return
@@ -547,7 +548,12 @@ final class PairingServer {
     private func sendResult(_ conn: NWConnection, ok: Bool, msg: String) {
         let obj: [String: Any] = ["ok": ok, "msg": msg]
         let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{\"ok\":false}".utf8)
-        send(conn, [UInt8](data)) { _ in }
+        // Tear the connection down ONLY after the final frame's bytes are processed (success OR
+        // error). This is the sole owner of per-connection teardown for every final-frame path, so
+        // closing never races the send: the client always reads the result before the drop.
+        send(conn, [UInt8](data)) { [weak self] _ in
+            self?.q.async { self?.finishConnection(conn) }
+        }
         if !msg.isEmpty {
             q.async { [weak self] in self?.lastMessage = msg; self?._writeDisplay() }
         }

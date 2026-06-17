@@ -32,17 +32,41 @@ enum Updater {
     struct Release { let tag: String; let assetURL: URL; let notes: String }
 
     // ── semver compare: a > b ? ──
+    // Supports optional alpha suffix on the patch component: e.g. "0.5.0a13".
+    // Ordering convention: (major, minor, patch, alpha) where a missing alpha
+    // suffix is treated as Int.max (i.e. a plain "0.5.0" final release is
+    // considered GREATER than any "0.5.0aN" alpha — matching the expectation
+    // that the final release supersedes all its alphas). During an alpha train
+    // "0.5.0a13" > "0.5.0a12" because 13 > 12.
     static func isNewer(_ a: String, than b: String) -> Bool {
-        func nums(_ s: String) -> [Int] {
-            s.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
-             .split(separator: "-").first.map(String.init)?      // ignore pre-release suffix
-             .split(separator: ".").map { Int($0) ?? 0 } ?? []
+        // Parse "major.minor.patchaNNN" → (major, minor, patch, alpha)
+        // alpha == Int.max means no suffix (final release).
+        func parse(_ s: String) -> (Int, Int, Int, Int) {
+            let core = s.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+                        .split(separator: "-").first.map(String.init) ?? s
+            let parts = core.split(separator: ".").map(String.init)
+            let major = parts.count > 0 ? (Int(parts[0]) ?? 0) : 0
+            let minor = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
+            // patch component may carry an alpha suffix: "0a12"
+            let patchStr = parts.count > 2 ? parts[2] : "0"
+            let alpha: Int
+            let patch: Int
+            if let aRange = patchStr.range(of: "a", options: .caseInsensitive),
+               let patchNum = Int(patchStr[patchStr.startIndex..<aRange.lowerBound]),
+               let alphaNum = Int(patchStr[aRange.upperBound...]) {
+                patch = patchNum
+                alpha = alphaNum
+            } else {
+                patch = Int(patchStr) ?? 0
+                alpha = Int.max   // no suffix → final release, beats any alpha
+            }
+            return (major, minor, patch, alpha)
         }
-        let x = nums(a), y = nums(b)
-        for i in 0..<max(x.count, y.count) {
-            let xi = i < x.count ? x[i] : 0, yi = i < y.count ? y[i] : 0
-            if xi != yi { return xi > yi }
-        }
+        let x = parse(a), y = parse(b)
+        if x.0 != y.0 { return x.0 > y.0 }
+        if x.1 != y.1 { return x.1 > y.1 }
+        if x.2 != y.2 { return x.2 > y.2 }
+        if x.3 != y.3 { return x.3 > y.3 }
         return false
     }
 
