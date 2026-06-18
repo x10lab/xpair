@@ -107,7 +107,7 @@ index bfd30e64..1d973f00 100644
  		// Global action bar
  		if (this.globalCompositeBar) {
  			this.globalCompositeBar.create(this.element);
-@@ -495,6 +503,46 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
+@@ -495,6 +503,45 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
  		return actions;
  	}
  
@@ -117,7 +117,6 @@ index bfd30e64..1d973f00 100644
 +	// RemotePair-owned container. Everything else is filtered out so the rail
 +	// stays minimal. String ids are used to avoid importing contrib modules.
 +	private static readonly RAIL_ALLOWED_CONTAINER_IDS = new Set<string>([
-+		'workbench.view.explorer', // Explorer (acts as the "Browser" file tree)
 +		'terminal',                // TERMINAL_VIEW_ID, if it is registered as a container
 +	]);
 +
@@ -620,6 +619,15 @@ index ecc6af48..285e075b 100644
  	ctorDescriptor: new SyncDescriptor(ExplorerViewPaneContainer),
  	storageId: 'workbench.explorer.views.state',
  	icon: explorerViewIcon,
+@@ -270,7 +285,7 @@ export const VIEW_CONTAINER: ViewContainer = viewContainerRegistry.registerViewC
+ 		keybindings: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyE },
+ 		order: 0
+ 	},
+-}, ViewContainerLocation.Sidebar, { isDefault: true });
++}, ViewContainerLocation.Sidebar, { isDefault: false });
+
+ const openFolder = localize('openFolder', "Open Folder");
+ const addAFolder = localize('addAFolder', "add a folder");
 @@ -327,6 +342,11 @@ viewsRegistry.registerViewWelcomeContent(EmptyView.ID, {
  	content: localize({ key: 'noFolderButEditorsHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
  		"You have not yet opened a folder.\n{0}\nOpening a folder will close all currently open editors. To keep them open, {1} instead.", openFolderButton, addAFolderButton),
@@ -3589,7 +3597,7 @@ index 00000000..58918ac0
 +	storageId: REMOTEPAIR_TERMINAL_SIDEBAR_ID,
 +	hideIfEmpty: false,
 +	order: 1,
-+}, ViewContainerLocation.Sidebar, { isDefault: false });
++}, ViewContainerLocation.Sidebar, { isDefault: true });
 +
 +const viewDescriptor: IViewDescriptor = {
 +	id: REMOTEPAIR_TERMINAL_SIDEBAR_ID + '.view',
@@ -3759,3 +3767,24 @@ index 43a883c5..df321091 100644
  
  registerWorkbenchContribution2(MarkerChatContextContribution.ID, MarkerChatContextContribution, WorkbenchPhase.AfterRestored);
  
+diff --git a/src/vs/workbench/browser/parts/panel/panelActions.ts b/src/vs/workbench/browser/parts/panel/panelActions.ts
+index 10fcbca0..2dbdd0e7 100644
+--- a/src/vs/workbench/browser/parts/panel/panelActions.ts
++++ b/src/vs/workbench/browser/parts/panel/panelActions.ts
+@@ -71,12 +71,16 @@ export class TogglePanelAction extends Action2 {
+ 
+ registerAction2(TogglePanelAction);
+ 
++// RemotePair: the bottom panel hosts the always-on Sessions tabs (Attached/Detached/History),
++// which must never be collapsible. Gate the panel title "Hide Panel" (X) button off so the
++// only collapse affordance is gone. (The TogglePanelAction command itself stays registered.)
+ MenuRegistry.appendMenuItem(MenuId.PanelTitle, {
+ 	command: {
+ 		id: TogglePanelAction.ID,
+ 		title: localize('closePanel', 'Hide Panel'),
+ 		icon: closeIcon
+ 	},
++	when: ContextKeyExpr.false(),
+ 	group: 'navigation',
+ 	order: 2
+ });

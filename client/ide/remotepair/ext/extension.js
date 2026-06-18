@@ -1426,6 +1426,14 @@ function activate(context) {
   notifier.start();
   context.subscriptions.push({ dispose: () => notifier.stop() });
 
+  // 5a) Force the Sessions sidebar open on every activation so it is always the
+  //     active primary-sidebar container — overrides any persisted
+  //     'workbench.sidebar.activeviewletid' that may still point to Browser
+  //     (e.g. after a workspace reload where Explorer was last active).
+  //     Fire-and-forget: do NOT await so the sidebar switch races with the layout
+  //     restore rather than blocking it, minimising any visible flash.
+  vscode.commands.executeCommand("remotepair.terminalSidebar");
+
   // 5) Open the RD editor tab on startup (Remote Desktop is this client's
   //    primary surface), then apply the one-time workbench layout. Chained so
   //    the RD pin lands before setupLayout opens the terminal tab.
