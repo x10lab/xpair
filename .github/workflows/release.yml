@@ -134,4 +134,7 @@ jobs:
           IDE_ZIP="client/ide/dist/RemotePair-${RP_VERSION}.zip"; IDE_STABLE="client/ide/dist/RemotePair.zip"
           ( cd "client/ide/dist/VSCode-darwin-arm64" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent RemotePair.app "../RemotePair-${RP_VERSION}.zip" )
           cp "$IDE_ZIP" "$IDE_STABLE"
-          gh release create "v${RP_VERSION}" "$HOST_ZIP" "$HOST_STABLE" "$IDE_ZIP" "$IDE_STABLE" --title "v${RP_VERSION}" --generate-notes
+          # Alpha builds (version has a letter suffix, e.g. 0.5.0a38) → mark Pre-release and NOT
+          # latest, so the host Updater (tracks /releases/latest, excludes pre-releases) ignores them.
+          PRE=""; case "$RP_VERSION" in *[a-z]*) PRE="--prerelease --latest=false";; esac
+          gh release create "v${RP_VERSION}" "$HOST_ZIP" "$HOST_STABLE" "$IDE_ZIP" "$IDE_STABLE" --title "v${RP_VERSION}" --generate-notes $PRE
