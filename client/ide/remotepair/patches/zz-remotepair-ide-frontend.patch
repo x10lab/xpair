@@ -2891,26 +2891,32 @@ index 0000000..6e5d586
 +registerSessionTab(REMOTEPAIR_SESSIONS_HISTORY_ID, localize2('remotepairHistory', "History"), 3, RemotePairHistorySessionsView);
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
 new file mode 100644
-index 0000000..5d8c769
+index 00000000..691df239
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,180 @@
 +/*---------------------------------------------------------------------------------------------
-+ *  RemotePair: in-tab "New Session" picker editor.
++ *  RemotePair: in-tab "New Session" folder picker editor.
 + *
-+ *  The Sessions sidebar "+" opens this as an empty editor tab inside the embedded
-+ *  EditorPart group. Clicking a card asks the registered launcher to start that session
-+ *  kind in the same group and close this picker tab. Hosting-layer only — it never
-+ *  touches core terminal behavior (it only drives ITerminalInstance/group public APIs
-+ *  via the launcher registered by the Sessions view).
++ *  The Sessions sidebar "+" opens this as an editor tab inside the embedded EditorPart group.
++ *  It hosts the SAME file tree the Browser/Explorer sidebar shows (same FilesRenderer +
++ *  ExplorerDataSource + WorkbenchCompressibleAsyncDataTree, bound to the global IExplorerService) —
++ *  it is "the Explorer view itself", just displayed here. Picking a FOLDER starts a Claude session
++ *  rooted at that folder via the existing `remotepair.terminalSidebar.openSessionInFolder` command.
++ *  No kind-picker: Claude is the only/default session kind, reached directly.
++ *
++ *  Blank-render note: the documented embedded-EditorPart blank saga (the `.part.editor` 5-layer fix)
++ *  was the INVERSE case — an EditorPart hosted INSIDE a sidebar ViewPane. Here the host IS an
++ *  EditorPane whose content already lives under `.part.editor`, so the tree paints; the only gotcha
++ *  is driving setVisible + layout so the async data source loads roots and the tree gets a size.
 + *--------------------------------------------------------------------------------------------*/
 +
 +import { localize } from '../../../../nls.js';
-+import { $, append, Dimension, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
-+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
-+import { KeyCode } from '../../../../base/common/keyCodes.js';
++import { append, $, Dimension } from '../../../../base/browser/dom.js';
 +import { URI } from '../../../../base/common/uri.js';
 +import { CancellationToken } from '../../../../base/common/cancellation.js';
++import { DisposableStore } from '../../../../base/common/lifecycle.js';
++import { FuzzyScore } from '../../../../base/common/filters.js';
 +import { EditorInputCapabilities, IEditorOpenContext, IUntypedEditorInput } from '../../../common/editor.js';
 +import { EditorInput } from '../../../common/editor/editorInput.js';
 +import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
@@ -2919,18 +2925,22 @@ index 0000000..5d8c769
 +import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 +import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 +import { IStorageService } from '../../../../platform/storage/common/storage.js';
++import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { WorkbenchCompressibleAsyncDataTree } from '../../../../platform/list/browser/listService.js';
++import { ResourceLabels } from '../../../browser/labels.js';
++import { ExplorerItem } from '../../files/common/explorerModel.js';
++import { IExplorerService } from '../../files/browser/files.js';
++import {
++	ExplorerDelegate, ExplorerDataSource, FilesRenderer, FilesFilter, FileSorter,
++	FileDragAndDrop, ExplorerCompressionDelegate, ExplorerFindProvider
++} from '../../files/browser/views/explorerViewer.js';
++import { createFileIconThemableTreeContainerScope } from '../../files/browser/views/explorerView.js';
 +import { rpLog } from './remotePairLog.js';
 +
++// Session kind kept as a type for the Session Manager's reattach path (remotePairTerminalSidebar.ts);
++// the in-tab picker no longer offers a kind choice — folder selection starts the default (Claude).
 +export type SessionKind = 'claude' | 'shell' | 'codex' | 'gemini';
-+
-+/** Launch a chosen session kind into `group`, then close the picker `pickerInput`. */
-+export type SessionLauncher = (kind: SessionKind, group: IEditorGroup, pickerInput: EditorInput) => void;
-+
-+let launcher: SessionLauncher | undefined;
-+export function setSessionLauncher(fn: SessionLauncher): void {
-+	launcher = fn;
-+	rpLog('debug', 'session picker: launcher registered');
-+}
 +
 +export const SESSION_PICKER_RESOURCE = URI.from({ scheme: 'remotepair-session-picker', path: '/new' });
 +
@@ -2943,66 +2953,112 @@ index 0000000..5d8c769
 +	override matches(other: EditorInput | IUntypedEditorInput): boolean { return other instanceof SessionPickerInput; }
 +}
 +
-+const PICKER_CARDS: ReadonlyArray<{ kind: SessionKind; label: string; desc: string }> = [
-+	{ kind: 'claude', label: 'Claude (remote)', desc: 'mosh + tmux + claude on the host' },
-+	{ kind: 'shell', label: 'Shell', desc: 'local zsh' },
-+	{ kind: 'codex', label: 'Codex', desc: 'codex CLI' },
-+	{ kind: 'gemini', label: 'Gemini', desc: 'gemini CLI' },
-+];
-+
 +export class SessionPickerPane extends EditorPane {
 +	static readonly ID = 'remotepair.sessionPickerPane';
 +	private root: HTMLElement | undefined;
++	private treeContainer: HTMLElement | undefined;
++	private tree: WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore> | undefined;
++	private filter: FilesFilter | undefined;
++	private findProvider: ExplorerFindProvider | undefined;
++	private readonly treeDisposables = this._register(new DisposableStore());
++	private inputSet = false;
 +
 +	constructor(
 +		group: IEditorGroup,
 +		@ITelemetryService telemetryService: ITelemetryService,
 +		@IThemeService themeService: IThemeService,
 +		@IStorageService storageService: IStorageService,
++		@IInstantiationService private readonly instantiationService: IInstantiationService,
++		@IExplorerService private readonly explorerService: IExplorerService,
++		@ICommandService private readonly commandService: ICommandService,
 +	) {
 +		super(SessionPickerPane.ID, group, telemetryService, themeService, storageService);
 +	}
 +
 +	protected createEditor(parent: HTMLElement): void {
-+		rpLog('debug', `session picker: building UI (${PICKER_CARDS.length} cards)`);
++		rpLog('debug', 'session picker: building real Explorer tree');
 +		const root = this.root = append(parent, $('div.remotepair-session-picker'));
-+		root.style.cssText = 'height:100%;width:100%;overflow:auto;padding:16px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;';
++		root.style.cssText = 'height:100%;width:100%;display:flex;flex-direction:column;box-sizing:border-box;';
 +
 +		const title = append(root, $('div'));
-+		title.textContent = localize('rpPickerTitle', "Start a session");
-+		title.style.cssText = 'font-size:13px;font-weight:600;opacity:0.8;margin-bottom:4px;';
++		title.textContent = localize('rpPickerTitle', "Pick a folder to start a Claude session");
++		title.style.cssText = 'font-size:13px;font-weight:600;opacity:0.8;padding:10px 12px 6px;flex:0 0 auto;';
 +
-+		for (const c of PICKER_CARDS) {
-+			const card = append(root, $('div'));
-+			card.setAttribute('role', 'button');
-+			card.setAttribute('tabindex', '0');
-+			card.style.cssText = 'border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);';
-+			const l = append(card, $('div')); l.textContent = c.label; l.style.cssText = 'font-weight:600;font-size:13px;';
-+			const d = append(card, $('div')); d.textContent = c.desc; d.style.cssText = 'font-size:11px;opacity:0.65;margin-top:2px;';
-+			const run = () => {
-+				const input = this.input;
-+				if (launcher && input) {
-+					rpLog('info', `session picker: launching kind=${c.kind}`);
-+					try {
-+						launcher(c.kind, this.group, input);
-+					} catch (err) {
-+						rpLog('error', `session picker: launcher threw for kind=${c.kind}: ${err instanceof Error ? err.message : String(err)}`);
-+					}
-+				} else {
-+					rpLog('warn', `session picker: cannot launch kind=${c.kind} (launcher=${!!launcher}, input=${!!input})`);
-+				}
-+			};
-+			this._register(addDisposableListener(card, EventType.CLICK, run));
-+			this._register(addDisposableListener(card, EventType.KEY_DOWN, (e) => {
-+				const ke = new StandardKeyboardEvent(e as KeyboardEvent);
-+				if (ke.equals(KeyCode.Enter) || ke.equals(KeyCode.Space)) { ke.preventDefault(); run(); }
-+			}));
++		// Same DOM the Explorer view uses: a flex-1 .explorer-folders-view holding the tree.
++		this.treeContainer = append(root, $('.explorer-folders-view'));
++		this.treeContainer.style.cssText = 'flex:1 1 auto;min-height:0;overflow:hidden;';
++		this.createTree(this.treeContainer);
++	}
++
++	/** Rebuild the Browser/Explorer tree (same renderer + data source + tree class). */
++	private createTree(container: HTMLElement): void {
++		const filter = this.filter = this.treeDisposables.add(this.instantiationService.createInstance(FilesFilter));
++		const labels = this.treeDisposables.add(this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: this.onDidChangeVisibility }));
++		const findProvider = this.findProvider = this.instantiationService.createInstance(ExplorerFindProvider, filter, () => this.tree!);
++		const updateWidth = (stat: ExplorerItem) => this.tree!.updateWidth(stat);
++		const renderer = this.treeDisposables.add(this.instantiationService.createInstance(FilesRenderer, container, labels, findProvider.highlightTree, updateWidth));
++		this.treeDisposables.add(createFileIconThemableTreeContainerScope(container, this.themeService));
++
++		const tree = this.tree = this.instantiationService.createInstance(
++			WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore>,
++			'RemotePairSessionFolderPicker', container, new ExplorerDelegate(), new ExplorerCompressionDelegate(), [renderer],
++			this.instantiationService.createInstance(ExplorerDataSource, filter, findProvider), {
++			compressionEnabled: false,
++			accessibilityProvider: renderer,
++			identityProvider: { getId: (stat: ExplorerItem) => stat.getId() },
++			keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: (stat: ExplorerItem) => stat.name },
++			multipleSelectionSupport: false,
++			filter,
++			sorter: this.instantiationService.createInstance(FileSorter),
++			dnd: this.instantiationService.createInstance(FileDragAndDrop, (item: ExplorerItem) => tree.isCollapsed(item)),
++			collapseByDefault: () => true,
++			autoExpandSingleChildren: true,
++			paddingBottom: ExplorerDelegate.getHeight(),
++			findProvider,
++		});
++		this.treeDisposables.add(tree);
++
++		// Folder-only open contract: opening a FOLDER row → start a Claude session rooted there.
++		this.treeDisposables.add(tree.onDidOpen(e => {
++			const el = e.element;
++			if (el && el.isDirectory) {
++				const uri = el.resource;
++				rpLog('info', `session picker: folder chosen -> openSessionInFolder ${uri.toString()}`);
++				this.commandService.executeCommand('remotepair.terminalSidebar.openSessionInFolder', uri)
++					.then(undefined, (err) => rpLog('warn', `session picker: openSessionInFolder failed: ${err}`));
++			}
++		}));
++	}
++
++	/** Load the workspace roots into the tree (same input shape as ExplorerView.setTreeInput). */
++	private async setTreeInput(): Promise<void> {
++		const tree = this.tree;
++		if (!tree) { return; }
++		const roots = this.explorerService.roots;
++		try {
++			await tree.setInput(roots);
++			for (let i = 0; i < Math.min(roots.length, 5); i++) {
++				await tree.expand(roots[i]).catch(() => { });
++			}
++		} catch (e) {
++			rpLog('warn', `session picker: setInput failed: ${e}`);
 +		}
 +	}
 +
 +	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
-+		rpLog('debug', 'session picker: setInput');
 +		await super.setInput(input, options, context, token);
++		if (!this.inputSet) {
++			this.inputSet = true;
++			await this.setTreeInput();
++		}
++	}
++
++	protected override setEditorVisible(visible: boolean): void {
++		super.setEditorVisible(visible);
++		// First real visibility after the embedded part is sized: ensure roots are loaded.
++		if (visible && this.tree && !this.tree.getInput()) {
++			this.setTreeInput();
++		}
 +	}
 +
 +	layout(dimension: Dimension): void {
@@ -3010,14 +3066,21 @@ index 0000000..5d8c769
 +			this.root.style.height = `${dimension.height}px`;
 +			this.root.style.width = `${dimension.width}px`;
 +		}
++		// Title row is flex:0; give the rest to the tree.
++		this.tree?.layout(Math.max(0, dimension.height - 36), dimension.width);
++	}
++
++	override clearInput(): void {
++		this.inputSet = false;
++		super.clearInput();
 +	}
 +}
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
 new file mode 100644
-index 0000000..58a8aad
+index 00000000..3997467f
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,610 @@
+@@ -0,0 +1,606 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3060,7 +3123,7 @@ index 0000000..58a8aad
 +import { Codicon } from '../../../../base/common/codicons.js';
 +import { IViewsService } from '../../../services/views/common/viewsService.js';
 +import { EditorInput } from '../../../common/editor/editorInput.js';
-+import { setSessionLauncher, SessionPickerInput, SessionKind } from './remotePairSessionPicker.js';
++import { SessionPickerInput, SessionKind } from './remotePairSessionPicker.js';
 +import { setSessionReattacher, setAttachedSessionsProvider, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
 +import { rpLog } from './remotePairLog.js';
 +
@@ -3145,10 +3208,6 @@ index 0000000..58a8aad
 +		@ITerminalInstanceService private readonly terminalInstanceService: ITerminalInstanceService
 +	) {
 +		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
-+
-+		// G002: route the in-tab session picker's launches through this view so they
-+		// open in the embedded EditorPart group (not the main editor).
-+		setSessionLauncher((kind, group, pickerInput) => this.launchSession(kind, group, pickerInput));
 +
 +		// G004: route the bottom Session Manager's reattach requests into this sidebar's
 +		// embedded EditorPart group, reusing the same terminal-open path.
