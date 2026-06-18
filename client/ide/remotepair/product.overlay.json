@@ -642,7 +642,10 @@
     }
   },
   "configurationDefaults": {
-    "workbench.startupEditor": "none"
+    "workbench.startupEditor": "none",
+    "workbench.activityBar.location": "hidden",
+    "workbench.statusBar.visible": false,
+    "workbench.layoutControl.enabled": false
   },
   "nameShort": "RemotePair",
   "nameLong": "RemotePair",
