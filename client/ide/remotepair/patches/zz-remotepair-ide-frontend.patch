@@ -2891,10 +2891,10 @@ index 0000000..6e5d586
 +registerSessionTab(REMOTEPAIR_SESSIONS_HISTORY_ID, localize2('remotepairHistory', "History"), 3, RemotePairHistorySessionsView);
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
 new file mode 100644
-index 00000000..691df239
+index 00000000..150d4d4f
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,182 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: in-tab "New Session" folder picker editor.
 + *
@@ -2914,6 +2914,7 @@ index 00000000..691df239
 +import { localize } from '../../../../nls.js';
 +import { append, $, Dimension } from '../../../../base/browser/dom.js';
 +import { URI } from '../../../../base/common/uri.js';
++import { Event } from '../../../../base/common/event.js';
 +import { CancellationToken } from '../../../../base/common/cancellation.js';
 +import { DisposableStore } from '../../../../base/common/lifecycle.js';
 +import { FuzzyScore } from '../../../../base/common/filters.js';
@@ -2958,8 +2959,6 @@ index 00000000..691df239
 +	private root: HTMLElement | undefined;
 +	private treeContainer: HTMLElement | undefined;
 +	private tree: WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore> | undefined;
-+	private filter: FilesFilter | undefined;
-+	private findProvider: ExplorerFindProvider | undefined;
 +	private readonly treeDisposables = this._register(new DisposableStore());
 +	private inputSet = false;
 +
@@ -2992,9 +2991,9 @@ index 00000000..691df239
 +
 +	/** Rebuild the Browser/Explorer tree (same renderer + data source + tree class). */
 +	private createTree(container: HTMLElement): void {
-+		const filter = this.filter = this.treeDisposables.add(this.instantiationService.createInstance(FilesFilter));
-+		const labels = this.treeDisposables.add(this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: this.onDidChangeVisibility }));
-+		const findProvider = this.findProvider = this.instantiationService.createInstance(ExplorerFindProvider, filter, () => this.tree!);
++		const filter = this.treeDisposables.add(this.instantiationService.createInstance(FilesFilter));
++		const labels = this.treeDisposables.add(this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: Event.None }));
++		const findProvider = this.instantiationService.createInstance(ExplorerFindProvider, filter, () => this.tree!);
 +		const updateWidth = (stat: ExplorerItem) => this.tree!.updateWidth(stat);
 +		const renderer = this.treeDisposables.add(this.instantiationService.createInstance(FilesRenderer, container, labels, findProvider.highlightTree, updateWidth));
 +		this.treeDisposables.add(createFileIconThemableTreeContainerScope(container, this.themeService));
@@ -3006,11 +3005,14 @@ index 00000000..691df239
 +			compressionEnabled: false,
 +			accessibilityProvider: renderer,
 +			identityProvider: { getId: (stat: ExplorerItem) => stat.getId() },
-+			keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: (stat: ExplorerItem) => stat.name },
++			keyboardNavigationLabelProvider: {
++				getKeyboardNavigationLabel: (stat: ExplorerItem) => stat.name,
++				getCompressedNodeKeyboardNavigationLabel: (stats: ExplorerItem[]) => stats.map(s => s.name).join('/'),
++			},
 +			multipleSelectionSupport: false,
 +			filter,
 +			sorter: this.instantiationService.createInstance(FileSorter),
-+			dnd: this.instantiationService.createInstance(FileDragAndDrop, (item: ExplorerItem) => tree.isCollapsed(item)),
++			dnd: this.instantiationService.createInstance(FileDragAndDrop, (item: ExplorerItem) => this.tree!.isCollapsed(item)),
 +			collapseByDefault: () => true,
 +			autoExpandSingleChildren: true,
 +			paddingBottom: ExplorerDelegate.getHeight(),
@@ -3025,7 +3027,7 @@ index 00000000..691df239
 +				const uri = el.resource;
 +				rpLog('info', `session picker: folder chosen -> openSessionInFolder ${uri.toString()}`);
 +				this.commandService.executeCommand('remotepair.terminalSidebar.openSessionInFolder', uri)
-+					.then(undefined, (err) => rpLog('warn', `session picker: openSessionInFolder failed: ${err}`));
++					.then(undefined, (err: unknown) => rpLog('warn', `session picker: openSessionInFolder failed: ${err}`));
 +			}
 +		}));
 +	}
@@ -3077,10 +3079,10 @@ index 00000000..691df239
 +}
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
 new file mode 100644
-index 00000000..3997467f
+index 00000000..58918ac0
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,606 @@
+@@ -0,0 +1,584 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3123,7 +3125,7 @@ index 00000000..3997467f
 +import { Codicon } from '../../../../base/common/codicons.js';
 +import { IViewsService } from '../../../services/views/common/viewsService.js';
 +import { EditorInput } from '../../../common/editor/editorInput.js';
-+import { SessionPickerInput, SessionKind } from './remotePairSessionPicker.js';
++import { SessionPickerInput } from './remotePairSessionPicker.js';
 +import { setSessionReattacher, setAttachedSessionsProvider, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
 +import { rpLog } from './remotePairLog.js';
 +
@@ -3243,28 +3245,6 @@ index 00000000..3997467f
 +				return instance?.resource.toString();
 +			},
 +		});
-+	}
-+
-+	/**
-+	 * Open a session of `kind` inside the picker's own `group`, then close the picker
-+	 * tab. Hosting-layer only: creates a terminal editor in the embedded group and, for
-+	 * non-shell kinds, sends the launch command via the terminal's public sendText API.
-+	 * Core terminal behavior is untouched.
-+	 */
-+	private launchSession(kind: SessionKind, group: IEditorGroup, pickerInput: EditorInput): void {
-+		try {
-+			const { instance, opened } = this.openTerminalInGroup(group);
-+			opened.then(() => {
-+				if (kind !== 'shell') {
-+					// claude → remote-pair launcher (mosh+tmux+claude); codex/gemini → their CLI.
-+					const cmd = kind === 'claude' ? 'remote-pair launch' : kind;
-+					instance.sendText(cmd, true);
-+				}
-+				group.closeEditor(pickerInput).then(undefined, (e) => { rpLog('warn', `launchSession(${kind}): closeEditor(picker) failed: ${e}`); /* best-effort */ });
-+			}, (e) => { rpLog('warn', `launchSession(${kind}): terminal open rejected: ${e}`); /* best-effort */ });
-+		} catch (e) {
-+			rpLog('error', `launchSession(${kind}): openTerminalInGroup threw: ${e}`); // best-effort
-+		}
 +	}
 +
 +	/**
