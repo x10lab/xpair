@@ -23,6 +23,11 @@ final class ScreenServer {
     private(set) var childPid: pid_t = 0
     private var observer: NSObjectProtocol?
 
+    /// True while the screen-share sidecar is running (serving; awaiting or with viewers).
+    var serving: Bool { childPid != 0 && isAlive(childPid) }
+    /// True while a remote viewer is actively connected (the sidecar requested capture:start).
+    var viewerConnected: Bool { captureEngine.isCapturing }
+
     // In-app capture/encode (uses the APP's Screen Recording TCC grant, not a helper binary's).
     private let captureEngine = CaptureEngine()
     // Pipe A write end (app -> child stdin: the AU stream). -1 when not spawned.

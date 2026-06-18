@@ -123,9 +123,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         perm.isEnabled = false
         menu.addItem(perm)
         if isHostRole {
-            menu.addItem(withTitle: "Grant Permissions…", action: #selector(grantPermissions), keyEquivalent: "")
+            menu.addItem(withTitle: "Permissions…", action: #selector(grantPermissions), keyEquivalent: "")
         }
         menu.addItem(.separator())
+
+        // Screen share status (host only). 0.5 is view-only — the host streams its screen, never
+        // accepts remote input — so this is a status line, not a toggle.
+        if isHostRole {
+            let shr: String
+            if host.screen.viewerConnected { shr = "Screen share: viewer connected" }
+            else if host.screen.serving    { shr = "Screen share: ready (view-only)" }
+            else                           { shr = "Screen share: off" }
+            let si = NSMenuItem(title: shr, action: nil, keyEquivalent: "")
+            si.isEnabled = false
+            menu.addItem(si)
+            menu.addItem(.separator())
+        }
 
         // ③ pairing: show the on-screen PIN while armed; otherwise offer to arm (host/both only).
         if isHostRole {
@@ -235,22 +248,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log("trigger → router")
             approve.run()
         }
-        // Onboarding (Electron) → app triggers: only the host app can register for TCC / run the installer.
-        let grantReq = "/tmp/remote-pair.grant-request"
-        if let raw = try? String(contentsOfFile: grantReq, encoding: .utf8) {
-            do { try FileManager.default.removeItem(atPath: grantReq) }
-            catch { log(.warn, "onboard: removing grant-request \(grantReq) failed (may re-fire next tick): \(error)") }
-            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            log("grant-request → Permissions.request(\(key))")
-            Permissions.request(key)
-        }
-        let installReq = "/tmp/remote-pair.install-request"
-        if FileManager.default.fileExists(atPath: installReq) {
-            do { try FileManager.default.removeItem(atPath: installReq) }
-            catch { log(.warn, "onboard: removing install-request \(installReq) failed (may re-fire next tick): \(error)") }
-            log("install-request → Installer.install")
-            Installer.install(force: true, refreshResources: true)
-        }
+        // (Removed: /tmp/remote-pair.grant-request and .install-request trigger-file handlers. Those
+        // bridged the OLD standalone Electron onboarding — a separate process that signalled the app
+        // via files. Onboarding is now in-process (OnboardingWindow's WKWebView bridge calls
+        // Permissions.request / Installer directly), so nothing writes those files anymore.)
     }
 
     // ③ pairing menu actions (host/both only; arming is the explicit on-screen action).

@@ -34,6 +34,10 @@ final class CaptureEngine {
     private var bitrate = 4_000_000
     private var sink: ((Data) -> Void)?
 
+    /// Advisory: true while capture is running (a viewer is connected → the sidecar sent capture:start).
+    /// Read cross-thread only for the menu-bar status line, so a one-tick-stale value is acceptable.
+    var isCapturing: Bool { stream != nil }
+
     // Keyframe forcing. A 76KB IDR can lose a packet on a lossy link → undecodable;
     // with no further keyframe the remote viewer stays BLACK forever. We force a
     // keyframe: (1) on the first frame after start, (2) periodically (~every 1s), and
