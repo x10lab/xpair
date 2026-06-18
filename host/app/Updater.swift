@@ -214,11 +214,19 @@ enum Updater {
                 let warn = try verifySignature(newApp)
                 try swapInPlace(newApp)
                 DispatchQueue.main.async {
-                    let m = NSAlert()
-                    m.messageText = "Update applied: \(rel.tag)"
-                    m.informativeText = (warn ?? "Signature verification OK — TCC grant is preserved.") + "\nRestarting now."
-                    m.addButton(withTitle: "Restart")
-                    bringToFront(); m.runModal()
+                    // Happy path (signature OK → TCC grant preserved): no extra modal. The user already
+                    // consented to update+restart in promptAndApply's gate, so just relaunch — don't make
+                    // them click a second "Restart" button or read a reassurance they don't need.
+                    // Surface a modal ONLY on a cert MISMATCH (warn != nil), because then they MUST
+                    // re-grant Accessibility/Screen Recording after the restart.
+                    if let warn = warn {
+                        let m = NSAlert()
+                        m.messageText = "Update applied: \(rel.tag)"
+                        m.informativeText = warn
+                        m.addButton(withTitle: "Restart")
+                        NSApp.activate(ignoringOtherApps: true)
+                        bringToFront(); m.runModal()
+                    }
                     relaunch()
                 }
             } catch {
