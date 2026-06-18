@@ -35,25 +35,6 @@ else
   SIGN_ID="-"; echo "⚠ signing: ad-hoc (cert '$SIGN_CN' missing → re-toggle on every rebuild). ./host/make-signing-cert.sh recommended"
 fi
 
-# ── ③ PAKE staticlib (Rust libpake) — linked into the host for PairingServer.swift ──
-# Crypto (SPAKE2) lives in host/rd/pake; Swift links the C-ABI staticlib (pake-bridge.h).
-# The P agent's `cargo build --release -p pake` produces target/release/libpake.a; if it is
-# not present yet we build it here so the host build is self-contained.
-export PATH="$HOME/.cargo/bin:$PATH"
-PAKE_MANIFEST=host/rd/pake/Cargo.toml
-PAKE_LIB=host/rd/pake/target/release/libpake.a
-if [ ! -f "$PAKE_LIB" ]; then
-  echo "=== build PAKE staticlib (cargo build --release -p pake) ==="
-  command -v cargo >/dev/null || { echo "✗ cargo missing — Rust toolchain required for the PAKE staticlib" >&2; exit 1; }
-  cargo build --release --manifest-path "$PAKE_MANIFEST" \
-    || { echo "✗ pake staticlib cargo build failed" >&2; exit 1; }
-fi
-[ -f "$PAKE_LIB" ] || { echo "✗ libpake.a missing after cargo build: $PAKE_LIB" >&2; exit 1; }
-# NOTE: the PAKE C-ABI header import + staticlib link is now declared in host/Package.swift
-# (-import-objc-header app/pake-bridge.h ; -L rd/pake/target/release -lpake). The flat swiftc compile
-# was replaced by `swift build` so the host can LINK sentry-cocoa (SentryBridge.swift). libpake.a must
-# exist before `swift build` runs — guaranteed by the cargo build above.
-
 # ── build the in-process onboarding (React) — bundled into Contents/Resources/onboarding ──
 # The onboarding is no longer a standalone Electron app; it is loaded by OnboardingWindow.swift in a
 # WKWebView. vite base is './' so the build is relocatable under file://. Build it here so the bundle
@@ -65,11 +46,11 @@ command -v npm >/dev/null || { echo "✗ npm missing — Node toolchain required
 [ -f host/onboarding/dist/index.html ] \
   || { echo "✗ onboarding build produced no dist/index.html" >&2; exit 1; }
 
-# ── compile (SwiftPM) — `swift build -c release` resolves+links sentry-cocoa + the PAKE staticlib ──
+# ── compile (SwiftPM) — `swift build -c release` resolves+links sentry-cocoa ──
 # host/Package.swift declares the executable target (all of host/app/*.swift) + the Sentry dependency.
 # `swift build` fetches sentry-cocoa from GitHub on first run (network) and statically links it. The built
 # product is copied into the bundle below; the rest of the bundle/sign flow is unchanged.
-echo "=== compile (SwiftPM: swift build -c release — links sentry-cocoa + libpake) ==="
+echo "=== compile (SwiftPM: swift build -c release — links sentry-cocoa) ==="
 mkdir -p build
 swift build --package-path host -c release \
   || { echo "✗ swift build -c release failed (host/Package.swift)" >&2; exit 1; }

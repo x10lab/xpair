@@ -1,12 +1,11 @@
-// BonjourAdvertiser.swift — LAN discovery, host side (plan component ① / A1).
+// BonjourAdvertiser.swift — LAN discovery, host side.
 //
 // Advertises this Mac as `_remotepair._tcp` on the local network so a RemotePair client
-// can discover it via Bonjour (NWBrowser / `dns-sd -B`). TXT record carries:
+// can discover it via Bonjour (NWBrowser / `dns-sd -B`) for `remote-pair discover`. TXT record carries:
 //   hn   = friendly hostname        v   = app version (Config.swift APP_VERSION)
-//   role = currentRole() (host|both)  fp = ed25519 host-key fingerprint (HostKey.swift)
+//   role = currentRole() (host|both)  fp = ed25519 host-key fingerprint (HostKey.swift, for TOFU)
 //
-// This is ADVERTISE-ONLY. The actual pairing handshake (PIN + PAKE) is PairingServer.swift
-// (component ③, later). Bonjour requires a bound TCP port to advertise, so incoming
+// This is ADVERTISE-ONLY. Bonjour requires a bound TCP port to advertise, so incoming
 // connections here are accepted and immediately cancelled — nothing is served on this port.
 //
 // Lifecycle mirrors HostManager.ensureServer: an idempotent ensureAdvertising() called at

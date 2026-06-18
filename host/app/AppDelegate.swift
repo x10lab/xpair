@@ -140,36 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        // ③ pairing: show the on-screen PIN while armed; otherwise offer to arm (host/both only).
-        if isHostRole {
-            let d = PairingServer.readDisplay()
-            if d.armed && !d.pin.isEmpty {
-                let mins = d.secondsLeft / 60, secs = d.secondsLeft % 60
-                // "Pairing code: 482 173 (1:58)" — grouped for readability, on the host screen only.
-                let grouped = d.pin.count == 6
-                    ? "\(d.pin.prefix(3)) \(d.pin.suffix(3))" : d.pin
-                let it = NSMenuItem(title: "Pairing code: \(grouped)  (\(mins):\(String(format: "%02d", secs)))",
-                                    action: nil, keyEquivalent: "")
-                it.isEnabled = false
-                menu.addItem(it)
-                if !d.message.isEmpty {
-                    let m = NSMenuItem(title: "  \(d.message)", action: nil, keyEquivalent: "")
-                    m.isEnabled = false
-                    menu.addItem(m)
-                }
-                menu.addItem(withTitle: "Stop pairing", action: #selector(stopPairing), keyEquivalent: "")
-            } else {
-                if !d.message.isEmpty {
-                    let m = NSMenuItem(title: d.message, action: nil, keyEquivalent: "")
-                    m.isEnabled = false
-                    menu.addItem(m)
-                }
-                menu.addItem(withTitle: "Pair a new Mac…", action: #selector(pairNewMac), keyEquivalent: "")
-            }
-            menu.addItem(.separator())
-        }
-
-        // session list (server status + each session → modal on click)
+        // session list (server status + each session → modal on click), grouped Attached / Detached.
         let serverUp = Sessions.serverUp()
         let sessions = serverUp ? Sessions.list() : []
         let shdr = NSMenuItem(title: serverUp ? "Sessions (\(sessions.count))" : "tmux host: down",
@@ -182,19 +153,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             none.isEnabled = false
             menu.addItem(none)
         } else {
-            for s in sessions {
-                let label = "  \(s.name)   (\(s.attached > 0 ? "attached ×\(s.attached)" : "detached"))"
-                let it = NSMenuItem(title: label, action: #selector(sessionClicked(_:)), keyEquivalent: "")
+            let attached = sessions.filter { $0.attached > 0 }
+            let detached = sessions.filter { $0.attached <= 0 }
+            // Render a disabled subheader per non-empty group, then its sessions.
+            func appendSession(_ s: TmuxSession) {
+                let it = NSMenuItem(title: "  \(s.name)", action: #selector(sessionClicked(_:)), keyEquivalent: "")
                 it.representedObject = s.name
                 it.target = self
                 menu.addItem(it)
             }
+            if !attached.isEmpty {
+                let h = NSMenuItem(title: "Attached", action: nil, keyEquivalent: "")
+                h.isEnabled = false
+                menu.addItem(h)
+                for s in attached { appendSession(s) }
+            }
+            if !detached.isEmpty {
+                let h = NSMenuItem(title: "Detached", action: nil, keyEquivalent: "")
+                h.isEnabled = false
+                menu.addItem(h)
+                for s in detached { appendSession(s) }
+            }
         }
-        menu.addItem(withTitle: "Restart tmux host", action: #selector(restartHost), keyEquivalent: "")
-        menu.addItem(withTitle: "Repair install", action: #selector(repairInstall), keyEquivalent: "")
         menu.addItem(.separator())
 
-        menu.addItem(withTitle: "Approve now", action: #selector(approveNow), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "")
         menu.addItem(withTitle: "About \(APP_NAME)", action: #selector(about), keyEquivalent: "")
@@ -202,38 +184,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 
-    // ── session click → modal (Detach all / Kill / Cancel) ──
+    // ── session click → confirm-terminate modal ──
     @objc private func sessionClicked(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         let list = Sessions.list()
         guard let s = list.first(where: { $0.name == name }) else { return }
 
         let a = NSAlert()
-        a.messageText = "Session: \(s.name)"
-        var detail = "Path: \(s.path.isEmpty ? "?" : s.path)\nattached: \(s.attached)  windows: \(s.windows)"
-        if let c = s.created {
-            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"
-            detail += "\nCreated: \(f.string(from: c))"
-        }
-        a.informativeText = detail
-        a.addButton(withTitle: "Detach all")     // .alertFirstButtonReturn
-        a.addButton(withTitle: "Kill session")   // .alertSecondButtonReturn
-        a.addButton(withTitle: "Cancel")         // .alertThirdButtonReturn
+        a.messageText = "Terminate session '\(s.name)'?"
+        a.informativeText = "The processes inside this session (claude, etc.) will be cleaned up. This cannot be undone."
+        a.alertStyle = .warning
+        a.addButton(withTitle: "Terminate")   // .alertFirstButtonReturn
+        a.addButton(withTitle: "Cancel")      // .alertSecondButtonReturn
         bringToFront()
-        switch a.runModal() {
-        case .alertFirstButtonReturn:
-            Sessions.detachAll(s.name)
-        case .alertSecondButtonReturn:
-            let c = NSAlert()
-            c.messageText = "Kill session '\(s.name)'?"
-            c.informativeText = "The processes inside this session (claude, etc.) will be cleaned up. This cannot be undone."
-            c.addButton(withTitle: "Kill"); c.addButton(withTitle: "Cancel")
-            c.alertStyle = .warning
-            bringToFront()
-            if c.runModal() == .alertFirstButtonReturn { Sessions.kill(s.name) }
-        default:
-            break
-        }
+        if a.runModal() == .alertFirstButtonReturn { Sessions.kill(s.name) }
     }
 
     // ── steady-state loop: heartbeat + status (ground truth) + trigger check (all lightweight) ──
@@ -241,7 +205,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do { try "".write(toFile: HEARTBEAT, atomically: false, encoding: .utf8) }
         catch { log(.debug, "heartbeat write failed: \(error)") }   // ignorable: next tick (1s) retries
         writeStatus()   // write app liveness + AX/SR/FDA grant facts to status.json — so the agent reads them without guessing
-        if isHostRole { PairingServer.shared.tick() }   // ③ expire/refresh the on-screen PIN countdown (pairing.json)
         if FileManager.default.fileExists(atPath: TRIGGER) {
             do { try FileManager.default.removeItem(atPath: TRIGGER) }
             catch { log(.warn, "approve: removing trigger \(TRIGGER) failed (router may re-fire): \(error)") }
@@ -254,10 +217,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Permissions.request / Installer directly), so nothing writes those files anymore.)
     }
 
-    // ③ pairing menu actions (host/both only; arming is the explicit on-screen action).
-    @objc func pairNewMac() { if isHostRole { PairingServer.shared.arm() } }
-    @objc func stopPairing() { PairingServer.shared.disarm() }
-
     @objc func grantPermissions() {
         // Open the in-app onboarding deep-linked to the Permissions step. Grant-only mode: the app is
         // already running, so closing the window does NOT quit it (unlike the launch run-gate). Pre-
@@ -267,28 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         grantWindow = ob
         ob.show()
     }
-    @objc func approveNow() { approve.run() }
-    @objc func restartHost() {
-        // true restart (reap server+sessions, then relaunch) — if there are active sessions, warn about disconnection before proceeding.
-        let n = Sessions.serverUp() ? Sessions.list().count : 0
-        if n > 0 {
-            let a = NSAlert()
-            a.messageText = "Restart tmux host?"
-            a.informativeText = "⚠ \(n) active session(s) will be disconnected. "
-                + "Conversation transcripts are preserved — re-launch the same folder to resume."
-            a.addButton(withTitle: "Restart")
-            a.addButton(withTitle: "Cancel")
-            NSApp.activate(ignoringOtherApps: true)
-            guard a.runModal() == .alertFirstButtonReturn else { return }
-        }
-        host.forceRestart()
-    }
     @objc func checkUpdates() { Updater.checkForUpdates(interactive: true) }
-
-    @objc func repairInstall() {
-        Installer.install(force: false)   // reapply missing pieces (safe: preserves existing files / running instance)
-        rebuildMenu()
-    }
 
     @objc func openSettings() {
         if settings == nil { settings = SettingsWindowController() }

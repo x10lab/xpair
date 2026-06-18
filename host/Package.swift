@@ -7,20 +7,10 @@
 // build-host.sh (bundle layout, inside-out local codesign) is unchanged — it copies the built product into
 // the .app and signs it exactly as before.
 //
-// PAKE staticlib: the host links the Rust SPAKE2 C-ABI staticlib (host/rd/pake/target/release/libpake.a) via
-// the bridging header host/app/pake-bridge.h — mirrors the old flat compile's
-// `-import-objc-header pake-bridge.h -L <dir> -lpake`. build-host.sh still builds libpake.a first, so it is
-// present before `swift build` runs.
-//
 // Sentry is the ONLY SwiftPM dependency. It is referenced behind `#if canImport(Sentry)` in
 // SentryBridge.swift, so the source still compiles if the dependency is ever removed.
 
 import PackageDescription
-
-// Resolve the PAKE staticlib dir at manifest-eval time so the linker flags are absolute (swift build runs
-// from this package dir; the staticlib lives under host/rd/pake/target/release relative to it).
-let pakeLibDir = "rd/pake/target/release"
-let pakeHeader = "app/pake-bridge.h"
 
 let package = Package(
     name: "RemotePairHost",
@@ -39,16 +29,7 @@ let package = Package(
                 .product(name: "Sentry", package: "sentry-cocoa")
             ],
             // The sources stayed in host/app (unchanged tree); point the target at that dir.
-            path: "app",
-            swiftSettings: [
-                // Mirror the flat compile: import the PAKE C-ABI bridging header so PairingServer.swift sees
-                // the pake_* symbols (pake-bridge.h).
-                .unsafeFlags(["-import-objc-header", pakeHeader])
-            ],
-            linkerSettings: [
-                // Mirror the flat compile's `-L <dir> -lpake`: link the Rust SPAKE2 staticlib.
-                .unsafeFlags(["-L", pakeLibDir, "-lpake"])
-            ]
+            path: "app"
         )
     ]
 )

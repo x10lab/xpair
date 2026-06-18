@@ -31,8 +31,6 @@ jobs:
       - name: Swift compile-check (RemotePairHost, no signing)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          # Build the PAKE staticlib prerequisite (Package.swift links it via -L rd/pake/target/release -lpake)
-          cargo build --release --manifest-path host/rd/pake/Cargo.toml
           # Compile via SwiftPM (mirrors build-host.sh: `swift build --package-path host -c release`)
           swift build --package-path host -c release
           echo "RemotePairHost compiles ✓"
