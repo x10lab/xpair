@@ -10,7 +10,7 @@
   "identity": {
     "product": "RemotePair",
     "urlProtocol": "remotepair",
-    "ideBundleId": "com.x10lab.remotepair-ide"
+    "ideBundleId": "com.x10lab.remote-pair"
   },
   "version": "0.1.0"
 }

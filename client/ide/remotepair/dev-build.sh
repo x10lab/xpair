@@ -6,10 +6,10 @@
 ###
 
 export APP_NAME="RemotePair"
-export ASSETS_REPOSITORY="ghyeongl/remotepair-ide"
+export ASSETS_REPOSITORY="ghyeongl/remote-pair"
 export BINARY_NAME="remotepair"
 export CI_BUILD="no"
-export GH_REPO_PATH="ghyeongl/remotepair-ide"
+export GH_REPO_PATH="ghyeongl/remote-pair"
 export ORG_NAME="x10lab"
 export SHOULD_BUILD="yes"
 export SKIP_ASSETS="yes"

@@ -17,7 +17,7 @@
       "nameLong": "RemotePair",
       "applicationName": "remotepair",
       "dataFolderName": ".remotepair",
-      "darwinBundleIdentifier": "com.x10lab.remotepair-ide",
+      "darwinBundleIdentifier": "com.x10lab.remote-pair",
       "urlProtocol": "remotepair",
       "serverApplicationName": "remotepair-server",
       "serverDataFolderName": ".remotepair-server",
