@@ -18,12 +18,11 @@ contextBridge.exposeInMainWorld('remotepair', {
   sshKeygen: () => rp('sshKeygen'),
   sshReachable: (host) => rp('sshReachable', [host]),
   tailscaleStatus: () => rp('tailscaleStatus'),
-  // Discovery / pairing. Secrets that transit here (renderer → main, NEVER argv/log): the 6-digit
-  // PIN (pair) and the account password (installHost) — main hands the password to the CLI over an
-  // inherited pipe, never the command line. hostPermissions SSH-reads the host's grant status
-  // (status.json) so the Grant step can confirm AX/SR were granted on the host's screen.
+  // Discovery / remote-install. The one secret that transits here (renderer → main, NEVER argv/log)
+  // is the account password (installHost) — main hands it to the CLI over an inherited pipe, never
+  // the command line. hostPermissions SSH-reads the host's grant status (status.json) so the Grant
+  // step can confirm AX/SR were granted on the host's screen.
   discover: () => rp('discover'),
-  pair: (opts) => rp('pair', [opts]),
   installHost: (opts) => rp('installHost', [opts]),
   hostPermissions: (opts) => rp('hostPermissions', [opts]),
   hostKeyFingerprint: (host) => rp('hostKeyFingerprint', [host]),

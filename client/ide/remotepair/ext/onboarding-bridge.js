@@ -291,13 +291,13 @@ const bridge = {
     return cli(["map", "add", clientPath, hostPath]);
   },
 
-  // --- Discovery / pairing (component ⑤ — shells to the CLI brain) -----------------------------
+  // --- Discovery / remote-install (component ⑤ — shells to the CLI brain) -----------------------
   //
-  // SECURITY (Principle 2): NONE of these methods ever receives or returns a password or key
-  // passphrase — those are collected ONLY by the separate askpass helper (the renderer never
-  // sees them). The 6-digit PIN is the ONE secret that transits here (renderer → CLI argv);
-  // it is bound to a 120s TTL on the host, never logged by this bridge, and never passed to any
-  // telemetry.capture() call. Do NOT add a tCapture/telemetry call inside discover/pair/installHost.
+  // SECURITY (Principle 2): NONE of these methods ever receives or returns a key passphrase —
+  // those are collected ONLY by the separate askpass helper (the renderer never sees them). The
+  // ONE secret that transits here is the account password (installHost), and it is handed to the
+  // CLI over an inherited pipe (never argv/log/disk). Do NOT add a tCapture/telemetry call inside
+  // discover/installHost.
 
   // Discovery — concurrent Bonjour + Tailscale sweep via the CLI. Returns a deduped peer array
   // (deduped by host-key fingerprint inside the CLI; the UI dedups again as a backstop).
@@ -313,19 +313,6 @@ const bridge = {
       return { peers: [], err: "discover: bad JSON: " + String(e && e.message ? e.message : e) };
     }
     return { peers, err: "" };
-  },
-
-  // Pairing (PIN path) — runs the client side of the PAKE through the CLI. `pin` is the 6-digit
-  // code the user read off the host's physical screen; it is NEVER logged or telemetered here.
-  // `fp` is the host-key fingerprint shown to the user for TOFU; it is passed as --expect-fp so
-  // the CLI fails closed on a mismatched host key. Returns {ok, err}.
-  async pair({ host, pin, fp } = {}) {
-    if (!host || !pin) return { ok: false, err: "pair requires host and pin" };
-    const args = ["pair", "--host", String(host), "--pin", String(pin)];
-    if (fp) args.push("--expect-fp", String(fp));
-    const r = await cli(args);
-    // r.out/r.err deliberately NOT echoed into any telemetry payload (could contain the PIN).
-    return { ok: r.code === 0, err: r.code === 0 ? "" : (r.err || "pairing failed") };
   },
 
   // Setup — remote install over SSH. `password` (optional) is the account password the user typed
@@ -370,7 +357,7 @@ const bridge = {
     }
   },
 
-  // TOFU display — fetch the host-key fingerprint the CLI observes for `host`, so the pairing
+  // TOFU display — fetch the host-key fingerprint the CLI observes for `host`, so the connect
   // step can show "Matches what <host> shows?" before any key is trusted. Returns {fp, err}.
   async hostKeyFingerprint(host) {
     if (!host) return { fp: "", err: "no host" };

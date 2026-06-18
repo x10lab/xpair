@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 import type { Peer } from "@/global";
-import { FingerprintPanel } from "./StepConnectPin";
+import { FingerprintPanel } from "./FingerprintPanel";
 
 type Props = {
   peer: Peer;

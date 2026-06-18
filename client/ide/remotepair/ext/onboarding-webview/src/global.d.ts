@@ -5,7 +5,7 @@ export type PeerSource = "lan" | "tailscale" | "ssh"
 export interface Peer {
   name: string
   addrs: string[]
-  // Canonical SSH target for install/connect/pair: the ssh-config alias name when this peer is
+  // Canonical SSH target for install/connect: the ssh-config alias name when this peer is
   // config-known (carries IdentityFile + User → key auth), otherwise a discovered address. Always
   // prefer this over addrs[0] for any window.remotepair call that SSHes — a bare tailnet/LAN IP
   // not in ssh config falls back to password auth and hangs the GUI askpass. Optional for
@@ -36,14 +36,10 @@ declare global {
       sshKeygen: () => Promise<{ pubkey: string; keygenNew: boolean }>
       sshReachable: (host: string) => Promise<{ reachable: boolean; err: string }>
       tailscaleStatus: () => Promise<{ installed: boolean; up: boolean }>
-      // Discovery / pairing (component ⑤). NONE of these carry a password or passphrase — those
-      // are collected only by the separate askpass helper. The PIN passed to pair() is short-lived
-      // (120s host TTL) and must never be logged or sent to telemetry.
+      // Discovery / remote-install (component ⑤). The only secret that transits here is the account
+      // password (installHost), handed to the CLI over an inherited pipe (never argv/log/disk) and
+      // never sent to telemetry; key passphrases are collected only by the separate askpass helper.
       discover: () => Promise<{ peers: Peer[]; err: string }>
-      pair: (opts: { host: string; pin: string; fp?: string | null }) => Promise<{
-        ok: boolean
-        err: string
-      }>
       // `password` is the account password the user typed into the onboarding (no separate dialog).
       // It is handed to the CLI over an inherited pipe (never argv/log/disk). Omit when the host
       // already trusts the client key — the install then authenticates by key.

@@ -11,7 +11,6 @@
 #   remote-pair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   remote-pair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   remote-pair discover [--json] [--timeout S]   Discover RemotePair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
-#   remote-pair pair --host <addr> --pin <pin> --fp <SHA256:..> [--alias N] [--user U]   PAKE-pair with a host (no account password); writes ~/.ssh/config + sets host.
 #   remote-pair install-host [--host <a>] [--account <u>] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
 #   remote-pair doctor         Check SSH key connection, host app, tmux + guidance
 #   remote-pair approve [--for "<what>"] [--type "key:..|ocr:.."] [--timeout S]   Handle a blocked approval dialog
@@ -804,8 +803,8 @@ _resolve_client_tool() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Discovery / pairing / remote-install (components ②④ — plan C1–C5).
-# Shared, security-sensitive helpers live here so cmd_discover/cmd_pair/
+# Discovery / remote-install (components ②④ — plan C1–C5).
+# Shared, security-sensitive helpers live here so cmd_discover/
 # cmd_install_host reuse ONE implementation. The CLI is the brain; the Electron
 # bridge (onboarding-bridge.js) just shells these verbs.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -817,7 +816,7 @@ _resolve_client_tool() {
 rp_ssh_pubkey() {
   local key="$HOME/.ssh/id_ed25519" pub="$HOME/.ssh/id_ed25519.pub"
   if [ ! -f "$pub" ]; then
-    # Always generate/use the DEFAULT id_ed25519 — cmd_pair/rp_ssh_config_write pin
+    # Always generate/use the DEFAULT id_ed25519 — rp_ssh_config_write pins
     # IdentityFile ~/.ssh/id_ed25519, so the authorized key MUST be that same keypair.
     # (No alternate id_ed25519*.pub fallback: it would authorize a key the ssh-config
     # alias never offers → reconnect fails.)
@@ -830,9 +829,6 @@ rp_ssh_pubkey() {
 
 # Locate the bundled askpass helper (sibling of this CLI / installed copy).
 rp_askpass_path() { _resolve_client_tool remote-pair-askpass 2>/dev/null || true; }
-
-# Locate the Rust PAKE client binary (built by the parallel agent; see plan P3).
-rp_pake_path() { _resolve_client_tool remote-pair-pake 2>/dev/null || true; }
 
 # ── C4. ~/.ssh/config managed-block writer (NET-NEW) ──
 # Idempotently upsert a sentinel-delimited managed block for one Host alias.
@@ -912,7 +908,7 @@ _rp_peer_status() {
   if [ -n "$name" ] && _rp_in_ssh_config "$name"; then printf 'reconnect'; return; fi
   if [ -n "$addr" ] && _rp_in_ssh_config "$addr"; then printf 'reconnect'; return; fi
   if [ -n "${REMOTE_HOST:-}" ] && { [ "$REMOTE_HOST" = "$name" ] || [ "$REMOTE_HOST" = "$addr" ]; }; then printf 'reconnect'; return; fi
-  # A peer advertising the RemotePair service (any role) → PIN/PAKE connect; otherwise plain SSH setup.
+  # A peer advertising the RemotePair service (any role) → account-password connect; otherwise plain SSH setup.
   case "$role" in host|both|client) printf 'connect' ;; *) printf 'setup' ;; esac
 }
 
@@ -1142,49 +1138,6 @@ print(json.dumps(out))
 PY
 }
 
-# ── C2. remote-pair pair --host <addr> --pin <pin> --fp <SHA256:…> [--alias N] ──
-# Client side of the PAKE. Shells to the Rust remote-pair-pake binary (P3), which
-# performs SPAKE2 + pubkey handoff bound to the host-key fp. On success: write the
-# ssh-config block (C4) and persist REMOTE_HOST.
-cmd_pair() {
-  local host="" pin="" fp="" alias="" user="${USER:-$(id -un)}"
-  while [ $# -gt 0 ]; do case "$1" in
-    --host)  host="${2:-}"; shift 2 ;;
-    --pin)   pin="${2:-}"; shift 2 ;;
-    --fp|--expect-fp) fp="${2:-}"; shift 2 ;;
-    --alias) alias="${2:-}"; shift 2 ;;
-    --user)  user="${2:-}"; shift 2 ;;
-    *) echo "pair --host <addr> --pin <pin> --fp <SHA256:…> [--alias N] [--user U]" >&2; return 2 ;;
-  esac; done
-  [ -n "$host" ] && [ -n "$pin" ] && [ -n "$fp" ] || { err "pair requires --host, --pin and --fp"; return 2; }
-  fp="$(rp_norm_fp "$fp")"
-  [ -n "$alias" ] || alias="$host"
-
-  local pub; pub="$(rp_ssh_pubkey)" || return 1
-  # rp_ssh_pubkey prints the pubkey FILE PATH; remote-pair-pake --pubkey wants the
-  # public-key LINE itself (it forwards the arg verbatim to the host). Read contents.
-  local pubdata; pubdata="$(cat "$pub" 2>/dev/null)" || { err "could not read pubkey: $pub"; return 1; }
-  [ -n "$pubdata" ] || { err "empty pubkey: $pub"; return 1; }
-  local pake; pake="$(rp_pake_path)"
-  [ -n "$pake" ] || { err "remote-pair-pake binary not found (PAKE helper not installed)"; return 1; }
-
-  # The PAKE binary owns the full handshake: SPAKE2 with the PIN, host-key fp
-  # cross-check (TOFU), and the pubkey handoff on MAC success. The PIN is passed
-  # only as an argv to this dedicated process — it never reaches a log or telemetry.
-  c "pairing with $host (PAKE) …"
-  if "$pake" --host "$host" --pin "$pin" --expect-fp "$fp" --pubkey "$pubdata"; then
-    ok "PAKE success — key authorized on $host"
-  else
-    err "pairing failed (wrong/expired PIN, fp mismatch, or host re-armed)"
-    return 1
-  fi
-
-  rp_ssh_config_write "$alias" "$host" "$user" "$HOME/.ssh/id_ed25519" || return 1
-  ok "ssh config written: Host $alias → $host"
-  rp_set REMOTE_HOST "$alias"; REMOTE_HOST="$alias"
-  ok "host set: $alias"
-}
-
 # ── C3. remote-pair install-host [--host <addr>] [--account <user>] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
 # Idempotent, integrity-verified remote install-or-repair over SSH.
 #   default: scp the locally-built, already-signed build/RemotePairHost.app and
@@ -1289,25 +1242,29 @@ cmd_install_host() {
       _rp_ssh "$target" "cd ~/.cache/remote-pair/stage && RP_YES=1 bash shared/install.sh --role host" \
         || { err "remote install.sh failed"; return 1; }
       ok "signed app installed on $target"
-
-      # Authorize the client's key on the host over the SAME askpass (password) SSH
-      # connection. Without this, BatchMode=yes (key-only) calls below — and every
-      # later editor/desktop/notify call — would fail despite a "successful" install.
-      local pubpath; pubpath="$(rp_ssh_pubkey)" || { err "could not resolve client pubkey"; return 1; }
-      local pubdata; pubdata="$(cat "$pubpath" 2>/dev/null)"
-      [ -n "$pubdata" ] || { err "empty client pubkey: $pubpath"; return 1; }
-      c "authorizing client key on $target (over the password connection) …"
-      # ssh-copy-id-style append: idempotent (grep -qxF guard), correct perms. Rides the
-      # SAME multiplexed master (RP_SSHOPTS/SSHENV) the install authenticated — so no
-      # re-auth, no separate password prompt, no host-key prompt. The pubkey is piped
-      # into ssh and read via $(cat) on the host; we do NOT use _rp_ssh (it hardcodes
-      # </dev/null, which would drop the piped key).
-      local rp_authcmd='umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys; key=$(cat); grep -qxF "$key" ~/.ssh/authorized_keys || printf "%s\n" "$key" >> ~/.ssh/authorized_keys'
-      printf '%s\n' "$pubdata" | "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "$rp_authcmd" \
-        || { err "failed to authorize client key on $target"; return 1; }
-      ok "client key authorized on $target"
     fi
   fi
+
+  # Authorize the client's key on the host over the SAME askpass (password) SSH
+  # connection — for BOTH the fresh-install AND the already-installed paths. This is
+  # what REPLACES PIN pairing: a host that is already running but has never seen this
+  # client's key must still authorize it (the old PIN scenario). Without this,
+  # BatchMode=yes (key-only) calls below — and every later editor/desktop/notify call
+  # — would fail despite a "successful" install/re-register. Idempotent (grep -qxF),
+  # so re-running on an already-authorized host is a no-op.
+  local pubpath; pubpath="$(rp_ssh_pubkey)" || { err "could not resolve client pubkey"; return 1; }
+  local pubdata; pubdata="$(cat "$pubpath" 2>/dev/null)"
+  [ -n "$pubdata" ] || { err "empty client pubkey: $pubpath"; return 1; }
+  c "authorizing client key on $target (over the password connection) …"
+  # ssh-copy-id-style append: idempotent (grep -qxF guard), correct perms. Rides the
+  # SAME multiplexed master (RP_SSHOPTS/SSHENV) the connection authenticated — so no
+  # re-auth, no separate password prompt, no host-key prompt. The pubkey is piped
+  # into ssh and read via $(cat) on the host; we do NOT use _rp_ssh (it hardcodes
+  # </dev/null, which would drop the piped key).
+  local rp_authcmd='umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys; key=$(cat); grep -qxF "$key" ~/.ssh/authorized_keys || printf "%s\n" "$key" >> ~/.ssh/authorized_keys'
+  printf '%s\n' "$pubdata" | "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "$rp_authcmd" \
+    || { err "failed to authorize client key on $target"; return 1; }
+  ok "client key authorized on $target"
 
   # Persist the host so the extension/CLI (which read client.env) find a configured
   # host after onboarding — mirrors the pair path's rp_set REMOTE_HOST.
@@ -1551,7 +1508,6 @@ case "${1:-help}" in
   onboard) cmd_onboard ;;
   open-gui) shift; cmd_open_gui "$@" ;;
   discover) shift; cmd_discover "$@" ;;
-  pair)    shift; cmd_pair "$@" ;;
   install-host) shift; cmd_install_host "$@" ;;
   host-permissions) shift; cmd_host_permissions "$@" ;;
   doctor)  cmd_doctor ;;
@@ -1565,6 +1521,6 @@ case "${1:-help}" in
   self-update) shift; cmd_self_update "$@" ;;
   update)  shift; cmd_update "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,28p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,28p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,27p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,27p' "$0"; exit 2 ;;
 esac

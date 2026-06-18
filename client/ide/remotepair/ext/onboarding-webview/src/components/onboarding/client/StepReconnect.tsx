@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertCircle, Check, Loader2, RotateCw, ShieldCheck } from "lucide-react";
 import type { Peer } from "@/global";
-import { FingerprintPanel } from "./StepConnectPin";
+import { FingerprintPanel } from "./FingerprintPanel";
 
 type ReconStatus = "checking" | "ready" | "offline";
 

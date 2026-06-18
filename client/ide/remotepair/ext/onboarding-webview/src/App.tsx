@@ -16,7 +16,6 @@ import {
 } from "@/components/onboarding/client/StepFileAccess";
 import { StepDone } from "@/components/onboarding/client/StepDone";
 import { StepDiscover } from "@/components/onboarding/client/StepDiscover";
-import { StepConnectPin, type PinState } from "@/components/onboarding/client/StepConnectPin";
 import { StepReconnect } from "@/components/onboarding/client/StepReconnect";
 import { StepSetupPassword } from "@/components/onboarding/client/StepSetupPassword";
 import { StepGrantPermissions } from "@/components/onboarding/client/StepGrantPermissions";
@@ -64,13 +63,12 @@ export default function App() {
     capture(EVENTS.ONBOARDING_STARTED);
   }, []);
 
-  // Discovery / pairing state.
+  // Discovery / connect state.
   const [peer, setPeer] = useState<Peer | null>(null);
   const [account, setAccount] = useState("");
   // Account password typed on the setup step → consumed by StepInstalling (handed to the CLI over a
   // pipe, never argv/log), then cleared. Empty ⇒ install authenticates by SSH key.
   const [password, setPassword] = useState("");
-  const [pinState, setPinState] = useState<PinState>("idle");
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
@@ -94,17 +92,19 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const isSetup = peer?.status === "setup";
-  // Reconnect: this client already paired with the host (ssh-config entry) and the app is installed,
-  // so there's nothing to PIN-pair — just re-persist REMOTE_HOST and confirm reachability.
+  // Reconnect: this client already authorized with the host (ssh-config entry) and the app is
+  // installed, so there's nothing to install — just re-persist REMOTE_HOST and confirm reachability.
   const isReconnect = peer?.status === "reconnect";
+  // Everything that is NOT a reconnect takes the account-password / install path (this covers the
+  // old "setup" status AND the old PIN "connect" status — a running host whose key isn't authorized
+  // yet). Any unknown status falls here too, so the UI never crashes on an unrecognized value.
+  const isSetup = !!peer && !isReconnect;
 
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
     (p: Peer) => {
       setManual(false);
       setPeer(p);
-      setPinState("idle");
       setInstallState("idle");
       setReconnectReady(false);
       setLive("idle");
@@ -147,11 +147,9 @@ export default function App() {
   const manualReady = connState === "reachable";
   const connectReady = manual
     ? manualReady
-    : isSetup
-    ? true // Setup path: Next moves on to Installing.
     : isReconnect
     ? reconnectReady // Reconnect path: gate on the host answering over the existing key.
-    : pinState === "paired";
+    : true; // Setup / account-password path: Next moves on to Installing.
   const nextDisabled =
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
     (w.index === S.CONNECT && !connectReady) ||
@@ -164,7 +162,7 @@ export default function App() {
   // Installing step.
   const onNext = () => {
     if (w.index === S.CONNECT && !isSetup) {
-      // PIN / reconnect path and manual path both skip the Installing step.
+      // Reconnect path and manual path both skip the Installing step.
       w.goTo(S.MAPPINGS, "next");
       return;
     }
@@ -248,7 +246,10 @@ export default function App() {
               state={connState}
               setState={setConnState}
             />
-          ) : isSetup ? (
+          ) : isReconnect ? (
+            <StepReconnect peer={peer} onReady={setReconnectReady} />
+          ) : (
+            // Everything else (old "setup" + old PIN "connect" + unknown status) → password path.
             <StepSetupPassword
               peer={peer}
               user={account}
@@ -256,10 +257,6 @@ export default function App() {
               password={password}
               setPassword={setPassword}
             />
-          ) : isReconnect ? (
-            <StepReconnect peer={peer} onReady={setReconnectReady} />
-          ) : (
-            <StepConnectPin peer={peer} state={pinState} setState={setPinState} />
           ))}
         {w.index === S.INSTALL && peer && (
           <StepInstalling
