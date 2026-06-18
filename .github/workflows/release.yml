@@ -78,6 +78,10 @@ jobs:
           P12_PW: ${{ secrets.SIGNING_P12_PASSWORD }}
           RP_VERSION: ${{ steps.ver.outputs.version }}
           GH_TOKEN: ${{ github.token }}
+          # The client-IDE npm install pulls binaries from GitHub (e.g. @vscode/ripgrep, playwright);
+          # without an authenticated token they hit anonymous rate limits → HTTP 403 → "Npm install
+          # failed too many times". The VSCodium recipe reads GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -e
           if [ -z "$P12_B64" ]; then
