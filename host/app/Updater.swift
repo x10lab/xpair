@@ -93,10 +93,41 @@ enum Updater {
         }
     }
 
+    // ── update channel ──
+    // "stable" (default) tracks GitHub's /releases/latest, which EXCLUDES pre-releases — so alpha
+    // (0.5.0aN, published as pre-release) never reaches stable hosts. "alpha" scans the full
+    // /releases list and takes the newest tag INCLUDING pre-releases. Opt a host in with:
+    //   defaults write \(BUNDLE_ID) RPUpdateChannel alpha     (or env RP_UPDATE_CHANNEL=alpha)
+    static var channel: String {
+        if let env = ProcessInfo.processInfo.environment["RP_UPDATE_CHANNEL"], !env.isEmpty {
+            return env.lowercased()
+        }
+        return (UserDefaults.standard.string(forKey: "RPUpdateChannel") ?? "stable").lowercased()
+    }
+
+    /// Build a Release from a GitHub release JSON object, or nil if it has no usable .zip asset.
+    private static func release(from json: [String: Any]) -> Release? {
+        guard let tag = json["tag_name"] as? String,
+              let assets = json["assets"] as? [[String: Any]] else { return nil }
+        let notes = (json["body"] as? String) ?? ""
+        let zips = assets.compactMap { a -> URL? in
+            guard let n = a["name"] as? String, n.hasSuffix(".zip"),
+                  let s = a["browser_download_url"] as? String, let u = URL(string: s) else { return nil }
+            return u
+        }
+        guard let asset = zips.first(where: { $0.lastPathComponent.lowercased().contains("remotepairhost") }) ?? zips.first else {
+            return nil
+        }
+        return Release(tag: tag, assetURL: asset, notes: notes)
+    }
+
     // ── GitHub API ──
     private static func fetchLatest(_ done: @escaping (Result<Release, RPError>) -> Void) {
         func fail(_ m: String) { done(.failure(RPError(m))) }
-        guard let url = URL(string: "https://api.github.com/repos/\(GH_REPO)/releases/latest") else {
+        // alpha → scan the full release list (incl. pre-releases); stable → /releases/latest only.
+        let isAlpha = channel == "alpha"
+        let path = isAlpha ? "releases?per_page=30" : "releases/latest"
+        guard let url = URL(string: "https://api.github.com/repos/\(GH_REPO)/\(path)") else {
             fail("invalid repo URL: \(GH_REPO)"); return
         }
         var req = URLRequest(url: url, timeoutInterval: 15)
@@ -108,23 +139,26 @@ enum Updater {
             guard http.statusCode == 200, let data = data else {
                 fail("HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1) (no release or rate limit)"); return
             }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = json["tag_name"] as? String,
-                  let assets = json["assets"] as? [[String: Any]] else {
-                log(.debug, "fetchLatest: release JSON missing/unparseable (\(data.count) bytes)")
-                fail("failed to parse response"); return
+            let obj = try? JSONSerialization.jsonObject(with: data)
+            if isAlpha {
+                // /releases returns an array (newest-first by GitHub, but we don't rely on that — pick
+                // the genuinely-newest tag via isNewer so a back-dated draft can't win).
+                guard let arr = obj as? [[String: Any]] else {
+                    log(.debug, "fetchLatest(alpha): release list unparseable (\(data.count) bytes)")
+                    fail("failed to parse response"); return
+                }
+                let rels = arr.compactMap { release(from: $0) }
+                guard let newest = rels.max(by: { isNewer($1.tag, than: $0.tag) }) else {
+                    fail("no release with a zip asset (alpha channel)"); return
+                }
+                done(.success(newest))
+            } else {
+                guard let json = obj as? [String: Any], let rel = release(from: json) else {
+                    log(.debug, "fetchLatest: release JSON missing/unparseable (\(data.count) bytes)")
+                    fail("failed to parse response (no zip asset?)"); return
+                }
+                done(.success(rel))
             }
-            let notes = (json["body"] as? String) ?? ""
-            // prefer .zip assets (prefer those with "app" in the name)
-            let zips = assets.compactMap { a -> URL? in
-                guard let n = a["name"] as? String, n.hasSuffix(".zip"),
-                      let s = a["browser_download_url"] as? String, let u = URL(string: s) else { return nil }
-                return u
-            }
-            guard let asset = zips.first(where: { $0.lastPathComponent.lowercased().contains("remotepairhost") }) ?? zips.first else {
-                fail("no zip asset (\(tag))"); return
-            }
-            done(.success(Release(tag: tag, assetURL: asset, notes: notes)))
         }.resume()
     }
 
