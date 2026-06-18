@@ -392,6 +392,22 @@ class RemoteDesktopPanel {
       } catch (_e) {}
       return;
     }
+    // Cross-extension-host dedup: this window runs TWO local extension hosts (a pre-existing
+    // workbench quirk), so activate() — and this reveal() — runs twice and would open a SECOND "RD"
+    // tab. Editor tabs are renderer-level (visible to every exthost via tabGroups), so if an RD
+    // webview tab already exists we skip creating another. This is the robust fix for the
+    // "RD opens twice" bug (the per-instance singleton + serializer dedup cannot span exthosts).
+    try {
+      for (const g of vscode.window.tabGroups.all) {
+        for (const t of g.tabs) {
+          const vt = t.input && t.input.viewType;
+          if (typeof vt === "string" && vt.indexOf("remotepair.remoteDesktop") !== -1) {
+            log("RD: an RD tab already exists (opened by another extension host) — skipping duplicate creation");
+            return;
+          }
+        }
+      }
+    } catch (_e) {}
     const panel = vscode.window.createWebviewPanel(
       "remotepair.remoteDesktop",
       "RD",
@@ -1226,6 +1242,19 @@ function installSentryHooks() {
 
 function activate(context) {
   log("RemotePair activating…");
+
+  // RemotePair: hide the bottom status bar — it is not part of this focused remote-pair surface.
+  // The status bar's visibility is the deprecated `workbench.statusBar.visible` setting, which maps
+  // to the layout UI-state (STATUSBAR_HIDDEN); patching the schema default does NOT take effect at
+  // runtime in this build, but setting the value explicitly DOES (and reclaims the 22px row, unlike
+  // CSS display:none). Idempotent + guarded so the duplicate activate() does not thrash settings.
+  try {
+    const _cfg = vscode.workspace.getConfiguration();
+    if (_cfg.get("workbench.statusBar.visible") !== false) {
+      _cfg.update("workbench.statusBar.visible", false, vscode.ConfigurationTarget.Global)
+        .then(undefined, (e) => log(`hide status bar: ${e && e.message ? e.message : e}`, "warn"));
+    }
+  } catch (_e) { /* best-effort */ }
 
   // 0) Telemetry (opt-in, both consent flags default OFF → zero network calls). Two side effects:
   //    a) app_first_launch{is_fresh_install} — fired ONCE, gated by a globalState stamp.

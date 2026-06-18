@@ -280,6 +280,10 @@ launch_local() {
     export RP_SESSION="$SESS"
     # Route through rp_log host (uses shared lock $LOG_DIR/.remote-pair.log.lock, coordinated with Swift).
     rp_log info host "SESSION: $([ "$NEED_CREATE" = 1 ] && echo created || echo attached) $SESS (client=$LOCAL_HOST local)"
+    # RemotePair (E): surface the SSOT tmux session name as the terminal title (OSC-2) so the
+    # RemotePair IDE shows it in the Sessions sidebar header (xterm title -> instance.title ->
+    # syncTitleToActiveSession). Emitted right before exec so it lands before tmux takes over.
+    printf '\033]2;%s\007' "$SESS"
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
@@ -291,6 +295,7 @@ launch_local() {
   local TSESS="${LOCAL_PROJ}_${TN}" TCONT=1
   [ "$TN" -gt 1 ] && TCONT=0                         # _2+ → fresh
   [ "$FRESH" = 1 ] && TCONT=0
+  printf '\033]2;%s\007' "$TSESS"   # RemotePair (E): surface tmux session name as terminal title (OSC-2)
   if tmux has-session -t "=$TSESS" 2>/dev/null; then
     exec tmux attach -d -t "=$TSESS"                 # detached → take-over re-attach (-d: drop stale clients)
   else
@@ -493,6 +498,9 @@ ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | se
 [ -z "$ACTUAL_SESSION" ] && die "failed to extract remote session name" 12
 # Export RP_SESSION so any child processes on this side stamp the same correlation id.
 export RP_SESSION="$ACTUAL_SESSION"
+# RemotePair (E): surface the SSOT remote tmux session name as the (local) terminal title (OSC-2),
+# so the RemotePair IDE shows it in the Sessions sidebar header before mosh/ssh takes over the tty.
+printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
 # Phase 2: attach via mosh (UDP-based — resilient to tmux freezes / network hiccups).
 # Fall back to ssh -t if mosh is unavailable.

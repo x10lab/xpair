@@ -1086,10 +1086,10 @@ index 00000000..d5f156ec
 +}
 diff --git a/src/vs/workbench/contrib/terminal/browser/media/remotePairSessions.css b/src/vs/workbench/contrib/terminal/browser/media/remotePairSessions.css
 new file mode 100644
-index 00000000..1c8d90ec
+index 00000000..c226ad4d
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/media/remotePairSessions.css
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,48 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair Sessions sidebar: custom "+" (New Session) overlay + hide the embedded
 + *  editor-group's default toolbar (new/split/more) which we don't want for sessions.
@@ -1128,6 +1128,16 @@ index 00000000..1c8d90ec
 +	background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 +	outline: none;
 +}
++
++/* RemotePair (A-polish): Browser container title bar. Scoped via the Back button — only the Browser
++   container's title has `.codicon-arrow-left` (registered in remotePairBrowserActions.ts). Hide the
++   "BROWSER" text label, center the Files/Search/Extensions menu icons, and pin the Back (<-) button
++   to the right edge — the same corner as the Sessions "+" button. */
++.monaco-workbench .part.sidebar .composite.title:has(a.action-label.codicon-arrow-left) .title-label { display: none !important; }
++.monaco-workbench .part.sidebar .composite.title:has(a.action-label.codicon-arrow-left) { position: relative; }
++.monaco-workbench .part.sidebar .composite.title:has(a.action-label.codicon-arrow-left) .title-actions { flex: 1 1 auto; width: 100%; }
++.monaco-workbench .part.sidebar .composite.title:has(a.action-label.codicon-arrow-left) .title-actions .monaco-action-bar .actions-container { justify-content: center; }
++.monaco-workbench .part.sidebar .composite.title:has(a.action-label.codicon-arrow-left) .action-item:has(a.action-label.codicon-arrow-left) { position: absolute; right: 6px; top: 0; bottom: 0; display: flex; align-items: center; }
 diff --git a/src/vs/workbench/contrib/terminal/browser/terminal.contribution.ts b/src/vs/workbench/contrib/terminal/browser/terminal.contribution.ts
 index 97485af0..96c21a11 100644
 --- a/src/vs/workbench/contrib/terminal/browser/terminal.contribution.ts
@@ -1270,10 +1280,10 @@ index 0000000..4fd3c0e
 +}
 diff --git a/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
 new file mode 100644
-index 0000000..2dfa5fa
+index 00000000..6887d7cb
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,425 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (G005): top-of-Browser actions and per-folder session creation.
 + *
@@ -1302,6 +1312,7 @@ index 0000000..2dfa5fa
 +import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 +import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 +import { ServicesAccessor, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { IViewsService } from '../../../services/views/common/viewsService.js';
 +import { ICommandService } from '../../../../platform/commands/common/commands.js';
 +import { IListService } from '../../../../platform/list/browser/listService.js';
 +import { Codicon } from '../../../../base/common/codicons.js';
@@ -1320,6 +1331,34 @@ index 0000000..2dfa5fa
 +import { EmptyView } from './views/emptyView.js';
 +import { WorkbenchStateContext } from '../../../common/contextkeys.js';
 +import { rpLog } from '../../terminal/browser/remotePairLog.js'; // RemotePair: unified workbench logger (docs/logging.md §8)
++
++/**
++ * Browser title-bar action: Back → return the primary sidebar to the Sessions container. This is the
++ * counterpart to the Sessions "+" button (which fills the sidebar with this Browser). Rendered
++ * leftmost (order 0) in the Browser title nav cluster — the same affordance position as "+".
++ */
++registerAction2(class extends Action2 {
++	constructor() {
++		super({
++			id: 'remotepair.browser.backToSessions',
++			title: localize2('remotepairBrowserBack', "Back to Sessions"),
++			icon: Codicon.arrowLeft,
++			f1: false,
++			menu: [{
++				id: MenuId.ViewContainerTitle,
++				when: ContextKeyExpr.equals('viewContainer', VIEWLET_ID),
++				group: 'navigation',
++				order: 0
++			}]
++		});
++	}
++	run(accessor: ServicesAccessor): void {
++		// Counterpart to the Sessions "+": switch the primary sidebar back to the Sessions container
++		// (id = REMOTEPAIR_TERMINAL_SIDEBAR_ID in remotePairTerminalSidebar.ts).
++		rpLog('debug', 'browser title-bar action: back to Sessions');
++		accessor.get(IViewsService).openViewContainer('remotepair.terminalSidebar', true);
++	}
++});
 +
 +/**
 + * Browser title-bar (Row-1) action: Explorer → route the Browser inner content back to the
@@ -2899,56 +2938,51 @@ index 0000000..6e5d586
 +registerSessionTab(REMOTEPAIR_SESSIONS_HISTORY_ID, localize2('remotepairHistory', "History"), 3, RemotePairHistorySessionsView);
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
 new file mode 100644
-index 00000000..150d4d4f
+index 00000000..4d355d93
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,137 @@
 +/*---------------------------------------------------------------------------------------------
-+ *  RemotePair: in-tab "New Session" folder picker editor.
++ *  RemotePair: in-tab "New Session" Browser editor.
 + *
 + *  The Sessions sidebar "+" opens this as an editor tab inside the embedded EditorPart group.
-+ *  It hosts the SAME file tree the Browser/Explorer sidebar shows (same FilesRenderer +
-+ *  ExplorerDataSource + WorkbenchCompressibleAsyncDataTree, bound to the global IExplorerService) —
-+ *  it is "the Explorer view itself", just displayed here. Picking a FOLDER starts a Claude session
-+ *  rooted at that folder via the existing `remotepair.terminalSidebar.openSessionInFolder` command.
-+ *  No kind-picker: Claude is the only/default session kind, reached directly.
++ *  It hosts the REAL Browser/Explorer viewlet — the registered Explorer view CONTAINER
++ *  (VIEWLET_ID = 'workbench.view.explorer', class ExplorerViewPaneContainer) instantiated as a
++ *  PaneComposite and laid out host-agnostically inside this EditorPane. That means the tab shows
++ *  the full Browser: the file tree PLUS its title toolbar (New File / New Folder / Refresh /
++ *  Collapse All) PLUS Search — exactly what the Browser sidebar viewlet shows, because the toolbar
++ *  actions (MenuId.ViewTitle, gated `when: view == workbench.explorer.fileView`) travel WITH the
++ *  ExplorerView pane header and render as long as the container is not merged-single-view.
 + *
-+ *  Blank-render note: the documented embedded-EditorPart blank saga (the `.part.editor` 5-layer fix)
-+ *  was the INVERSE case — an EditorPart hosted INSIDE a sidebar ViewPane. Here the host IS an
-+ *  EditorPane whose content already lives under `.part.editor`, so the tree paints; the only gotcha
-+ *  is driving setVisible + layout so the async data source loads roots and the tree gets a size.
++ *  Starting a Claude session rooted at a folder is NOT done by clicking a row here (the real
++ *  Explorer click opens files / expands folders). The Browser already exposes a per-folder hover
++ *  action `remotepair.terminalSidebar.openSessionInFolder` for that.
++ *
++ *  Blank-render note: the only gotcha hosting a composite in an EditorPane is driving setVisible +
++ *  layout so the ViewPaneContainer's panes load and get a real size. We do that in
++ *  setEditorVisible() and layout() with the FULL dimension.
 + *--------------------------------------------------------------------------------------------*/
 +
 +import { localize } from '../../../../nls.js';
 +import { append, $, Dimension } from '../../../../base/browser/dom.js';
 +import { URI } from '../../../../base/common/uri.js';
-+import { Event } from '../../../../base/common/event.js';
-+import { CancellationToken } from '../../../../base/common/cancellation.js';
 +import { DisposableStore } from '../../../../base/common/lifecycle.js';
-+import { FuzzyScore } from '../../../../base/common/filters.js';
-+import { EditorInputCapabilities, IEditorOpenContext, IUntypedEditorInput } from '../../../common/editor.js';
++import { Registry } from '../../../../platform/registry/common/platform.js';
++import { EditorInputCapabilities, IUntypedEditorInput } from '../../../common/editor.js';
 +import { EditorInput } from '../../../common/editor/editorInput.js';
 +import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
 +import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
-+import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 +import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 +import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 +import { IStorageService } from '../../../../platform/storage/common/storage.js';
 +import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-+import { ICommandService } from '../../../../platform/commands/common/commands.js';
-+import { WorkbenchCompressibleAsyncDataTree } from '../../../../platform/list/browser/listService.js';
-+import { ResourceLabels } from '../../../browser/labels.js';
-+import { ExplorerItem } from '../../files/common/explorerModel.js';
-+import { IExplorerService } from '../../files/browser/files.js';
-+import {
-+	ExplorerDelegate, ExplorerDataSource, FilesRenderer, FilesFilter, FileSorter,
-+	FileDragAndDrop, ExplorerCompressionDelegate, ExplorerFindProvider
-+} from '../../files/browser/views/explorerViewer.js';
-+import { createFileIconThemableTreeContainerScope } from '../../files/browser/views/explorerView.js';
++import { PaneComposite, Extensions as PaneCompositeExtensions, PaneCompositeRegistry } from '../../../browser/panecomposite.js';
 +import { rpLog } from './remotePairLog.js';
 +
-+// Session kind kept as a type for the Session Manager's reattach path (remotePairTerminalSidebar.ts);
-+// the in-tab picker no longer offers a kind choice — folder selection starts the default (Claude).
++// The real Browser/Explorer view container id (see contrib/files/common/files.ts VIEWLET_ID).
++const EXPLORER_VIEWLET_ID = 'workbench.view.explorer';
++
++// Session kind kept as a type for the Session Manager's reattach path (remotePairTerminalSidebar.ts).
 +export type SessionKind = 'claude' | 'shell' | 'codex' | 'gemini';
 +
 +export const SESSION_PICKER_RESOURCE = URI.from({ scheme: 'remotepair-session-picker', path: '/new' });
@@ -2964,11 +2998,10 @@ index 00000000..150d4d4f
 +
 +export class SessionPickerPane extends EditorPane {
 +	static readonly ID = 'remotepair.sessionPickerPane';
-+	private root: HTMLElement | undefined;
-+	private treeContainer: HTMLElement | undefined;
-+	private tree: WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore> | undefined;
-+	private readonly treeDisposables = this._register(new DisposableStore());
-+	private inputSet = false;
++	private holder: HTMLElement | undefined;
++	private composite: PaneComposite | undefined;
++	private lastDimension: Dimension | undefined;
++	private readonly compositeDisposables = this._register(new DisposableStore());
 +
 +	constructor(
 +		group: IEditorGroup,
@@ -2976,121 +3009,82 @@ index 00000000..150d4d4f
 +		@IThemeService themeService: IThemeService,
 +		@IStorageService storageService: IStorageService,
 +		@IInstantiationService private readonly instantiationService: IInstantiationService,
-+		@IExplorerService private readonly explorerService: IExplorerService,
-+		@ICommandService private readonly commandService: ICommandService,
 +	) {
 +		super(SessionPickerPane.ID, group, telemetryService, themeService, storageService);
 +	}
 +
 +	protected createEditor(parent: HTMLElement): void {
-+		rpLog('debug', 'session picker: building real Explorer tree');
-+		const root = this.root = append(parent, $('div.remotepair-session-picker'));
-+		root.style.cssText = 'height:100%;width:100%;display:flex;flex-direction:column;box-sizing:border-box;';
++		rpLog('debug', 'session picker: hosting real Explorer viewlet (PaneComposite)');
 +
-+		const title = append(root, $('div'));
-+		title.textContent = localize('rpPickerTitle', "Pick a folder to start a Claude session");
-+		title.style.cssText = 'font-size:13px;font-weight:600;opacity:0.8;padding:10px 12px 6px;flex:0 0 auto;';
++		// Full-size holder. Deliberately NOT classed `part`/`editor` (that was an unrelated
++		// embedded-EditorPart hack) — this holder just gives the composite a sized box.
++		const holder = this.holder = append(parent, $('div.remotepair-session-picker'));
++		holder.style.cssText = 'height:100%;width:100%;position:relative;box-sizing:border-box;';
 +
-+		// Same DOM the Explorer view uses: a flex-1 .explorer-folders-view holding the tree.
-+		this.treeContainer = append(root, $('.explorer-folders-view'));
-+		this.treeContainer.style.cssText = 'flex:1 1 auto;min-height:0;overflow:hidden;';
-+		this.createTree(this.treeContainer);
-+	}
-+
-+	/** Rebuild the Browser/Explorer tree (same renderer + data source + tree class). */
-+	private createTree(container: HTMLElement): void {
-+		const filter = this.treeDisposables.add(this.instantiationService.createInstance(FilesFilter));
-+		const labels = this.treeDisposables.add(this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: Event.None }));
-+		const findProvider = this.instantiationService.createInstance(ExplorerFindProvider, filter, () => this.tree!);
-+		const updateWidth = (stat: ExplorerItem) => this.tree!.updateWidth(stat);
-+		const renderer = this.treeDisposables.add(this.instantiationService.createInstance(FilesRenderer, container, labels, findProvider.highlightTree, updateWidth));
-+		this.treeDisposables.add(createFileIconThemableTreeContainerScope(container, this.themeService));
-+
-+		const tree = this.tree = this.instantiationService.createInstance(
-+			WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore>,
-+			'RemotePairSessionFolderPicker', container, new ExplorerDelegate(), new ExplorerCompressionDelegate(), [renderer],
-+			this.instantiationService.createInstance(ExplorerDataSource, filter, findProvider), {
-+			compressionEnabled: false,
-+			accessibilityProvider: renderer,
-+			identityProvider: { getId: (stat: ExplorerItem) => stat.getId() },
-+			keyboardNavigationLabelProvider: {
-+				getKeyboardNavigationLabel: (stat: ExplorerItem) => stat.name,
-+				getCompressedNodeKeyboardNavigationLabel: (stats: ExplorerItem[]) => stats.map(s => s.name).join('/'),
-+			},
-+			multipleSelectionSupport: false,
-+			filter,
-+			sorter: this.instantiationService.createInstance(FileSorter),
-+			dnd: this.instantiationService.createInstance(FileDragAndDrop, (item: ExplorerItem) => this.tree!.isCollapsed(item)),
-+			collapseByDefault: () => true,
-+			autoExpandSingleChildren: true,
-+			paddingBottom: ExplorerDelegate.getHeight(),
-+			findProvider,
-+		});
-+		this.treeDisposables.add(tree);
-+
-+		// Folder-only open contract: opening a FOLDER row → start a Claude session rooted there.
-+		this.treeDisposables.add(tree.onDidOpen(e => {
-+			const el = e.element;
-+			if (el && el.isDirectory) {
-+				const uri = el.resource;
-+				rpLog('info', `session picker: folder chosen -> openSessionInFolder ${uri.toString()}`);
-+				this.commandService.executeCommand('remotepair.terminalSidebar.openSessionInFolder', uri)
-+					.then(undefined, (err: unknown) => rpLog('warn', `session picker: openSessionInFolder failed: ${err}`));
-+			}
-+		}));
-+	}
-+
-+	/** Load the workspace roots into the tree (same input shape as ExplorerView.setTreeInput). */
-+	private async setTreeInput(): Promise<void> {
-+		const tree = this.tree;
-+		if (!tree) { return; }
-+		const roots = this.explorerService.roots;
-+		try {
-+			await tree.setInput(roots);
-+			for (let i = 0; i < Math.min(roots.length, 5); i++) {
-+				await tree.expand(roots[i]).catch(() => { });
-+			}
-+		} catch (e) {
-+			rpLog('warn', `session picker: setInput failed: ${e}`);
++		const reg = Registry.as<PaneCompositeRegistry>(PaneCompositeExtensions.Viewlets);
++		const desc = reg.getPaneComposite(EXPLORER_VIEWLET_ID);
++		if (!desc) {
++			rpLog('warn', `session picker: Explorer viewlet descriptor '${EXPLORER_VIEWLET_ID}' not found; tab will be empty`);
++			return;
 +		}
-+	}
 +
-+	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
-+		await super.setInput(input, options, context, token);
-+		if (!this.inputSet) {
-+			this.inputSet = true;
-+			await this.setTreeInput();
++		const composite = this.composite = desc.instantiate(this.instantiationService);
++		this.compositeDisposables.add(composite);
++		composite.create(holder);
++		composite.setVisible(true);
++
++		// If we already have a size (createEditor can run after a layout), apply it now.
++		if (this.lastDimension) {
++			composite.layout(this.lastDimension);
 +		}
 +	}
 +
 +	protected override setEditorVisible(visible: boolean): void {
 +		super.setEditorVisible(visible);
-+		// First real visibility after the embedded part is sized: ensure roots are loaded.
-+		if (visible && this.tree && !this.tree.getInput()) {
-+			this.setTreeInput();
++		this.composite?.setVisible(visible);
++		// On first real visibility, ensure the composite is laid out so its panes load + size.
++		if (visible && this.composite && this.lastDimension) {
++			this.composite.layout(this.lastDimension);
 +		}
++	}
++
++	override focus(): void {
++		super.focus();
++		this.composite?.focus();
 +	}
 +
 +	layout(dimension: Dimension): void {
-+		if (this.root) {
-+			this.root.style.height = `${dimension.height}px`;
-+			this.root.style.width = `${dimension.width}px`;
++		this.lastDimension = dimension;
++		if (this.holder) {
++			this.holder.style.height = `${dimension.height}px`;
++			this.holder.style.width = `${dimension.width}px`;
 +		}
-+		// Title row is flex:0; give the rest to the tree.
-+		this.tree?.layout(Math.max(0, dimension.height - 36), dimension.width);
++		this.composite?.layout(dimension);
 +	}
 +
 +	override clearInput(): void {
-+		this.inputSet = false;
++		this.disposeComposite();
 +		super.clearInput();
++	}
++
++	override dispose(): void {
++		this.disposeComposite();
++		super.dispose();
++	}
++
++	private disposeComposite(): void {
++		if (this.composite) {
++			this.compositeDisposables.clear();
++			this.composite = undefined;
++		}
 +	}
 +}
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
 new file mode 100644
-index 00000000..58918ac0
+index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,585 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3134,6 +3128,7 @@ index 00000000..58918ac0
 +import { IViewsService } from '../../../services/views/common/viewsService.js';
 +import { EditorInput } from '../../../common/editor/editorInput.js';
 +import { SessionPickerInput } from './remotePairSessionPicker.js';
++import { VIEWLET_ID as BROWSER_VIEWLET_ID } from '../../files/common/files.js';
 +import { setSessionReattacher, setAttachedSessionsProvider, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
 +import { rpLog } from './remotePairLog.js';
 +
@@ -3523,9 +3518,10 @@ index 00000000..58918ac0
 +		this.partDisposables.add(part.onDidChangeActiveGroup(group => this.trackActiveGroup(group)));
 +		this.trackActiveGroup(part.activeGroup);
 +
-+		// RemotePair: on launch, show the New Session picker first (not an empty terminal).
-+		// A terminal editor is created only when the user picks Claude/Shell/Codex/Gemini.
-+		this.openSessionPicker();
++		// RemotePair: on launch the Sessions sidebar shows running session terminals (if any). The
++		// "+" New Session button fills the primary sidebar with the Browser container (folder picker);
++		// picking a folder starts a Claude session and returns here. (We no longer open an in-tab
++		// picker — hosting the Explorer viewlet in an editor pane could not populate its views.)
 +	}
 +
 +	protected override layoutBody(height: number, width: number): void {
@@ -3625,11 +3621,10 @@ index 00000000..58918ac0
 +		});
 +	}
 +	run(accessor: ServicesAccessor): void {
-+		const viewsService = accessor.get(IViewsService);
-+		const view = viewsService.getActiveViewWithId(REMOTEPAIR_TERMINAL_SIDEBAR_ID + '.view');
-+		if (view instanceof RemotePairTerminalSidebarView) {
-+			view.openSessionPicker();
-+		}
++		// New Session: fill the primary sidebar with the real Browser container so the user can pick
++		// a folder (the Browser renders natively here). The Browser's "Back to Sessions" title button
++		// returns here; picking a folder starts a Claude session and also returns here.
++		accessor.get(IViewsService).openViewContainer(BROWSER_VIEWLET_ID, true);
 +	}
 +});
 +
@@ -3788,3 +3783,35 @@ index 10fcbca0..2dbdd0e7 100644
  	group: 'navigation',
  	order: 2
  });
+
+diff --git a/src/vs/workbench/browser/workbench.contribution.ts b/src/vs/workbench/browser/workbench.contribution.ts
+index 3c7242ab..d29f74fd 100644
+--- a/src/vs/workbench/browser/workbench.contribution.ts
++++ b/src/vs/workbench/browser/workbench.contribution.ts
+@@ -623,7 +623,7 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
+ 			},
+ 			'workbench.statusBar.visible': {
+ 				'type': 'boolean',
+-				'default': true,
++				'default': false, // RemotePair: status bar hidden by default (focused remote-pair surface, no rail/statusbar chrome)
+ 				'description': localize('statusBarVisibility', "Controls the visibility of the status bar at the bottom of the workbench."),
+ 				agentsWindow: { default: false, readOnly: true },
+ 			},
+@@ -650,7 +650,7 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
+ 			[LayoutSettings.ACTIVITY_BAR_LOCATION]: {
+ 				'type': 'string',
+ 				'enum': ['default', 'top', 'bottom', 'hidden'],
+-				'default': 'default',
++				'default': 'hidden', // RemotePair: no activity-bar rail; Sessions is the only, fixed primary sidebar
+ 				'markdownDescription': localize({ comment: ['This is the description for a setting'], key: 'activityBarLocation' }, "Controls the location of the Activity Bar relative to the Primary and Secondary Side Bars."),
+ 				'enumDescriptions': [
+ 					localize('workbench.activityBar.location.default', "Show the Activity Bar on the side of the Primary Side Bar and on top of the Secondary Side Bar."),
+@@ -861,7 +861,7 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
+ 			},
+ 			[LayoutSettings.LAYOUT_ACTIONS]: {
+ 				'type': 'boolean',
+-				'default': true,
++				'default': false, // RemotePair: hide the title-bar layout toggles (sidebar/panel are fixed open)
+ 				'markdownDescription': isWeb ?
+ 					localize('layoutControlEnabledWeb', "Controls whether the layout control in the title bar is shown.") :
+ 					localize({ key: 'layoutControlEnabled', comment: ['{0}, {1} is a placeholder for a setting identifier.'] }, "Controls whether the layout control is shown in the custom title bar. This setting only has an effect when {0} is not set to {1}.", '`#window.customTitleBarVisibility#`', '`never`'),
