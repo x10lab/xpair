@@ -22,13 +22,18 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
     private var webView: WKWebView!
     private let onComplete: () -> Void
     private let mode: Mode
+    /// Deep-link the React onboarding to a specific step on open (e.g. "permissions"). nil = start at
+    /// the beginning (Welcome) — used by "Configure…" to show the whole flow from scratch.
+    private let initialStep: String?
     // Set true once the React side calls complete() (Screen Recording granted). Distinguishes a
     // legitimate finish from the user dismissing the window while still ungranted (→ hard gate quit).
     private var completed = false
 
     /// onComplete is invoked on the main thread when the React onboarding signals completion.
-    init(mode: Mode = .runGate, onComplete: @escaping () -> Void) {
+    /// `initialStep` deep-links the flow (e.g. "permissions"); nil starts at Welcome.
+    init(mode: Mode = .runGate, initialStep: String? = nil, onComplete: @escaping () -> Void) {
         self.mode = mode
+        self.initialStep = initialStep
         self.onComplete = onComplete
         super.init()
     }
@@ -48,6 +53,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         getStatus: () => post('getStatus', []),
         getConsent: () => post('getConsent', []),
         setConsent: (c) => post('setConsent', [c]),
+        connectedClients: () => post('connectedClients', []),
         complete: () => post('complete', []),
       };
     })();
@@ -63,10 +69,11 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
                                   injectionTime: .atDocumentStart,
                                   forMainFrameOnly: true)
         controller.addUserScript(script)
-        // Grant-only: deep-link the React onboarding straight to the Permissions step. Injected
-        // atDocumentStart (before the app bundle runs) so App.tsx reads it on first render.
-        if mode == .grantOnly {
-            let stepScript = WKUserScript(source: "window.__rp_initialStep = 'permissions';",
+        // Deep-link the React onboarding straight to a specific step (e.g. "permissions" / "connect").
+        // Injected atDocumentStart (before the app bundle runs) so App.tsx reads it on first render.
+        // nil = start at Welcome (the whole flow from scratch), so inject nothing.
+        if let step = initialStep {
+            let stepScript = WKUserScript(source: "window.__rp_initialStep = '\(step)';",
                                           injectionTime: .atDocumentStart,
                                           forMainFrameOnly: true)
             controller.addUserScript(stepScript)
@@ -174,6 +181,14 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
                                           forKey: SentryBridge.consentKey)
             }
             replyHandler(nil, nil)
+
+        case "connectedClients":
+            // Read-only: the connected-client list (ts within the freshness window). Reuses the same
+            // helper the menu bar uses. Never throws to the renderer — list() returns [] on any error.
+            let clients = ConnectedClients.list().map {
+                ["name": $0.name, "user": $0.user, "ageSec": $0.ageSec] as [String: Any]
+            }
+            replyHandler(clients, nil)
 
         case "complete":
             replyHandler(nil, nil)

@@ -17,6 +17,10 @@ const os = require('node:os')
 const bridge = require('./onboarding-bridge.js')
 let telemetry = null
 try { telemetry = require('./telemetry.js') } catch { /* telemetry optional */ }
+// CLIENT→HOST liveness heartbeat — started here so the onboarding window already counts as a
+// connected client. The workbench keeps it going afterwards, so stop is OPTIONAL here.
+let heartbeat = null
+try { heartbeat = require('./heartbeat.js') } catch { /* heartbeat optional */ }
 
 const WEBVIEW_INDEX = path.join(__dirname, 'onboarding-webview', 'dist', 'index.html')
 const PRELOAD = path.join(__dirname, 'onboarding-preload.cjs')
@@ -118,6 +122,8 @@ function openOnboardingWindow({ electron, onComplete }) {
   // guarantees exactly one forced run — a later normal launch won't re-trigger onboarding.
   clearForceOnboardingSentinel()
   try { if (telemetry && telemetry.firstRunStamp) telemetry.firstRunStamp() } catch { /* */ }
+  // Count the onboarding window as a connected client (fire-and-forget; never blocks/throws).
+  try { if (heartbeat && heartbeat.startHeartbeat) heartbeat.startHeartbeat() } catch { /* */ }
   wireIpc(ipcMain, onComplete)
 
   _win = new BrowserWindow({

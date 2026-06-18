@@ -1,7 +1,7 @@
 // AppDelegate.swift — menu bar (NSStatusItem) + dynamic session list + permissions/settings/update/About routing.
 //
 // Separation of responsibilities: tmux host=HostManager, approve=ApproveManager, session query/control=Sessions,
-//            permissions=Permissions, updates=Updater, settings window=SettingsWindowController.
+//            permissions=Permissions, updates=Updater, setup/onboarding=OnboardingWindow.
 // The menu redraws the session list on every open via NSMenuDelegate.menuNeedsUpdate.
 
 import Cocoa
@@ -14,7 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var menu: NSMenu!
     var hostTimer: Timer?
     var tickTimer: Timer?
-    var settings: SettingsWindowController?
     var onboarding: OnboardingWindow?   // shown while Screen Recording is ungranted (hard run-gate)
     var grantWindow: OnboardingWindow?  // menu-bar "Grant Permissions…" — onboarding deep-linked to the Permissions step
 
@@ -118,10 +117,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
 
-        // permission status + grant (CLIENT = access-only: status only, Grant item shown on host/both only)
-        let perm = NSMenuItem(title: Permissions.summary(), action: nil, keyEquivalent: "")
-        perm.isEnabled = false
-        menu.addItem(perm)
+        // permission status + grant. One short row per permission (full names, line-broken) so the
+        // dropdown stays narrow instead of one long summary line. (Grant item: host/both only.)
+        let permHeader = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
+        permHeader.isEnabled = false
+        menu.addItem(permHeader)
+        for (name, granted) in [("Accessibility", Permissions.axTrusted()),
+                                ("Screen Recording", Permissions.srGranted()),
+                                ("Full Disk", Permissions.fdaGranted())] {
+            let row = NSMenuItem(title: "   \(name)  \(granted ? "✓" : "✗")", action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            menu.addItem(row)
+        }
         if isHostRole {
             menu.addItem(withTitle: "Permissions…", action: #selector(grantPermissions), keyEquivalent: "")
         }
@@ -137,6 +144,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let si = NSMenuItem(title: shr, action: nil, keyEquivalent: "")
             si.isEnabled = false
             menu.addItem(si)
+            menu.addItem(.separator())
+
+            // Connected clients (host only). Read-only status — no click action, no disconnect. The
+            // menu rebuilds on each open (menuNeedsUpdate) so this stays fresh. A client counts as
+            // connected if its heartbeat ts is within ConnectedClients.freshnessSec of now.
+            let clientHeader = NSMenuItem(title: "Clients", action: nil, keyEquivalent: "")
+            clientHeader.isEnabled = false
+            menu.addItem(clientHeader)
+            let clients = ConnectedClients.list()
+            if clients.isEmpty {
+                let none = NSMenuItem(title: "   (none connected)", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                menu.addItem(none)
+            } else {
+                for c in clients {
+                    let row = NSMenuItem(title: "   \(c.name)  (\(c.user))", action: nil, keyEquivalent: "")
+                    row.isEnabled = false
+                    menu.addItem(row)
+                }
+            }
             menu.addItem(.separator())
         }
 
@@ -177,7 +204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        // "Connect…" (host only): deep-link the onboarding to the client-connection guide step.
+        if isHostRole {
+            menu.addItem(withTitle: "Connect…", action: #selector(connectClient), keyEquivalent: "")
+        }
+        // "Set up…" IS the onboarding (replaces the old Settings window): open the whole flow from
+        // scratch (Welcome). initialStep nil → no deep-link.
+        menu.addItem(withTitle: "Set up…", action: #selector(openSetup), keyEquivalent: ",")
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "")
         menu.addItem(withTitle: "About \(APP_NAME)", action: #selector(about), keyEquivalent: "")
         menu.addItem(.separator())
@@ -222,16 +255,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // already running, so closing the window does NOT quit it (unlike the launch run-gate). Pre-
         // register the TCC entries so the user only flips the toggles in System Settings.
         Permissions.request("ax"); Permissions.request("sr")
-        let ob = OnboardingWindow(mode: .grantOnly, onComplete: { [weak self] in self?.grantWindow = nil })
+        let ob = OnboardingWindow(mode: .grantOnly, initialStep: "permissions",
+                                  onComplete: { [weak self] in self?.grantWindow = nil })
         grantWindow = ob
         ob.show()
     }
-    @objc func checkUpdates() { Updater.checkForUpdates(interactive: true) }
 
-    @objc func openSettings() {
-        if settings == nil { settings = SettingsWindowController() }
-        settings?.show()
+    @objc func connectClient() {
+        // Open the in-app onboarding deep-linked to the client-connection guide step (host only).
+        // Grant-only mode: closing the window does NOT quit the running app.
+        let ob = OnboardingWindow(mode: .grantOnly, initialStep: "connect",
+                                  onComplete: { [weak self] in self?.grantWindow = nil })
+        grantWindow = ob
+        ob.show()
     }
+
+    @objc func openSetup() {
+        // "Set up…" IS the onboarding: open the whole flow from scratch (Welcome). Grant-only mode so
+        // closing it never quits the running app. initialStep nil → no deep-link.
+        let ob = OnboardingWindow(mode: .grantOnly, initialStep: nil,
+                                  onComplete: { [weak self] in self?.grantWindow = nil })
+        grantWindow = ob
+        ob.show()
+    }
+
+    @objc func checkUpdates() { Updater.checkForUpdates(interactive: true) }
 
     @objc func about() {
         let a = NSAlert()

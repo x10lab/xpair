@@ -20,6 +20,11 @@ const net = require("net");
 // Self-contained stdlib-only module — does NOT add an external npm dependency.
 const telemetry = require("./telemetry.js");
 
+// CLIENT→HOST liveness heartbeat: while the workbench is alive, periodically write a small file to
+// the host over SSH so the host can show this client as connected. Self-contained, stdlib-only,
+// fire-and-forget (never crashes/blocks the IDE).
+const heartbeat = require("./heartbeat.js");
+
 // --- constants -------------------------------------------------------------
 
 // Build-time generated from the monorepo shared/ SoT (screen-protocol + identity).
@@ -1243,6 +1248,10 @@ function installSentryHooks() {
 function activate(context) {
   log("RemotePair activating…");
 
+  // Start the CLIENT→HOST liveness heartbeat (writes now + every 30s; idempotent across
+  // activations). Fire-and-forget — must never block or crash activation.
+  try { heartbeat.startHeartbeat(); } catch (e) { log(`heartbeat start: ${e && e.message ? e.message : e}`, "warn"); }
+
   // RemotePair: hide the bottom status bar — it is not part of this focused remote-pair surface.
   // The status bar's visibility is the deprecated `workbench.statusBar.visible` setting, which maps
   // to the layout UI-state (STATUSBAR_HIDDEN); patching the schema default does NOT take effect at
@@ -1483,6 +1492,9 @@ function activate(context) {
   log("RemotePair activated.");
 }
 
-function deactivate() {}
+function deactivate() {
+  // Stop the heartbeat and best-effort remove the host file so the host expires this client promptly.
+  try { heartbeat.stopHeartbeat(); } catch { /* never let teardown throw */ }
+}
 
 module.exports = { activate, deactivate };

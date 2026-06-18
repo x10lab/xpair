@@ -65,10 +65,8 @@ final class SettingsWindowController: NSWindowController {
 
         let row = NSStackView()
         row.orientation = .horizontal; row.spacing = 8
-        // CLIENT = access-only: omit the 'Grant Permissions' button (host/both only). The rest are identical.
-        var buttons: [(String, Selector)] = []
-        if isHostRole { buttons.append(("Grant Permissions…", #selector(grant))) }
-        buttons += [("Check for Updates…", #selector(update)),
+        // Permission granting now lives in the onboarding ("Set up…"/"Permissions…" menu items), not here.
+        let buttons: [(String, Selector)] = [("Check for Updates…", #selector(update)),
                     ("Open Folder", #selector(openDir)),
                     ("Refresh", #selector(refresh))]
         for (t, sel) in buttons {
@@ -91,7 +89,6 @@ final class SettingsWindowController: NSWindowController {
         // Takes effect on next launch (SentryBridge.setupIfConsented runs at startup); no live re-init here.
         UserDefaults.standard.set(crashConsent.state == .on, forKey: SentryBridge.consentKey)
     }
-    @objc private func grant() { Permissions.requestAndOpen(); refresh() }
     @objc private func update() { Updater.checkForUpdates(interactive: true) }
     @objc private func openDir() {
         ensureDirs()

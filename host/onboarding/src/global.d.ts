@@ -12,6 +12,8 @@ declare global {
       // Both flags are opt-in (default OFF). Maps to UserDefaults RPTelemetryConsent / RPCrashReportConsent.
       getConsent: () => Promise<{ telemetry: boolean; crash: boolean }>
       setConsent: (c: { telemetry: boolean; crash: boolean }) => Promise<void>
+      // Read-only: clients currently connected (heartbeat ts within the freshness window). [] when none.
+      connectedClients: () => Promise<Array<{ name: string; user: string; ageSec: number }>>
       complete: () => Promise<void>
     }
   }

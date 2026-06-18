@@ -31,58 +31,14 @@ enum Permissions {
         }
     }
 
-    /// One-line summary for the menu bar status. e.g. "Permissions: Accessibility ✓  Screen Recording ✗  Full Disk ✗"
+    /// One-line summary (used by the Settings window text blob). The menu bar renders permissions as
+    /// one short row each (see AppDelegate.rebuildMenu) so the dropdown stays narrow.
     static func summary() -> String {
         "Permissions: Accessibility \(axTrusted() ? "✓" : "✗")  Screen Recording \(srGranted() ? "✓" : "✗")  Full Disk \(fdaGranted() ? "✓" : "✗")"
     }
 
     /// Only checks computer-use's required gates (FDA is recommended, so it's not a gate).
     static func allGranted() -> Bool { axTrusted() && srGranted() }
-
-    /// Trigger the permission prompts + open the relevant settings pane + show guidance.
-    static func requestAndOpen() {
-        // CLIENT = ACCESS-ONLY: never raise the AX/SR system prompts (this machine is not a permission boundary).
-        // Return early before calling either prompt API (AXIsProcessTrustedWithOptions / CGRequestScreenCaptureAccess).
-        if isClientRole {
-            let a = NSAlert()
-            a.messageText = "This machine is client (access-only)"
-            a.informativeText = """
-            A client machine does not request permissions (Accessibility / Screen Recording).
-            computer-use permissions are granted only on host (host/both) machines.
-            This machine connects to a host via the 'remote-pair' CLI and uses its sessions.
-            """
-            a.addButton(withTitle: "OK")
-            bringToFront()
-            a.runModal()
-            return
-        }
-        // Trigger the system prompts (a dialog on first run, no-op once already decided).
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(opts)
-        if !srGranted() { CGRequestScreenCaptureAccess() }
-
-        let panes = [
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-        ]
-        for u in panes { if let url = URL(string: u) { NSWorkspace.shared.open(url) } }
-
-        let a = NSAlert()
-        a.messageText = "Grant permissions (one time)"
-        a.informativeText = """
-        In System Settings → Privacy & Security, turn on \(APP_NAME):
-          • Accessibility               [required]    : \(axTrusted() ? "✓ already on" : "OFF — turn on")
-          • Screen Recording            [required]    : \(srGranted() ? "✓ already on" : "OFF — turn on")
-          • Full Disk Access            [recommended] : \(fdaGranted() ? "✓ already on" : "OFF — turn on if headless")
-        If it's not in the list, add /Applications/\(APP_NAME).app with +.
-        Full Disk Access removes the folder prompts that can't be clicked remotely, but lets every session read the whole disk (trade-off).
-        After toggling, use 'Restart tmux host' from the menu to pick up the grant.
-        """
-        a.addButton(withTitle: "OK")
-        bringToFront()
-        a.runModal()
-    }
 
     /// Onboarding-triggered single-permission request (the onboarding owns the surrounding UI, so no alert/panes here).
     /// AX → AXIsProcessTrustedWithOptions(prompt) shows the system prompt AND registers the app in the Accessibility list.

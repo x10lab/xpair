@@ -8,21 +8,23 @@ import {
   StepPermissions,
   type PermState,
 } from "@/components/onboarding/host/StepPermissions";
+import { StepWaiting } from "@/components/onboarding/host/StepWaiting";
 import { StepDone } from "@/components/onboarding/host/StepDone";
 
-// The app self-launches this onboarding AFTER it is already installed, so there is no
-// install step and no "waiting for client" step — just Welcome → Permissions → Done.
-const STEP_TITLES = ["Welcome", "Permissions", "Done"];
+// The app self-launches this onboarding AFTER it is already installed, so there is no install step:
+// Welcome(0) → Permissions(1) → Connect(2) → Done(3).
+const STEP_TITLES = ["Welcome", "Permissions", "Connect", "Done"];
 
 export default function App() {
-  // The host can deep-link this onboarding straight to the Permissions step (menu-bar
-  // "Grant Permissions…"): OnboardingWindow injects window.__rp_initialStep before app code runs.
-  const initialStep =
-    typeof window !== "undefined" &&
-    (window as unknown as { __rp_initialStep?: string }).__rp_initialStep === "permissions"
-      ? 1
-      : 0;
-  const w = useWizard(3, initialStep);
+  // The host can deep-link this onboarding to a specific step (menu-bar "Permissions…"/"Connect…"):
+  // OnboardingWindow injects window.__rp_initialStep before app code runs. 'permissions'→1, 'connect'→2,
+  // anything else (incl. unset, "Set up…")→0 (Welcome).
+  const deepLink =
+    typeof window !== "undefined"
+      ? (window as unknown as { __rp_initialStep?: string }).__rp_initialStep
+      : undefined;
+  const initialStep = deepLink === "permissions" ? 1 : deepLink === "connect" ? 2 : 0;
+  const w = useWizard(4, initialStep);
   const [perm, setPerm] = useState<PermState>({
     ax: "pending",
     sr: "pending",
@@ -64,7 +66,8 @@ export default function App() {
       <AnimatedStep stepKey={w.index} direction={w.direction}>
         {w.index === 0 && <StepWelcome />}
         {w.index === 1 && <StepPermissions state={perm} setState={setPerm} />}
-        {w.index === 2 && <StepDone />}
+        {w.index === 2 && <StepWaiting />}
+        {w.index === 3 && <StepDone />}
       </AnimatedStep>
     </WizardShell>
   );

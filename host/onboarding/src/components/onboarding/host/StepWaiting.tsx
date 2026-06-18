@@ -1,92 +1,95 @@
 import { useEffect, useState } from "react";
 import { Check, Laptop, Wifi } from "lucide-react";
-import { Button } from "@/components/ui/button";
 
-export type ConnectedClient = { name: string; ip: string; user: string };
+export type ConnectedClient = { name: string; user: string; ageSec: number };
 
-type Props = {
-  connected: ConnectedClient | null;
-  onSimulate: () => void;
-};
-
-export function StepWaiting({ connected, onSimulate }: Props) {
+// Connect step: guide the user to bring up RemotePair on their other Mac, then poll the host bridge
+// for connected clients. Read-only — there is no disconnect/revoke, only live status.
+export function StepWaiting() {
   const [dots, setDots] = useState(1);
   const [hostname, setHostname] = useState("…");
+  const [clients, setClients] = useState<ConnectedClient[]>([]);
 
   useEffect(() => {
     window.remotepair.getHostInfo().then((i) => setHostname(i.hostname)).catch(() => {});
   }, []);
 
+  // Poll the connected-client list every 3s. connectedClients() never throws (host returns [] on error).
   useEffect(() => {
-    if (connected) return;
+    let alive = true;
+    const tick = () => {
+      window.remotepair
+        .connectedClients()
+        .then((list) => { if (alive) setClients(list); })
+        .catch(() => {});
+    };
+    tick();
+    const t = setInterval(tick, 3000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // Animate the "waiting…" dots only while nobody is connected.
+  useEffect(() => {
+    if (clients.length > 0) return;
     const t = setInterval(() => setDots((d) => (d % 3) + 1), 500);
     return () => clearInterval(t);
-  }, [connected]);
+  }, [clients.length]);
 
-  if (connected) {
-    return (
-      <div className="flex flex-col items-center text-center">
-        <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <Check className="h-7 w-7" />
-        </div>
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">
-          Client connected
-        </h2>
-        <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-          You can keep this Mac running — sessions stay alive 24/7.
-        </p>
-
-        <div className="mt-6 w-full max-w-xs rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-left">
-          <div className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-wide text-primary">
-            <Laptop className="h-3 w-3" />
-            Connected from
-          </div>
-          <div className="font-mono text-sm text-foreground">{connected.name}</div>
-          <div className="mt-0.5 font-mono text-xs text-muted-foreground">
-            {connected.user}@{connected.ip}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const connected = clients.length > 0;
 
   return (
     <div className="flex flex-col items-center text-center">
-      <div className="relative mb-6 h-20 w-20">
-        <span className="radar-ring" />
-        <span className="radar-ring" style={{ animationDelay: "0.7s" }} />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary soft-pulse">
-            <Wifi className="h-5 w-5" />
+      {connected ? (
+        <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Check className="h-7 w-7" />
+        </div>
+      ) : (
+        <div className="relative mb-6 h-20 w-20">
+          <span className="radar-ring" />
+          <span className="radar-ring" style={{ animationDelay: "0.7s" }} />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary soft-pulse">
+              <Wifi className="h-5 w-5" />
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
-        Try a connection{".".repeat(dots)}
+        {connected
+          ? clients.length === 1
+            ? "Client connected"
+            : `${clients.length} clients connected`
+          : `Waiting for a client${".".repeat(dots)}`}
       </h2>
       <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-        Optional: open RemotePair on your laptop and pick this Mac to confirm
-        pairing works. You can skip and do it later.
+        On your other Mac, open RemotePair — once it can SSH in, it connects automatically.
       </p>
 
       <div className="mt-6 w-full max-w-xs rounded-xl border border-border bg-muted/30 px-4 py-3 text-left">
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
           This Mac
         </div>
-        <div className="mt-1 font-mono text-sm text-foreground">
-          {hostname}
-        </div>
+        <div className="mt-1 font-mono text-sm text-foreground">{hostname}</div>
       </div>
 
-      <Button
-        size="sm"
-        variant="ghost"
-        className="mt-6 text-xs text-muted-foreground"
-        onClick={onSimulate}
-      >
-        Simulate client connected
-      </Button>
+      {connected && (
+        <div className="mt-4 w-full max-w-xs space-y-2">
+          {clients.map((c) => (
+            <div
+              key={`${c.name}-${c.user}`}
+              className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-left"
+            >
+              <div className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-wide text-primary">
+                <Laptop className="h-3 w-3" />
+                Connected from
+              </div>
+              <div className="font-mono text-sm text-foreground">{c.name}</div>
+              <div className="mt-0.5 font-mono text-xs text-muted-foreground">{c.user}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
