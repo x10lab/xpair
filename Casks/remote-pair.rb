@@ -2,10 +2,10 @@ cask "remote-pair" do
   version "0.5.0a38" # release-pinned (NOT the dev shared/.build-counter, which bumps per build); bump when cutting a release
   sha256 :no_check # alpha pre-release (0.5.0aN); sha re-pinned at release time
 
-  url "https://github.com/ghyeongl/remote-pair/releases/download/v#{version}/RemotePair-#{version}.zip"
+  url "https://github.com/x10lab/xpair/releases/download/v#{version}/RemotePair-#{version}.zip"
   name "RemotePair"
   desc "Client IDE for remote pairing with Claude (VSCodium fork: Sessions sidebar + Browser)"
-  homepage "https://github.com/ghyeongl/remote-pair"
+  homepage "https://github.com/x10lab/xpair"
 
   depends_on macos: :ventura
   # The client IDE ships an arm64-only build (VSCodium fork). Reject Intel explicitly instead of

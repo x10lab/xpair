@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bootstrap.sh — RemotePair one-shot install.  For first-time users.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | bash
 #
 # What it does (in order, idempotent) — installs glue (CLI/approve/Service/launcher) only. App binaries are supplied by Homebrew:
 #   1) prereq check (macOS / git)
@@ -16,7 +16,7 @@
 #   REMOTE_HOST=my-mac  SYNC_URL=git@github.com:me/claude.git  RP_ORG=com.acme  SKIP_SYNC=1  BRANCH=main
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/ghyeongl/remote-pair.git}"
+REPO_URL="${REPO_URL:-https://github.com/x10lab/xpair.git}"
 SRC="${REMOTE_PAIR_SRC:-$HOME/.local/share/remote-pair}"
 BRANCH="${BRANCH:-main}"
 ROLE="${ROLE:-both}"     # host | client | both
@@ -72,10 +72,10 @@ if [ "$ROLE" != client ]; then
     # ensure cask (only when the app is not present yet)
     if [ ! -d "$HOME/Applications/RemotePairHost.app" ] && [ ! -d /Applications/RemotePairHost.app ]; then
       c "install RemotePairHost.app (Homebrew cask)"
-      brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair 2>/dev/null || true
-      brew trust ghyeongl/remote-pair 2>/dev/null || true   # trust the third-party tap (recent brew security gate)
+      brew tap x10lab/xpair https://github.com/x10lab/xpair 2>/dev/null || true
+      brew trust x10lab/xpair 2>/dev/null || true   # trust the third-party tap (recent brew security gate)
       brew install --cask remote-pair-host \
-        || warn "cask install failed — manual: brew trust ghyeongl/remote-pair && brew install --cask remote-pair-host"
+        || warn "cask install failed — manual: brew trust x10lab/xpair && brew install --cask remote-pair-host"
     fi
   else
     warn "Homebrew not found — required to install the app (cask) + cliclick. Install Homebrew first, then run this again:"

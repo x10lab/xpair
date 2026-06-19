@@ -113,10 +113,10 @@ need_app_guidance() {
   warn "this command needs the $APP_NAME app (the privileged daemon) — set up the HOST Mac:"
   cat >&2 <<EOF
    • One-shot host setup (app daemon + approve rules + skills + CLI):
-       curl -fsSL https://raw.githubusercontent.com/${GH_REPO:-ghyeongl/remote-pair}/main/shared/bootstrap.sh | ROLE=host bash
+       curl -fsSL https://raw.githubusercontent.com/${GH_REPO:-x10lab/xpair}/main/shared/bootstrap.sh | ROLE=host bash
    • App binary only: ${APP_NAME}.zip from Releases → ~/Applications → open once (daemon only;
      run the host setup above for approve rules + the approve skill).
-       https://github.com/${GH_REPO:-ghyeongl/remote-pair}/releases/latest
+       https://github.com/${GH_REPO:-x10lab/xpair}/releases/latest
    Then grant Accessibility + Screen Recording once. Verify with: remote-pair status
    (This client/CLI maps/launches/attaches; approve & host run where the app lives.)
 EOF
@@ -768,7 +768,7 @@ cmd_logs() {
 
 # Self-update the client (launcher/CLI/romanize) to the latest from GitHub — prevents version drift with the host app (e.g. unrecognized --type).
 cmd_self_update() {
-  local repo="${GH_REPO:-ghyeongl/remote-pair}" ref="${1:-main}"
+  local repo="${GH_REPO:-x10lab/xpair}" ref="${1:-main}"
   local base="https://raw.githubusercontent.com/$repo/$ref/client/cli"
   c "self-update ← $repo@$ref"
   local tmp; tmp="$(mktemp -d)" || { warn "mktemp failed"; return 1; }
@@ -1207,7 +1207,7 @@ cmd_install_host() {
       [ -n "$sha" ] || { err "--bootstrap requires --sha256 <hex> (no unverified curl|bash)"; return 2; }
       c "fetching bootstrap.sh @ $ref and verifying SHA256 before remote exec …"
       local btmp; btmp="$(mktemp "${TMPDIR:-/tmp}/rp-boot.XXXXXX")"
-      curl -fsSL "https://raw.githubusercontent.com/${GH_REPO:-ghyeongl/remote-pair}/$ref/shared/bootstrap.sh" -o "$btmp" \
+      curl -fsSL "https://raw.githubusercontent.com/${GH_REPO:-x10lab/xpair}/$ref/shared/bootstrap.sh" -o "$btmp" \
         || { err "bootstrap fetch failed"; rm -f "$btmp"; return 1; }
       local got; got="$(shasum -a 256 "$btmp" 2>/dev/null | awk '{print $1}')"
       if [ "$got" != "$sha" ]; then

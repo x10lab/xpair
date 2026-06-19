@@ -21,7 +21,7 @@ Run Claude Code on an always-on Mac, with full macOS **computer-use** (screensho
 Already have Claude Code? Paste the block below into a session **on the Mac you're setting up** and it drives the whole install end-to-end — figuring out the role, installing, wiring SSH, and walking you through the one manual permission step.
 
 ```text
-Set up RemotePair (https://github.com/ghyeongl/remote-pair) on this Mac. Fetch and read its README, then follow it. Figure out whether this Mac is the host or the client, explain each command before you run it, and stop for anything that needs my input or my physical screen (like the one-time permission grant). Finish with remote-pair doctor and a summary of what's left for me to do.
+Set up RemotePair (https://github.com/x10lab/xpair) on this Mac. Fetch and read its README, then follow it. Figure out whether this Mac is the host or the client, explain each command before you run it, and stop for anything that needs my input or my physical screen (like the one-time permission grant). Finish with remote-pair doctor and a summary of what's left for me to do.
 ```
 
 Prefer to do it by hand? See [Installation](#installation) below.
@@ -67,14 +67,14 @@ Each feature exists to solve a concrete problem.
 One command sets up the host. It installs the `remote-pair` CLI + the approve rules/skill (the daemon glue), then installs the app (`RemotePairHost.app`) via Homebrew Cask:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=host bash
+curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=host bash
 ```
 
 On first launch the app self-installs its **daemon** (LaunchAgent, `~/.remote-pair`, tmux-aqua link, watchdog). The app is self-signed, not notarized — Homebrew strips the quarantine flag so it launches normally *and* its Accessibility / Screen Recording grants stick to the stable signing identity (TCC needs no notarization, only a quarantine-free, stably-signed app).
 
 > No Homebrew? The script tells you and stops — install it ([brew.sh](https://brew.sh)) and re-run; it'll handle the cask. Homebrew supplies the app binary; the script does the rest.
 
-> Just want the app, no CLI? `brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair && brew install --cask remote-pair-host`. (Building from source instead is in [For maintainers](#for-maintainers).)
+> Just want the app, no CLI? `brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask remote-pair-host`. (Building from source instead is in [For maintainers](#for-maintainers).)
 
 Once installed, finish with the **one-time permission grant** below.
 
@@ -113,7 +113,7 @@ Not there yet? Turn on **Remote Login** on the host (System Settings → General
 #### Install the client
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | ROLE=client bash
+curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=client bash
 ```
 
 Installs the Finder Quick Action + `remote-pair` CLI, then auto-runs `remote-pair onboard` (host address, terminal app, folder mappings).
@@ -286,7 +286,7 @@ Hit something broken? Work through this before filing:
 3. **Computer-use stopped after a `claude` update?** Toggle the MCP server: `/mcp disable computer-use` then `/mcp enable computer-use`. (No need to re-grant TCC.)
 4. **Permissions look granted but computer-use fails?** Re-pick up the grants: `launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host`.
 
-Still stuck? **[Open an issue](https://github.com/ghyeongl/remote-pair/issues)** and include:
+Still stuck? **[Open an issue](https://github.com/x10lab/xpair/issues)** and include:
 
 - Version (`remote-pair status`, or the app's menu-bar **About**) and your macOS version.
 - `remote-pair doctor` output, and the relevant tail of `~/.remote-pair/logs/remote-pair.log`.

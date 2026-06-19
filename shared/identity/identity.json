@@ -2,7 +2,7 @@
   "$comment": "Single source of truth (SoT) for RemotePair branding/identifiers. Consumers (Casks, client/ide/product.json, host/app Swift, host/rd Cargo) must match these values and are validated by shared/identity/check-identity.sh. May be generated and injected via build-time codegen (docs/ide-merge-architecture.md) in the future.",
   "product": "RemotePair",
   "org": "com.x10lab",
-  "homepage": "https://github.com/ghyeongl/remote-pair",
+  "homepage": "https://github.com/x10lab/xpair",
   "urlProtocol": "remotepair",
   "signingCommonName": "RemotePair Local Signing",
   "components": {

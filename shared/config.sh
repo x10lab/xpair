@@ -46,7 +46,7 @@ RP_ORG="${RP_ORG:-com.x10lab}"
 BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair-host}"
 APP_NAME="${APP_NAME:-RemotePairHost}"
 SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"
-GH_REPO="${GH_REPO:-ghyeongl/remote-pair}"             # Updater (GitHub Releases) target owner/repo
+GH_REPO="${GH_REPO:-x10lab/xpair}"             # Updater (GitHub Releases) target owner/repo
 APP_LABEL="$BUNDLE_PREFIX"; WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
 APP_PATH="/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"   # aligned to the Homebrew cask default location (/Applications)
 APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"

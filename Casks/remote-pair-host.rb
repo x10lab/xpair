@@ -2,10 +2,10 @@ cask "remote-pair-host" do
   version "0.5.0a12" # release-pinned (NOT the dev shared/.build-counter, which bumps per build); bump when cutting a release
   sha256 :no_check # alpha pre-release (0.5.0aN); sha re-pinned at release time
 
-  url "https://github.com/ghyeongl/remote-pair/releases/download/v#{version}/RemotePairHost-#{version}.zip"
+  url "https://github.com/x10lab/xpair/releases/download/v#{version}/RemotePairHost-#{version}.zip"
   name "RemotePairHost"
   desc "Menu-bar host for remote pairing with Claude (tmux + approve + sessions)"
-  homepage "https://github.com/ghyeongl/remote-pair"
+  homepage "https://github.com/x10lab/xpair"
 
   depends_on macos: :ventura
   # The host bundles arm64-only binaries (app + screen sidecar + Swift helpers,

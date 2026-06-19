@@ -57,7 +57,7 @@ let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy)
 
 // Display version + update target (Info.plist is the single source; populated by build-host.sh)
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-let GH_REPO = (Bundle.main.infoDictionary?["RPGitHubRepo"] as? String) ?? "ghyeongl/remote-pair"
+let GH_REPO = (Bundle.main.infoDictionary?["RPGitHubRepo"] as? String) ?? "x10lab/xpair"
 let APP_NAME = (Bundle.main.infoDictionary?["CFBundleName"] as? String) ?? "RemotePairHost"
 let BUNDLE_ID = Bundle.main.bundleIdentifier ?? "com.x10lab.remote-pair-host"
 
