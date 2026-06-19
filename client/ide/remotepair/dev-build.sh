@@ -146,6 +146,15 @@ if [[ "${SKIP_BUILD}" == "no" ]]; then
   cp -R "$_RP_EXT_SRC" vscode/extensions/remotepair
   echo "→ injected RemotePair builtin extension → vscode/extensions/remotepair"
 
+  # RemotePair app icon (client = orbit3: cube + orbiting sphere). gulp packages the macOS .app icon
+  # from vscode/resources/darwin/code.icns, so overwrite that source here (after source-prep, before
+  # gulp). vscode/ is regenerated each build, so no cleanup needed; vendor subtree stays pristine.
+  _RP_ICON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assets/icon/code.icns"
+  if [ -f "$_RP_ICON" ]; then
+    cp "$_RP_ICON" vscode/resources/darwin/code.icns
+    echo "→ injected RemotePair app icon → vscode/resources/darwin/code.icns"
+  fi
+
   . build.sh
 
   if [[ -f "./include_${OS_NAME}.gypi" ]]; then
