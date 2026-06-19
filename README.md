@@ -1,30 +1,30 @@
 <p align="center">
-  <img src="assets/icon/AppIcon-1024.png" alt="Rasbora" width="128">
+  <img src="assets/icon/AppIcon-1024.png" alt="Xpair" width="128">
 </p>
 
-<h1 align="center">Rasbora</h1>
+<h1 align="center">Xpair</h1>
 
 <p align="center"><b>English</b> · <a href="README.ko.md">Korean</a></p>
 
 <p align="center"><i>You close the laptop. The work doesn't stop.</i></p>
 
-**Rasbora** runs the Claude you already subscribe to (or Codex / Gemini) on a **dedicated remote Mac**, with full macOS **computer-use** (screenshot, click, type) intact — unattended and fully visible — so your long tasks keep going while you're away. Attach from your laptop or your phone over mosh/SSH.
+**Xpair** runs the Claude you already subscribe to (or Codex / Gemini) on a **dedicated remote Mac**, with full macOS **computer-use** (screenshot, click, type) intact — unattended and fully visible — so your long tasks keep going while you're away. Attach from your laptop or your phone over mosh/SSH.
 
-> **Naming:** *Rasbora* is the product brand. The shipping software still carries the **`RemotePair`** name — the host app (`RemotePairHost.app`), the client IDE (`RemotePair`), and the `remote-pair` CLI — and the repo lives at [`x10lab/xpair`](https://github.com/x10lab/xpair). A full rename to the Rasbora brand is in progress; the identifiers below are the ones that are real today.
+> **Naming:** *Xpair* is the product brand. The shipping software still carries the **`RemotePair`** name — the host app (`RemotePairHost.app`), the client IDE (`RemotePair`), and the `remote-pair` CLI — and the repo lives at [`x10lab/xpair`](https://github.com/x10lab/xpair). A full rename to the Xpair brand is in progress; the identifiers below are the ones that are real today.
 
-![Rasbora architecture](assets/architecture.png)
+![Xpair architecture](assets/architecture.png)
 
 - **Host Mac** — runs `claude` inside persistent tmux sessions, 24/7, with computer-use working.
-- **Client** — the **Rasbora IDE** (a VSCodium fork) or the `remote-pair` CLI, attaching from your laptop with a Finder right-click.
+- **Client** — the **Xpair IDE** (a VSCodium fork) or the `remote-pair` CLI, attaching from your laptop with a Finder right-click.
 - **Mobile** — reach the same sessions from Claude Code on your phone.
 
-### Why Rasbora
+### Why Xpair
 
 1. **You keep your own computer.** The work runs on a dedicated (remote) Mac, so your laptop stays free — use it normally, close the lid, the session keeps running.
 2. **It doesn't stall on approvals.** Auto-Approve clears the permission prompts that would otherwise block a headless, unattended session, so work continues while you sleep.
 3. **It's not a black box.** Stream the remote desktop and watch every action. The engine is full-power **Claude Code** — your own subscription, no third-party wrapper in the middle.
 
-**Billing:** connect the Claude / Codex / Gemini subscription you already pay for. Rasbora charges **zero** extra AI credits. The core is open source (AGPL-3.0); a managed **Hosted** tier (we provide the Mac too) is planned.
+**Billing:** connect the Claude / Codex / Gemini subscription you already pay for. Xpair charges **zero** extra AI credits. The core is open source (AGPL-3.0); a managed **Hosted** tier (we provide the Mac too) is planned.
 
 ---
 
@@ -33,7 +33,7 @@
 Already have Claude Code? Paste the block below into a session **on the Mac you're setting up** and it drives the whole install end-to-end — figuring out the role, installing, wiring SSH, and walking you through the one manual permission step.
 
 ```text
-Set up Rasbora / RemotePair (https://github.com/x10lab/xpair) on this Mac. Fetch and read its README, then follow it. Figure out whether this Mac is the host or the client, explain each command before you run it, and stop for anything that needs my input or my physical screen (like the one-time permission grant). Finish with remote-pair doctor and a summary of what's left for me to do.
+Set up Xpair / RemotePair (https://github.com/x10lab/xpair) on this Mac. Fetch and read its README, then follow it. Figure out whether this Mac is the host or the client, explain each command before you run it, and stop for anything that needs my input or my physical screen (like the one-time permission grant). Finish with remote-pair doctor and a summary of what's left for me to do.
 ```
 
 Prefer to do it by hand? See [Installation](#installation) below.
@@ -71,7 +71,7 @@ Each feature exists to solve a concrete problem. The **core** below works today;
 ### In progress
 These are wired up but still maturing (scaffold / spike) — expect rough edges:
 
-- **The Rasbora IDE** (VSCodium fork): the *Sessions* sidebar and *Browser* container ship; the embedded extension bundling, in-IDE **Remote Desktop** streaming, and **code-server Editor** are still being wired in. See [The Rasbora IDE](#the-rasbora-ide-the-client).
+- **The Xpair IDE** (VSCodium fork): the *Sessions* sidebar and *Browser* container ship; the embedded extension bundling, in-IDE **Remote Desktop** streaming, and **code-server Editor** are still being wired in. See [The Xpair IDE](#the-xpair-ide-the-client).
 - **Live remote-desktop streaming**: today `remote-pair desktop` opens macOS Screen Sharing (VNC); a low-latency in-house engine (`host/rd`, JPEG → WebRTC) is at the spike stage.
 - **Electron onboarding windows** (host + client) are being rebuilt from scratch — see [Onboarding](#onboarding-in-progress).
 - **Hosted tier** (we provide the remote Mac for you) is planned.
@@ -85,7 +85,7 @@ These are wired up but still maturing (scaffold / spike) — expect rough edges:
 - SSH key authentication between client and host
 - `mosh` on both machines (plain SSH works, but a disconnect kills the live attach)
 - **Host:** Homebrew (for the app cask) + git. No build — tmux-aqua ships embedded in the app, so no Xcode needed. (Source build is maintainers-only.)
-- **Client:** either the Rasbora IDE cask (`remote-pair`) or just the `remote-pair` CLI + Finder Quick Action.
+- **Client:** either the Xpair IDE cask (`remote-pair`) or just the `remote-pair` CLI + Finder Quick Action.
 
 ---
 
@@ -115,7 +115,7 @@ This is the one manual step, and it can only be done at the host's screen (TCC c
 |---|---|---|
 | **Accessibility** | Synthetic input (click/type) for computer-use | **Required** |
 | **Screen Recording** | Screenshots for computer-use | **Required** |
-| **Full Disk Access** | Prevents macOS folder prompts that a *headless* host can't answer remotely (an unanswered prompt stalls the session). Trade-off: the grant is exercised not by Rasbora's own logic but by the **Claude Code session running inside it** (Rasbora itself touches the disk only at install) — so that session can silently read the whole disk (Mail/Messages/browser included). | **Recommended** |
+| **Full Disk Access** | Prevents macOS folder prompts that a *headless* host can't answer remotely (an unanswered prompt stalls the session). Trade-off: the grant is exercised not by Xpair's own logic but by the **Claude Code session running inside it** (Xpair itself touches the disk only at install) — so that session can silently read the whole disk (Mail/Messages/browser included). | **Recommended** |
 
 The in-app **Grant Permissions…** menu item opens all three panes and shows live ✓/✗ status for each. After toggling, pick up the grants with:
 
@@ -127,11 +127,11 @@ launchctl kickstart -k gui/$(id -u)/com.x10lab.remote-pair-host   # or: menu bar
 
 ### Client — the laptop you sit at
 
-You can run the client as the **Rasbora IDE** (a VSCodium-based app with a Sessions sidebar) or as the **CLI + Finder Quick Action** — they share the same `remote-pair` config and host.
+You can run the client as the **Xpair IDE** (a VSCodium-based app with a Sessions sidebar) or as the **CLI + Finder Quick Action** — they share the same `remote-pair` config and host.
 
 #### SSH access — key-based login to the host
 
-Rasbora drives the host over SSH, so all you need is passwordless login working. Check it:
+Xpair drives the host over SSH, so all you need is passwordless login working. Check it:
 
 ```bash
 ssh gh-mac-m1   # logs into the host shell with no password prompt → you're set
@@ -147,7 +147,7 @@ Not there yet? Turn on **Remote Login** on the host (System Settings → General
 
 #### Install the client
 
-**Rasbora IDE (cask):**
+**Xpair IDE (cask):**
 
 ```bash
 brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask remote-pair
@@ -174,9 +174,9 @@ The CLI install adds the Finder Quick Action + `remote-pair` CLI, then auto-runs
 
 ## Folder mapping (do this first)
 
-Rasbora runs `claude` **on the host**, against files **on the host**. So the project you launch from your laptop has to already exist on the host — Rasbora doesn't copy files, it attaches to a host path. You keep both sides in sync yourself with **Google Drive, Syncthing, iCloud, or any file-sync tool** (or mount the host folder directly with `remote-pair mount` — see [docs/m-mount.md](docs/m-mount.md)); the same project then lives at a (possibly different) absolute path on each machine.
+Xpair runs `claude` **on the host**, against files **on the host**. So the project you launch from your laptop has to already exist on the host — Xpair doesn't copy files, it attaches to a host path. You keep both sides in sync yourself with **Google Drive, Syncthing, iCloud, or any file-sync tool** (or mount the host folder directly with `remote-pair mount` — see [docs/m-mount.md](docs/m-mount.md)); the same project then lives at a (possibly different) absolute path on each machine.
 
-A **mapping** tells Rasbora which host path a given client path corresponds to. The sync root sits at a different parent path on each machine (`ghyeong` vs `rpi/Desktop`), but **everything below it must be identical** — Rasbora attaches to the same subfolder structure on the host:
+A **mapping** tells Xpair which host path a given client path corresponds to. The sync root sits at a different parent path on each machine (`ghyeong` vs `rpi/Desktop`), but **everything below it must be identical** — Xpair attaches to the same subfolder structure on the host:
 
 <p align="center">
   <img src="assets/folder-mapping.png" alt="Folder mapping: host and client sync roots differ in parent path but share identical subfolders" width="720">
@@ -246,7 +246,7 @@ remote-pair config set terminal iterm2     # or: terminal
 
 ---
 
-## The Rasbora IDE (the client)
+## The Xpair IDE (the client)
 
 The client ships as a **VSCodium fork** (`remote-pair` cask) — a familiar editor reshaped around remote pairing. It is the successor to the old browser-based "Web UI" (a `remote-pair web` localhost bridge), which has been **removed**. What it adds on top of stock VSCodium:
 
@@ -259,7 +259,7 @@ The IDE keeps stock VSCodium **inviolable**: RemotePair changes live only in `cl
 
 ### Onboarding *(in progress)*
 
-First-run onboarding is being rebuilt from scratch as **two Electron windows** — one embedded in `RemotePairHost` (the host app) and one in the Rasbora IDE (the client) — covering role selection, permission grants, SSH/host config, and folder mapping. The earlier web wizard was retired; the new windows are not finished yet.
+First-run onboarding is being rebuilt from scratch as **two Electron windows** — one embedded in `RemotePairHost` (the host app) and one in the Xpair IDE (the client) — covering role selection, permission grants, SSH/host config, and folder mapping. The earlier web wizard was retired; the new windows are not finished yet.
 
 <p align="center">
   <img src="client-onboarding-v2.png" alt="Client onboarding storyboard: connect to host, discover over the network / Tailscale, pairing code, SSH setup, connected" width="720">
@@ -278,19 +278,19 @@ The hook (`host/hooks/remote-pair-notify.sh`) appends events to `~/.remote-pair/
 
 ### Identity note
 
-Today's shipping identities are **`RemotePairHost`** (`com.x10lab.remote-pair-host`, the host app) and **`RemotePair`** (`com.x10lab.remote-pair`, the client IDE). The *Rasbora* product brand is being rolled out across these; the identifiers above are what's real now. Do not grant permissions to an app whose identity you didn't explicitly install.
+Today's shipping identities are **`RemotePairHost`** (`com.x10lab.remote-pair-host`, the host app) and **`RemotePair`** (`com.x10lab.remote-pair`, the client IDE). The *Xpair* product brand is being rolled out across these; the identifiers above are what's real now. Do not grant permissions to an app whose identity you didn't explicitly install.
 
 ---
 
 ## Notes & caveats
 
-> ⚠️ **Security & responsibility — read this.** Rasbora intentionally lowers macOS's safety guardrails on the host: it holds Accessibility + Screen Recording (and, if you enable it, **Full Disk Access**) and keeps an autonomous `claude` agent running *inside* that privileged process subtree, reachable remotely 24/7. In effect, an agent on the host can see the screen, synthesize clicks/keystrokes, and — with Full Disk Access — silently read and write your entire disk (Mail, Messages, browser data, SSH keys, everything). (What actually exercises these grants is the `claude` session running inside Rasbora, not Rasbora's own logic — Rasbora itself never touches the disk except at install.) That is the whole point of the tool, and it is a deliberate trade-off you are opting into. **You are solely responsible for what runs on the host.** Any data loss, leakage, or damage caused by misconfiguration, a careless instruction, a prompt-injection, or an unattended session is entirely the operator's responsibility. Run this only on a personal machine you own, grant the minimum permissions you actually need (prefer a non-protected project root over Full Disk Access), and don't point it at anything you can't afford to lose. The software is provided **as-is, without warranty** (see [LICENSE](LICENSE)).
+> ⚠️ **Security & responsibility — read this.** Xpair intentionally lowers macOS's safety guardrails on the host: it holds Accessibility + Screen Recording (and, if you enable it, **Full Disk Access**) and keeps an autonomous `claude` agent running *inside* that privileged process subtree, reachable remotely 24/7. In effect, an agent on the host can see the screen, synthesize clicks/keystrokes, and — with Full Disk Access — silently read and write your entire disk (Mail, Messages, browser data, SSH keys, everything). (What actually exercises these grants is the `claude` session running inside Xpair, not Xpair's own logic — Xpair itself never touches the disk except at install.) That is the whole point of the tool, and it is a deliberate trade-off you are opting into. **You are solely responsible for what runs on the host.** Any data loss, leakage, or damage caused by misconfiguration, a careless instruction, a prompt-injection, or an unattended session is entirely the operator's responsibility. Run this only on a personal machine you own, grant the minimum permissions you actually need (prefer a non-protected project root over Full Disk Access), and don't point it at anything you can't afford to lose. The software is provided **as-is, without warranty** (see [LICENSE](LICENSE)).
 
 ---
 
 ## Telemetry — opt-in, off by default
 
-Rasbora ships **no telemetry that is on by default**. Both reporting channels below are
+Xpair ships **no telemetry that is on by default**. Both reporting channels below are
 **opt-in** — they stay completely silent unless you explicitly turn them on, and even then they
 never carry anything that could identify you or your work. The code is open; audit it yourself.
 
@@ -314,7 +314,7 @@ hostnames or ssh aliases, or any personal data. Every payload is run through the
 filter used for local logs before it leaves the machine, and crash reports have Apple/Sentry PII
 collection disabled.
 
-**Default OFF means zero network calls** — with both switches off, Rasbora makes no connection
+**Default OFF means zero network calls** — with both switches off, Xpair makes no connection
 to any analytics or crash endpoint. Analytics currently routes to PostHog Cloud (EU region);
 crash reports to Sentry. The endpoint is configurable and we plan to move analytics to self-hosted
 infrastructure later. See [docs/logging.md §11](docs/logging.md) for the full event catalog and
@@ -350,7 +350,7 @@ This is a single **monorepo** (`host/` + `client/` + `shared/`), built in lockst
 ./host/make-signing-cert.sh            # stable self-signed cert "RemotePair Local Signing" (idempotent)
 ./host/build-host.sh                   # → build/RemotePairHost.app (signed + verified)
 ./host/build-host.sh --deploy [host]   # build + rsync + install on host
-./client/ide/build.sh                  # → the Rasbora IDE (VSCodium fork) app
+./client/ide/build.sh                  # → the Xpair IDE (VSCodium fork) app
 shared/identity/check-identity.sh      # brand/version consistency (SoT: shared/identity/)
 ```
 
