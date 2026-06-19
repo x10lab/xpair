@@ -53,7 +53,7 @@ export function StepPermissions({ state, setState }: Props) {
 
     const poll = async () => {
       try {
-        const s = await window.remotepair.getStatus();
+        const s = await window.xpair.getStatus();
         if (cancelled) return;
         const cur = stateRef.current;
         const next: PermState = {
@@ -97,8 +97,8 @@ export function StepPermissions({ state, setState }: Props) {
               onOpen={() => {
                 // Register the host in the TCC list (CGRequestScreenCaptureAccess)
                 // AND open the relevant Settings pane.
-                window.remotepair.requestPermission(r.key);
-                window.remotepair.openPermissionPane(r.key);
+                window.xpair.requestPermission(r.key);
+                window.xpair.openPermissionPane(r.key);
                 setState({ ...state, [r.key]: "opening" });
               }}
             />

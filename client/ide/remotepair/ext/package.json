@@ -1,8 +1,8 @@
 {
   "publisher": "x10lab",
   "name": "remotepair",
-  "displayName": "RemotePair",
-  "description": "Turns the RemotePair IDE into a remote-pair client: live Remote Desktop of the host, input forwarding, one-click SSH connect, and host-side notifications.",
+  "displayName": "Xpair",
+  "description": "Turns the Xpair IDE into a xpair client: live Remote Desktop of the host, input forwarding, one-click SSH connect, and host-side notifications.",
   "version": "0.1.0",
   "license": "AGPL-3.0-or-later",
   "repository": {
@@ -24,53 +24,53 @@
     "commands": [
       {
         "command": "remotepair.openRemoteDesktop",
-        "title": "RemotePair: Open Remote Desktop",
+        "title": "Xpair: Open Remote Desktop",
         "icon": "$(device-desktop)"
       },
       {
         "command": "remotepair.connectHost",
-        "title": "RemotePair: Connect to Host",
+        "title": "Xpair: Connect to Host",
         "icon": "$(remote)"
       },
       {
         "command": "remotepair.remoteDesktop.refresh",
-        "title": "RemotePair: Refresh Remote Desktop",
+        "title": "Xpair: Refresh Remote Desktop",
         "icon": "$(refresh)"
       },
       {
         "command": "remotepair.ensureExtensions",
-        "title": "RemotePair: Install AI Extensions"
+        "title": "Xpair: Install AI Extensions"
       },
       {
         "command": "remotepair.setupFileAccess",
-        "title": "RemotePair: Set Up File Access (folder mapping / mount)"
+        "title": "Xpair: Set Up File Access (folder mapping / mount)"
       },
       {
         "command": "remotepair.setupLayout",
-        "title": "RemotePair: Reset Layout (terminal left, RD tab right)"
+        "title": "Xpair: Reset Layout (terminal left, RD tab right)"
       },
       {
         "command": "remotepair.openFileBrowser",
-        "title": "RemotePair: Open File Browser"
+        "title": "Xpair: Open File Browser"
       },
       {
         "command": "remotepair.openSettings",
-        "title": "RemotePair: Open Settings"
+        "title": "Xpair: Open Settings"
       },
       {
         "command": "remotepair.launchRemoteClaude",
-        "title": "RemotePair: Launch Remote Claude (mosh+tmux+claude)",
+        "title": "Xpair: Launch Remote Claude (mosh+tmux+claude)",
         "icon": "$(play)"
       },
       {
         "command": "remotepair.showLogs",
-        "title": "RemotePair: Show Logs",
+        "title": "Xpair: Show Logs",
         "icon": "$(output)"
       },
       {
         "command": "remotepair.runSetup",
-        "title": "RemotePair: Re-run setup",
-        "category": "RemotePair"
+        "title": "Xpair: Re-run setup",
+        "category": "Xpair"
       }
     ],
     "menus": {
@@ -97,13 +97,13 @@
     "walkthroughs": [
       {
         "id": "remotepair.setup",
-        "title": "RemotePair setup",
+        "title": "Xpair setup",
         "description": "Connect to your host, understand the host-side permission model, and install the AI extensions.",
         "steps": [
           {
             "id": "remotepair.setup.connect",
             "title": "Connect to your host",
-            "description": "RemotePair drives a remote macOS host (default REMOTE_HOST from ~/.remote-pair/client.env). Click below to open the host filesystem over SSH.\n[Connect to Host](command:remotepair.connectHost)",
+            "description": "Xpair drives a remote macOS host (default REMOTE_HOST from ~/.xpair/host/client.env). Click below to open the host filesystem over SSH.\n[Connect to Host](command:remotepair.connectHost)",
             "media": {
               "markdown": "media/walkthrough-connect.md"
             }
@@ -119,7 +119,7 @@
           {
             "id": "remotepair.setup.permissions",
             "title": "Permissions are host-side",
-            "description": "Screen recording, accessibility (clicks/keys) and folder access are granted on the HOST machine (RemotePairHost.app), not on this client. If the Remote Desktop is blank, check the host's System Settings > Privacy & Security.",
+            "description": "Screen recording, accessibility (clicks/keys) and folder access are granted on the HOST machine (XpairHost.app), not on this client. If the Remote Desktop is blank, check the host's System Settings > Privacy & Security.",
             "media": {
               "markdown": "media/walkthrough-permissions.md"
             }
@@ -127,7 +127,7 @@
           {
             "id": "remotepair.setup.extensions",
             "title": "AI agents run via the CLI",
-            "description": "RemotePair runs AI agents (Claude, Codex, Gemini) via the terminal CLI — start one from the New Session picker. Only Open Remote - SSH is installed automatically (for host connections).\n[Install Open Remote - SSH](command:remotepair.ensureExtensions)",
+            "description": "Xpair runs AI agents (Claude, Codex, Gemini) via the terminal CLI — start one from the New Session picker. Only Open Remote - SSH is installed automatically (for host connections).\n[Install Open Remote - SSH](command:remotepair.ensureExtensions)",
             "media": {
               "markdown": "media/walkthrough-extensions.md"
             }

@@ -5,7 +5,7 @@
 #   * Does NOT touch ~/.claude/.git itself or user data (skills/settings/memory) — data protection.
 #
 # Usage:  ./uninstall.sh           (revert every installed role manifest in reverse order)
-#         ./uninstall.sh --purge   (the above + delete the ~/.remote-pair namespace too)
+#         ./uninstall.sh --purge   (the above + delete the ~/.xpair/host namespace too)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/config.sh"

@@ -1,6 +1,6 @@
 declare global {
   interface Window {
-    remotepair: {
+    xpair: {
       // VIEW-ONLY: Accessibility ('ax') is no longer a granted permission, but the
       // bridge still accepts it for forward-compat; the UI only uses 'sr' | 'fda'.
       openPermissionPane: (key: 'ax' | 'sr' | 'fda') => Promise<void>

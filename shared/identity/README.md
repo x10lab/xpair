@@ -1,7 +1,7 @@
 # shared/identity — Single Source of Truth (SoT) for Brand and Version
 
-Declares the **brand identifiers and versions in one place** for the RemotePair monorepo
-(`remote-pair` core · `client/ide/` VSCodium fork · `host/rd/` native engine).
+Declares the **brand identifiers and versions in one place** for the Xpair monorepo
+(`xpair` core · `client/ide/` VSCodium fork · `host/rd/` native engine).
 Because consumers are heterogeneous (Ruby · JSON · Swift · Cargo), instead of injecting values
 directly, singularity is enforced through **declaration + consistency checks**.
 
@@ -17,7 +17,7 @@ directly, singularity is enforced through **declaration + consistency checks**.
 |--------|-----------|
 | `client/ide/product.json` | nameShort/Long · applicationName · dataFolderName · darwinBundleIdentifier · urlProtocol · server* · win32* |
 | `client/ide/remotepair-ext/package.json` | `version` == `versions.ide` (product.json has no version — the app version is injected as RELEASE_VERSION at build time) |
-| `Casks/remote-pair-host.rb` | `version` == `versions.host` |
+| `Casks/xpair-host.rb` | `version` == `versions.host` |
 | `host/rd/screen/Cargo.toml` | `version` == `versions.screen-engine` |
 | `host/app/Config.swift` | `components.host.bundleId` is present in the `BUNDLE_ID` default value |
 

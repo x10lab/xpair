@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-identity.sh — verify all consumers match the shared/identity/ SoT.
 # Non-breaking: reads identity.json + versions.json and asserts that
-# client/ide/product.json, Casks/remote-pair-host.rb, host/rd Cargo.toml, and host/app Swift
+# client/ide/product.json, Casks/xpair-host.rb, host/rd Cargo.toml, and host/app Swift
 # carry the canonical brand/version values. Exits non-zero on drift.
 set -euo pipefail
 
@@ -32,13 +32,13 @@ else
   echo "skip: client/ide/product.json not found"
 fi
 
-# ide version lives in the committed RemotePair extension (product.json has none;
+# ide version lives in the committed Xpair extension (product.json has none;
 # the app version is injected at build from RELEASE_VERSION).
 EXT_PKG="$ROOT/client/ide/remotepair-ext/package.json"
 [[ -f "$EXT_PKG" ]] && check "ide version (remotepair-ext)" "$(jq -r .ide "$VER")" "$(jq -r '.version // empty' "$EXT_PKG")"
 
-# --- Casks/remote-pair-host.rb version ---
-CASK="$ROOT/Casks/remote-pair-host.rb"
+# --- Casks/xpair-host.rb version ---
+CASK="$ROOT/Casks/xpair-host.rb"
 [[ -f "$CASK" ]] && check "Casks host version" "$(jq -r .host "$VER")" \
   "$(grep -E '^[[:space:]]*version "' "$CASK" | head -1 | sed -E 's/.*version "([^"]+)".*/\1/')"
 

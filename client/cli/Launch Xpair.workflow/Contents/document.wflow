@@ -59,9 +59,9 @@
 				<key>ActionParameters</key>
 				<dict>
 					<key>COMMAND_STRING</key>
-					<string># RemotePair — open the selected folder via the config-driven terminal dispatcher.
-# open-gui reads TERMINAL_APP from ~/.remote-pair/client.env and opens iTerm2 or Terminal accordingly.
-RP="$HOME/.local/bin/remote-pair"
+					<string># Xpair — open the selected folder via the config-driven terminal dispatcher.
+# open-gui reads TERMINAL_APP from ~/.xpair/host/client.env and opens iTerm2 or Terminal accordingly.
+RP="$HOME/.local/bin/xpair"
 for d in "$@"; do
   "$RP" open-gui "$d"
 done</string>

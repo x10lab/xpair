@@ -85,7 +85,7 @@ export function StepConnectPin({ peer, state, setState }: Props) {
         Enter the pairing code
       </h2>
       <p className="mt-2 max-w-xs text-sm text-muted-foreground">
-        RemotePair is running on{" "}
+        Xpair is running on{" "}
         <span className="font-semibold text-foreground">{peer.name}</span>. Read the 6-digit code
         on its menu bar and type it here.
       </p>

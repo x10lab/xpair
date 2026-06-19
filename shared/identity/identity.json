@@ -1,32 +1,32 @@
 {
-  "$comment": "Single source of truth (SoT) for RemotePair branding/identifiers. Consumers (Casks, client/ide/product.json, host/app Swift, host/rd Cargo) must match these values and are validated by shared/identity/check-identity.sh. May be generated and injected via build-time codegen (docs/ide-merge-architecture.md) in the future.",
-  "product": "RemotePair",
+  "$comment": "Single source of truth (SoT) for Xpair branding/identifiers. Consumers (Casks, client/ide/product.json, host/app Swift, host/rd Cargo) must match these values and are validated by shared/identity/check-identity.sh. NOTE: signingCommonName intentionally stays 'RemotePair Local Signing' — the stable signing cert (and the CI p12 secret) is keyed to that CN; changing it would invalidate the designated requirement and the Updater leaf-CN check. May be generated and injected via build-time codegen (docs/ide-merge-architecture.md) in the future.",
+  "product": "Xpair",
   "org": "com.x10lab",
   "homepage": "https://github.com/x10lab/xpair",
-  "urlProtocol": "remotepair",
+  "urlProtocol": "xpair",
   "signingCommonName": "RemotePair Local Signing",
   "components": {
     "host": {
-      "displayName": "RemotePairHost",
-      "app": "RemotePairHost.app",
-      "bundleId": "com.x10lab.remote-pair-host",
+      "displayName": "XpairHost",
+      "app": "XpairHost.app",
+      "bundleId": "com.x10lab.xpair-host",
       "desc": "Menu-bar host for remote pairing with Claude (tmux + approve + sessions)"
     },
     "ide": {
-      "nameShort": "RemotePair",
-      "nameLong": "RemotePair",
-      "applicationName": "remotepair",
-      "dataFolderName": ".remotepair",
-      "darwinBundleIdentifier": "com.x10lab.remote-pair",
-      "urlProtocol": "remotepair",
-      "serverApplicationName": "remotepair-server",
-      "serverDataFolderName": ".remotepair-server",
-      "win32AppUserModelId": "x10lab.RemotePair",
-      "win32MutexName": "remotepair"
+      "nameShort": "Xpair",
+      "nameLong": "Xpair",
+      "applicationName": "xpair",
+      "dataFolderName": ".xpair/client",
+      "darwinBundleIdentifier": "com.x10lab.xpair",
+      "urlProtocol": "xpair",
+      "serverApplicationName": "xpair-server",
+      "serverDataFolderName": ".xpair/client-server",
+      "win32AppUserModelId": "x10lab.Xpair",
+      "win32MutexName": "xpair"
     },
     "screen-engine": {
       "crate": "screen",
-      "note": "host/rd/ (remotepair-rs) in-house native screen engine"
+      "note": "host/rd/ in-house native screen engine"
     }
   }
 }

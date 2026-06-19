@@ -644,18 +644,18 @@
   "configurationDefaults": {
     "workbench.startupEditor": "none"
   },
-  "nameShort": "RemotePair",
-  "nameLong": "RemotePair",
-  "applicationName": "remotepair",
-  "dataFolderName": ".remotepair",
-  "darwinBundleIdentifier": "com.x10lab.remote-pair",
-  "urlProtocol": "remotepair",
-  "serverApplicationName": "remotepair-server",
-  "serverDataFolderName": ".remotepair-server",
-  "win32AppUserModelId": "x10lab.RemotePair",
-  "win32MutexName": "remotepair",
-  "win32DirName": "RemotePair",
-  "win32NameVersion": "RemotePair",
-  "win32RegValueName": "RemotePair",
-  "win32ShellNameShort": "RemotePair"
+  "nameShort": "Xpair",
+  "nameLong": "Xpair",
+  "applicationName": "xpair",
+  "dataFolderName": ".xpair/client",
+  "darwinBundleIdentifier": "com.x10lab.xpair",
+  "urlProtocol": "xpair",
+  "serverApplicationName": "xpair-server",
+  "serverDataFolderName": ".xpair/client-server",
+  "win32AppUserModelId": "x10lab.Xpair",
+  "win32MutexName": "xpair",
+  "win32DirName": "Xpair",
+  "win32NameVersion": "Xpair",
+  "win32RegValueName": "Xpair",
+  "win32ShellNameShort": "Xpair"
 }

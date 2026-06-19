@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-pair-askpass — SSH_ASKPASS helper for the RemotePair client.
+# xpair-askpass — SSH_ASKPASS helper for the Xpair client.
 #
 # Purpose: collect ONE secret (account password OR key passphrase) in a process
 # distinct from the parent CLI/Electron renderer, so the secret NEVER transits a
@@ -37,12 +37,12 @@ emit_secret() {
 # ── Path 1: inherited FD (no argv/env/file exposure) ──
 if [ -n "${RP_ASKPASS_FD:-}" ]; then
   case "$RP_ASKPASS_FD" in
-    (''|*[!0-9]*) printf 'remote-pair-askpass: bad RP_ASKPASS_FD\n' >&2; exit 2 ;;
+    (''|*[!0-9]*) printf 'xpair-askpass: bad RP_ASKPASS_FD\n' >&2; exit 2 ;;
   esac
   _secret=""
   # Read exactly one line from the inherited descriptor. Fail closed if empty/closed.
-  IFS= read -r _secret <&"$RP_ASKPASS_FD" || { printf 'remote-pair-askpass: no secret on fd %s\n' "$RP_ASKPASS_FD" >&2; exit 3; }
-  [ -n "$_secret" ] || { printf 'remote-pair-askpass: empty secret\n' >&2; exit 3; }
+  IFS= read -r _secret <&"$RP_ASKPASS_FD" || { printf 'xpair-askpass: no secret on fd %s\n' "$RP_ASKPASS_FD" >&2; exit 3; }
+  [ -n "$_secret" ] || { printf 'xpair-askpass: empty secret\n' >&2; exit 3; }
   emit_secret "$_secret"
   exit 0
 fi
@@ -53,17 +53,17 @@ if command -v osascript >/dev/null 2>&1; then
   esc="${prompt//\\/\\\\}"; esc="${esc//\"/\\\"}"
   _secret="$(osascript <<OSA 2>/dev/null
 try
-  set r to display dialog "RemotePair: $esc" default answer "" with hidden answer with title "RemotePair" buttons {"Cancel", "OK"} default button "OK"
+  set r to display dialog "Xpair: $esc" default answer "" with hidden answer with title "Xpair" buttons {"Cancel", "OK"} default button "OK"
   text returned of r
 on error
   ""
 end try
 OSA
-)" || { printf 'remote-pair-askpass: dialog failed\n' >&2; exit 4; }
-  [ -n "$_secret" ] || { printf 'remote-pair-askpass: cancelled\n' >&2; exit 5; }
+)" || { printf 'xpair-askpass: dialog failed\n' >&2; exit 4; }
+  [ -n "$_secret" ] || { printf 'xpair-askpass: cancelled\n' >&2; exit 5; }
   emit_secret "$_secret"
   exit 0
 fi
 
-printf 'remote-pair-askpass: no secret source (set RP_ASKPASS_FD or install osascript)\n' >&2
+printf 'xpair-askpass: no secret source (set RP_ASKPASS_FD or install osascript)\n' >&2
 exit 6

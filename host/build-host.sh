@@ -1,12 +1,12 @@
 #!/bin/bash
-# build-host.sh — build RemotePairHost.app (menu-bar host: tmux host + approve + session management + updater)
+# build-host.sh — build XpairHost.app (menu-bar host: tmux host + approve + session management + updater)
 #
 # Compiles the per-responsibility .swift files in one shot (zero package dependencies). Embeds the helpers (tmux-aqua, router, ocr-find) in the bundle.
 # Signing: stable self-signed cert "RemotePair Local Signing" → the TCC grant is bound to the designated requirement
 #   so it survives rebuilds/updates. Without the cert, falls back to ad-hoc (re-toggle on every rebuild). Generate it with: ./make-signing-cert.sh
 #
 # Usage:
-#   ./build-host.sh                 # build/RemotePairHost.app build+sign+verify
+#   ./build-host.sh                 # build/XpairHost.app build+sign+verify
 #   ./build-host.sh --deploy [host] # above + rsync → remote (default REMOTE_HOST or gh-mac-m1) → install.sh --role host
 #   ./build-host.sh --release       # above + signed-app zip → gh release create v<version>
 set -euo pipefail
@@ -79,7 +79,7 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSBonjourServices</key><array><string>_remotepair._tcp</string></array>
-<key>NSLocalNetworkUsageDescription</key><string>RemotePair advertises this Mac on your local network so your RemotePair client can discover and pair with it.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Xpair advertises this Mac on your local network so your Xpair client can discover and pair with it.</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleIconName</key><string>AppIcon</string>
 </dict></plist>
@@ -95,7 +95,7 @@ fi
 
 echo "=== embed helpers → Contents/Helpers ==="
 HELP="$APP/Contents/Helpers"; mkdir -p "$HELP"
-cp host/remote-pair-approve-router.sh "$HELP/"; chmod +x "$HELP/remote-pair-approve-router.sh"
+cp host/xpair-approve-router.sh "$HELP/"; chmod +x "$HELP/xpair-approve-router.sh"
 cp host/ocr-find "$HELP/"; chmod +x "$HELP/ocr-find"
 # cliclick = the app's click/key primitive injector. Embedded in the bundle (self-contained). If missing, falls back to the homebrew path at runtime.
 if [ -x /opt/homebrew/bin/cliclick ]; then cp /opt/homebrew/bin/cliclick "$HELP/cliclick"; chmod +x "$HELP/cliclick"; echo "  embedded: cliclick"; fi
@@ -110,7 +110,7 @@ fi
 cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
 # Final check that it actually made it into the bundle — block a broken bundle from leaking into release/cask at the source.
 [ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua bundle embed verification failed: $HELP/tmux-aqua" >&2; exit 1; }
-echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + remote-pair-approve-router.sh + ocr-find"
+echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + xpair-approve-router.sh + ocr-find"
 
 # ── the 2 screenshare binaries (screen sidecar + rp-screencap helper) → Contents/Helpers ──
 # Since the SSH deploy channel was retired, this bundle is the only delivery path for the two binaries.
@@ -215,9 +215,9 @@ if [ "${1:-}" = "--deploy" ]; then
   HOST="${2:-$DEPLOY_HOST}"
   echo ""
   echo "=== deploy → $HOST (rsync repo + install.sh --role host) ==="
-  ssh "$HOST" 'mkdir -p ~/.local/share/remote-pair'
-  rsync -az --delete --exclude '.git' --exclude '.omc' ./ "$HOST:~/.local/share/remote-pair/"
-  ssh "$HOST" 'cd ~/.local/share/remote-pair && ./shared/install.sh --role host'
+  ssh "$HOST" 'mkdir -p ~/.local/share/xpair'
+  rsync -az --delete --exclude '.git' --exclude '.omc' ./ "$HOST:~/.local/share/xpair/"
+  ssh "$HOST" 'cd ~/.local/share/xpair && ./shared/install.sh --role host'
   echo ""
   echo "※ For a new bundle id ($BUNDLE_PREFIX), re-grant once: System Settings → Accessibility / Screen Recording → $APP_NAME ON"
 fi
@@ -240,7 +240,7 @@ if [ "${1:-}" = "--release" ]; then
   echo "released v$VERSION ✓"
 
   # Homebrew Cask auto-bump: update version + sha256 against the zip just uploaded (SSOT = the release artifact).
-  CASK="Casks/remote-pair-host.rb"
+  CASK="Casks/xpair-host.rb"
   if [ -f "$CASK" ]; then
     SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
     /usr/bin/sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" "$CASK"

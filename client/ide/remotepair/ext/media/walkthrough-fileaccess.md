@@ -14,15 +14,15 @@ Choose how this client reaches the host's files. Pick **one** primary backend:
   (`SYNC_BACKEND=mount`), an alternative to Syncthing.
 
 **Run setup** configures all of this interactively (host, terminal app, **folder
-mapping**, and a doctor check) via the `remote-pair onboard` CLI. You can also run
+mapping**, and a doctor check) via the `xpair onboard` CLI. You can also run
 these directly in a terminal:
 
 ```
-remote-pair onboard                      # interactive: host + folder mapping + doctor
-remote-pair map add <localDir> <hostDir> # register one mapping (omit hostDir = same path)
-remote-pair mount mount <hostPath>       # mount a host folder (smb/sshfs)
-remote-pair mount status                 # show active mounts
+xpair onboard                      # interactive: host + folder mapping + doctor
+xpair map add <localDir> <hostDir> # register one mapping (omit hostDir = same path)
+xpair mount mount <hostPath>       # mount a host folder (smb/sshfs)
+xpair mount status                 # show active mounts
 ```
 
-Mappings persist in `~/.remote-pair/client.env` (`FOLDER_MAPS`). Re-run
-`remote-pair onboard` anytime to change them.
+Mappings persist in `~/.xpair/host/client.env` (`FOLDER_MAPS`). Re-run
+`xpair onboard` anytime to change them.

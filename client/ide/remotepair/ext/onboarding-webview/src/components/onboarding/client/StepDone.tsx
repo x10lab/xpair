@@ -14,7 +14,7 @@ export function StepDone({ host, mappings }: Props) {
         You're all set
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
-        RemotePair is connected to{" "}
+        Xpair is connected to{" "}
         <span className="font-mono text-foreground">{host}</span>
         {mappings.length === 0 ? (
           <> — no folders mapped yet. Add them anytime from the IDE with Add Root.</>

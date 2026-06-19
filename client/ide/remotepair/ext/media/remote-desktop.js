@@ -1,4 +1,4 @@
-// RemotePair Remote Desktop webview script (v2 WebRTC only).
+// Xpair Remote Desktop webview script (v2 WebRTC only).
 // Opens a signaling WebSocket to the host `screen serve-webrtc`, negotiates a
 // WebRTC peer connection, and renders the H.264 media (decoded natively) into a
 // <video>. This view is PERMANENTLY view-only: no cursor/keyboard input is
@@ -150,10 +150,10 @@
     if (m.type === "status") {
       let msg = "Connecting to host…";
       if (m.state === "no-host") {
-        msg = "REMOTE_HOST is not set in ~/.remote-pair/client.env";
+        msg = "REMOTE_HOST is not set in ~/.xpair/host/client.env";
       } else if (m.state === "error") {
         msg = "Error: " + (m.detail || "unknown") +
-          "\nIs RemotePairHost.app running on the host (screen serve-webrtc)?";
+          "\nIs XpairHost.app running on the host (screen serve-webrtc)?";
       }
       if (!haveFrame) showOverlay(msg);
     }

@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xpair — Activity Bar / Rail</title>
+<style>
+/* ============================================================
+   Xpair surface mockup preamble — shared design tokens
+   Values from VSCode "Default Dark Modern" theme palette.
+   Inline this verbatim at the top of every surface mockup.
+   ============================================================ */
+:root{
+  /* typography */
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+
+  /* base text + icons */
+  --vscode-foreground: #cccccc;
+  --vscode-icon-foreground: #cccccc;
+
+  /* focus + borders */
+  --vscode-focusBorder: #0078d4;
+  --vscode-widget-border: #313131;
+
+  /* widgets / popovers */
+  --vscode-editorWidget-background: #202020;
+
+  /* activity bar */
+  --vscode-activityBar-foreground: #d7d7d7;
+  --vscode-activityBar-inactiveForeground: #868686;
+
+  /* lists + toolbars (hover states) */
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  /* links */
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+
+  /* scrollbar */
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+
+  /* convenience tokens used by the base layer below
+     (not referenced by the patch CSS, but handy for mockups) */
+  --rp-bg: #1f1f1f;
+  --rp-sidebar-bg: #181818;
+}
+
+/* ---- minimal base layer ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body{
+  margin: 0;
+  padding: 0;
+  background: var(--rp-bg, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   SURFACE CSS — Xpair custom Activity Bar / rail
+   Extracted from our patched workbench:
+     - activitybarpart.css      (.part.activitybar width = slim 30px rail)
+     - activityaction.css       (text-only vertical labels, "+" rail action)
+   var(--vscode-*) tokens resolved against the preamble above.
+   Monaco-internal rules irrelevant to the look were dropped.
+   The activity-bar CSS variables the workbench injects at runtime are
+   pinned here to the Xpair slim-rail values:
+       --activity-bar-width        : 30px   (ActivitybarPart.ACTIVITYBAR_WIDTH)
+       --activity-bar-action-height: 48px   (default action row height)
+   ============================================================ */
+.monaco-workbench .part.activitybar{
+  --activity-bar-width: 30px;            /* Xpair: was 48px (icon rail) */
+  --activity-bar-action-height: 48px;
+}
+
+/* ---- activitybarpart.css :: the rail container ---- */
+.monaco-workbench .part.activitybar{
+  width: var(--activity-bar-width, 30px);   /* Xpair: was 48px */
+  height: 100%;
+  font-family: var(--vscode-workbench-activitybar-font-family, inherit);
+  font-size: var(--vscode-workbench-activitybar-font-size, 11px);
+}
+
+/* The rail content column + the composite bar that stacks the items, and the
+   global bar pinned to the bottom (Settings). The .part > .content split and
+   the global-activity wrapper come from activitybarPart.ts / globalCompositeBar.ts. */
+.monaco-workbench .part.activitybar > .content{
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.monaco-workbench .part.activitybar > .content > .composite-bar{
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.monaco-workbench .part.activitybar > .content > .global-activity{
+  flex: 0 0 auto;
+}
+
+/* The action bar widget that lays out the vertical stack of action-items. */
+.monaco-workbench .activitybar > .content .monaco-action-bar{
+  width: 100%;
+  height: 100%;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .actions-container{
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  height: 100%;
+}
+
+/* ---- activityaction.css :: per-item active-border underline (rotated to the
+        rail's left edge by the workbench; kept here as the 2px accent marker) ---- */
+.monaco-workbench .activitybar > .content .composite-bar > .monaco-action-bar .action-item::after{
+  position: absolute;
+  content: '';
+  width: var(--activity-bar-width, 30px);   /* Xpair: was 48px */
+  height: 2px;
+  display: none;
+  background-color: transparent;
+  box-sizing: border-box;
+}
+
+/* ---- activityaction.css :: the item container ---- */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item{
+  position: relative;
+  z-index: 1;
+  display: flex;
+  overflow: hidden;
+  width: var(--activity-bar-width, 30px);   /* Xpair: was 48px */
+  height: var(--activity-bar-action-height, 48px);
+  margin-right: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+/* ---- activityaction.css :: non-codicon label baseline padding ---- */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-label:not(.codicon){
+  font-size: 15px;
+  line-height: var(--activity-bar-action-height, 48px);
+  padding: 0 0 0 var(--activity-bar-width, 30px);   /* Xpair: was 48px */
+}
+
+/* ----------------------------------------------------------------------------
+ * Xpair: text-only activity bar rail (Sessions / Browser / Settings).
+ * When the composite bar is created with icon:false, the action-item container
+ * does NOT get the `.icon` class, but updateLabel() still adds the codicon
+ * classNames AND the text label. Suppress the glyph and show the text.
+ * -------------------------------------------------------------------------- */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item:not(.icon) .action-label.codicon::before{
+  display: none !important;
+}
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item:not(.icon) .action-label{
+  font-family: var(--vscode-font-family);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  box-sizing: border-box;
+  color: var(--vscode-foreground);
+
+  /* Xpair: thin vertical text rail. The label reads bottom-to-top along
+     the slim rail. vertical-rl + 180deg rotation gives an upright, readable
+     sideways label; the rail itself stays narrow (~30px). Tight padding and a
+     small font keep the text crisp on the thin vertical strip. */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: auto;
+  padding: 6px 0;
+}
+
+/* Xpair: "+" rail action appended after the container list. */
+.monaco-workbench .activitybar > .content .remotepair-rail-add{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: var(--activity-bar-action-height, 48px);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--vscode-activityBar-inactiveForeground, var(--vscode-foreground));
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.monaco-workbench .activitybar > .content .remotepair-rail-add:hover,
+.monaco-workbench .activitybar > .content .remotepair-rail-add:focus{
+  color: var(--vscode-activityBar-foreground, var(--vscode-foreground));
+  outline: none;
+}
+
+/* ---- Behavioural states (from base activityaction.css + compositeBarActions.ts)
+        re-expressed so the mockup is visible without runtime JS ---- */
+
+/* hover on any rail item */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item:hover .action-label{
+  color: var(--vscode-activityBar-foreground);
+}
+
+/* active/checked composite: foreground brightens + the active-item-indicator
+   shows the 2px accent bar on the rail's left edge. compositeBarActions.ts adds
+   `.checked` to the container and appends `.active-item-indicator`. */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item.checked .action-label{
+  color: var(--vscode-activityBar-foreground);
+  font-weight: 600;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .active-item-indicator{
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item.checked .active-item-indicator{
+  background: var(--vscode-activityBar-foreground);
+}
+
+/* the count badge (`.badge` > `.badge-content`) rendered by compositeBarActions.ts.
+   Hidden until a composite has a numeric activity; here we show one on Sessions. */
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .badge{
+  position: absolute;
+  top: 6px;
+  right: 2px;
+  display: none;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .badge.has-content{
+  display: block;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .badge .badge-content{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  border-radius: 20px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  color: #ffffff;                 /* ACTIVITY_BAR_BADGE_FOREGROUND */
+  background-color: #0078d4;      /* ACTIVITY_BAR_BADGE_BACKGROUND */
+}
+
+/* ============================================================
+   MOCKUP SCAFFOLDING — not part of the patch. Provides the
+   workbench frame so the slim rail reads in context. Namespaced
+   under .rp-mock-* so it never collides with workbench classes.
+   ============================================================ */
+.rp-mock-shell{
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+.monaco-workbench{
+  display: flex;
+  height: 100%;
+  width: 100%;
+}
+/* slim rail gets the dark sidebar-adjacent tone + right divider */
+.monaco-workbench .part.activitybar{
+  background: var(--rp-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  flex: 0 0 auto;
+}
+/* faux sidebar so the rail isn't floating in a void */
+.rp-mock-sidebar{
+  flex: 0 0 240px;
+  background: var(--rp-sidebar-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rp-mock-sidebar-title{
+  height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 16px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vscode-activityBar-inactiveForeground);
+}
+.rp-mock-sidebar-add{
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 16px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+}
+.rp-mock-sidebar-add:hover{ background: var(--vscode-toolbar-hoverBackground); }
+.rp-mock-sidebar-body{
+  flex: 1 1 auto;
+  padding: 6px 0;
+  overflow: auto;
+}
+.rp-mock-row{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 16px;
+  font-size: 13px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+}
+.rp-mock-row:hover{ background: var(--vscode-list-hoverBackground); }
+.rp-mock-row.indent{ padding-left: 30px; }
+.rp-mock-row .chev{ color: var(--vscode-activityBar-inactiveForeground); font-size: 11px; width: 10px; }
+.rp-mock-row .dot{
+  width: 7px; height: 7px; border-radius: 50%; background: #4ec9b0; flex: 0 0 auto;
+}
+.rp-mock-row .dot.idle{ background: var(--vscode-activityBar-inactiveForeground); }
+.rp-mock-editor{
+  flex: 1 1 auto;
+  background: var(--rp-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-activityBar-inactiveForeground);
+  font-size: 12px;
+}
+.rp-mock-caption{
+  position: fixed;
+  bottom: 12px;
+  right: 16px;
+  font-size: 11px;
+  color: var(--vscode-activityBar-inactiveForeground);
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  max-width: 360px;
+}
+.rp-mock-caption code{
+  color: var(--vscode-textLink-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+</style>
+</head>
+<body>
+<div class="rp-mock-shell">
+  <!-- =========================================================
+       The patched Xpair workbench root.
+       ========================================================= -->
+  <div class="monaco-workbench">
+
+    <!-- =======================================================
+         ACTIVITY BAR  ::  the slim Xpair "rail"
+         Real DOM:
+           .part.activitybar
+             > .content
+                 > .composite-bar
+                     > .monaco-action-bar > .actions-container
+                         > .action-item  (one per ALLOWLISTED view container)
+                             > a.action-label.codicon.codicon-*  (icon:false -> text shown, glyph hidden)
+                             > .badge > .badge-content
+                             > .active-item-indicator
+                 > .global-activity  (GlobalCompositeBar; Settings only — Accounts removed)
+         Rail allowlist (ActivityBarCompositeBar.RAIL_ALLOWED_CONTAINER_IDS):
+           workbench.view.explorer  -> "Browser"  (Explorer file tree, retitled)
+           terminal / remotepair*   -> "Sessions" (embedded terminal/session host)
+         Pruned out: Search, SCM, Run&Debug, Extensions, and all extension containers.
+         ======================================================= -->
+    <div class="part activitybar" role="none" aria-label="Active View Switcher">
+      <div class="content">
+
+        <!-- the stacked view-container composites -->
+        <div class="composite-bar">
+          <div class="monaco-action-bar vertical" role="toolbar">
+            <ul class="actions-container" role="tablist" aria-label="Active View Switcher">
+
+              <!-- Sessions :: Xpair-owned container (active/checked) -->
+              <li class="action-item icon-text checked"
+                  role="tab" aria-selected="true"
+                  title="Sessions">
+                <a class="action-label codicon codicon-terminal"
+                   role="button" tabindex="0" aria-label="Sessions">Sessions</a>
+                <span class="badge has-content" aria-hidden="true">
+                  <span class="badge-content">2</span>
+                </span>
+                <div class="active-item-indicator"></div>
+              </li>
+
+              <!-- Browser :: Explorer container, retitled "Browser" -->
+              <li class="action-item icon-text"
+                  role="tab" aria-selected="false"
+                  title="Browser">
+                <a class="action-label codicon codicon-files"
+                   role="button" tabindex="0" aria-label="Browser">Browser</a>
+                <span class="badge" aria-hidden="true">
+                  <span class="badge-content"></span>
+                </span>
+                <div class="active-item-indicator"></div>
+              </li>
+
+            </ul>
+          </div>
+        </div>
+
+        <!-- GlobalCompositeBar :: bottom-pinned. Accounts action removed in the
+             patch; only the global "Manage" action remains, retitled "Settings"
+             and rendered as a vertical TEXT label (icon:false). -->
+        <div class="global-activity">
+          <div class="monaco-action-bar vertical" role="toolbar">
+            <ul class="actions-container" role="none">
+              <li class="action-item icon-text"
+                  role="button" title="Settings">
+                <a class="action-label codicon codicon-settings-gear"
+                   role="button" tabindex="0" aria-label="Settings">Settings</a>
+                <div class="active-item-indicator"></div>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <!-- end .part.activitybar -->
+
+    <!-- =======================================================
+         Faux sidebar + editor so the slim rail reads in context.
+         (Scaffolding only — NOT from the patch.)
+         ======================================================= -->
+    <aside class="rp-mock-sidebar" aria-label="Sessions (mock)">
+      <div class="rp-mock-sidebar-title">
+        <span>Sessions</span>
+        <!-- the "+" New Session lives in the container title (rail "+" was removed) -->
+        <span class="rp-mock-sidebar-add" title="New Session">+</span>
+      </div>
+      <div class="rp-mock-sidebar-body">
+        <div class="rp-mock-row"><span class="dot"></span><span>claude — frontend</span></div>
+        <div class="rp-mock-row"><span class="dot"></span><span>claude — host</span></div>
+        <div class="rp-mock-row"><span class="dot idle"></span><span>shell — build</span></div>
+      </div>
+    </aside>
+
+    <main class="rp-mock-editor">
+      <span>editor area</span>
+    </main>
+
+  </div>
+</div>
+
+<div class="rp-mock-caption">
+  Xpair rail — slim <code>30px</code> text-only Activity Bar.
+  Items are real view-container composites rendered with <code>icon:false</code>
+  (glyph hidden, label rotated vertical). Allowlist keeps only
+  <code>Sessions</code> + <code>Browser</code>; <code>Settings</code> sits in the
+  bottom global bar (Accounts removed).
+</div>
+</body>
+</html>

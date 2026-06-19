@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RemotePair — Client Onboarding (discovery → pair → connect) mockup</title>
+<title>Xpair — Client Onboarding (discovery → pair → connect) mockup</title>
 <style>
   .dark {
     --background: oklch(0.129 0.042 264.695);
@@ -208,7 +208,7 @@
 </style>
 </head>
 <body>
-  <div class="page-title">RemotePair — Client onboarding</div>
+  <div class="page-title">Xpair — Client onboarding</div>
   <div class="page-sub">discovery → pair → connect · embedded Electron client (mockup for review)</div>
 
   <div class="legend">
@@ -252,7 +252,7 @@ function win({sub, step, body, prev=true, nextLabel='Continue', nextKind='primar
   <div class="win">
     <div class="titlebar">
       <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
-      <div class="tb-text"><h1>RemotePair</h1><p>${sub}</p></div>
+      <div class="tb-text"><h1>Xpair</h1><p>${sub}</p></div>
       ${dots(step)}
     </div>
     <div class="body">${body}</div>
@@ -268,8 +268,8 @@ const welcome = win({ sub:'Welcome', step:0, prev:false, nextLabel:'Find my host
   body:`<div class="center">
     <div class="icon-badge">${I.laptop}</div>
     <h2 class="title">Connect to your host</h2>
-    <p class="lead">RemotePair will look for the Mac that runs your sessions — on this Wi-Fi first, no setup needed.</p>
-    <p class="hint">Make sure <b>RemotePairHost</b> is running on the other Mac.</p>
+    <p class="lead">Xpair will look for the Mac that runs your sessions — on this Wi-Fi first, no setup needed.</p>
+    <p class="hint">Make sure <b>XpairHost</b> is running on the other Mac.</p>
     <ul class="bullets">
       <li>Find your host automatically</li>
       <li>Confirm with a short pairing code</li>
@@ -283,7 +283,7 @@ const scanning = win({ sub:'Finding your host', step:1, nextLabel:'',
     <div class="radar"><span class="ring"></span><span class="ring"></span>
       <div class="core"><div>${I.wifi}</div></div></div>
     <h2 class="title sm">Looking for your host…</h2>
-    <p class="lead">Scanning this network for Macs running RemotePairHost.</p>
+    <p class="lead">Scanning this network for Macs running XpairHost.</p>
     <div class="scanline" style="margin-top:18px"><span class="spinner"></span> Bonjour · same Wi-Fi</div>
     <div class="scanline"><span class="spinner"></span> Tailscale · your tailnet</div>
   </div>`});
@@ -302,7 +302,7 @@ const found = win({ sub:'3 Macs found', step:1, nextLabel:'', extraFooter:`<butt
       <div class="pill-setup">Reconnect</div>
     </div>
 
-    <!-- discoverable, advertising RemotePair, not yet in my config → Connect -->
+    <!-- discoverable, advertising Xpair, not yet in my config → Connect -->
     <div class="peer">
       <div class="pic">${I.server}</div>
       <div class="meta"><div class="nm">gh-mac-studio <span class="badge ts">TAILSCALE</span></div>
@@ -310,12 +310,12 @@ const found = win({ sub:'3 Macs found', step:1, nextLabel:'', extraFooter:`<butt
       <div class="pill-setup">Connect</div>
     </div>
 
-    <!-- SSH-able but RemotePair not installed → Set up (client installs over SSH) -->
+    <!-- SSH-able but Xpair not installed → Set up (client installs over SSH) -->
     <div class="peer">
       <div class="pic">${I.server}</div>
       <div class="meta"><div class="nm">gh-mac-mini <span class="badge ssh">SSH</span></div>
         <div class="sub">192.168.1.31</div>
-        <div class="warnhint">${I.download} RemotePair not installed — we'll set it up</div></div>
+        <div class="warnhint">${I.download} Xpair not installed — we'll set it up</div></div>
       <div class="pill-setup">Set up</div>
     </div>
 
@@ -350,7 +350,7 @@ const connectPin = win({ sub:'Connect to gh-mac-m1', step:2, nextLabel:'Pair & c
   body:`<div class="center">
     <div class="icon-badge round">${I.shield}</div>
     <h2 class="title sm">Enter the pairing code</h2>
-    <p class="lead">RemotePair is running on <b style="color:var(--foreground)">gh-mac-m1</b>. Read the 6-digit code on its menu bar and type it here.</p>
+    <p class="lead">Xpair is running on <b style="color:var(--foreground)">gh-mac-m1</b>. Read the 6-digit code on its menu bar and type it here.</p>
     <div class="pin">
       <span class="filled">4</span><span class="filled">8</span><span class="filled">2</span>
       <span class="cursor">1</span><span></span><span></span>
@@ -366,8 +366,8 @@ const connectPin = win({ sub:'Connect to gh-mac-m1', step:2, nextLabel:'Pair & c
 // ── 6. Set up · account password via askpass helper (host NOT installed) ──
 const setupPassword = win({ sub:'Set up gh-mac-mini', step:2, nextLabel:'', prev:true,
   body:`<div>
-    <div class="sect-h">Sign in to install RemotePair</div>
-    <div class="sect-p" style="margin-bottom:4px">gh-mac-mini doesn't have RemotePair yet. Sign in once so we can set it up — after this it's key-based, no more passwords.</div>
+    <div class="sect-h">Sign in to install Xpair</div>
+    <div class="sect-p" style="margin-bottom:4px">gh-mac-mini doesn't have Xpair yet. Sign in once so we can set it up — after this it's key-based, no more passwords.</div>
     <div class="field">
       <span class="l">Connect as</span>
       <div class="inputrow">
@@ -403,11 +403,11 @@ const installing = win({ sub:'Installing on gh-mac-mini', step:3, prev:false, ne
     <div class="center" style="margin-bottom:2px">
       <div class="icon-badge round" style="width:52px;height:52px;margin-bottom:12px">${I.box}</div>
       <h2 class="title sm">Setting up the host</h2>
-      <p class="lead" style="max-width:300px">Installing RemotePairHost on gh-mac-mini over SSH.</p>
+      <p class="lead" style="max-width:300px">Installing XpairHost on gh-mac-mini over SSH.</p>
     </div>
     <div class="steps" style="max-width:340px;margin-left:auto;margin-right:auto">
       <div class="st done"><span class="b">${I.check_sm}</span><span class="x">Authorized SSH key</span></div>
-      <div class="st done"><span class="b">${I.check_sm}</span><span class="x">Pushed RemotePairHost.app</span></div>
+      <div class="st done"><span class="b">${I.check_sm}</span><span class="x">Pushed XpairHost.app</span></div>
       <div class="st now"><span class="b"><span class="spinner" style="width:11px;height:11px;border-width:1.5px"></span></span><span class="x">Registering launch agent</span></div>
       <div class="st todo"><span class="b">4</span><span class="x">Starting host</span></div>
     </div>
@@ -420,11 +420,11 @@ const installing = win({ sub:'Installing on gh-mac-mini', step:3, prev:false, ne
   </div>`});
 
 // ── 7. Done ──────────────────────────────────────────────────
-const done = win({ sub:'Done', step:4, prev:false, nextLabel:'Open RemotePair', nextKind:'primary',
+const done = win({ sub:'Done', step:4, prev:false, nextLabel:'Open Xpair', nextKind:'primary',
   body:`<div class="center">
     <div class="icon-badge round">${I.check}</div>
     <h2 class="title">You're connected</h2>
-    <p class="lead">RemotePair is paired with <b style="color:var(--foreground)">gh-mac-m1</b>. Your sessions live there and stay alive 24/7.</p>
+    <p class="lead">Xpair is paired with <b style="color:var(--foreground)">gh-mac-m1</b>. Your sessions live there and stay alive 24/7.</p>
     <div class="peer primary" style="margin-top:24px; width:300px; cursor:default">
       <div class="pic on">${I.server}</div>
       <div class="meta"><div class="nm">gh-mac-m1 <span class="badge lan">LAN</span></div>

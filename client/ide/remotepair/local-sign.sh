@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Inside-out re-sign of a LOCALLY-built RemotePair IDE app with a self-signed identity +
+# Inside-out re-sign of a LOCALLY-built Xpair IDE app with a self-signed identity +
 # hardened runtime + JIT entitlements, so the Electron app actually launches.
 #
 # Why: the gulp build produces an adhoc/linker signature; launching it with V8 JIT under a

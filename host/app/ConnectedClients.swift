@@ -1,6 +1,6 @@
 // ConnectedClients.swift — read-only view of which clients are currently connected.
 //
-// The CLIENT writes one heartbeat file per client at ~/.remote-pair/clients/<id>.json, shaped
+// The CLIENT writes one heartbeat file per client at ~/.xpair/host/clients/<id>.json, shaped
 // {"name":"<client hostname>","user":"<client user>","ts":<unix epoch seconds>}. A client counts as
 // "connected" if its ts is within the freshness window of now. There is NO disconnect/revoke — this is
 // read-only status. Reused by both the menu bar (AppDelegate.rebuildMenu) and the onboarding bridge

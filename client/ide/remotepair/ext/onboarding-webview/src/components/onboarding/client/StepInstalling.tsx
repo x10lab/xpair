@@ -21,7 +21,7 @@ type Props = {
 
 const PHASES = [
   "Authorized SSH key",
-  "Pushed RemotePairHost.app",
+  "Pushed XpairHost.app",
   "Registering launch agent",
   "Starting host",
 ];
@@ -109,8 +109,8 @@ export function StepInstalling({
           {state === "failed"
             ? `Couldn't finish setting up ${peer.name}.`
             : state === "done"
-            ? `RemotePairHost is installed on ${peer.name}.`
-            : `Installing RemotePairHost on ${peer.name} over SSH.`}
+            ? `XpairHost is installed on ${peer.name}.`
+            : `Installing XpairHost on ${peer.name} over SSH.`}
         </p>
       </div>
 

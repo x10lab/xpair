@@ -1,7 +1,7 @@
-# remotepair-rs
+# xpair-rs
 
-RemotePair's native screen-sharing (remote desktop) engine. A sibling repo to
-`remote-pair` (main) and `remotepair-ide` (IDE). Implemented in native Rust/Swift for
+Xpair's native screen-sharing (remote desktop) engine. A sibling repo to
+`xpair` (main) and `xpair-ide` (IDE). Implemented in native Rust/Swift for
 performance, it streams to the IDE's screen-sharing tab via H.264/WebRTC.
 
 ## Components
@@ -21,7 +21,7 @@ performance, it streams to the IDE's screen-sharing tab via H.264/WebRTC.
   IOSurface zero-copy. rp-screencap standalone verification: SCK capture + VT, IDR 36KB / P-frame avg 2.2KB.
   (The previous xcap path was capped at 20fps for release decode.)
 - The client uses the browser's native WebRTC → cross-platform (mac/win/linux) decode.
-- Specify the helper path via the `RP_SCREENCAP` environment variable (default `~/.remote-pair/bin/rp-screencap` or PATH).
+- Specify the helper path via the `RP_SCREENCAP` environment variable (default `~/.xpair/host/bin/rp-screencap` or PATH).
 
 ## License
 Apache-2.0. No AGPL mixing (`screen/deny.toml`). VideoToolbox/SCK = Apple EULA (system).

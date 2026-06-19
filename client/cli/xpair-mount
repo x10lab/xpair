@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-pair-mount — Mount-based file access for RemotePair (ALTERNATIVE to Syncthing).
+# xpair-mount — Mount-based file access for Xpair (ALTERNATIVE to Syncthing).
 #
 # Philosophy / trade-off:
 #   Mount option:    single source of truth on the host — no sync daemon, no conflicts, no local copy.
@@ -22,16 +22,16 @@
 # host files directly without any additional path translation layer.
 #
 # Usage:
-#   remote-pair-mount [--backend smb|sshfs] mount   <hostPath> [mountpoint]
-#   remote-pair-mount [--backend smb|sshfs] unmount <mountpoint|hostPath>
-#   remote-pair-mount status
-#   remote-pair-mount help
+#   xpair-mount [--backend smb|sshfs] mount   <hostPath> [mountpoint]
+#   xpair-mount [--backend smb|sshfs] unmount <mountpoint|hostPath>
+#   xpair-mount status
+#   xpair-mount help
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# ── config (single source of truth: ~/.remote-pair) ──
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+# ── config (single source of truth: ~/.xpair/host) ──
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 for _f in common host client; do
   # shellcheck disable=SC1090
   [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
@@ -39,7 +39,7 @@ done
 REMOTE_HOST="${REMOTE_HOST:-}"
 MOUNT_BACKEND="${MOUNT_BACKEND:-smb}"
 
-# Default mountpoint root: ~/.remote-pair/mounts/<host>/<sanitized-path>
+# Default mountpoint root: ~/.xpair/host/mounts/<host>/<sanitized-path>
 MOUNTS_ROOT="$RP_DIR/mounts"
 
 # Source the shared logger; no-op fallback for partially-updated clients.
@@ -74,8 +74,8 @@ SUBCMD="${SUBCMD:-help}"
 require_host() {
   if [ -z "$REMOTE_HOST" ]; then
     err "REMOTE_HOST is not set."
-    printf >&2 '  Set it with:  remote-pair config set host <ssh-alias>\n'
-    printf >&2 '  Or in ~/.remote-pair/client.env:  REMOTE_HOST=<ssh-alias>\n'
+    printf >&2 '  Set it with:  xpair config set host <ssh-alias>\n'
+    printf >&2 '  Or in ~/.xpair/host/client.env:  REMOTE_HOST=<ssh-alias>\n'
     exit 1
   fi
 }
@@ -143,7 +143,7 @@ cmd_mount() {
   local mountpoint="${SUBCMD_ARGS[1]:-}"
 
   if [ -z "$hostpath" ]; then
-    err "mount requires a host path.  Usage: remote-pair-mount mount <hostPath> [mountpoint]"
+    err "mount requires a host path.  Usage: xpair-mount mount <hostPath> [mountpoint]"
     exit 2
   fi
 
@@ -201,7 +201,7 @@ cmd_mount() {
         printf >&2 '    1. Verify File Sharing is ON on the host (System Settings > General > Sharing).\n'
         printf >&2 '    2. Ensure the folder "%s" is shared (or a parent folder is shared).\n' "$hostpath"
         printf >&2 '    3. Check the share name: by default macOS uses the folder'"'"'s basename.\n'
-        printf >&2 '       Override with: MOUNT_BACKEND=smb remote-pair-mount mount <hostPath> [mountpoint]\n'
+        printf >&2 '       Override with: MOUNT_BACKEND=smb xpair-mount mount <hostPath> [mountpoint]\n'
         printf >&2 '       and pass the full path — or use --backend sshfs to avoid SMB altogether.\n'
         # Clean up empty mountpoint we created.
         rmdir "$mountpoint" 2>/dev/null || true
@@ -233,14 +233,14 @@ cmd_mount() {
 
   printf '  Mountpoint: %s\n' "$mountpoint"
   printf '  Tip: add FOLDER_MAPS entry so editors resolve to this path:\n'
-  printf '    remote-pair config set folder-map <localPath>::%s\n' "$mountpoint"
+  printf '    xpair config set folder-map <localPath>::%s\n' "$mountpoint"
 }
 
 # ── subcommand: unmount ──
 cmd_unmount() {
   local target="${SUBCMD_ARGS[0]:-}"
   if [ -z "$target" ]; then
-    err "unmount requires a mountpoint or hostPath.  Usage: remote-pair-mount unmount <mountpoint|hostPath>"
+    err "unmount requires a mountpoint or hostPath.  Usage: xpair-mount unmount <mountpoint|hostPath>"
     exit 2
   fi
 
@@ -252,7 +252,7 @@ cmd_unmount() {
     if [ ! -d "$mountpoint" ]; then
       err "Cannot find mountpoint for: $target"
       printf >&2 '  Tried: %s\n' "$mountpoint"
-      printf >&2 '  Run: remote-pair-mount status\n'
+      printf >&2 '  Run: xpair-mount status\n'
       exit 1
     fi
   fi
@@ -285,7 +285,7 @@ cmd_unmount() {
 
 # ── subcommand: status ──
 cmd_status() {
-  info "Active RemotePair mounts (via SSHFS or SMB):"
+  info "Active Xpair mounts (via SSHFS or SMB):"
   local found=0
 
   # SMB mounts with our remote host or our mounts root.

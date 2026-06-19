@@ -1,7 +1,7 @@
 #!/bin/bash
-# remote-pair-approve-router.sh — detect an approval dialog that is up (or about to appear) → allow it → verify it closed.
+# xpair-approve-router.sh — detect an approval dialog that is up (or about to appear) → allow it → verify it closed.
 #
-# RemotePairHost (menu-bar app, AX+screen-recording+PostEvent granted) invokes this as a child on trigger → permissions inherited.
+# XpairHost (menu-bar app, AX+screen-recording+PostEvent granted) invokes this as a child on trigger → permissions inherited.
 # claude/skills only "trigger when blocked"; which dialog to allow and how is entirely routed here.
 #
 # Improvements (v3):
@@ -17,7 +17,7 @@ set -u
 # Make sure claude·screencapture·cliclick are on PATH (the PATH an app spawns with directly is sparse)
 export PATH="/usr/sbin:/usr/bin:/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 SCAP=/usr/sbin/screencapture
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 
 OCR="$(command -v ocr-find 2>/dev/null || true)"
 [ -n "$OCR" ] || for _c in "$RP_DIR/bin/ocr-find" "$HOME/.claude/bin/ocr-find"; do [ -x "$_c" ] && { OCR="$_c"; break; }; done
@@ -25,8 +25,8 @@ CLICK="$(command -v cliclick 2>/dev/null || echo /opt/homebrew/bin/cliclick)"
 CLAUDE="$(command -v claude 2>/dev/null || true)"
 
 RULES="${RULES_FILE:-$RP_DIR/rules.txt}"; [ -f "$RULES" ] || RULES="$HOME/.claude/auto-approve/rules.txt"
-LOG="${LOG_FILE:-$RP_DIR/logs/remote-pair.log}"; mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-# size-cap rotation (5MB → .1) at startup — shared remote-pair.log, append-only writers tolerate it
+LOG="${LOG_FILE:-$RP_DIR/logs/xpair.log}"; mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+# size-cap rotation (5MB → .1) at startup — shared xpair.log, append-only writers tolerate it
 { _sz="$(stat -f %z "$LOG" 2>/dev/null || echo 0)"; [ "$_sz" -gt 5000000 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null; } || true
 SHOT="${RP_SHOT:-/tmp/rp-router.png}"          # when RP_SHOT is set, use that image (test, one-shot)
 DRY="${RP_DRY:-0}"                             # RP_DRY=1 = don't actually click/press keys (intent only)
@@ -49,8 +49,8 @@ log(){ printf '%s router: %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
 
 # hint: if the agent tells us in advance "which approval this is" (rule id or free text), try that rule first +
 #   use it as the prior for haiku classification. Optional. (passed by the CLI via a .label file, or the RP_FOR env var)
-HINT_FILE="${RP_HINT_FILE:-/tmp/remote-pair.approve-request.label}"
-TYPE_FILE="${RP_TYPE_FILE:-/tmp/remote-pair.approve-request.type}"
+HINT_FILE="${RP_HINT_FILE:-/tmp/xpair.approve-request.label}"
+TYPE_FILE="${RP_TYPE_FILE:-/tmp/xpair.approve-request.type}"
 HINT="${RP_FOR:-}"
 [ -z "$HINT" ] && [ -f "$HINT_FILE" ] && HINT="$(head -1 "$HINT_FILE" 2>/dev/null)"
 # --type: the agent directly specifies "how to approve" (key:<combo> | ocr:<label>) → overrides the rule action on the hint path

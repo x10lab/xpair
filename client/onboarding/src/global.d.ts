@@ -1,4 +1,4 @@
-// Discovery peer shape returned by `remote-pair discover --json` (deduped by host-key fingerprint).
+// Discovery peer shape returned by `xpair discover --json` (deduped by host-key fingerprint).
 // source = the primary transport; sources[] = every transport this peer was seen on (LAN+TS merged).
 export type PeerStatus = "reconnect" | "connect" | "setup";
 export type PeerSource = "lan" | "tailscale" | "ssh";

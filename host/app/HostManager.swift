@@ -1,6 +1,6 @@
 // HostManager.swift — launches the patched-tmux server as a child of this app and keeps it pinned.
 //
-// For claude to use computer-use, the tmux server must live in the granted .app (RemotePairHost) subtree
+// For claude to use computer-use, the tmux server must live in the granted .app (XpairHost) subtree
 // so it inherits AX/SR. With patched tmux (daemon→setsid, no reparent), the server PPID stays in the app chain.
 
 import Cocoa

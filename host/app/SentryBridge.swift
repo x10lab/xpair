@@ -1,4 +1,4 @@
-// SentryBridge.swift — host crash-reporting seam for RemotePairHost (telemetry-funnel spec, Sentry scope).
+// SentryBridge.swift — host crash-reporting seam for XpairHost (telemetry-funnel spec, Sentry scope).
 //
 // PROTOCOL SEAM. The crash backend is swappable behind the CrashReporting protocol: NoopCrashReporter
 // (zero network) by default, and a sentry-cocoa-backed SentryCrashReporter once consent + DSN are present.
@@ -172,7 +172,7 @@ enum SentryBridge {
     }
 
     /// Mark crash-host-signal.log as uploaded without deleting it: rename to a dated copy so the live file
-    /// starts empty (no re-upload) while the local dump is preserved for `remote-pair logs --collect`.
+    /// starts empty (no re-upload) while the local dump is preserved for `xpair logs --collect`.
     private static func markSignalCrashUploaded(_ path: String) {
         let fm = FileManager.default
         let archived = "\(LOG_DIR)/crash-host-signal-\(Int(Date().timeIntervalSince1970)).log"

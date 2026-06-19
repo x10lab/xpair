@@ -1,8 +1,8 @@
-// CrashReporter.swift — local-only crash dumps for RemotePairHost (logging contract §10).
+// CrashReporter.swift — local-only crash dumps for XpairHost (logging contract §10).
 //
 // No remote telemetry is sent. On a crash we persist a dump under $LOG_DIR so it is
-// recoverable via `remote-pair logs --collect` (which tars all of $LOG_DIR) and shows up
-// in `remote-pair logs` (matched by the *.log glob). Two paths:
+// recoverable via `xpair logs --collect` (which tars all of $LOG_DIR) and shows up
+// in `xpair logs` (matched by the *.log glob). Two paths:
 //
 //   • NSException (Obj-C/AppKit interop) → NSSetUncaughtExceptionHandler. Not a signal
 //     context, so Foundation + logRedact() are safe here. → crash-host-<epoch>.log
@@ -58,7 +58,7 @@ private func crashWriteInt(_ fd: Int32, _ value: Int32) {
 private let crashSignalHandler: @convention(c) (Int32) -> Void = { sig in
     let fd = crashSignalFD
     if fd >= 0 {
-        crashWrite(fd, "\n=== RemotePairHost CRASH (signal ")
+        crashWrite(fd, "\n=== XpairHost CRASH (signal ")
         crashWriteInt(fd, sig)
         crashWrite(fd, ") ===\n")
         let n = backtrace(crashFrames, kCrashMaxFrames)
@@ -98,7 +98,7 @@ func installCrashReporter() {
             frames: exc.callStackSymbols.map(outboundScrub))
 
         let ts = logTSFormatter.string(from: Date())
-        var s = "=== RemotePairHost CRASH (NSException) \(ts) ===\n"
+        var s = "=== XpairHost CRASH (NSException) \(ts) ===\n"
         s += "name: \(exc.name.rawValue)\n"
         if let reason = exc.reason { s += "reason: \(reason)\n" }
         s += "\n" + exc.callStackSymbols.joined(separator: "\n") + "\n"

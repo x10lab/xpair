@@ -2,7 +2,7 @@
 //
 // WHY THIS EXISTS: macOS Screen Recording (TCC) permission is granted PER BINARY.
 // The standalone `rp-screencap` helper (host/rd/rpmedia/rp-screencap.swift) is a
-// separate executable, so the RemotePairHost.app Screen Recording grant does NOT
+// separate executable, so the XpairHost.app Screen Recording grant does NOT
 // cover it — ScreenCaptureKit returns SCStreamErrorDomain Code=-3801 ("user
 // declined TCCs"), the helper exits, and the WebRTC stream is BLACK on a freshly
 // installed host. Running the SAME SCK+VT pipeline INSIDE this app process makes

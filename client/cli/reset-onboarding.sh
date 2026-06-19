@@ -6,8 +6,8 @@
 # empty state with this script, then launch the app, which will behave exactly as a clean install.
 #
 # What it does (client-side only — never touches the host):
-#   1. Unmounts any RemotePair mounts under ~/.remote-pair/mounts and removes the leftover dirs.
-#   2. Clears the onboarding-produced keys in ~/.remote-pair/client.env (REMOTE_HOST, FOLDER_MAPS,
+#   1. Unmounts any Xpair mounts under ~/.xpair/host/mounts and removes the leftover dirs.
+#   2. Clears the onboarding-produced keys in ~/.xpair/host/client.env (REMOTE_HOST, FOLDER_MAPS,
 #      SYNC_BACKEND, MOUNT_BACKEND) while preserving install-level keys (LAUNCHER, TERMINAL_APP).
 #   3. Leaves the SSH key (~/.ssh/id_ed25519) in place by default — onboarding reuses it. Pass
 #      --keys to also remove it for a truly bare state.
@@ -15,7 +15,7 @@
 # Usage: reset-onboarding.sh [-y|--yes] [--keys]
 set -euo pipefail
 
-RP_DIR="$HOME/.remote-pair"
+RP_DIR="$HOME/.xpair/host"
 CLIENT_ENV="$RP_DIR/client.env"
 MOUNTS_ROOT="$RP_DIR/mounts"
 SSH_KEY="$HOME/.ssh/id_ed25519"
@@ -31,10 +31,10 @@ for a in "$@"; do
   esac
 done
 
-# Resolve remote-pair-mount (installed or on PATH) for backend-correct unmounts.
+# Resolve xpair-mount (installed or on PATH) for backend-correct unmounts.
 RPM=""
-if command -v remote-pair-mount >/dev/null 2>&1; then RPM="$(command -v remote-pair-mount)"
-elif [ -x "$HOME/.local/bin/remote-pair-mount" ]; then RPM="$HOME/.local/bin/remote-pair-mount"; fi
+if command -v xpair-mount >/dev/null 2>&1; then RPM="$(command -v xpair-mount)"
+elif [ -x "$HOME/.local/bin/xpair-mount" ]; then RPM="$HOME/.local/bin/xpair-mount"; fi
 
 if [ "$YES" != 1 ]; then
   printf 'Reset this client to a fresh, pre-onboarding state (unmount + clear host/maps/backends)? [y/N]: '
@@ -76,4 +76,4 @@ if [ "$DROP_KEYS" = 1 ]; then
   rm -f "$SSH_KEY" "$SSH_KEY.pub" && echo "removed $SSH_KEY(.pub)"
 fi
 
-echo "✅ onboarding reset — next launch of the RemotePair app will show onboarding from scratch."
+echo "✅ onboarding reset — next launch of the Xpair app will show onboarding from scratch."

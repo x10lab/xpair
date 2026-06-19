@@ -18,7 +18,7 @@ enum Installer {
     static let LOCAL_BIN = "\(HOME)/.local/bin"
     static let COMMON_ENV = "\(RP_DIR)/common.env"
     static let HOST_ENV = "\(RP_DIR)/host.env"
-    static let WATCHDOG_SH = "\(RP_DIR)/bin/remote-pair-watchdog.sh"
+    static let WATCHDOG_SH = "\(RP_DIR)/bin/xpair-watchdog.sh"
     static let APP_EXEC = Bundle.main.executablePath ?? "/Applications/\(APP_NAME).app/Contents/MacOS/\(APP_NAME)"
 
     private static var fm: FileManager { FileManager.default }
@@ -29,13 +29,13 @@ enum Installer {
 
     /// Called on every launch. If "installed + same version", it is a true no-op (does not touch the running tmux server).
     /// If installed but the version went up, only resources (skills/rules/tmux-aqua) are refreshed — this prevents
-    /// the case where only the app changes to the new version while ~/.remote-pair / ~/.claude resources remain old
+    /// the case where only the app changes to the new version while ~/.xpair/host / ~/.claude resources remain old
     /// (common to app replacement / in-app update).
     /// grant / LaunchAgent / host.env (user settings) are left untouched.
     ///
     /// ── M6 LEVEL-1 (hot update) non-interference guarantee ──────────────────────────────────────
     /// glue/web (CLI / rules / skills / web / hooks) changes are hot-swapped on disk by the CLI
-    /// (`remote-pair update`) — no .app/tmux restart. The app's role is **not to interfere** with that:
+    /// (`xpair update`) — no .app/tmux restart. The app's role is **not to interfere** with that:
     ///   • Same version → true no-op. Never touches the tmux server / LaunchAgent / grant (hot-swap protection).
     ///   • Version up → only refresh resources (tmux-aqua link / env alignment), preserving grant / LaunchAgent / host.env.
     /// In other words, even if a LEVEL-1 hot-swap changes disk resources, the app does not revert them or trigger a restart.
@@ -132,7 +132,7 @@ enum Installer {
         //       That is the job of the CLI/README single install (shared/install.sh). The app only brings up its own daemon.
 
         // 3.5 host notification hook mirror — so that a cask-only host (one that did not go through install.sh) also gets
-        //     notification delivery, install/register remote-pair-notify.sh + manage-claude-hooks.py best-effort, the same way the CLI does.
+        //     notification delivery, install/register xpair-notify.sh + manage-claude-hooks.py best-effort, the same way the CLI does.
         installNotifyHook()
 
         // 4. tmux-aqua symlink → bundled Helpers/tmux-aqua (replace if the link is wrong/stale)
@@ -151,7 +151,7 @@ enum Installer {
         } else { log(.warn, "bundled tmux-aqua not found (\(tmuxSrc))") }
 
         // 4b. Two screen-sharing symlinks → bundled Helpers/{screen,rp-screencap}.
-        //     Resolves the stable path ~/.remote-pair/bin/<name> that extensions/docs call to the bundle's signed binary
+        //     Resolves the stable path ~/.xpair/host/bin/<name> that extensions/docs call to the bundle's signed binary
         //     (after retiring SSH deploy, the bundle is the only delivery path). Being symlinks, on .app update they always
         //     point at the new bundle so there is no version skew, and the serve_webrtc resolver's current_exe().canonicalize()
         //     resolves the link to the real Helpers path to discover sibling helpers.
@@ -174,17 +174,17 @@ enum Installer {
 
     // ── host notification hook mirror (for cask-only hosts) ────────────────────────────────────
     //
-    // Why: notification delivery starts with the host's Claude Code hook (remote-pair-notify.sh) writing events to a queue.
+    // Why: notification delivery starts with the host's Claude Code hook (xpair-notify.sh) writing events to a queue.
     //   install.sh (--role host) lays this down, but a host that received only the .app via cask never went through
     //   install.sh and has no hook → the client receives no notifications. So app self-install mirrors it the same way the CLI does.
     //
     // Approach (consistent with the approve/notify hook section of shared/install.sh):
     //   Source lookup order ① app bundle Contents/Helpers/hooks ② repo HOST_DIR/hooks (dev/source tree)
     //   If neither is present (pure cask + repo unreachable) → graceful skip: just log and pass.
-    //   Install locations (character-for-character identical to install.sh — guarantees reversibility): notify.sh → $RP_DIR/bin/remote-pair-notify.sh,
+    //   Install locations (character-for-character identical to install.sh — guarantees reversibility): notify.sh → $RP_DIR/bin/xpair-notify.sh,
     //             manage-claude-hooks.py → $RP_DIR/bin/ (idempotent JSON merger, same as install.sh)
     //   Registration: manage-claude-hooks.py add <settings> <approve_cmd> <notify_cmd> — preserves existing user hooks (idempotent).
-    //     notify_cmd is registered with the same absolute path as install.sh ($RP_DIR/bin/remote-pair-notify.sh) →
+    //     notify_cmd is registered with the same absolute path as install.sh ($RP_DIR/bin/xpair-notify.sh) →
     //     uninstall.sh's path-keyed remove (manage-claude-hooks.py remove) removes it exactly by the same key regardless of
     //     whether the CLI or the app registered it (blocks reversibility leaks).
     //   If python3 is absent, skip (install the skill/notification scripts but defer only hook registration) — the same conservative handling as install.sh.
@@ -211,7 +211,7 @@ enum Installer {
         var managerSrc: String?
         var approveSrc: String?
         for base in candidates {
-            let n = "\(base)/remote-pair-notify.sh"
+            let n = "\(base)/xpair-notify.sh"
             let m = "\(base)/manage-claude-hooks.py"
             if notifySrc == nil, fm.fileExists(atPath: n) { notifySrc = n }
             if managerSrc == nil, fm.fileExists(atPath: m) { managerSrc = m }
@@ -228,9 +228,9 @@ enum Installer {
         let claudeDir = "\(HOME)/.claude"
         let hooksDst = "\(claudeDir)/hooks"
         // FIX 9: unify to the same path as install.sh — notify.sh goes in $RP_DIR/bin (registered/reverted under the same key as the CLI).
-        let notifyDst = "\(RP_DIR)/bin/remote-pair-notify.sh"
+        let notifyDst = "\(RP_DIR)/bin/xpair-notify.sh"
         let managerDst = "\(RP_DIR)/bin/manage-claude-hooks.py"
-        let approveDst = "\(hooksDst)/remote-pair-approve-reminder.sh"   // same as install.sh (approve only)
+        let approveDst = "\(hooksDst)/xpair-approve-reminder.sh"   // same as install.sh (approve only)
         let settings = "\(claudeDir)/settings.json"
 
         // cask-only reversibility record target (a separate file from install.sh's .manifest-host). Records only newly created files/registrations.
@@ -343,8 +343,8 @@ enum Installer {
             bases.append("\(env)/host/hooks")
         }
         // The conventional location used by bootstrap.sh (if present)
-        bases.append("\(HOME)/.local/share/remote-pair/host/hooks")
-        for b in bases where fm.fileExists(atPath: "\(b)/remote-pair-notify.sh") { return b }
+        bases.append("\(HOME)/.local/share/xpair/host/hooks")
+        for b in bases where fm.fileExists(atPath: "\(b)/xpair-notify.sh") { return b }
         return nil
     }
 
@@ -382,8 +382,8 @@ enum Installer {
         }
     }
 
-    /// Bundle Contents/Helpers/<name> → ~/.remote-pair/bin/<name> symlink (replace if it is a wrong/stale link or a real file).
-    /// Resolves the stable call path of screen-sharing sidecars/helpers (~/.remote-pair/bin) to the signed bundle binary.
+    /// Bundle Contents/Helpers/<name> → ~/.xpair/host/bin/<name> symlink (replace if it is a wrong/stale link or a real file).
+    /// Resolves the stable call path of screen-sharing sidecars/helpers (~/.xpair/host/bin) to the signed bundle binary.
     /// Items not in the bundle are silently skipped (dev/partial bundle). Idempotent — a no-op if the link is already correct.
     private static func linkBundledBinaries(_ names: [String]) {
         let helpersDir = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path
@@ -427,7 +427,7 @@ enum Installer {
     private static func writeEnv(_ path: String, _ pairs: [(String, String)], onlyIfAbsent: Bool) {
         if onlyIfAbsent && fm.fileExists(atPath: path) { return }
         let base = (path as NSString).lastPathComponent
-        var s = "# RemotePair config (\(base)) — written by RemotePairHost self-install. Safe to edit manually.\n"
+        var s = "# Xpair config (\(base)) — written by XpairHost self-install. Safe to edit manually.\n"
         for (k, v) in pairs { s += "\(k)=\(shellQuote(v))\n" }
         writeFile(path, s)
         log("INSTALL: env \(path)")
@@ -454,7 +454,7 @@ enum Installer {
         let label = "gui/$(id -u)/\(APP_LABEL)"
         let s = """
         #!/bin/bash
-        # remote-pair-watchdog.sh — Restart \(APP_NAME) when heartbeat goes stale. (generated by RemotePairHost self-install)
+        # xpair-watchdog.sh — Restart \(APP_NAME) when heartbeat goes stale. (generated by XpairHost self-install)
         set -u
         HB="\(HEARTBEAT)"; LOG="\(LOGP)"
         STALE=90; LABEL="\(label)"; now=$(date +%s)
@@ -475,8 +475,8 @@ enum Installer {
           <key>ProgramArguments</key><array><string>\(APP_EXEC)</string></array>
           <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
           <key>ProcessType</key><string>Interactive</string>
-          <key>StandardOutPath</key><string>\(LOG_DIR)/remote-pair.out.log</string>
-          <key>StandardErrorPath</key><string>\(LOG_DIR)/remote-pair.err.log</string>
+          <key>StandardOutPath</key><string>\(LOG_DIR)/xpair.out.log</string>
+          <key>StandardErrorPath</key><string>\(LOG_DIR)/xpair.err.log</string>
         </dict></plist>
 
         """
@@ -490,7 +490,7 @@ enum Installer {
           <key>Label</key><string>\(WATCHDOG_LABEL)</string>
           <key>ProgramArguments</key><array><string>/bin/bash</string><string>\(WATCHDOG_SH)</string></array>
           <key>RunAtLoad</key><true/><key>StartInterval</key><integer>30</integer>
-          <key>StandardErrorPath</key><string>\(LOG_DIR)/remote-pair-watchdog.err.log</string>
+          <key>StandardErrorPath</key><string>\(LOG_DIR)/xpair-watchdog.err.log</string>
         </dict></plist>
 
         """

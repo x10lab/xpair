@@ -1,10 +1,10 @@
-//! screen — license-clean screen-capture sidecar for RemotePair
+//! screen — license-clean screen-capture sidecar for Xpair
 //! Remote Desktop (the v1 high-performance path).
 //!
 //! STATUS: v2 (WebRTC) SHIPPED. `serve-webrtc` is the product Remote Desktop path:
 //! `rp-screencap` (ScreenCaptureKit + VideoToolbox hardware H.264) → webrtc-rs
 //! (DTLS/SRTP over UDP/ICE) → IDE `<video>`. View-only screen share: there is no
-//! remote keyboard/mouse injection (RemotePair streams the screen, not control).
+//! remote keyboard/mouse injection (Xpair streams the screen, not control).
 //! Built behind the `webrtc` feature; shipping in 0.5.0 and verified end-to-end
 //! from the IDE. `serve` (v1a WS+JPEG software path) remains a license-clean
 //! fallback, and `capture`/`info` prove the capture foundation is license-clean
@@ -31,13 +31,13 @@ mod serve;
 #[cfg(feature = "webrtc")]
 mod serve_webrtc;
 
-/// License-clean screen-capture sidecar for RemotePair Remote Desktop (v1).
+/// License-clean screen-capture sidecar for Xpair Remote Desktop (v1).
 #[derive(Parser, Debug)]
 #[command(name = "screen", version, about, long_about = None)]
 struct Cli {
     /// Correlation session id for logs (the tmux session name). Falls back to
     /// the `RP_SESSION` env var, then `-`. Used in the `[session]` column of
-    /// `~/.remote-pair/logs/rust.log` (see docs/logging.md).
+    /// `~/.xpair/host/logs/rust.log` (see docs/logging.md).
     #[arg(long, value_name = "NAME", global = true)]
     session: Option<String>,
 

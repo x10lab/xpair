@@ -1,4 +1,4 @@
-// RemotePair client extension for the RemotePair IDE (VSCodium fork).
+// Xpair client extension for the Xpair IDE (VSCodium fork).
 // Plain CommonJS, vscode API + node stdlib only. No external npm deps.
 //
 // All ssh invocations are argv-safe (spawn, never a shell string built from REMOTE_HOST).
@@ -31,7 +31,7 @@ const heartbeat = require("./heartbeat.js");
 // Committed so this extension stays self-contained; regenerate via generate-contracts.mjs.
 const CONTRACTS = require("./generated/contracts.json");
 
-// RemotePair: AI agent extensions (Claude Code / Codex·ChatGPT) are DISABLED for now —
+// Xpair: AI agent extensions (Claude Code / Codex·ChatGPT) are DISABLED for now —
 // CLI-only. Use the New Session picker's claude/codex/gemini CLI agents instead of the
 // in-editor GUI extensions. Re-enable later by uncommenting. open-remote-ssh stays: it is
 // the SSH transport, not an AI agent.
@@ -55,10 +55,10 @@ const HOST_RE = /^[A-Za-z0-9._-]+$/;
 
 // --- logging (US-006) ------------------------------------------------------
 // Conforms to docs/logging.md: line format `[<ISO>] [<LEVEL>] [ide] [<session>] <msg>`,
-// file persist to ~/.remote-pair/logs/ide.log (mode 0700), rotate-on-open at 5 MB
+// file persist to ~/.xpair/host/logs/ide.log (mode 0700), rotate-on-open at 5 MB
 // (keep .1/.2, max 3 files), level threshold REMOTEPAIR_LOG > info, redaction before sink.
 
-const LOG_DIR = path.join(os.homedir(), ".remote-pair", "logs");
+const LOG_DIR = path.join(os.homedir(), ".xpair/host", "logs");
 const LOG_FILE = path.join(LOG_DIR, "ide.log");
 const LOG_COMP = "ide";
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // rotate-on-open threshold
@@ -153,7 +153,7 @@ function log(msg, level) {
   const lvl = level && level in LOG_LEVELS ? level : "info";
   const safe = redact(msg);
   // OutputChannel keeps the full human-facing trail (unchanged behavior + level tag).
-  if (!outputChannel) outputChannel = vscode.window.createOutputChannel("RemotePair");
+  if (!outputChannel) outputChannel = vscode.window.createOutputChannel("Xpair");
   const ts = logTimestamp();
   outputChannel.appendLine(`[${ts}] [${lvl.toUpperCase()}] ${safe}`);
   // File sink honors the resolved threshold (REMOTEPAIR_LOG > info).
@@ -163,13 +163,13 @@ function log(msg, level) {
   }
 }
 
-/** Read REMOTE_HOST from ~/.remote-pair/client.env (KEY=VALUE lines). */
+/** Read REMOTE_HOST from ~/.xpair/host/client.env (KEY=VALUE lines). */
 function readRemoteHost() {
   // env override wins (useful for testing), then the client.env file.
   const fromEnv = process.env.REMOTE_HOST;
   if (fromEnv && HOST_RE.test(fromEnv.trim())) return fromEnv.trim();
 
-  const envPath = path.join(os.homedir(), ".remote-pair", "client.env");
+  const envPath = path.join(os.homedir(), ".xpair/host", "client.env");
   let raw;
   try {
     raw = fs.readFileSync(envPath, "utf8");
@@ -207,9 +207,9 @@ function getValidHost() {
   return h;
 }
 
-/** Read ENABLED_TYPES from ~/.remote-pair/notify.conf, or null if absent. */
+/** Read ENABLED_TYPES from ~/.xpair/host/notify.conf, or null if absent. */
 function readEnabledNotifyTypes() {
-  const confPath = path.join(os.homedir(), ".remote-pair", "notify.conf");
+  const confPath = path.join(os.homedir(), ".xpair/host", "notify.conf");
   let raw;
   try {
     raw = fs.readFileSync(confPath, "utf8");
@@ -604,7 +604,7 @@ class RemoteDesktopPanel {
   <div id="stage">
     <video id="screen-video" autoplay muted playsinline></video>
     <div id="overlay" class="hidden">
-      <div id="overlay-title">RemotePair</div>
+      <div id="overlay-title">Xpair</div>
       <div id="overlay-msg">Connecting to host…</div>
     </div>
     <div id="badge" class="off" title="View-only (no remote control)">view-only</div>
@@ -629,7 +629,7 @@ function makeNonce() {
 async function ensureExtensions(interactive) {
   const missing = AI_EXTENSIONS.filter((id) => !vscode.extensions.getExtension(id));
   if (!missing.length) {
-    if (interactive) vscode.window.showInformationMessage("RemotePair: AI extensions already installed.");
+    if (interactive) vscode.window.showInformationMessage("Xpair: AI extensions already installed.");
     return;
   }
   log(`Installing missing AI extensions: ${missing.join(", ")}`);
@@ -644,7 +644,7 @@ async function ensureExtensions(interactive) {
   }
   if (interactive) {
     vscode.window.showInformationMessage(
-      `RemotePair: requested install of ${missing.length} extension(s). Reload if prompted.`
+      `Xpair: requested install of ${missing.length} extension(s). Reload if prompted.`
     );
   }
 }
@@ -687,7 +687,7 @@ async function _doConnectHost(host) {
   }
   // Last resort: instructions.
   vscode.window.showInformationMessage(
-    `RemotePair: open the Remote Explorer and connect to "${host}" via Open Remote - SSH.`
+    `Xpair: open the Remote Explorer and connect to "${host}" via Open Remote - SSH.`
   );
 }
 
@@ -699,7 +699,7 @@ async function connectHost() {
   const host = getValidHost();
   if (!host) {
     vscode.window.showWarningMessage(
-      "RemotePair: REMOTE_HOST is not set (or invalid) in ~/.remote-pair/client.env."
+      "Xpair: REMOTE_HOST is not set (or invalid) in ~/.xpair/host/client.env."
     );
     return;
   }
@@ -717,7 +717,7 @@ async function connectHost() {
   ];
 
   const picked = await vscode.window.showQuickPick(items, {
-    title: "RemotePair: Select Host to Connect",
+    title: "Xpair: Select Host to Connect",
     placeHolder: "Choose an endpoint…",
     matchOnDescription: true,
     matchOnDetail: true,
@@ -731,10 +731,10 @@ async function connectHost() {
 // --- launch remote Claude ---------------------------------------------------
 
 /**
- * Open a terminal and stage the `remote-pair launch` command (addNewLine=false
+ * Open a terminal and stage the `xpair launch` command (addNewLine=false
  * so the user reviews before pressing Enter).
  *
- * `remote-pair launch` is the client-side CLI that opens a mosh+tmux session
+ * `xpair launch` is the client-side CLI that opens a mosh+tmux session
  * on the host and starts Claude Code inside it.  If the exact subcommand name
  * changes, adjust the sendText argument here; the terminal name makes the
  * intent clear to the user regardless.
@@ -742,17 +742,17 @@ async function connectHost() {
 function launchRemoteClaude() {
   let term;
   try {
-    term = vscode.window.createTerminal("RemotePair — Launch Claude");
+    term = vscode.window.createTerminal("Xpair — Launch Claude");
     term.show(true);
     // Stage without auto-executing so the user can review / edit first.
-    // "remote-pair launch" = mosh → tmux → claude (see remote-pair CLI help).
+    // "xpair launch" = mosh → tmux → claude (see xpair CLI help).
     // If the exact subcommand differs on your setup, edit before pressing Enter.
-    term.sendText("remote-pair launch", false);
+    term.sendText("xpair launch", false);
   } catch (e) {
     log(`launchRemoteClaude: ${e && e.message ? e.message : e}`);
   }
   vscode.window.showInformationMessage(
-    "RemotePair: review 'remote-pair launch' in the terminal and press Enter to open " +
+    "Xpair: review 'xpair launch' in the terminal and press Enter to open " +
       "a mosh+tmux+Claude Code session on the remote host."
   );
 }
@@ -760,23 +760,23 @@ function launchRemoteClaude() {
 // --- file access / folder mapping setup ------------------------------------
 
 /**
- * Open a terminal and stage the interactive `remote-pair onboard` wizard, which
+ * Open a terminal and stage the interactive `xpair onboard` wizard, which
  * configures host, terminal app, folder mapping, and a doctor check. We do NOT
  * auto-run it (addNewLine=false) so the user reviews the command first.
  */
 function setupFileAccess() {
   let term;
   try {
-    term = vscode.window.createTerminal("RemotePair Setup");
+    term = vscode.window.createTerminal("Xpair Setup");
     term.show(true);
     // Stage the command without executing — the user presses Enter to start the
     // interactive wizard (it prompts for host / mapping / backend).
-    term.sendText("remote-pair onboard", false);
+    term.sendText("xpair onboard", false);
   } catch (e) {
     log(`setupFileAccess: ${e && e.message ? e.message : e}`);
   }
   vscode.window.showInformationMessage(
-    "RemotePair: review 'remote-pair onboard' in the terminal and press Enter to " +
+    "Xpair: review 'xpair onboard' in the terminal and press Enter to " +
       "configure the host, folder mapping, and file-access backend (Syncthing or mount)."
   );
 }
@@ -812,7 +812,7 @@ class NotificationPoller {
     const enabled = readEnabledNotifyTypes(); // Set or null(=all)
     const res = await sshRun(
       host,
-      "tail -n 20 ~/.remote-pair/notifications/queue.jsonl 2>/dev/null",
+      "tail -n 20 ~/.xpair/host/notifications/queue.jsonl 2>/dev/null",
       { timeoutMs: 8000 }
     );
     if (res.code !== 0 && res.code !== null) return; // missing file / unreachable -> quiet
@@ -836,13 +836,13 @@ class NotificationPoller {
       if (firstRun) continue;
       if (enabled && obj.type && !enabled.has(obj.type)) continue;
 
-      const title = obj.title ? String(obj.title) : "RemotePair";
+      const title = obj.title ? String(obj.title) : "Xpair";
       const message = obj.message ? String(obj.message) : "";
       const text = message ? `${title}: ${message}` : title;
       if (obj.approvalType) {
-        vscode.window.showWarningMessage(`RemotePair (approval: ${obj.approvalType}) — ${text}`);
+        vscode.window.showWarningMessage(`Xpair (approval: ${obj.approvalType}) — ${text}`);
       } else {
-        vscode.window.showInformationMessage(`RemotePair — ${text}`);
+        vscode.window.showInformationMessage(`Xpair — ${text}`);
       }
     }
     // Bound the dedupe set so it can't grow unbounded.
@@ -885,7 +885,7 @@ async function setupLayout(context, force) {
 // --- FOLDER_MAPS parser ----------------------------------------------------
 
 /**
- * Read FOLDER_MAPS from ~/.remote-pair/client.env.
+ * Read FOLDER_MAPS from ~/.xpair/host/client.env.
  * Format: "clientDir::hostDir" pairs separated by ";".
  * Returns an array of { clientDir, hostDir } objects (may be empty).
  */
@@ -897,7 +897,7 @@ function expandHome(p) {
 }
 
 function readFolderMaps() {
-  const envPath = path.join(os.homedir(), ".remote-pair", "client.env");
+  const envPath = path.join(os.homedir(), ".xpair/host", "client.env");
   let raw;
   try {
     raw = fs.readFileSync(envPath, "utf8");
@@ -1015,16 +1015,16 @@ function reconcileBrowserRoots() {
 }
 
 /**
- * C1.D3 — Run the client `remote-pair` CLI and capture its stdout/stderr. Spawned through
- * the user's login shell so PATH resolution finds `remote-pair` wherever it was installed
+ * C1.D3 — Run the client `xpair` CLI and capture its stdout/stderr. Spawned through
+ * the user's login shell so PATH resolution finds `xpair` wherever it was installed
  * (~/.local/bin, /opt/homebrew/bin, /usr/local/bin, …) — the extension host does not inherit
  * an interactive PATH. argv is passed as a single POSIX-quoted command string to `sh -lc`.
  *
  * Returns { code, stdout, stderr }. Never throws (spawn errors resolve as code -1).
  */
-function runRemotePairCli(args, opts = {}) {
+function runXpairCli(args, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
-  const quoted = ["remote-pair", ...args].map(shSingleQuote).join(" ");
+  const quoted = ["xpair", ...args].map(shSingleQuote).join(" ");
   const shell = process.env.SHELL || "/bin/sh";
   return new Promise((resolve) => {
     let child;
@@ -1057,14 +1057,14 @@ function runRemotePairCli(args, opts = {}) {
 /**
  * C1.D3 — Mount-first add-root flow for the Browser's "Add Root" affordance.
  *   1. Prompt for a HOST folder path (v1 = host-path input box).
- *   2. `remote-pair mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
+ *   2. `xpair mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
  *   3. Parse the printed "Mountpoint: <path>" and register a FOLDER_MAP via
- *      `remote-pair map add <mountpoint> <hostPath>` (writes <mountpoint>::<hostPath>).
+ *      `xpair map add <mountpoint> <hostPath>` (writes <mountpoint>::<hostPath>).
  *   4. Reconcile roots so the mountpoint appears as a Browser root without restart.
  */
 async function addRoot() {
   const hostPath = await vscode.window.showInputBox({
-    title: "RemotePair — Add Root (mount a host folder)",
+    title: "Xpair — Add Root (mount a host folder)",
     prompt: "Enter the HOST folder path to mount (SMB by default; appears as a Browser root and in Finder).",
     placeHolder: "/Users/you/Projects/myrepo",
     ignoreFocusOut: true,
@@ -1079,18 +1079,18 @@ async function addRoot() {
   const host = hostPath.trim();
 
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `RemotePair: mounting ${host}…`, cancellable: false },
+    { location: vscode.ProgressLocation.Notification, title: `Xpair: mounting ${host}…`, cancellable: false },
     async () => {
       // Step 2: mount.
-      const mres = await runRemotePairCli(["mount", host], { timeoutMs: 180000 });
+      const mres = await runXpairCli(["mount", host], { timeoutMs: 180000 });
       if (mres.code !== 0) {
         log(`addRoot: mount failed (code ${mres.code}): ${mres.stderr || mres.stdout}`);
         const detail = (mres.stderr || mres.stdout || "").trim().split(/\r?\n/).slice(-3).join(" ");
-        vscode.window.showErrorMessage(`RemotePair: 'remote-pair mount ${host}' failed. ${detail}`);
+        vscode.window.showErrorMessage(`Xpair: 'xpair mount ${host}' failed. ${detail}`);
         return;
       }
 
-      // Step 3: parse the "Mountpoint: <path>" line (printed to stdout by remote-pair-mount).
+      // Step 3: parse the "Mountpoint: <path>" line (printed to stdout by xpair-mount).
       let mountpoint = "";
       for (const line of mres.stdout.split(/\r?\n/)) {
         const m = line.match(/^\s*Mountpoint:\s*(\S.*?)\s*$/);
@@ -1098,17 +1098,17 @@ async function addRoot() {
       }
       if (!mountpoint) {
         log(`addRoot: could not parse mountpoint from mount output: ${mres.stdout}`);
-        vscode.window.showErrorMessage("RemotePair: mount succeeded but the mountpoint could not be determined.");
+        vscode.window.showErrorMessage("Xpair: mount succeeded but the mountpoint could not be determined.");
         return;
       }
       log(`addRoot: mounted ${host} at ${mountpoint}`);
 
       // Step 3b: register the FOLDER_MAP (clientDir=mountpoint :: hostDir=host). 'already mapped'
       // is a benign success (the map exists / is covered) — code 0 in that case.
-      const ares = await runRemotePairCli(["map", "add", mountpoint, host], { timeoutMs: 30000 });
+      const ares = await runXpairCli(["map", "add", mountpoint, host], { timeoutMs: 30000 });
       if (ares.code !== 0) {
         log(`addRoot: map add failed (code ${ares.code}): ${ares.stderr || ares.stdout}`);
-        vscode.window.showErrorMessage(`RemotePair: mounted at ${mountpoint} but registering the folder map failed.`);
+        vscode.window.showErrorMessage(`Xpair: mounted at ${mountpoint} but registering the folder map failed.`);
         return;
       }
 
@@ -1117,7 +1117,7 @@ async function addRoot() {
       try {
         await vscode.commands.executeCommand("workbench.view.explorer");
       } catch (_e) {}
-      vscode.window.showInformationMessage(`RemotePair: added Browser root ${mountpoint} (mounted ${host}).`);
+      vscode.window.showInformationMessage(`Xpair: added Browser root ${mountpoint} (mounted ${host}).`);
     }
   );
 }
@@ -1125,8 +1125,8 @@ async function addRoot() {
 // --- show logs (US-006) ----------------------------------------------------
 
 /**
- * RemotePair: Show Logs. Reveal the logs dir in the OS file manager, and offer to
- * run `remote-pair logs --collect` (tar/gzip $LOG_DIR for a bug report) in a terminal.
+ * Xpair: Show Logs. Reveal the logs dir in the OS file manager, and offer to
+ * run `xpair logs --collect` (tar/gzip $LOG_DIR for a bug report) in a terminal.
  */
 async function showLogs() {
   // Ensure the dir exists so reveal doesn't fail on a never-logged client.
@@ -1151,15 +1151,15 @@ async function showLogs() {
   // Offer to collect logs into a shareable tarball for a bug report.
   const COLLECT = "Collect logs (--collect)";
   const picked = await vscode.window.showInformationMessage(
-    "RemotePair logs are in ~/.remote-pair/logs. Collect them into a tarball for a bug report?",
+    "Xpair logs are in ~/.xpair/host/logs. Collect them into a tarball for a bug report?",
     COLLECT
   );
   if (picked === COLLECT) {
     try {
-      const term = vscode.window.createTerminal("RemotePair — Collect Logs");
+      const term = vscode.window.createTerminal("Xpair — Collect Logs");
       term.show(true);
       // Staged with auto-execute: a read-only collect is safe to run on Enter.
-      term.sendText("remote-pair logs --collect", true);
+      term.sendText("xpair logs --collect", true);
     } catch (e) {
       log(`showLogs: collect terminal failed: ${e && e.message ? e.message : e}`, "error");
     }
@@ -1170,7 +1170,7 @@ async function showLogs() {
 
 // --- re-run setup ----------------------------------------------------------
 // Single-app model (spec: single-app onboarding): onboarding is hosted by the IDE MAIN process as a
-// pre-workbench window on first run — there is NO separate "RemotePair Setup" Electron app to launch
+// pre-workbench window on first run — there is NO separate "Xpair Setup" Electron app to launch
 // (that 2nd process is removed). "Re-run setup" therefore makes the NEXT launch onboard again
 // (the main-process hook shows onboarding when not onboarded) and asks the user to restart, instead
 // of spawning a second app/process.
@@ -1182,14 +1182,14 @@ function runSetup() {
   // shouldOnboard() honors (and clears on next open). Path MUST match FORCE_ONBOARDING_SENTINEL
   // in onboarding-main.cjs.
   try {
-    fs.mkdirSync(path.join(os.homedir(), ".remote-pair"), { recursive: true });
-    fs.writeFileSync(path.join(os.homedir(), ".remote-pair", ".force-onboarding"), "");
+    fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
+    fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");
   } catch (e) {
     log(`runSetup: could not write force-onboarding sentinel: ${e && e.message ? e.message : e}`, "warn");
   }
   vscode.window
     .showInformationMessage(
-      "RemotePair setup will run when you restart the app.",
+      "Xpair setup will run when you restart the app.",
       "Restart now",
     )
     .then((choice) => {
@@ -1200,22 +1200,22 @@ function runSetup() {
     });
 }
 
-// Non-destructive re-onboarding. Bound to the bottom-left host status-bar button. RemotePair
+// Non-destructive re-onboarding. Bound to the bottom-left host status-bar button. Xpair
 // sessions PERSIST across restart (detach/reattach), so this is NOT "ending a session" — it drops
 // the same one-shot .force-onboarding sentinel runSetup() uses and quits, so the next launch
 // re-enters onboarding and the user reattaches right back. No scary "end session" modal: a single
 // light positive confirm (the action quits the app, so one click of confirmation is warranted).
 function endSessionReonboard() {
   vscode.window
-    .showInformationMessage("Set up RemotePair again? Your sessions stay attached.", "Set up again")
+    .showInformationMessage("Set up Xpair again? Your sessions stay attached.", "Set up again")
     .then((choice) => {
       if (choice !== "Set up again") {
         return;
       }
       log("endSessionReonboard: re-onboarding on next launch (sessions persist)");
       try {
-        fs.mkdirSync(path.join(os.homedir(), ".remote-pair"), { recursive: true });
-        fs.writeFileSync(path.join(os.homedir(), ".remote-pair", ".force-onboarding"), "");
+        fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
+        fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");
       } catch (e) {
         log(`endSessionReonboard: sentinel write failed: ${e && e.message ? e.message : e}`, "warn");
       }
@@ -1246,13 +1246,13 @@ function installSentryHooks() {
 }
 
 function activate(context) {
-  log("RemotePair activating…");
+  log("Xpair activating…");
 
   // Start the CLIENT→HOST liveness heartbeat (writes now + every 30s; idempotent across
   // activations). Fire-and-forget — must never block or crash activation.
   try { heartbeat.startHeartbeat(); } catch (e) { log(`heartbeat start: ${e && e.message ? e.message : e}`, "warn"); }
 
-  // RemotePair: hide the bottom status bar — it is not part of this focused remote-pair surface.
+  // Xpair: hide the bottom status bar — it is not part of this focused xpair surface.
   // The status bar's visibility is the deprecated `workbench.statusBar.visible` setting, which maps
   // to the layout UI-state (STATUSBAR_HIDDEN); patching the schema default does NOT take effect at
   // runtime in this build, but setting the value explicitly DOES (and reclaims the 22px row, unlike
@@ -1327,7 +1327,7 @@ function activate(context) {
   // the bottom Session Manager panel collapsed/expanded.
   const panelToggleBtn = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1);
   panelToggleBtn.text = "$(layout-panel)";
-  panelToggleBtn.tooltip = "RemotePair: toggle the Session Manager panel";
+  panelToggleBtn.tooltip = "Xpair: toggle the Session Manager panel";
   panelToggleBtn.command = "workbench.action.togglePanel";
   panelToggleBtn.show();
   context.subscriptions.push(panelToggleBtn);
@@ -1342,19 +1342,19 @@ function activate(context) {
     const host = getValidHost();
     if (!host) {
       hostBtn.text = "$(gear) Set host";
-      hostBtn.tooltip = "RemotePair: no host configured — click to set up";
+      hostBtn.tooltip = "Xpair: no host configured — click to set up";
       hostBtn.backgroundColor = undefined;
     } else if (hostReachable === true) {
       hostBtn.text = `$(vm-active) ${host}`;
-      hostBtn.tooltip = `RemotePair: ${host} — reachable. Click to connect.`;
+      hostBtn.tooltip = `Xpair: ${host} — reachable. Click to connect.`;
       hostBtn.backgroundColor = undefined;
     } else if (hostReachable === false) {
       hostBtn.text = `$(vm-outline) ${host}`;
-      hostBtn.tooltip = `RemotePair: ${host} — unreachable. Click to connect / retry.`;
+      hostBtn.tooltip = `Xpair: ${host} — unreachable. Click to connect / retry.`;
       hostBtn.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
     } else {
       hostBtn.text = `$(sync~spin) ${host}`;
-      hostBtn.tooltip = `RemotePair: ${host} — checking reachability…`;
+      hostBtn.tooltip = `Xpair: ${host} — checking reachability…`;
       hostBtn.backgroundColor = undefined;
     }
     hostBtn.show();
@@ -1437,7 +1437,7 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.browser.addRoot", () =>
       addRoot().catch((e) => {
         log(`addRoot: ${e && e.message ? e.message : e}`);
-        vscode.window.showErrorMessage(`RemotePair: Add Root failed. ${e && e.message ? e.message : e}`);
+        vscode.window.showErrorMessage(`Xpair: Add Root failed. ${e && e.message ? e.message : e}`);
       })
     ),
     vscode.commands.registerCommand("remotepair.openSettings", () => {
@@ -1446,7 +1446,7 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.showLogs", () =>
       showLogs().catch((e) => {
         log(`showLogs: ${e && e.message ? e.message : e}`, "error");
-        vscode.window.showErrorMessage(`RemotePair: Show Logs failed. ${e && e.message ? e.message : e}`);
+        vscode.window.showErrorMessage(`Xpair: Show Logs failed. ${e && e.message ? e.message : e}`);
       })
     )
   );
@@ -1489,7 +1489,7 @@ function activate(context) {
     )
     .catch((e) => log(`setupLayout / force-open Sessions panel error: ${e}`));
 
-  log("RemotePair activated.");
+  log("Xpair activated.");
 }
 
 function deactivate() {

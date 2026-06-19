@@ -2,7 +2,7 @@
 # t_10_install_reversibility — white-box: install/uninstall reversibility (CLI + launcher + manifest).
 #
 # Under test:
-#   install.sh --role client  →  installs the remote-pair CLI + launcher and records them in the
+#   install.sh --role client  →  installs the xpair CLI + launcher and records them in the
 #                                manifest (.manifest-client) as FILE/BACKUP.
 #   uninstall.sh              →  removes all of it precisely by replaying the manifest in reverse (no --purge needed).
 #
@@ -54,12 +54,12 @@ it "install/rc-ok"
 assert_rc "$RP_RC" 0 "install.sh --role client rc=0 :: stderr=[$RP_ERR]"
 
 it "install/cli-installed"
-[ -x "$HOME/.local/bin/remote-pair" ] && _pass "remote-pair CLI installed" \
-  || _fail "remote-pair CLI missing: $HOME/.local/bin/remote-pair"
+[ -x "$HOME/.local/bin/xpair" ] && _pass "xpair CLI installed" \
+  || _fail "xpair CLI missing: $HOME/.local/bin/xpair"
 
 it "install/launcher-installed"
-[ -x "$RP_DIR/bin/remote-pair-launch" ] && _pass "launcher installed" \
-  || _fail "launcher missing: $RP_DIR/bin/remote-pair-launch"
+[ -x "$RP_DIR/bin/xpair-launch" ] && _pass "launcher installed" \
+  || _fail "launcher missing: $RP_DIR/bin/xpair-launch"
 
 it "install/manifest-records-cli"
 MAN="$(MANIFEST_CLIENT)"
@@ -67,7 +67,7 @@ if [ -f "$MAN" ]; then _pass "manifest exists: $MAN"
 else _fail "manifest missing: $MAN"; fi
 MAN_TXT="$(cat "$MAN" 2>/dev/null)"
 # CLI FILE record (fresh install, so FILE rather than BACKUP)
-assert_contains "$MAN_TXT" "FILE	$HOME/.local/bin/remote-pair" "CLI recorded as FILE in manifest"
+assert_contains "$MAN_TXT" "FILE	$HOME/.local/bin/xpair" "CLI recorded as FILE in manifest"
 
 # ────────────────────────────────────────────────────────────────────────────
 # UNINSTALL (no --purge) → reverse-order restore from manifest
@@ -78,8 +78,8 @@ it "uninstall/rc-ok"
 assert_rc "$RP_RC" 0 "uninstall.sh rc=0 :: stderr=[$RP_ERR]"
 
 it "uninstall/cli-and-launcher-removed"
-[ -e "$HOME/.local/bin/remote-pair" ] && _fail "CLI remaining" || _pass "CLI removed"
-[ -e "$RP_DIR/bin/remote-pair-launch" ] && _fail "launcher remaining" || _pass "launcher removed"
+[ -e "$HOME/.local/bin/xpair" ] && _fail "CLI remaining" || _pass "CLI removed"
+[ -e "$RP_DIR/bin/xpair-launch" ] && _fail "launcher remaining" || _pass "launcher removed"
 
 it "uninstall/manifest-consumed"
 # uninstall rm's the manifest file itself after restoring

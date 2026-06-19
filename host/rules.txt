@@ -1,4 +1,4 @@
-# RemotePair approve rules v2 — runtime location: ~/.remote-pair/rules.txt
+# Xpair approve rules v2 — runtime location: ~/.xpair/host/rules.txt
 # One line = one approval dialog.  id <TAB> marker <TAB> action      (lines starting with "#" are comments, edits apply immediately)
 #   marker = unique OCR text that appears only in that dialog (substring match, case-insensitive)
 #   action = ocr:<label|label..>  (find that button text via OCR and click it)

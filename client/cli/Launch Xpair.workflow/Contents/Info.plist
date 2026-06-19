@@ -8,7 +8,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Launch Remote Claude</string>
+				<string>Launch Xpair</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>runWorkflowAsService</string>

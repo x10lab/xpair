@@ -13,7 +13,7 @@ export function StepDone({ hostAlias, mappings }: Props) {
         You're all set
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
-        RemotePair is connected to{" "}
+        Xpair is connected to{" "}
         <span className="font-mono text-foreground">{hostAlias}</span> with{" "}
         {mappings.length} mapping{mappings.length === 1 ? "" : "s"}.
       </p>

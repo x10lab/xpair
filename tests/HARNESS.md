@@ -1,6 +1,6 @@
 # Test Harness Contract (tests/lib.sh)
 
-Target launcher: `client/cli/remote-pair-launch` (new). Reference: `~/.claude/bin/claude-iterm-launch`.
+Target launcher: `client/cli/xpair-launch` (new). Reference: `~/.claude/bin/claude-iterm-launch`.
 Does not touch real m1/network/GUI — installing a mock under `.local/bin` in a temporary HOME lets the mock win over the real binary thanks to the launcher's PATH-prepend. bash 3.2 compatible only.
 
 ## Test File Format
@@ -28,7 +28,7 @@ finish                 # end of file. Prints __SUMMARY__ + non-zero on failure
 - `make_mock NAME` : a single mock.
 - If you need custom behavior, **do not modify lib.sh**. After make_all_mocks, overwrite the executable directly at `$MOCKBIN/NAME` (chmod +x). If you want argv logging on the first line, add `{ printf '%s' "$(basename "$0")"; for a in "$@"; do printf '|%s' "$a"; done; echo; } >> "$MOCKLOG"`.
 - `run_launcher [args]` : runs the new launcher. Values set: `$RP_OUT` (stdout) `$RP_ERR` (stderr) `$RP_RC` (exit code) `$MLOG` (mock call log, `name|arg|arg` per line).
-- `run_reference [args]` : runs the reference (for parity comparison). The reference uses the `~/.claude` path / old names (open -a RemotePair, com.ghyeong.remote-pair) — you must prepare the matching mocks/directories.
+- `run_reference [args]` : runs the reference (for parity comparison). The reference uses the `~/.claude` path / old names (open -a Xpair, com.ghyeong.xpair) — you must prepare the matching mocks/directories.
 - Variables: `$SBX` (sandbox root = HOME) `$RP_DIR` `$MOCKBIN` `$MOCKLOG` `$SSH_CAPTURE` (file storing the body of the remote setup script that the mock ssh received).
 
 ## MOCK_* Knobs (run_launcher prefixes)

@@ -1,20 +1,20 @@
-// heartbeat.js — CLIENT→HOST liveness heartbeat for the RemotePair IDE.
+// heartbeat.js — CLIENT→HOST liveness heartbeat for the Xpair IDE.
 //
 // While the client GUI is alive (the pre-workbench onboarding window AND/OR the IDE workbench),
 // it periodically writes a tiny heartbeat file to the HOST over SSH. When the GUI quits, the
 // heartbeats stop and the host expires the entry. This is liveness + identity ONLY — no revoke,
-// no secrets. The host reads ~/.remote-pair/clients/<id>.json and shows which clients are connected.
+// no secrets. The host reads ~/.xpair/host/clients/<id>.json and shows which clients are connected.
 //
 // CONTRACT (must match the host side exactly):
-//   - Host file:   ~/.remote-pair/clients/<id>.json on the HOST (the remote Mac).
+//   - Host file:   ~/.xpair/host/clients/<id>.json on the HOST (the remote Mac).
 //   - <id>     :   sanitized "<user>_<hostname>" of THIS (client) machine; every char outside
 //                  [A-Za-z0-9._-] replaced with '_'  (e.g. ghyeong_gh-mac-m4.json).
 //   - Content  :   {"name": <client hostname>, "user": <client user>, "ts": <unix epoch seconds>}
 //   - Cadence  :   write immediately on start, then every 30s.
 //   - Transport:   ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" \
-//                    'mkdir -p ~/.remote-pair/clients && cat > ~/.remote-pair/clients/<id>.json'
+//                    'mkdir -p ~/.xpair/host/clients && cat > ~/.xpair/host/clients/<id>.json'
 //                  with the JSON piped on stdin. BatchMode = key auth, never prompt.
-//   - Shutdown :   best-effort `ssh ... 'rm -f ~/.remote-pair/clients/<id>.json'`.
+//   - Shutdown :   best-effort `ssh ... 'rm -f ~/.xpair/host/clients/<id>.json'`.
 //
 // Robustness: every ssh spawn is fire-and-forget with error handlers — the heartbeat must NEVER
 // crash the IDE or block. If REMOTE_HOST is empty or ssh fails, skip silently (retry next tick).
@@ -28,7 +28,7 @@ const fs = require("fs");
 const path = require("path");
 
 const HOME = os.homedir();
-const RP_DIR = path.join(HOME, ".remote-pair");
+const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const INTERVAL_MS = 30 * 1000;
 const CONNECT_TIMEOUT = "6";
@@ -94,7 +94,7 @@ function writeOnce() {
         "-o", "BatchMode=yes",
         "-o", `ConnectTimeout=${CONNECT_TIMEOUT}`,
         host,
-        "mkdir -p ~/.remote-pair/clients && cat > ~/.remote-pair/clients/" + id + ".json",
+        "mkdir -p ~/.xpair/host/clients && cat > ~/.xpair/host/clients/" + id + ".json",
       ],
       { windowsHide: true, stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, PATH: richPath } },
     );
@@ -130,7 +130,7 @@ function stopHeartbeat() {
     const richPath = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
     const child = cp.spawn(
       "ssh",
-      ["-o", "BatchMode=yes", host, "rm -f ~/.remote-pair/clients/" + id + ".json"],
+      ["-o", "BatchMode=yes", host, "rm -f ~/.xpair/host/clients/" + id + ".json"],
       { windowsHide: true, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, PATH: richPath } },
     );
     child.on("error", () => { /* best-effort — ignore */ });

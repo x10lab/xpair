@@ -1,7 +1,7 @@
 // BonjourAdvertiser.swift — LAN discovery, host side.
 //
-// Advertises this Mac as `_remotepair._tcp` on the local network so a RemotePair client
-// can discover it via Bonjour (NWBrowser / `dns-sd -B`) for `remote-pair discover`. TXT record carries:
+// Advertises this Mac as `_remotepair._tcp` on the local network so an Xpair client
+// can discover it via Bonjour (NWBrowser / `dns-sd -B`) for `xpair discover`. TXT record carries:
 //   hn   = friendly hostname        v   = app version (Config.swift APP_VERSION)
 //   role = currentRole() (host|both)  fp = ed25519 host-key fingerprint (HostKey.swift, for TOFU)
 //

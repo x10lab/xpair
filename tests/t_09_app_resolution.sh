@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# t_09_app_resolution — white-box: client/cli/remote-pair app/identity resolution.
+# t_09_app_resolution — white-box: client/cli/xpair app/identity resolution.
 #
-# Targets under test (client/cli/remote-pair):
-#   app_pid()       Recognizes both the CURRENT (com.x10lab.remote-pair-host) and FORWARD (com.x10lab.remote-pair)
+# Targets under test (client/cli/xpair):
+#   app_pid()       Recognizes both the CURRENT (com.x10lab.xpair-host) and FORWARD (com.x10lab.xpair)
 #                   labels in launchctl list (dual-id probing for the 0.5 flip). Falls back to pgrep on miss.
-#                   NOTE: the current shipping identity is com.x10lab.remote-pair-host / RemotePairHost. FORWARD is the unified 0.5 id.
+#                   NOTE: the current shipping identity is com.x10lab.xpair-host / XpairHost. FORWARD is the unified 0.5 id.
 #   app_available() Checks existence across two locations (/Applications + ~/Applications) x both app names (CURRENT/FORWARD)
 #                   (verifies the fix for Seonjae's ~/Applications-only bug). Also honors pid/status.json/host-session.
 #
@@ -17,9 +17,9 @@
 
 cd "$(dirname "$0")"; . ./lib.sh
 
-CLI_SRC="${CLI_SRC:-$_REPO_ROOT/client/cli/remote-pair}"
+CLI_SRC="${CLI_SRC:-$_REPO_ROOT/client/cli/xpair}"
 
-# run_cli [args...] — run the remote-pair CLI with sandbox + MOCKBIN-on-PATH.
+# run_cli [args...] — run the xpair CLI with sandbox + MOCKBIN-on-PATH.
 # The CLI does not touch PATH, so we prepend MOCKBIN here so the mocks shadow the real commands.
 run_cli() {
   RP_OUT="$(PATH="$MOCKBIN:$PATH" RP_DIR="$RP_DIR" HOME="$HOME" bash "$CLI_SRC" "$@" 2>"$RP_ERRFILE")"; RP_RC=$?
@@ -63,11 +63,11 @@ EOS
 }
 
 # ────────────────────────────────────────────────────────────────────────────
-# Case 1: running under the CURRENT label (com.x10lab.remote-pair-host) → status resolves to running
+# Case 1: running under the CURRENT label (com.x10lab.xpair-host) → status resolves to running
 #   (the current shipping identity. This is the primary BUNDLE_PREFIX.)
 # ────────────────────────────────────────────────────────────────────────────
 new_sandbox
-make_launchctl_mock "$(printf '7777\t0\tcom.x10lab.remote-pair-host')"
+make_launchctl_mock "$(printf '7777\t0\tcom.x10lab.xpair-host')"
 make_pgrep_mock
 make_mock open
 run_cli status
@@ -82,11 +82,11 @@ assert_absent "$MLOG" "pgrep|" "pgrep fallback unused on launchctl hit"
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────────────────────
-# Case 2: only the FORWARD label (com.x10lab.remote-pair, unified 0.5 id) → still resolves via dual-id probing
+# Case 2: only the FORWARD label (com.x10lab.xpair, unified 0.5 id) → still resolves via dual-id probing
 #   (even if the 0.5 flip moves the host to the unified id, this CLI does not produce a false negative.)
 # ────────────────────────────────────────────────────────────────────────────
 new_sandbox
-make_launchctl_mock "$(printf '8888\t0\tcom.x10lab.remote-pair')"
+make_launchctl_mock "$(printf '8888\t0\tcom.x10lab.xpair')"
 make_pgrep_mock
 make_mock open
 run_cli status
@@ -99,13 +99,13 @@ assert_contains "$MLOG" "launchctl|list" "status probes via launchctl list"
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────────────────────
-# Case 2b: no label → pgrep fallback hits on the FORWARD app name (RemotePair)
-#   (the CURRENT pgrep pattern RemotePairHost.app/... differs from 'RemotePair.app/...' so it misses →
-#    the FORWARD pgrep pattern RemotePair.app/... hits. Verifies the dual-id pgrep fallback.)
+# Case 2b: no label → pgrep fallback hits on the FORWARD app name (Xpair)
+#   (the CURRENT pgrep pattern XpairHost.app/... differs from 'Xpair.app/...' so it misses →
+#    the FORWARD pgrep pattern Xpair.app/... hits. Verifies the dual-id pgrep fallback.)
 # ────────────────────────────────────────────────────────────────────────────
 new_sandbox
 make_launchctl_mock                 # list prints no labels at all
-make_pgrep_mock "RemotePair.app/Contents/MacOS/RemotePair"
+make_pgrep_mock "Xpair.app/Contents/MacOS/Xpair"
 make_mock open
 run_cli status
 
@@ -116,13 +116,13 @@ assert_contains "$MLOG" "pgrep|" "pgrep fallback called on launchctl miss"
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────────────────────
-# Case 3: the app exists at ~/Applications/RemotePairHost.app (CURRENT) → app_available true.
+# Case 3: the app exists at ~/Applications/XpairHost.app (CURRENT) → app_available true.
 #   (Seonjae's bug: it used to look at only one location. The current code checks both /Applications + ~/Applications.)
 #   /Applications is not sandbox-capable → verified here against ~/Applications. The /Applications branch is inspected in case 3b.
 #   Observation: app_available is true → approve does not emit need_app_guidance (install instructions) and proceeds to write the trigger.
 # ────────────────────────────────────────────────────────────────────────────
 new_sandbox
-mkdir -p "$HOME/Applications/RemotePairHost.app"
+mkdir -p "$HOME/Applications/XpairHost.app"
 make_launchctl_mock                 # no label
 make_pgrep_mock                     # no pid
 make_mock open
@@ -150,10 +150,10 @@ assert_eq "$av_loop" "2" "/Applications + ~/Applications dual-location loop appe
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────────────────────
-# Case 4: the FORWARD app (RemotePair.app, unified 0.5 id) is in ~/Applications → still detected after the flip
+# Case 4: the FORWARD app (Xpair.app, unified 0.5 id) is in ~/Applications → still detected after the flip
 # ────────────────────────────────────────────────────────────────────────────
 new_sandbox
-mkdir -p "$HOME/Applications/RemotePair.app"
+mkdir -p "$HOME/Applications/Xpair.app"
 make_launchctl_mock
 make_pgrep_mock
 make_mock open
@@ -166,21 +166,21 @@ assert_contains "$RP_OUT" "approve request" "FORWARD .app → app_available=true
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────────────────────
-# Case 4b: whether cmd_host tries open with the CURRENT id (RemotePairHost) first (app installed + server down).
-#   host_up=false (server down), app installed at ~/Applications/RemotePairHost.app → tries open -a RemotePairHost.
-#   The server never comes up so it exits non-zero, but open -a RemotePairHost must be recorded in MLOG.
-#   (If open succeeds with CURRENT, the FORWARD open is skipped by short-circuit evaluation — only check open -a RemotePairHost is present.
-#    Match exactly on 'open|-a|RemotePairHost' to rule out an accidental prefix (RemotePair) match.)
+# Case 4b: whether cmd_host tries open with the CURRENT id (XpairHost) first (app installed + server down).
+#   host_up=false (server down), app installed at ~/Applications/XpairHost.app → tries open -a XpairHost.
+#   The server never comes up so it exits non-zero, but open -a XpairHost must be recorded in MLOG.
+#   (If open succeeds with CURRENT, the FORWARD open is skipped by short-circuit evaluation — only check open -a XpairHost is present.
+#    Match exactly on 'open|-a|XpairHost' to rule out an accidental prefix (Xpair) match.)
 # ────────────────────────────────────────────────────────────────────────────
 new_sandbox
-mkdir -p "$HOME/Applications/RemotePairHost.app"
+mkdir -p "$HOME/Applications/XpairHost.app"
 make_launchctl_mock
 make_pgrep_mock
 make_mock open                      # tmux-aqua absent → host_up=false stays
 run_cli host
 
 it "host/open-tries-current-id"
-assert_contains "$MLOG" "open|-a|RemotePairHost" "cmd_host tries open -a RemotePairHost (CURRENT id)"
+assert_contains "$MLOG" "open|-a|XpairHost" "cmd_host tries open -a XpairHost (CURRENT id)"
 
 cleanup_sandbox
 

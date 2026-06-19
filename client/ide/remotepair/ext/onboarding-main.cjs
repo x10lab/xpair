@@ -28,7 +28,7 @@ const PRELOAD = path.join(__dirname, 'onboarding-preload.cjs')
 /** Sentinel that forces onboarding on the next launch (written by the IDE's "Re-run setup"
  *  command, which can't pass an env var across an app quit+relaunch). Deleted once onboarding
  *  actually opens, so it forces exactly one run. */
-const FORCE_ONBOARDING_SENTINEL = path.join(os.homedir(), '.remote-pair', '.force-onboarding')
+const FORCE_ONBOARDING_SENTINEL = path.join(os.homedir(), '.xpair/host', '.force-onboarding')
 
 /** @returns {boolean} true if the force-onboarding sentinel file exists. */
 function forceOnboardingSentinelExists() {
@@ -45,7 +45,7 @@ function clearForceOnboardingSentinel() {
  *  but unmapped client still counts as onboarded — otherwise the hard guard would re-show onboarding
  *  forever for anyone who skipped mapping. */
 function isOnboarded() {
-  const file = path.join(os.homedir(), '.remote-pair', 'client.env')
+  const file = path.join(os.homedir(), '.xpair/host', 'client.env')
   let txt = ''
   try { txt = fs.readFileSync(file, 'utf8') } catch { return false }
   const env = {}

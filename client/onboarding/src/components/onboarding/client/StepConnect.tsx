@@ -186,7 +186,7 @@ function NewKeyPanel({
   state,
   setState,
 }: Props) {
-  const [keyName, setKeyName] = useState("id_ed25519_remotepair");
+  const [keyName, setKeyName] = useState("id_ed25519_xpair");
   const [hostAddr, setHostAddr] = useState("");
   const [pubKey, setPubKey] = useState("");
   const [steps, setSteps] = useState<Record<SetupStep, StepStatus>>({
@@ -486,7 +486,7 @@ function StatusPanel({
   if (state === "connected_installed")
     return (
       <Panel tone="ok" icon={<Check className="h-3.5 w-3.5" />} title="Connected · helper detected">
-        <p>RemotePairHost is already installed on {alias}.</p>
+        <p>XpairHost is already installed on {alias}.</p>
       </Panel>
     );
 
@@ -497,7 +497,7 @@ function StatusPanel({
         icon={<AlertCircle className="h-3.5 w-3.5" />}
         title="Connected · helper not installed"
       >
-        <p>We reached {alias} but couldn't find RemotePairHost.</p>
+        <p>We reached {alias} but couldn't find XpairHost.</p>
         <Button size="sm" className="mt-3" onClick={() => setState("installing")}>
           <Download className="mr-1.5 h-3.5 w-3.5" />
           Install on host
@@ -527,7 +527,7 @@ function StatusPanel({
 
   return (
     <Panel tone="ok" icon={<Check className="h-3.5 w-3.5" />} title="Installed and ready">
-      <p>RemotePairHost is running on {alias}.</p>
+      <p>XpairHost is running on {alias}.</p>
     </Panel>
   );
 }

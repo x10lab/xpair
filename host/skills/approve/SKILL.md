@@ -1,16 +1,16 @@
 ---
 name: approve
-description: Use when work is blocked by a macOS approval/permission dialog (1Password SSH approval/unlock, the Claude-for-Chrome permission window, system confirmation dialogs, etc.). Claude does not click anything itself; it only asks the RemotePair app — which holds the permissions — to "allow it." RemotePair detects and routes which window to allow and how.
+description: Use when work is blocked by a macOS approval/permission dialog (1Password SSH approval/unlock, the Claude-for-Chrome permission window, system confirmation dialogs, etc.). Claude does not click anything itself; it only asks the Xpair app — which holds the permissions — to "allow it." Xpair detects and routes which window to allow and how.
 ---
 
-# approve — get past a blocked approval dialog (request it from RemotePair)
+# approve — get past a blocked approval dialog (request it from Xpair)
 
 When work is blocked by a macOS approval/permission dialog, all you need is **a one-line request**:
 
 ```bash
-remote-pair approve                       # trigger + collect result (exit 0=handled, 1=failed). Requires PATH(~/.local/bin).
-remote-pair approve --for "1Password"     # hint about which approval window (recommended). Aliases are lenient (e.g. Chrome/Google Chrome → Claude for Chrome)
-remote-pair approve --for "Claude for Chrome" --type "key:cmd+return|return"   # ★ specify directly how to approve
+xpair approve                       # trigger + collect result (exit 0=handled, 1=failed). Requires PATH(~/.local/bin).
+xpair approve --for "1Password"     # hint about which approval window (recommended). Aliases are lenient (e.g. Chrome/Google Chrome → Claude for Chrome)
+xpair approve --for "Claude for Chrome" --type "key:cmd+return|return"   # ★ specify directly how to approve
 ```
 **Use `--type` to decide directly "how to approve" (recommended).** Look at the screen (you're already watching it via computer-use), judge how to get that window through, and pass it; the router runs it **exactly as given** (not locked into fixed rules, and it even handles short-burst multiple retries on its own):
 - `--type "key:cmd+return|return"` → send keys (sequential candidates). Enter / Mac Command+Enter, etc.
@@ -24,9 +24,9 @@ remote-pair approve --for "Claude for Chrome" --type "key:cmd+return|return"   #
 - ⚠️ Verification is based only on "did the window close" → **even if a wrong key clicks Decline and the window closes, it looks like success**. So use `key:` **only when** the Allow shortcut is certain. If unsure, the button text `ocr:` is safer (it presses only the Allow button precisely).
 
 `--for "<what>"` is a supplementary hint (optional, aliases lenient: browser name→Claude for Chrome). If `--type` is present it takes priority; if absent it falls back to the default method of the `--for` rule.
-Fallback (action without hint): `~/.remote-pair/bin/approve` or `touch /tmp/remote-pair.approve-request`.
+Fallback (action without hint): `~/.xpair/host/bin/approve` or `touch /tmp/xpair.approve-request`.
 
-That's all. From there **RemotePair** (the menu bar app, with Screen Recording + Accessibility granted) takes care of it:
+That's all. From there **Xpair** (the menu bar app, with Screen Recording + Accessibility granted) takes care of it:
 - Looks at the screen (OCR) and detects **which approval window** appeared
 - **Routes to the action** matching that window — 1Password→click `Authorize`, Claude-for-Chrome→`Return` (Enter), generic window→its button/key
 - Even if the dialog appears late, right after the trigger, it retries for a few seconds
@@ -37,17 +37,17 @@ The router **polls adaptively for ~18s by default after the trigger** (`RP_WAIT_
 
 Detection is **hybrid**: OCR rules (marker text) first → on a miss, **haiku classifies only "which known approval window this is"** (coordinates are OCR's job; haiku is routing-only). For a window not in the rules, it falls back to a generic approval label (Allow/허용/승인/확인…). haiku is a best-effort call via the subscription claude CLI — if it's missing or slow, it works with OCR rules alone (can be turned off with `RP_VISION=off`).
 
-- **When the approval window is already up** (1Password etc. is blocking another process): just use `remote-pair approve` (blocking, exit 0=clicked 1=timeout) as is.
-- **When the tool call has already failed with Permission denied**: the window is already gone. Running approve alone ends with "no known dialog up". You must go in this order: **non-blocking fallback (`~/.remote-pair/bin/approve` or trigger touch) → immediately (within 7s) retry the failed call**. If the retry raises the window again, the router that was polling clicks it. If you use the blocking wrapper, you can't raise the window while waiting for approve to finish, so it times out.
+- **When the approval window is already up** (1Password etc. is blocking another process): just use `xpair approve` (blocking, exit 0=clicked 1=timeout) as is.
+- **When the tool call has already failed with Permission denied**: the window is already gone. Running approve alone ends with "no known dialog up". You must go in this order: **non-blocking fallback (`~/.xpair/host/bin/approve` or trigger touch) → immediately (within 7s) retry the failed call**. If the retry raises the window again, the router that was polling clicks it. If you use the blocking wrapper, you can't raise the window while waiting for approve to finish, so it times out.
 
 **Your (claude's) only job is the trigger.** Never do the "how" — clicking/keys/coordinates — yourself:
 - computer-use is by default **blocked** on permission/approval windows, and
 - direct osascript/System Events clicks are blocked because the identity (Automation) doesn't match, and 1Password doesn't expose its window to Accessibility.
-→ So **only the permission-holding RemotePair** can click, and the method is centrally managed by RemotePair via rules.
+→ So **only the permission-holding Xpair** can click, and the method is centrally managed by Xpair via rules.
 
 ## Read the result and act (judge from the log even on failure)
 
-`remote-pair approve` **prints the router log for this specific request as is** and reports the result via exit code.
+`xpair approve` **prints the router log for this specific request as is** and reports the result via exit code.
 Even on failure, "why" is left in the log, so you (the agent) just read it and decide the next action:
 
 - **exit 0** = `router: success [id] (verified: dialog closed)` — passed. Continue the blocked work.
@@ -56,7 +56,7 @@ Even on failure, "why" is left in the log, so you (the agent) just read it and d
   - `[id] button not found (labels=...)` → the window is right but the button label differs from the rule → correct the action label in rules.txt.
   - `vision → UNKNOWN` or `[id] clicked but close unconfirmed` → an unknown/unusual window. Add a rule to rules.txt, or if that doesn't work, report to the user.
   - `vision claude rc=…` / `claude CLI missing → vision disabled (OCR rules only)` → vision alone failed (harmless). Working on OCR rules — check whether that window is in the rules.
-- Full log: `~/.remote-pair/logs/remote-pair.log`.
+- Full log: `~/.xpair/host/logs/xpair.log`.
 
 Key point: **Don't struggle to "recover" from a failure yourself; read the log and pick one of (re-trigger / add rule / report to user).** Never click/coordinate yourself.
 
@@ -66,18 +66,18 @@ approve's `success` means **the window closed**, not a guarantee that it was **a
 Even if the work stays blocked, **don't conclude "the host died" — confirm the actual state as fact first**:
 
 ```bash
-remote-pair status   # app alive (launchctl) + AX/SR/FDA grant (app status.json). Ground truth, not a guess.
+xpair status   # app alive (launchctl) + AX/SR/FDA grant (app status.json). Ground truth, not a guess.
 ```
-- `app NOT running` & `host server down` → the app really isn't running → launch the app on the host / `remote-pair host`.
+- `app NOT running` & `host server down` → the app really isn't running → launch the app on the host / `xpair host`.
   ⚠ The menu bar app **runs even without permissions.** It's not dead just because `pgrep` "doesn't see it" (status judges via launchctl).
 - `app running` but `AX ✗` or `SR ✗` → **launched but not granted.** Even when approve clicks, the synthetic input
   doesn't take, so it can look "closed" → turn on Accessibility/Screen Recording in System Settings (this is not "host down").
-- Failing even with `AX ✓ SR ✓` → **not a RemotePair problem.** It's one of two things:
+- Failing even with `AX ✓ SR ✓` → **not a Xpair problem.** It's one of two things:
   - The click pressed the **wrong button** (Decline etc.) → specify precisely with `--type "ocr:<Allow button text>"`.
-  - **A block outside RemotePair** — the browser extension's per-domain permission, an org policy (e.g. "Service Not Allowed"), the network. approve can't fix it (user/admin territory).
+  - **A block outside Xpair** — the browser extension's per-domain permission, an org policy (e.g. "Service Not Allowed"), the network. approve can't fix it (user/admin territory).
 
 ## Adding a new approval window (rules.txt)
-`~/.remote-pair/rules.txt`, one tab-separated line = one window:  `id <TAB> detection-marker <TAB> action`
+`~/.xpair/host/rules.txt`, one tab-separated line = one window:  `id <TAB> detection-marker <TAB> action`
 - detection-marker = a unique phrase that appears only in that window (OCR partial match).
 - action = `ocr:Allow|허용|OK` (find the button text and click it) or `key:return` (send keys, `cmd+return`·`esc` etc.).
 - e.g.: `MyApp<TAB>Grant access?<TAB>ocr:Allow|허용`  /  `Some Dialog<TAB>Confirm action<TAB>key:return`

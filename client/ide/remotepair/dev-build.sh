@@ -5,11 +5,11 @@
 # to run with Bash: "C:\Program Files\Git\bin\bash.exe" ./dev/build.sh
 ###
 
-export APP_NAME="RemotePair"
-export ASSETS_REPOSITORY="ghyeongl/remote-pair"
-export BINARY_NAME="remotepair"
+export APP_NAME="Xpair"
+export ASSETS_REPOSITORY="ghyeongl/xpair"
+export BINARY_NAME="xpair"
 export CI_BUILD="no"
-export GH_REPO_PATH="ghyeongl/remote-pair"
+export GH_REPO_PATH="ghyeongl/xpair"
 export ORG_NAME="x10lab"
 export SHOULD_BUILD="yes"
 export SKIP_ASSETS="yes"
@@ -135,7 +135,7 @@ if [[ "${SKIP_BUILD}" == "no" ]]; then
     cp ./build/osx/include.gypi ~/.gyp/include.gypi
   fi
 
-  # RemotePair: inject the RemotePair extension as a builtin AFTER source prep, right before gulp.
+  # Xpair: inject the Xpair extension as a builtin AFTER source prep, right before gulp.
   # MUST be here (not pre-build in build.sh): SKIP_SOURCE=no wipes vscode/ (line ~85 `rm -rf vscode*`
   # + re-clone) and SKIP_SOURCE=yes resets it (`git add .` + `git reset --hard HEAD`), either of which
   # deletes a pre-build copy. gulp glob-discovers extensions/*/package.json, so dropping the ext into
@@ -144,15 +144,15 @@ if [[ "${SKIP_BUILD}" == "no" ]]; then
   _RP_EXT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ext"
   rm -rf vscode/extensions/remotepair
   cp -R "$_RP_EXT_SRC" vscode/extensions/remotepair
-  echo "→ injected RemotePair builtin extension → vscode/extensions/remotepair"
+  echo "→ injected Xpair builtin extension → vscode/extensions/remotepair"
 
-  # RemotePair app icon (client = orbit3: cube + orbiting sphere). gulp packages the macOS .app icon
+  # Xpair app icon (client = orbit3: cube + orbiting sphere). gulp packages the macOS .app icon
   # from vscode/resources/darwin/code.icns, so overwrite that source here (after source-prep, before
   # gulp). vscode/ is regenerated each build, so no cleanup needed; vendor subtree stays pristine.
   _RP_ICON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assets/icon/code.icns"
   if [ -f "$_RP_ICON" ]; then
     cp "$_RP_ICON" vscode/resources/darwin/code.icns
-    echo "→ injected RemotePair app icon → vscode/resources/darwin/code.icns"
+    echo "→ injected Xpair app icon → vscode/resources/darwin/code.icns"
   fi
 
   . build.sh

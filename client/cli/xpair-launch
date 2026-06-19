@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-pair-launch — open a claude session (remote host or local) for a single folder and attach.
+# xpair-launch — open a claude session (remote host or local) for a single folder and attach.
 #
 # Key behavior (1:1 connection only — no session sharing / multi-attach):
 #   • Path mapping: client folder → host folder (FOLDER_MAPS; content is identical via external sync
@@ -9,23 +9,23 @@
 #   • _N numbering: if _1 already has a client (tab) attached → _2 is opened fresh;
 #                   detached sessions are taken over with attach -d
 #   • computer-use: session is added to the patched tmux-aqua server socket started by
-#                   RemotePairHost → claude inherits its permissions
+#                   XpairHost → claude inherits its permissions
 #   • non-interactive: RP_YES=1 (or --yes) skips all prompts (auto dir creation, etc.)
 #
-# Usage:  remote-pair-launch [--local|--remote] [--fresh] [--yes] [<dir>]
-#         (typically called via 'remote-pair launch <dir>' or a Finder Service)
+# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [<dir>]
+#         (typically called via 'xpair launch <dir>' or a Finder Service)
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# ── config (single source of truth: ~/.remote-pair) ──
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+# ── config (single source of truth: ~/.xpair/host) ──
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 for _f in common host client; do
   # shellcheck disable=SC1090
   [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
 done
 REMOTE_HOST="${REMOTE_HOST:-}"
-APP_NAME="${APP_NAME:-RemotePairHost}"
-BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.remote-pair-host}"
+APP_NAME="${APP_NAME:-XpairHost}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.xpair-host}"
 REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin}"          # path evaluated on the remote side (preserve quoting)
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
@@ -158,7 +158,7 @@ export CLAUDE_WARP_RC="$RC"
 # on a miss we start blank rather than risk grabbing the wrong project's conversation.
 _LSD="$HOME/.claude/.git/last-session"
 _K="$(printf '%s' "$PWD" | shasum -a 256 | cut -c1-16)"
-_rplog="$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "$(dirname "$_rplog")" 2>/dev/null
+_rplog="$HOME/.xpair/host/logs/xpair.log"; mkdir -p "$(dirname "$_rplog")" 2>/dev/null
 while :; do
   # Re-read inside the loop so a crash-respawn picks up the latest recorded id.
   RESUME_SID=""
@@ -178,7 +178,7 @@ done
 RESPAWN
 }
 
-# ── optional ~/.claude git sync (only when present — not a RemotePair requirement) ──
+# ── optional ~/.claude git sync (only when present — not a Xpair requirement) ──
 # Heavy parallel sync intentionally omitted (~/.claude sync is opt-in).
 # --resume pointers are per-machine local, so sync is not needed for basic operation.
 sync_claude_local() {
@@ -224,7 +224,7 @@ _remote_next_n() {
 }
 
 ensure_local_host() {
-  # The computer-use (aqua-tmux) path is HOST-only. A client has no granted RemotePairHost,
+  # The computer-use (aqua-tmux) path is HOST-only. A client has no granted XpairHost,
   # so local sessions there must use plain tmux — one tmux per machine, no socket fragmentation.
   # (Mirrors the reference's `AQUA="" on non-host`, but role-based instead of hostname-hardcoded.)
   # Allow the local aqua path only when this machine is in an *actual host role* (role host|both).
@@ -260,7 +260,7 @@ launch_local() {
   sync_claude_local
   cd "$PROJECT_DIR"                                 # local: host == client
   # For computer-use, claude must be inside the patched-tmux server under the granted
-  # .app (RemotePairHost) process subtree. If RemotePair host (aqua-tmux) is on this machine,
+  # .app (XpairHost) process subtree. If Xpair host (aqua-tmux) is on this machine,
   # use it; otherwise fall back to plain tmux.
   if ensure_local_host; then
     # Skip any _N that already has a client (tab) attached — opens _2 if _1 is visible on screen
@@ -274,20 +274,20 @@ launch_local() {
       [ -d "$PROJECT_DIR" ] || die "project directory missing: $PROJECT_DIR" 1
       { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
       tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T"
-    fi   # RemotePairHost subtree → computer-use
+    fi   # XpairHost subtree → computer-use
     # host-side session-lifecycle log (local==host here; correlation id = session name).
     # Export RP_SESSION so child claude processes stamp the same id in their log lines.
     export RP_SESSION="$SESS"
-    # Route through rp_log host (uses shared lock $LOG_DIR/.remote-pair.log.lock, coordinated with Swift).
+    # Route through rp_log host (uses shared lock $LOG_DIR/.xpair.log.lock, coordinated with Swift).
     rp_log info host "SESSION: $([ "$NEED_CREATE" = 1 ] && echo created || echo attached) $SESS (client=$LOCAL_HOST local)"
-    # RemotePair (E): surface the SSOT tmux session name as the terminal title (OSC-2) so the
-    # RemotePair IDE shows it in the Sessions sidebar header (xterm title -> instance.title ->
+    # Xpair (E): surface the SSOT tmux session name as the terminal title (OSC-2) so the
+    # Xpair IDE shows it in the Sessions sidebar header (xterm title -> instance.title ->
     # syncTitleToActiveSession). Emitted right before exec so it lands before tmux takes over.
     printf '\033]2;%s\007' "$SESS"
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
-  # Fallback: plain tmux (no computer-use — machine without RemotePairHost)
+  # Fallback: plain tmux (no computer-use — machine without XpairHost)
   command -v tmux >/dev/null 2>&1 || die "tmux not found on $LOCAL_HOST. Install it: brew install tmux" 10
   # Skip any _N that already has a client (tab) attached
   local TN=1
@@ -295,7 +295,7 @@ launch_local() {
   local TSESS="${LOCAL_PROJ}_${TN}" TCONT=1
   [ "$TN" -gt 1 ] && TCONT=0                         # _2+ → fresh
   [ "$FRESH" = 1 ] && TCONT=0
-  printf '\033]2;%s\007' "$TSESS"   # RemotePair (E): surface tmux session name as terminal title (OSC-2)
+  printf '\033]2;%s\007' "$TSESS"   # Xpair (E): surface tmux session name as terminal title (OSC-2)
   if tmux has-session -t "=$TSESS" 2>/dev/null; then
     exec tmux attach -d -t "=$TSESS"                 # detached → take-over re-attach (-d: drop stale clients)
   else
@@ -432,7 +432,7 @@ if ! command -v claude >/dev/null 2>&1; then
   printf 'claude not found on %s (PATH=%s)\n' "\$(hostname -s)" "\$PATH" >&2
   exit 11
 fi
-# Optional ~/.claude sync (only when present — not a RemotePair requirement)
+# Optional ~/.claude sync (only when present — not a Xpair requirement)
 if [ -d "\$HOME/.claude/.git" ]; then
   ( cd "\$HOME/.claude" && git fetch -q origin main 2>/dev/null && git merge --no-edit -X ours origin/main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1 || true ) || true
 fi
@@ -471,15 +471,15 @@ if [ "\$NEED_CREATE" = 1 ]; then
   tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c '${HOST_DIR}' "bash \$T"
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached).
-# Use shared logger (shared lock \$LOG_DIR/.remote-pair.log.lock, coordinated with Swift) if installed;
+# Use shared logger (shared lock \$LOG_DIR/.xpair.log.lock, coordinated with Swift) if installed;
 # fall back to direct append for hosts without logging.sh yet.
 export RP_SESSION="\$SESSION"
-_rp_log="\$HOME/.remote-pair/bin/logging.sh"
+_rp_log="\$HOME/.xpair/host/bin/logging.sh"
 if [ -f "\$_rp_log" ]; then
   . "\$_rp_log"
   rp_log info host "SESSION: \$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached) \$SESSION (client=${LOCAL_HOST})"
 else
-  RPLOG="\$HOME/.remote-pair/logs/remote-pair.log"; mkdir -p "\$(dirname "\$RPLOG")"
+  RPLOG="\$HOME/.xpair/host/logs/xpair.log"; mkdir -p "\$(dirname "\$RPLOG")"
   sz=\$(stat -f %z "\$RPLOG" 2>/dev/null || echo 0); [ "\$sz" -gt 5000000 ] && mv -f "\$RPLOG" "\$RPLOG.1" 2>/dev/null || true
   printf '%s SESSION: %s %s (client=%s)\n' "\$(date '+%FT%T%z')" "\$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached)" "\$SESSION" "${LOCAL_HOST}" >> "\$RPLOG"
 fi
@@ -498,8 +498,8 @@ ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | se
 [ -z "$ACTUAL_SESSION" ] && die "failed to extract remote session name" 12
 # Export RP_SESSION so any child processes on this side stamp the same correlation id.
 export RP_SESSION="$ACTUAL_SESSION"
-# RemotePair (E): surface the SSOT remote tmux session name as the (local) terminal title (OSC-2),
-# so the RemotePair IDE shows it in the Sessions sidebar header before mosh/ssh takes over the tty.
+# Xpair (E): surface the SSOT remote tmux session name as the (local) terminal title (OSC-2),
+# so the Xpair IDE shows it in the Sessions sidebar header before mosh/ssh takes over the tty.
 printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
 # Phase 2: attach via mosh (UDP-based — resilient to tmux freezes / network hiccups).
@@ -511,7 +511,7 @@ if command -v mosh >/dev/null 2>&1; then
   # → tmux-aqua must be an absolute path. Since host and client share the same user (same home path),
   #   expand local $HOME to build the absolute path (remote home == local home). This also keeps
   #   'attach -d -t =SESS' clean in the mosh-client argv so zombie/RN pgrep matching works correctly.
-  # Attach to the RemotePair fixed socket — independent of client (mosh) context; claude is a server child.
+  # Attach to the Xpair fixed socket — independent of client (mosh) context; claude is a server child.
   # No timeout intentionally — if the client sleeps for a long time, mosh restores the session on wake (roaming).
   #
   # Invariant "tmux attached ⟺ open tab on client" enforcement:

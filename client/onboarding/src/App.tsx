@@ -170,7 +170,7 @@ export default function App() {
 
   return (
     <WizardShell
-      title="RemotePair"
+      title="Xpair"
       subtitle={STEP_TITLES[w.index]}
       step={w.index}
       totalSteps={w.totalSteps}
@@ -192,7 +192,7 @@ export default function App() {
       footerSlot={
         w.isLast ? (
           <Button size="sm" onClick={() => window.remotepair.complete()}>
-            Open RemotePair
+            Open Xpair
           </Button>
         ) : w.index === S.MAPPINGS && live === "checking" ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

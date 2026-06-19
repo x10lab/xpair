@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# logging.sh — RemotePair unified bash logger (single concern).
+# logging.sh — Xpair unified bash logger (single concern).
 #
 # Contract: docs/logging.md
 #   Line format : [<ISO-8601 ts>] [<LEVEL>] [<comp>] [<session>] <msg>
-#   Comp→file   : cli→cli.log  host→remote-pair.log  (see docs table)
+#   Comp→file   : cli→cli.log  host→xpair.log  (see docs table)
 #   Levels      : trace < debug < info < warn < error
 #   File default: INFO (REMOTEPAIR_LOG env overrides)
 #   Rotation    : rotate-on-open >5MB → shift .log→.1→.2 (max 3) under advisory lock
@@ -23,7 +23,7 @@ __RP_LOGGING_LOADED=1
 # ── Resolve LOG_DIR and LOG_LEVEL ─────────────────────────────────────────────
 # If config.sh was already sourced, LOG_DIR / LOG_LEVEL are already set.
 # Otherwise derive safe defaults so this file can be sourced standalone.
-LOG_DIR="${LOG_DIR:-${RP_DIR:-$HOME/.remote-pair}/logs}"
+LOG_DIR="${LOG_DIR:-${RP_DIR:-$HOME/.xpair/host}/logs}"
 LOG_LEVEL="${REMOTEPAIR_LOG:-${LOG_LEVEL:-info}}"
 
 # ── Level ordering ─────────────────────────────────────────────────────────────
@@ -55,10 +55,10 @@ _rp_unlock() { rmdir "$1" 2>/dev/null || true; }
 # ── Rotate a log file if > 5 MB, under advisory lock ─────────────────────────
 # _rp_rotate <filepath>
 # SINGLE lock primitive on ALL platforms: an atomic mkdir lock on "<file>.lock.d".
-# This is deliberate: macOS stock has no flock(1), AND the Swift writer of remote-pair.log uses
+# This is deliberate: macOS stock has no flock(1), AND the Swift writer of xpair.log uses
 # the SAME mkdir lock dir (see host/app/Config.swift rotateIfNeeded). Using one primitive
 # everywhere is what makes the cross-language lock (bash launcher ↔ Swift daemon) on
-# remote-pair.log actually interoperate — a flock(2)-vs-mkdir mix would NOT mutually exclude.
+# xpair.log actually interoperate — a flock(2)-vs-mkdir mix would NOT mutually exclude.
 _rp_rotate() {
   local f="$1"
   [ -f "$f" ] || return 0
@@ -67,7 +67,7 @@ _rp_rotate() {
   [ "$sz" -le 5000000 ] && return 0   # under 5 MB — nothing to do
 
   local basename_f; basename_f="$(basename "$f")"
-  local lockd="$LOG_DIR/.${basename_f}.lock.d"   # e.g. .remote-pair.log.lock.d (shared w/ Swift)
+  local lockd="$LOG_DIR/.${basename_f}.lock.d"   # e.g. .xpair.log.lock.d (shared w/ Swift)
   if _rp_lock "$lockd"; then
     # Re-check size inside the lock (another writer may have rotated already)
     local sz2
@@ -84,7 +84,7 @@ _rp_rotate() {
 
 # ── Redaction (docs/logging.md §6) ────────────────────────────────────────────
 # Mask the home dir → ~ and the REMOTE_HOST value / ssh alias → <host>, so logs shipped via
-# `remote-pair logs --collect` don't leak the reporter's paths/host. Best-effort, msg body only.
+# `xpair logs --collect` don't leak the reporter's paths/host. Best-effort, msg body only.
 _rp_redact() {
   local s="$1"
   [ -n "${HOME:-}" ] && s="${s//$HOME/~}"
@@ -98,7 +98,7 @@ _rp_redact() {
 #   comp  : cli | host | rust | ide | workbench (see docs/logging.md §2)
 #   msg   : rest of arguments joined by space
 #
-# Writes to $LOG_DIR/<comp>.log  (exception: comp=host → remote-pair.log)
+# Writes to $LOG_DIR/<comp>.log  (exception: comp=host → xpair.log)
 # Echoes colored line to stderr for warn/error.
 # Skips file write if level < LOG_LEVEL threshold.
 rp_log() {
@@ -108,7 +108,7 @@ rp_log() {
   # Resolve destination file (comp→file contract from docs/logging.md §2)
   local logfile
   case "$comp" in
-    host) logfile="$LOG_DIR/remote-pair.log" ;;
+    host) logfile="$LOG_DIR/xpair.log" ;;
     *)    logfile="$LOG_DIR/${comp}.log" ;;
   esac
 

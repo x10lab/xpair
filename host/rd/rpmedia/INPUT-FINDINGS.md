@@ -14,7 +14,7 @@ they never verified whether the app actually *inserts* it (evaluator blind spot)
 | System Events cmd+V(clipboard=Hangul) | key=true | [] (paste did not fire / race, inconclusive) |
 
 → **CGEvent does NOT deliver keyboard input to the app. System Events (the Accessibility path) DOES deliver it.**
-This is exactly why the existing `host/RemotePairHost/InputServer.swift` uses osascript System Events for key input
+This is exactly why the existing `host/XpairHost/InputServer.swift` uses osascript System Events for key input
 (comment: synthetic CGEvent keys don't work in some web UIs — in reality the scope is much broader).
 
 ## Fix Direction (next)
@@ -48,7 +48,7 @@ rc=0`. Unlike CGEvent (does not reach) and System Events (garbles Hangul), this 
 **Two preconditions (naturally met on a real host, only unmet in automated tests):**
 1. The injection binary must be **AX-trusted** — same-process AX needs no trust, but cross-process does.
    It's inherited from the parent process (iTerm trusted → helper trusted; if an untrusted app spawns it, it's untrusted). Production
-   grants the helper Accessibility (like the existing InputServer/RemotePairHost).
+   grants the helper Accessibility (like the existing InputServer/XpairHost).
 2. The **target must genuinely be frontmost-active** — system-wide kAXFocusedUIElement returns the focused
    element of whichever app is active at that moment. On a real host this is met because the app the user is using is active. Automated tests
    cannot make a throwaway window active (the agent/terminal steals frontmost), so cross-process is unverified.

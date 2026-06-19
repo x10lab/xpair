@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         "video".to_owned(),
-        "remotepair-screen".to_owned(),
+        "xpair-screen".to_owned(),
     ));
     pc.add_track(track).await?;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# manage-claude-hooks.py — idempotently adds/removes the RemotePair hooks in the
+# manage-claude-hooks.py — idempotently adds/removes the Xpair hooks in the
 # hooks section of ~/.claude/settings.json. Never touches existing user hooks
 # (gstack/omc/notify, etc.).
 #
@@ -17,7 +17,7 @@
 #
 # Hook layout (data-driven):
 #   approve-reminder.sh  → PermissionDenied, PostToolUseFailure  (matcher: GUI tools)
-#   remote-pair-notify.sh→ Stop, Notification, SubagentStop       (matcher: None = all tools)
+#   xpair-notify.sh→ Stop, Notification, SubagentStop       (matcher: None = all tools)
 #                        → PermissionDenied, PostToolUseFailure  (matcher: GUI tools, approve events)
 import json, os, sys
 

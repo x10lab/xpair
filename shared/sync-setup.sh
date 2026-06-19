@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source the shared logger; no-op fallback when running standalone before install.
 # shellcheck disable=SC1090
-[ -f "${RP_DIR:-$HOME/.remote-pair}/bin/logging.sh" ] && . "${RP_DIR:-$HOME/.remote-pair}/bin/logging.sh"
+[ -f "${RP_DIR:-$HOME/.xpair/host}/bin/logging.sh" ] && . "${RP_DIR:-$HOME/.xpair/host}/bin/logging.sh"
 type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; warn(){ printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }; }
 
 # say() is a local UI helper; warn() comes from logging.sh or the fallback above.

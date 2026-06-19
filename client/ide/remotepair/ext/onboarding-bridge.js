@@ -1,8 +1,8 @@
-// onboarding-bridge.js — Node ↔ remote-pair CLI bridge for the IDE-embedded client onboarding.
+// onboarding-bridge.js — Node ↔ xpair CLI bridge for the IDE-embedded client onboarding.
 //
-// The client onboarding runs inside the RemotePair IDE (VSCodium) as a webview; this module is the
+// The client onboarding runs inside the Xpair IDE (VSCodium) as a webview; this module is the
 // extension-side bridge the webview calls to perform REAL setup (Tailscale/SSH connection, file-access
-// backend, folder mappings) via the `remote-pair` CLI. Per §0.1 the CLI is the brain — this bridge only
+// backend, folder mappings) via the `xpair` CLI. Per §0.1 the CLI is the brain — this bridge only
 // shells out to it (argv-safe spawn, never a shell string), it does not reimplement install/map logic.
 //
 // Spec: .omc/specs/deep-interview-client-onboarding-real-wiring.md
@@ -16,14 +16,14 @@ const path = require("path");
 const telemetry = require("./telemetry.js");
 
 const HOME = os.homedir();
-const RP_DIR = path.join(HOME, ".remote-pair");
+const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
 
-/** Resolve the remote-pair binary (installed to ~/.local/bin, else on PATH). */
+/** Resolve the xpair binary (installed to ~/.local/bin, else on PATH). */
 function rpBin() {
-  const local = path.join(HOME, ".local", "bin", "remote-pair");
-  return fs.existsSync(local) ? local : "remote-pair";
+  const local = path.join(HOME, ".local", "bin", "xpair");
+  return fs.existsSync(local) ? local : "xpair";
 }
 
 /** Resolve the tailscale binary path (macOS .app / brew / std locations), or null if absent.
@@ -178,7 +178,7 @@ const bridge = {
   // Connection — Tailscale-first reachability probe. On macOS Tailscale commonly ships ONLY as
   // /Applications/Tailscale.app (no `tailscale` on PATH), so a naive `which tailscale` false-negatives
   // ("not installed" despite being installed). Probe the app/brew binary too — matching the CLI's
-  // cmd_discover probe — so this agrees with `remote-pair discover`.
+  // cmd_discover probe — so this agrees with `xpair discover`.
   async tailscaleStatus() {
     const bin = resolveTailscale();
     if (!bin) return { installed: false, up: false };
@@ -245,14 +245,14 @@ const bridge = {
     return { exists: r.code === 0, err: r.err };
   },
 
-  // Mappings — compute the default mountpoint the same way remote-pair-mount does, so the UI
+  // Mappings — compute the default mountpoint the same way xpair-mount does, so the UI
   // can pre-fill the field before the user clicks Mount.
   //
-  // Mirrors remote-pair-mount default_mountpoint + sanitize_path exactly:
+  // Mirrors xpair-mount default_mountpoint + sanitize_path exactly:
   //   sanitize_path: strip leading '/', replace remaining '/' with '_',
   //                  then replace every char not in [A-Za-z0-9._-] with '_'.
   //   host_slug:     replace every char not in [A-Za-z0-9._-] with '_'.
-  //   result:        ~/.remote-pair/mounts/<host_slug>/<path_slug>
+  //   result:        ~/.xpair/host/mounts/<host_slug>/<path_slug>
   defaultMountpoint(hostPath) {
     const cfg = parseEnv(CLIENT_ENV);
     const remoteHost = cfg.REMOTE_HOST || "";
@@ -265,10 +265,10 @@ const bridge = {
     return path.join(mountsRoot, hostSlug, pathSlug);
   },
 
-  // Mappings — actually mount a host folder. `remote-pair-mount` takes a SUBCOMMAND first, so via the
-  // wrapper this is `remote-pair mount mount <hostPath> [mountpoint]` (1st "mount" = the remote-pair
-  // subcommand that execs remote-pair-mount; 2nd "mount" = its mount action).
-  // mountpoint is optional: when provided it overrides the default computed by remote-pair-mount.
+  // Mappings — actually mount a host folder. `xpair-mount` takes a SUBCOMMAND first, so via the
+  // wrapper this is `xpair mount mount <hostPath> [mountpoint]` (1st "mount" = the xpair
+  // subcommand that execs xpair-mount; 2nd "mount" = its mount action).
+  // mountpoint is optional: when provided it overrides the default computed by xpair-mount.
   // Returns the parsed Mountpoint from CLI output.
   async mount(hostPath, mountpoint) {
     const h = String(hostPath || "").trim();

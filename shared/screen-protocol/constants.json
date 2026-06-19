@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth (SoT) for the RemotePair Remote Desktop screen protocol. host/rd/(serve.rs·serve_webrtc.rs) and client/ide/(remote-desktop.js·extension.js) implement this contract, and check-screen-protocol.sh verifies consistency.",
+  "$comment": "Single source of truth (SoT) for the Xpair Remote Desktop screen protocol. host/rd/(serve.rs·serve_webrtc.rs) and client/ide/(remote-desktop.js·extension.js) implement this contract, and check-screen-protocol.sh verifies consistency.",
   "transport": {
     "v1a_jpeg": {
       "scheme": "ws",
@@ -23,8 +23,8 @@
   },
   "input": {
     "channel": "host InputServer file channel",
-    "reqFile": "/tmp/remote-pair.input-req",
-    "resFile": "/tmp/remote-pair.input-res",
+    "reqFile": "/tmp/xpair.input-req",
+    "resFile": "/tmp/xpair.input-res",
     "wireFormat": "<verb>\\t<args...>",
     "throttleMs": 120,
     "webviewCoords": "relative 0..1 (rx,ry); the extension converts to host pixels using the frame dimensions",

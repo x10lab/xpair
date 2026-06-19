@@ -1,4 +1,4 @@
-// Discovery peer shape returned by `remote-pair discover --json` (deduped by host-key fingerprint).
+// Discovery peer shape returned by `xpair discover --json` (deduped by host-key fingerprint).
 export type PeerStatus = "reconnect" | "connect" | "setup"
 export type PeerSource = "lan" | "tailscale" | "ssh"
 

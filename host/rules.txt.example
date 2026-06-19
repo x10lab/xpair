@@ -1,4 +1,4 @@
-# RemotePair approve rules v2 — runtime location: ~/.claude/auto-approve/rules.txt
+# Xpair approve rules v2 — runtime location: ~/.claude/auto-approve/rules.txt
 # id <TAB> marker (detected OCR text, partial match) <TAB> action
 #   action: ocr:<label|..> (find the button text and click it) | key:<combo> (cmd+return, return, esc)
 1Password	Access Requested	ocr:Authorize|Authorize Once|승인|허용|확인

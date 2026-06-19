@@ -3,7 +3,7 @@
 # approval dialog, reminds the model to use the approve skill. (Generalizes m1's
 # chrome-approve-reminder.sh to the repo.)
 #
-# Why: the RemotePair host is headless (remote session, no human in front of the screen),
+# Why: the Xpair host is headless (remote session, no human in front of the screen),
 #   so GUI approval windows (Claude-for-Chrome permission modal, 1Password approval/unlock,
 #   macOS system permission prompts, etc.) cannot be clicked by anyone, which means a
 #   "Permission denied" is usually an unclicked timeout rather than an intentional denial.

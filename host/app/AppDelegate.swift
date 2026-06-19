@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let older = NSRunningApplication.runningApplications(withBundleIdentifier: BUNDLE_ID)
             .filter { $0.processIdentifier != myPid && $0.processIdentifier < myPid && !$0.isTerminated }
         if !older.isEmpty {
-            log("launch: an older RemotePairHost instance (pid \(older.map { $0.processIdentifier })) is running — terminating duplicate")
+            log("launch: an older XpairHost instance (pid \(older.map { $0.processIdentifier })) is running — terminating duplicate")
             NSApp.terminate(nil); return
         }
         Installer.ensureInstalled()     // self-install on first run of a downloaded .app (no-op if already installed)
@@ -57,14 +57,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         rebuildMenu()
 
-        log("launched (RemotePairHost v\(APP_VERSION), repo=\(GH_REPO))")
+        log("launched (XpairHost v\(APP_VERSION), repo=\(GH_REPO))")
 
         // The tick loop (heartbeat + writeStatus + approve/onboarding triggers) ALWAYS runs — even while
         // gated — because writeStatus() drives status.json, which the onboarding WKWebView polls for the
         // Screen Recording grant. Serving (HostManager/ScreenServer/pairing/advertising) is gated below.
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         // (legacy v0 InputServer 0.1s main-thread polling removed — screencapture's synchronous blocking froze the menu bar.
-        //  Screen sharing is replaced by v1/v2 (remote-pair-screen serve-webrtc, view-only, no remote input).)
+        //  Screen sharing is replaced by v1/v2 (xpair-screen serve-webrtc, view-only, no remote input).)
 
         // Hard run-gate. The host needs BOTH Accessibility (approve auto-click via cliclick/System
         // Events) AND Screen Recording (screen-share + approve OCR). If either is ungranted, show the
@@ -244,7 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log("trigger → router")
             approve.run()
         }
-        // (Removed: /tmp/remote-pair.grant-request and .install-request trigger-file handlers. Those
+        // (Removed: /tmp/xpair.grant-request and .install-request trigger-file handlers. Those
         // bridged the OLD standalone Electron onboarding — a separate process that signalled the app
         // via files. Onboarding is now in-process (OnboardingWindow's WKWebView bridge calls
         // Permissions.request / Installer directly), so nothing writes those files anymore.)
@@ -290,7 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         • Holds the patched tmux-aqua server as a child of the app to inherit AX/SR permissions
         • Auto-clicks approval dialogs (approve router)
-        • Clients connect via the 'remote-pair' CLI + Finder Service
+        • Clients connect via the 'xpair' CLI + Finder Service
 
         repo: github.com/\(GH_REPO)
         """

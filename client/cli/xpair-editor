@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# remote-pair-editor — Launch code-server for the RemotePair web editor tab.
+# xpair-editor — Launch code-server for the Xpair web editor tab.
 #
 # Usage:
-#   remote-pair-editor [start] [<folder>]   Launch code-server on 127.0.0.1:${EDITOR_PORT:-8080}
-#   remote-pair-editor status               Is code-server listening on EDITOR_PORT?
-#   remote-pair-editor stop                 Kill the running code-server for this port
+#   xpair-editor [start] [<folder>]   Launch code-server on 127.0.0.1:${EDITOR_PORT:-8080}
+#   xpair-editor status               Is code-server listening on EDITOR_PORT?
+#   xpair-editor stop                 Kill the running code-server for this port
 #
 # Security note: --auth none is intentional and safe ONLY because the server is bound to
 # 127.0.0.1 (loopback). Never expose EDITOR_PORT to an external interface without auth.
 #
-# Install path: $LOCAL_BIN/remote-pair-editor (placed by shared/install.sh)
+# Install path: $LOCAL_BIN/xpair-editor (placed by shared/install.sh)
 # Config:  EDITOR_PORT (default 8080)
-#          RP_DIR      (default ~/.remote-pair)
+#          RP_DIR      (default ~/.xpair/host)
 set -euo pipefail
 
 # ── Config ──────────────────────────────────────────────────────────────────
 EDITOR_PORT="${EDITOR_PORT:-8080}"
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 BIND_ADDR="127.0.0.1"
 
@@ -56,9 +56,9 @@ print_install_guidance() {
     Official script: curl -fsSL https://code-server.dev/install.sh | sh
 
   After installing, re-run:
-    remote-pair-editor [<folder>]
+    xpair-editor [<folder>]
 
-  For the full RemotePair custom fork (progressive VS Code modification),
+  For the full Xpair custom fork (progressive VS Code modification),
   see docs/m4-code-server.md.
 EOF
 }

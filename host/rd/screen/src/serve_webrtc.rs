@@ -38,7 +38,7 @@ use webrtc::track::track_local::TrackLocal;
 
 /// Locate a helper binary that sits **next to this executable** (the bundle
 /// `Contents/Helpers/` layout). `current_exe()` is `canonicalize()`d first so a
-/// symlinked launch path (e.g. `~/.remote-pair/bin/screen` → bundle Helpers) is
+/// symlinked launch path (e.g. `~/.xpair/host/bin/screen` → bundle Helpers) is
 /// resolved to the real bundle dir, where the sibling helpers actually live.
 /// Returns `None` when no sibling helper exists (dev `cargo run`, missing file).
 fn sibling_helper(name: &str) -> Option<String> {
@@ -54,7 +54,7 @@ fn sibling_helper(name: &str) -> Option<String> {
 /// Resolve the SCK capture+encode helper (`rp-screencap`). It self-captures via
 /// ScreenCaptureKit and encodes H.264 — no raw-frame pipe, no Rust-side capture.
 /// Order: `$RP_SCREENCAP` → bundle sibling (`current_exe` dir) →
-/// `~/.remote-pair/bin` → PATH.
+/// `~/.xpair/host/bin` → PATH.
 fn screencap_path() -> String {
     if let Ok(p) = std::env::var("RP_SCREENCAP") {
         return p;
@@ -63,7 +63,7 @@ fn screencap_path() -> String {
         return p;
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    let deployed = format!("{home}/.remote-pair/bin/rp-screencap");
+    let deployed = format!("{home}/.xpair/host/bin/rp-screencap");
     if std::path::Path::new(&deployed).exists() {
         return deployed;
     }
@@ -144,7 +144,7 @@ async fn handle_session(
             ..Default::default()
         },
         "video".to_owned(),
-        "remotepair-screen".to_owned(),
+        "xpair-screen".to_owned(),
     ));
     let rtp_sender = pc
         .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)

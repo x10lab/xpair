@@ -7,10 +7,10 @@ export function StepWelcome() {
         <Laptop className="h-7 w-7" />
       </div>
       <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-        Welcome to RemotePair
+        Welcome to Xpair
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
-        Attach to a Mac running RemotePairHost and work as if it were sitting
+        Attach to a Mac running XpairHost and work as if it were sitting
         on your desk. Let's get you connected.
       </p>
       <ul className="mt-8 w-full max-w-sm space-y-2 text-left text-sm text-muted-foreground">

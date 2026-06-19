@@ -19,7 +19,7 @@ type Props = {
 };
 
 /** Dedup peers by host-key fingerprint (UI backstop; the CLI already dedups). Peers without a
- *  fingerprint (SSH-only, RemotePair not installed) are keyed by name so they aren't collapsed. */
+ *  fingerprint (SSH-only, Xpair not installed) are keyed by name so they aren't collapsed. */
 function dedup(peers: Peer[]): Peer[] {
   const byKey = new Map<string, Peer>();
   for (const p of peers) {
@@ -102,7 +102,7 @@ function Scanning() {
         Looking for your host…
       </h2>
       <p className="mt-2 max-w-xs text-sm text-muted-foreground">
-        Scanning this network for Macs running RemotePairHost.
+        Scanning this network for Macs running XpairHost.
       </p>
       <div className="mt-5 flex flex-col items-start gap-2 text-xs text-muted-foreground">
         <Scanline label="Bonjour · same Wi-Fi" />
@@ -199,7 +199,7 @@ function PeerRow({ peer, onSelect }: { peer: Peer; onSelect: (p: Peer) => void }
         {notInstalled && (
           <span className="mt-1 flex items-center gap-1.5 text-[10.5px] text-accent-ts">
             <Download className="h-3 w-3" />
-            RemotePair not installed — we'll set it up
+            Xpair not installed — we'll set it up
           </span>
         )}
       </span>

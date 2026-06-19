@@ -1,13 +1,13 @@
-// Config.swift — RemotePairHost shared constants/paths + logging. (multiple .swift files are compiled together)
+// Config.swift — XpairHost shared constants/paths + logging. (multiple .swift files are compiled together)
 //
-// All runtime state lives under ~/.remote-pair — it does not depend on ~/.claude syncing.
+// All runtime state lives under ~/.xpair/host — it does not depend on ~/.claude syncing.
 // host helpers (tmux-aqua, router, ocr-find) are bundled in the app's Contents/Helpers; falls back to an external path if absent.
 
 import Cocoa
 import Darwin
 
 let HOME = NSHomeDirectory()
-let RP_DIR = "\(HOME)/.remote-pair"
+let RP_DIR = "\(HOME)/.xpair/host"
 let LOG_DIR = "\(RP_DIR)/logs"
 let ROLE_FILE = "\(RP_DIR)/role"            // host|client|both — written by install.sh. Used to block host self-install on a client.
 let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // present = client installed on this machine
@@ -46,20 +46,20 @@ func helper(_ name: String, _ fallback: String) -> String {
 
 let TMUX = helper("tmux-aqua", "\(HOME)/.local/bin/tmux-aqua")        // tmux patched with daemon→setsid
 let SOCKET = "/tmp/aqua-tmux.sock"                                    // host tmux server socket
-let ROUTER = helper("remote-pair-approve-router.sh", "\(RP_DIR)/bin/remote-pair-approve-router.sh")
-let LOGP = "\(LOG_DIR)/remote-pair.log"
-let HEARTBEAT = "\(LOG_DIR)/remote-pair.heartbeat"                    // read by the watchdog
+let ROUTER = helper("xpair-approve-router.sh", "\(RP_DIR)/bin/xpair-approve-router.sh")
+let LOGP = "\(LOG_DIR)/xpair.log"
+let HEARTBEAT = "\(LOG_DIR)/xpair.heartbeat"                          // read by the watchdog
 let STATUS_FILE = "\(LOG_DIR)/status.json"                            // ground truth read by the agent: app alive + AX/SR/FDA grant
 let RULES_FILE = "\(RP_DIR)/rules.txt"                                // approve router rules
-let TRIGGER = "/tmp/remote-pair.approve-request"                     // (legacy) /approve skill touch → old router fallback
+let TRIGGER = "/tmp/xpair.approve-request"                           // (legacy) /approve skill touch → old router fallback
 // (legacy v0 InputServer file channel INPUT_REQ/INPUT_RES removed — its 0.1s main-thread polling froze
-//  the menu bar. Screen sharing is replaced by v1/v2: remote-pair(screen) serve-webrtc (view-only, no remote input).)
+//  the menu bar. Screen sharing is replaced by v1/v2: xpair(screen) serve-webrtc (view-only, no remote input).)
 
 // Display version + update target (Info.plist is the single source; populated by build-host.sh)
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 let GH_REPO = (Bundle.main.infoDictionary?["RPGitHubRepo"] as? String) ?? "x10lab/xpair"
-let APP_NAME = (Bundle.main.infoDictionary?["CFBundleName"] as? String) ?? "RemotePairHost"
-let BUNDLE_ID = Bundle.main.bundleIdentifier ?? "com.x10lab.remote-pair-host"
+let APP_NAME = (Bundle.main.infoDictionary?["CFBundleName"] as? String) ?? "XpairHost"
+let BUNDLE_ID = Bundle.main.bundleIdentifier ?? "com.x10lab.xpair-host"
 
 func ensureDirs() {
     // §1: logs dir MUST be mode 0700 (contains host names, ssh aliases, paths). Idempotent.
@@ -71,12 +71,12 @@ func ensureDirs() {
         // Use FileHandle.standardError (NOT log()) to avoid recursion into a dir that may not exist.
         let exists = FileManager.default.fileExists(atPath: LOG_DIR, isDirectory: nil)
         if !exists {
-            FileHandle.standardError.write(Data("[remote-pair] ensureDirs: cannot create \(LOG_DIR): \(error)\n".utf8))
+            FileHandle.standardError.write(Data("[xpair] ensureDirs: cannot create \(LOG_DIR): \(error)\n".utf8))
         }
     }
 }
 
-/// The single ground truth read by the agent (remote-pair status/doctor). Lets it know whether the app
+/// The single ground truth read by the agent (xpair status/doctor). Lets it know whether the app
 /// is alive and granted as fact, not by guessing (pgrep, etc.). Refreshed every tick (1s) → liveness judged from ts freshness.
 func writeStatus() {
     ensureDirs()
@@ -89,12 +89,12 @@ func writeStatus() {
     catch { log(.warn, "STATUS: write \(STATUS_FILE) failed: \(error)") }
 }
 
-let LOG_MAX_BYTES = 5_000_000        // §7: rotate remote-pair.log past 5MB (24/7 host → unbounded growth otherwise)
+let LOG_MAX_BYTES = 5_000_000        // §7: rotate xpair.log past 5MB (24/7 host → unbounded growth otherwise)
 let LOG_BACKUPS = 2                   // §7: keep live + .1 + .2 (max 3 total)
 // §7 cross-writer lock. MUST be the SAME atomic-mkdir lock dir that bash _rp_rotate uses
-// (shared/logging.sh: "$LOG_DIR/.remote-pair.log.lock.d") — a flock(2) lock would NOT interoperate
+// (shared/logging.sh: "$LOG_DIR/.xpair.log.lock.d") — a flock(2) lock would NOT interoperate
 // with bash's mkdir lock, so the Swift host + launcher bash writers would not actually mutually exclude.
-let LOG_LOCK_DIR = "\(LOG_DIR)/.remote-pair.log.lock.d"
+let LOG_LOCK_DIR = "\(LOG_DIR)/.xpair.log.lock.d"
 
 // MARK: - Logging contract (docs/logging.md)
 
@@ -142,7 +142,7 @@ let logTSFormatter: DateFormatter = {
 }()
 
 /// §7 size-cap rotation under a shared advisory lock so the Swift host and the launcher bash writer
-/// don't clobber each other's backups (both append to remote-pair.log). Keeps live + .1/.2/.3.
+/// don't clobber each other's backups (both append to xpair.log). Keeps live + .1/.2/.3.
 /// The lock guards only the cheap stat + rename window; appends stay lock-free atomic single writes (§7).
 func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
     let fm = FileManager.default
@@ -151,7 +151,7 @@ func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
           let size = (attrs[.size] as? NSNumber)?.intValue, size > maxBytes else { return }
 
     // Acquire the SHARED atomic-mkdir lock (same primitive + dir as bash _rp_rotate, shared/logging.sh)
-    // so the Swift host and the launcher bash writer serialize on remote-pair.log. 5s spin then give up.
+    // so the Swift host and the launcher bash writer serialize on xpair.log. 5s spin then give up.
     var spins = 0
     while mkdir(LOG_LOCK_DIR, 0o700) != 0 {
         if errno != EEXIST { return }            // unexpected error → skip rotation this pass
@@ -162,7 +162,7 @@ func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
 
     // Rotation diagnostics go to STDERR, never log() — re-entering log()→rotateIfNeeded while we hold
     // this lock (e.g. on a rename failure of an oversized file) would deadlock on the same mkdir lock.
-    func diag(_ m: String) { FileHandle.standardError.write(Data("[remote-pair] rotate: \(m)\n".utf8)) }
+    func diag(_ m: String) { FileHandle.standardError.write(Data("[xpair] rotate: \(m)\n".utf8)) }
 
     // Re-check under the lock: another writer may have rotated between our pre-check and acquiring the lock.
     guard let attrs2 = try? fm.attributesOfItem(atPath: path),
@@ -186,7 +186,7 @@ func rotateIfNeeded(_ path: String, _ maxBytes: Int) {
     catch { diag("move live \(path) → \(path).1 failed: \(error)") }
 }
 
-/// §6 REMOTE_HOST for redaction — env wins, else parsed once from ~/.remote-pair/client.env (KEY=VALUE).
+/// §6 REMOTE_HOST for redaction — env wins, else parsed once from ~/.xpair/host/client.env (KEY=VALUE).
 private let logRemoteHost: String? = {
     if let h = ProcessInfo.processInfo.environment["REMOTE_HOST"], !h.isEmpty { return h }
     if let raw = try? String(contentsOfFile: "\(RP_DIR)/client.env", encoding: .utf8) {
@@ -202,7 +202,7 @@ private let logRemoteHost: String? = {
 }()
 
 /// §6 redaction: mask the home dir → ~ and REMOTE_HOST → <host> before any sink (logs may be shipped
-/// via `remote-pair logs --collect`). Best-effort, msg body only.
+/// via `xpair logs --collect`). Best-effort, msg body only.
 ///
 /// SCOPE: this is the LOCAL-LOG redactor. Local logs legitimately keep full absolute paths (other than
 /// $HOME) for debugging, so this deliberately does NOT mask IPs, arbitrary paths, or other hostnames.
@@ -268,7 +268,7 @@ func outboundScrub(_ s: String) -> String {
     return r
 }
 
-/// §3 unified writer. Emits `[<ISO8601>] [<LEVEL>] [host] [<session>] <msg>` to remote-pair.log (LOGP),
+/// §3 unified writer. Emits `[<ISO8601>] [<LEVEL>] [host] [<session>] <msg>` to xpair.log (LOGP),
 /// gated by LOG_THRESHOLD. session defaults to RP_SESSION (§5), or `-` for app-level events.
 func log(_ level: Level = .info, _ s: String,
          session: String = (ProcessInfo.processInfo.environment["RP_SESSION"] ?? "-")) {
@@ -283,7 +283,7 @@ func log(_ level: Level = .info, _ s: String,
     } else {
         // File doesn't exist yet — create it. (Append-create race tolerated; first line at worst.)
         do { try line.write(toFile: LOGP, atomically: false, encoding: .utf8) }
-        catch { FileHandle.standardError.write(Data("[remote-pair] log: write \(LOGP) failed: \(error)\n".utf8)) }
+        catch { FileHandle.standardError.write(Data("[xpair] log: write \(LOGP) failed: \(error)\n".utf8)) }
     }
 }
 

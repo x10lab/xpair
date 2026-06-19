@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/lib.sh — remote-pair-launch test harness (mock PATH-shim + assert + runner).
+# tests/lib.sh — xpair-launch test harness (mock PATH-shim + assert + runner).
 #
 # Core trick: on startup the launcher prepends PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH".
 # So in the tests we swap HOME for a temporary directory and place all mocks
@@ -12,7 +12,7 @@
 # Target under test / reference paths — relative to the repo root (works on any machine/CI checkout path; never hardcode absolute paths)
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(cd "$_LIB_DIR/.." && pwd)"
-LAUNCHER_SRC="${LAUNCHER_SRC:-$_REPO_ROOT/client/cli/remote-pair-launch}"
+LAUNCHER_SRC="${LAUNCHER_SRC:-$_REPO_ROOT/client/cli/xpair-launch}"
 REFERENCE_SRC="${REFERENCE_SRC:-${HOME_REAL:-$HOME}/.claude/bin/claude-iterm-launch}"
 
 # Aggregate counters
@@ -41,7 +41,7 @@ HOME_REAL="${HOME_REAL:-$HOME}"
 new_sandbox() {
   SBX="$(mktemp -d -t rpltest.XXXXXX)"
   export HOME="$SBX"
-  RP_DIR="$SBX/.remote-pair"
+  RP_DIR="$SBX/.xpair/host"
   MOCKBIN="$SBX/.local/bin"
   MOCKLOG="$SBX/mocklog"
   RP_ERRFILE="$SBX/launch.err"

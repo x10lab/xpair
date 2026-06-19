@@ -1,10 +1,10 @@
 #!/bin/bash
-# remote-pair-notify.sh — Claude Code hook command (host side).
+# xpair-notify.sh — Claude Code hook command (host side).
 # When a Claude Code event (Stop / Notification / SubagentStop / approve) fires on
-# the host, append a single JSON line to ~/.remote-pair/notifications/queue.jsonl.
+# the host, append a single JSON line to ~/.xpair/host/notifications/queue.jsonl.
 # The client (WEB bridge) reads this file over SSH and notifies the user.
 #
-# Usage: remote-pair-notify.sh <EVENT>
+# Usage: xpair-notify.sh <EVENT>
 #   When Claude Code invokes this as a hook command, JSON is provided on stdin.
 #
 # Supported EVENTs:
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 EVENT="${1:-}"
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 QUEUE_FILE="$RP_DIR/notifications/queue.jsonl"
 CONF_FILE="$RP_DIR/notify.conf"
 QUEUE_MAX=500
@@ -164,7 +164,7 @@ try:
         f.write(line + "\n")
         fcntl.flock(f, fcntl.LOCK_UN)
 except OSError as e:
-    sys.stderr.write(f"remote-pair-notify: queue write failed: {e}\n")
+    sys.stderr.write(f"xpair-notify: queue write failed: {e}\n")
     sys.exit(1)
 
 sys.stderr.write(line + "\n")  # for debugging (Claude Code hooks ignore stderr)

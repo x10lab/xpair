@@ -1,6 +1,6 @@
 name: Release
 
-# Build + sign RemotePairHost.app with the stable self-signed cert and publish a GitHub Release.
+# Build + sign XpairHost.app with the stable self-signed cert and publish a GitHub Release.
 # Trigger: push a tag like `v0.4.0`  (or run manually with a version input).
 #
 # Requires two repo secrets (the stable signing identity — grant persistence depends on it):
@@ -68,7 +68,7 @@ jobs:
         with:
           node-version-file: client/ide/.nvmrc
 
-      # One step: import cert → build+sign+verify HOST and the client IDE (RemotePair.app) → publish
+      # One step: import cert → build+sign+verify HOST and the client IDE (Xpair.app) → publish
       # all assets to one prerelease. MUST be a single shell: `security list-keychains -s` and the
       # unlock are session-scoped, so the keychain must be set up + consumed by both builds' codesign
       # in the same process.
@@ -109,30 +109,30 @@ jobs:
           ./host/build-host.sh
 
           # Gate: the host asset MUST be signed with the stable cert (not ad-hoc) before we publish.
-          codesign -dvv build/RemotePairHost.app 2>&1 | grep -q "Authority=RemotePair Local Signing" \
+          codesign -dvv build/XpairHost.app 2>&1 | grep -q "Authority=RemotePair Local Signing" \
             || { echo "::error::host app was signed ad-hoc, not with the stable cert — refusing to publish"; exit 1; }
-          codesign --verify --strict build/RemotePairHost.app
+          codesign --verify --strict build/XpairHost.app
           echo "host signed with stable cert ✓"
 
-          # ── Client IDE: build the PRODUCTION identity (RemotePair.app) signed with the SAME cert. ──
+          # ── Client IDE: build the PRODUCTION identity (Xpair.app) signed with the SAME cert. ──
           # In CI ($GITHUB_ACTIONS set) build.sh defaults RP_LOCAL_IDENTITY=0 (prod identity, not
-          # RemotePairLocal); set it explicitly for clarity. RP_BUILD_VER pins the version to the tag
+          # XpairLocal); set it explicitly for clarity. RP_BUILD_VER pins the version to the tag
           # (skips the shared shared/.build-counter so the release version == the tag, no drift).
           ( cd client/ide && RP_LOCAL_IDENTITY=0 RP_BUILD_VER="${RP_VERSION}" ./build.sh )
-          IDE_APP="client/ide/dist/VSCode-darwin-arm64/RemotePair.app"
-          [ -d "$IDE_APP" ] || { echo "::error::IDE build did not produce $IDE_APP — prod-identity build failed (got RemotePairLocal?)"; exit 1; }
+          IDE_APP="client/ide/dist/VSCode-darwin-arm64/Xpair.app"
+          [ -d "$IDE_APP" ] || { echo "::error::IDE build did not produce $IDE_APP — prod-identity build failed (got XpairLocal?)"; exit 1; }
           codesign -dvv "$IDE_APP" 2>&1 | grep -q "Authority=RemotePair Local Signing" \
             || { echo "::error::IDE app was signed ad-hoc, not with the stable cert — refusing to publish"; exit 1; }
           codesign --verify --strict "$IDE_APP"
           echo "IDE signed with stable cert ✓"
 
           # Publish. Ship versioned + stable-named copies of BOTH host and IDE so the GUI/cask install
-          # links (releases/latest/download/{RemotePairHost,RemotePair}.zip) stay valid across versions.
-          HOST_ZIP="build/RemotePairHost-${RP_VERSION}.zip"; HOST_STABLE="build/RemotePairHost.zip"
-          ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent RemotePairHost.app "RemotePairHost-${RP_VERSION}.zip" )
+          # links (releases/latest/download/{XpairHost,Xpair}.zip) stay valid across versions.
+          HOST_ZIP="build/XpairHost-${RP_VERSION}.zip"; HOST_STABLE="build/XpairHost.zip"
+          ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent XpairHost.app "XpairHost-${RP_VERSION}.zip" )
           cp "$HOST_ZIP" "$HOST_STABLE"
-          IDE_ZIP="client/ide/dist/RemotePair-${RP_VERSION}.zip"; IDE_STABLE="client/ide/dist/RemotePair.zip"
-          ( cd "client/ide/dist/VSCode-darwin-arm64" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent RemotePair.app "../RemotePair-${RP_VERSION}.zip" )
+          IDE_ZIP="client/ide/dist/Xpair-${RP_VERSION}.zip"; IDE_STABLE="client/ide/dist/Xpair.zip"
+          ( cd "client/ide/dist/VSCode-darwin-arm64" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent Xpair.app "../Xpair-${RP_VERSION}.zip" )
           cp "$IDE_ZIP" "$IDE_STABLE"
           # Alpha builds (version has a letter suffix, e.g. 0.5.0a38) → mark Pre-release and NOT
           # latest, so the host Updater (tracks /releases/latest, excludes pre-releases) ignores them.

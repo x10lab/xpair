@@ -4,7 +4,7 @@
 # "cd '<HOST_DIR>'" line in the remote setup script ($SSH_CAPTURE).
 #
 # NOTE: claude-iterm-launch (the reference) had no path mapping — it assumes identical paths.
-#       map_to_host is a new feature of remote-pair-launch (an intentional divergence).
+#       map_to_host is a new feature of xpair-launch (an intentional divergence).
 #       An equivalence comparison test against the reference is unnecessary.
 cd "$(dirname "$0")"; . ./lib.sh
 

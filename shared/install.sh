@@ -1,13 +1,13 @@
 #!/bin/bash
-# install.sh — RemotePair installer (role-based, reversible).
+# install.sh — Xpair installer (role-based, reversible).
 #
 # Roles (--role):
-#   host    Machine where claude runs with computer-use. RemotePairHost.app + LaunchAgent + approve (skill/rules) + watchdog.
-#   client  Machine you sit at. Service "Launch Remote Pair" + launcher + remote-pair CLI. (No app/permissions/build needed.)
+#   host    Machine where claude runs with computer-use. XpairHost.app + LaunchAgent + approve (skill/rules) + watchdog.
+#   client  Machine you sit at. Service "Launch Xpair" + launcher + xpair CLI. (No app/permissions/build needed.)
 #   both    Both roles on one machine (default).
 #
-# All runtime state lives under ~/.remote-pair (self-contained). ~/.claude only receives the
-# Claude harness (approve skill) — RemotePair behavior does not depend on ~/.claude being synced.
+# All runtime state lives under ~/.xpair/host (self-contained). ~/.claude only receives the
+# Claude harness (approve skill) — Xpair behavior does not depend on ~/.claude being synced.
 #
 # Sync is OFF by default (opt-in). ~/.claude git backbone is set up only with --with-sync or SYNC_URL set.
 # Every action is recorded in the manifest so uninstall.sh can precisely reverse it.
@@ -15,7 +15,7 @@
 # Usage:
 #   ./install.sh                      # role=both (interactive REMOTE_HOST prompt)
 #   ./install.sh --role client        # Laptop: Service + launcher only (no build/permissions needed)
-#   ./install.sh --role host          # Server: app + approve (requires a built build/RemotePairHost.app)
+#   ./install.sh --role host          # Server: app + approve (requires a built build/XpairHost.app)
 #   ./install.sh --with-sync          # + ~/.claude git backbone
 #   REMOTE_HOST=my-mac ./install.sh --role client      # Non-interactive
 set -euo pipefail
@@ -45,7 +45,7 @@ is_client() { [ "$ROLE" = client ] || [ "$ROLE" = both ]; }
 _write_env() {
   local f="$1"; shift
   [ -e "$f" ] || record FILE "$f"
-  { echo "# RemotePair config ($(basename "$f")) — written by install.sh. Safe to edit manually."
+  { echo "# Xpair config ($(basename "$f")) — written by install.sh. Safe to edit manually."
     local k; for k in "$@"; do printf '%s=%q\n' "$k" "${!k}"; done
   } > "$f"
 }
@@ -60,7 +60,7 @@ write_config() {
 }
 
 # ── 0. Input ──
-say "RemotePair install — role=$ROLE, sync=$([ "$DO_SYNC" = 1 ] && echo on || echo off) (bundle=$BUNDLE_PREFIX, app=$APP_NAME)"
+say "Xpair install — role=$ROLE, sync=$([ "$DO_SYNC" = 1 ] && echo on || echo off) (bundle=$BUNDLE_PREFIX, app=$APP_NAME)"
 if is_client && [ -z "${REMOTE_HOST:-}" ] && [ -t 0 ] && [ "${RP_YES:-0}" != 1 ]; then
   read -r -p "Remote host (mosh/ssh target; leave blank for local-only): " REMOTE_HOST || true
 fi
@@ -85,8 +85,8 @@ write_config
 record NOTE "installed role=$ROLE at $(date '+%F %T') on $(hostname -s)"
 
 # ── Common: umbrella CLI → PATH + log directory ──
-say "remote-pair CLI → $LOCAL_BIN"
-install_file "$CLIENT_DIR/remote-pair" "$LOCAL_BIN/remote-pair" 755
+say "xpair CLI → $LOCAL_BIN"
+install_file "$CLIENT_DIR/xpair" "$LOCAL_BIN/xpair" 755
 case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN is not in PATH — add it to your shell rc" ;; esac
 mk_dir "$LOG_DIR"
 
@@ -101,13 +101,13 @@ if is_host; then
     done < <(find "$HOST_DIR/skills" -type f)
   fi
 
-  # notify hook → ~/.remote-pair/bin/remote-pair-notify.sh (Claude Code events → append to queue).
+  # notify hook → ~/.xpair/host/bin/xpair-notify.sh (Claude Code events → append to queue).
   # Together with the approve hook, manage-claude-hooks.py (4-arg) idempotently merges it into settings.json.
   # notify.conf defaults are laid down only on first install (preserving user edits), and recorded reversibly in the manifest.
-  notify_cmd="$RP_DIR/bin/remote-pair-notify.sh"
-  if [ -f "$HOST_DIR/hooks/remote-pair-notify.sh" ]; then
+  notify_cmd="$RP_DIR/bin/xpair-notify.sh"
+  if [ -f "$HOST_DIR/hooks/xpair-notify.sh" ]; then
     say "[host] notify hook → $notify_cmd"
-    install_file "$HOST_DIR/hooks/remote-pair-notify.sh" "$notify_cmd" 755
+    install_file "$HOST_DIR/hooks/xpair-notify.sh" "$notify_cmd" 755
     # notify.conf — first-run defaults (create only if absent, preserving user edits). manifest-record on creation.
     if [ ! -e "$RP_DIR/notify.conf" ] && [ -f "$HOST_DIR/hooks/notify.conf.example" ]; then
       mk_dir "$RP_DIR"; record FILE "$RP_DIR/notify.conf"
@@ -115,7 +115,7 @@ if is_host; then
       say "  notify.conf defaults created (editable: $RP_DIR/notify.conf)"
     fi
   else
-    warn "host/hooks/remote-pair-notify.sh not found — skipping notify hook (notifications unavailable)"
+    warn "host/hooks/xpair-notify.sh not found — skipping notify hook (notifications unavailable)"
   fi
 
   # approve reminder hook → ~/.claude/settings.json (PermissionDenied/PostToolUseFailure).
@@ -126,9 +126,9 @@ if is_host; then
   if [ -f "$HOST_DIR/hooks/approve-reminder.sh" ] && [ -f "$HOST_DIR/hooks/manage-claude-hooks.py" ]; then
     if command -v python3 >/dev/null 2>&1; then
       install_file "$HOST_DIR/hooks/manage-claude-hooks.py" "$RP_DIR/bin/manage-claude-hooks.py" 755
-      install_file "$HOST_DIR/hooks/approve-reminder.sh"    "$CLAUDE_DIR/hooks/remote-pair-approve-reminder.sh" 755
+      install_file "$HOST_DIR/hooks/approve-reminder.sh"    "$CLAUDE_DIR/hooks/xpair-approve-reminder.sh" 755
       settings="$CLAUDE_DIR/settings.json"
-      approve_cmd='$HOME/.claude/hooks/remote-pair-approve-reminder.sh'
+      approve_cmd='$HOME/.claude/hooks/xpair-approve-reminder.sh'
       existed=0; [ -f "$settings" ] && existed=1
       say "[host] approve+notify hook → $settings (idempotent merge)"
       python3 "$RP_DIR/bin/manage-claude-hooks.py" add "$settings" "$approve_cmd" "$notify_cmd" || warn "approve/notify hook merge failed — manual check required"
@@ -146,16 +146,16 @@ if is_host; then
 
   # Remove legacy label names — idempotent, best-effort
   U=$(id -u)
-  for L in com.ghyeong.remote-pair com.ghyeong.remote-pair-watchdog com.ghyeong.auto-approve com.ghyeong.auto-approve-watchdog com.x10lab.remote-pair com.x10lab.remote-pair-watchdog; do
+  for L in com.ghyeong.remote-pair com.ghyeong.remote-pair-watchdog com.ghyeong.auto-approve com.ghyeong.auto-approve-watchdog com.x10lab.remote-pair com.x10lab.remote-pair-watchdog com.x10lab.remote-pair-host com.x10lab.remote-pair-host-watchdog; do
     launchctl bootout "gui/$U/$L" 2>/dev/null || true
   done
-  rm -rf "$HOME/Applications/RemotePair.app" "$HOME/Applications/AutoApprove.app" 2>/dev/null || true
+  rm -rf "$HOME/Applications/RemotePairHost.app" "$HOME/Applications/RemotePair.app" "$HOME/Applications/AutoApprove.app" 2>/dev/null || true
 
   # watchdog
   install -d "$RP_DIR/bin" 2>/dev/null || mkdir -p "$RP_DIR/bin"
-  write_file "$RP_DIR/bin/remote-pair-watchdog.sh" 755 <<W
+  write_file "$RP_DIR/bin/xpair-watchdog.sh" 755 <<W
 #!/bin/bash
-# remote-pair-watchdog.sh — Restart $APP_NAME when heartbeat goes stale. (generated by install.sh)
+# xpair-watchdog.sh — Restart $APP_NAME when heartbeat goes stale. (generated by install.sh)
 set -u
 HB="$HEARTBEAT_FILE"; LOG="$LOG_FILE"
 STALE=90; LABEL="gui/\$(id -u)/${APP_LABEL}"; now=\$(date +%s)
@@ -185,8 +185,8 @@ W
   <key>ProgramArguments</key><array><string>${APP_EXEC}</string></array>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>
-  <key>StandardOutPath</key><string>${LOG_DIR}/remote-pair.out.log</string>
-  <key>StandardErrorPath</key><string>${LOG_DIR}/remote-pair.err.log</string>
+  <key>StandardOutPath</key><string>${LOG_DIR}/xpair.out.log</string>
+  <key>StandardErrorPath</key><string>${LOG_DIR}/xpair.err.log</string>
 </dict></plist>
 P
       write_file "$wd_plist" <<P
@@ -194,9 +194,9 @@ P
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${WATCHDOG_LABEL}</string>
-  <key>ProgramArguments</key><array><string>/bin/bash</string><string>${RP_DIR}/bin/remote-pair-watchdog.sh</string></array>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>${RP_DIR}/bin/xpair-watchdog.sh</string></array>
   <key>RunAtLoad</key><true/><key>StartInterval</key><integer>30</integer>
-  <key>StandardErrorPath</key><string>${LOG_DIR}/remote-pair-watchdog.err.log</string>
+  <key>StandardErrorPath</key><string>${LOG_DIR}/xpair-watchdog.err.log</string>
 </dict></plist>
 P
       U=$(id -u)
@@ -218,34 +218,34 @@ if is_client; then
   [ -f "$CLIENT_DIR/hangul-romanize" ] && install_file "$CLIENT_DIR/hangul-romanize" "$RP_DIR/bin/hangul-romanize" 755
   say "[client] shared logger → $RP_DIR/bin/logging.sh"
   install_file "$HERE/logging.sh" "$RP_DIR/bin/logging.sh" 644
-  install_file "$CLIENT_DIR/remote-pair-launch" "$LAUNCHER" 755
+  install_file "$CLIENT_DIR/xpair-launch" "$LAUNCHER" 755
 
   # ── Web-tab launchers: editor (M4 code-server) + desktop (M5 Screen Sharing). manifest-recorded → reversible. ──
-  if [ -f "$CLIENT_DIR/remote-pair-editor" ]; then
-    say "[client] editor launcher → $LOCAL_BIN/remote-pair-editor"
-    install_file "$CLIENT_DIR/remote-pair-editor" "$LOCAL_BIN/remote-pair-editor" 755
+  if [ -f "$CLIENT_DIR/xpair-editor" ]; then
+    say "[client] editor launcher → $LOCAL_BIN/xpair-editor"
+    install_file "$CLIENT_DIR/xpair-editor" "$LOCAL_BIN/xpair-editor" 755
   else
-    warn "client/cli/remote-pair-editor not found — skipping ('remote-pair editor' unavailable)"
+    warn "client/cli/xpair-editor not found — skipping ('xpair editor' unavailable)"
   fi
-  if [ -f "$CLIENT_DIR/remote-pair-desktop" ]; then
-    say "[client] desktop launcher → $LOCAL_BIN/remote-pair-desktop"
-    install_file "$CLIENT_DIR/remote-pair-desktop" "$LOCAL_BIN/remote-pair-desktop" 755
+  if [ -f "$CLIENT_DIR/xpair-desktop" ]; then
+    say "[client] desktop launcher → $LOCAL_BIN/xpair-desktop"
+    install_file "$CLIENT_DIR/xpair-desktop" "$LOCAL_BIN/xpair-desktop" 755
   else
-    warn "client/cli/remote-pair-desktop not found — skipping ('remote-pair desktop' unavailable)"
+    warn "client/cli/xpair-desktop not found — skipping ('xpair desktop' unavailable)"
   fi
   # ── Mount-based file access (alternative to Syncthing — see docs/m-mount.md). manifest-recorded → reversible. ──
-  if [ -f "$CLIENT_DIR/remote-pair-mount" ]; then
-    say "[client] mount launcher → $LOCAL_BIN/remote-pair-mount"
-    install_file "$CLIENT_DIR/remote-pair-mount" "$LOCAL_BIN/remote-pair-mount" 755
+  if [ -f "$CLIENT_DIR/xpair-mount" ]; then
+    say "[client] mount launcher → $LOCAL_BIN/xpair-mount"
+    install_file "$CLIENT_DIR/xpair-mount" "$LOCAL_BIN/xpair-mount" 755
   else
-    warn "client/cli/remote-pair-mount not found — skipping ('remote-pair mount' unavailable)"
+    warn "client/cli/xpair-mount not found — skipping ('xpair mount' unavailable)"
   fi
-  # ── askpass helper (sibling launcher used by 'remote-pair install-host' over SSH). ──
-  if [ -f "$CLIENT_DIR/remote-pair-askpass" ]; then
-    say "[client] askpass helper → $LOCAL_BIN/remote-pair-askpass"
-    install_file "$CLIENT_DIR/remote-pair-askpass" "$LOCAL_BIN/remote-pair-askpass" 755
+  # ── askpass helper (sibling launcher used by 'xpair install-host' over SSH). ──
+  if [ -f "$CLIENT_DIR/xpair-askpass" ]; then
+    say "[client] askpass helper → $LOCAL_BIN/xpair-askpass"
+    install_file "$CLIENT_DIR/xpair-askpass" "$LOCAL_BIN/xpair-askpass" 755
   else
-    warn "client/cli/remote-pair-askpass not found — skipping (SSH askpass prompts unavailable)"
+    warn "client/cli/xpair-askpass not found — skipping (SSH askpass prompts unavailable)"
   fi
   svc_src="$CLIENT_DIR/Launch Remote Pair.workflow"
   svc_dst="$SERVICES_DIR/Launch Remote Pair.workflow"
@@ -260,7 +260,7 @@ if is_client; then
   fi
 fi
 
-# ── SYNC (opt-in): ~/.claude git backbone (personal convenience — unrelated to RemotePair behavior) ──
+# ── SYNC (opt-in): ~/.claude git backbone (personal convenience — unrelated to Xpair behavior) ──
 if [ "$DO_SYNC" = 1 ]; then
   say "[sync] gitignore whitelist + git backbone"
   while IFS= read -r line; do
@@ -277,8 +277,8 @@ record NOTE "install finished"
 
 # ── client: SSH connectivity check (non-blocking advisory) ──
 if is_client && [ -n "${REMOTE_HOST:-}" ]; then
-  echo; say "[client] SSH connectivity check (remote-pair doctor)"
-  "$LOCAL_BIN/remote-pair" doctor || warn "doctor reported issues — see above (install itself succeeded)"
+  echo; say "[client] SSH connectivity check (xpair doctor)"
+  "$LOCAL_BIN/xpair" doctor || warn "doctor reported issues — see above (install itself succeeded)"
 fi
 
 # ── client: host handshake poll (best-effort, non-fatal, max 30s) ──
@@ -289,11 +289,11 @@ if is_client && [ -n "${REMOTE_HOST:-}" ]; then
   for _hs_i in 1 2 3 4 5 6 7 8 9 10; do
     printf '  attempt %d/10 — ' "$_hs_i"
     if ssh -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" true 2>/dev/null; then
-      _sj="$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" 'cat ~/.remote-pair/logs/status.json 2>/dev/null' 2>/dev/null || true)"
+      _sj="$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" 'cat ~/.xpair/host/logs/status.json 2>/dev/null' 2>/dev/null || true)"
       if [ -n "$_sj" ]; then
         # Check freshness: status.json mtime age ≤ 15s means app is heartbeating
         _fresh="$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" \
-          'python3 -c "import os,time; f=os.path.expanduser(\"~/.remote-pair/logs/status.json\"); print(\"fresh\" if os.path.exists(f) and (time.time()-os.path.getmtime(f))<=15 else \"stale\")" 2>/dev/null' 2>/dev/null || true)"
+          'python3 -c "import os,time; f=os.path.expanduser(\"~/.xpair/host/logs/status.json\"); print(\"fresh\" if os.path.exists(f) and (time.time()-os.path.getmtime(f))<=15 else \"stale\")" 2>/dev/null' 2>/dev/null || true)"
         if [ "$_fresh" = "fresh" ]; then
           echo "host reachable + status.json fresh — handshake OK"; _hs_ok=1; break
         else
@@ -308,12 +308,12 @@ if is_client && [ -n "${REMOTE_HOST:-}" ]; then
     [ "$_hs_i" -lt 10 ] && sleep 3
   done
   if [ "$_hs_ok" = 0 ]; then
-    warn "handshake timed out — host may not be running RemotePairHost.app yet (install succeeded; start the app on the host)"
+    warn "handshake timed out — host may not be running XpairHost.app yet (install succeeded; start the app on the host)"
   fi
 fi
 
 # ── client: interactive onboarding (tty only) ──
 if is_client && [ -t 0 ]; then
   echo
-  "$LOCAL_BIN/remote-pair" onboard || true
+  "$LOCAL_BIN/xpair" onboard || true
 fi

@@ -12,8 +12,8 @@ export function StepDone({ paired = false }: { paired?: boolean }) {
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
         {paired
-          ? "RemotePairHost is running in your menu bar. Control sessions, view status, and stop the host from the menu bar icon."
-          : "RemotePairHost is running in your menu bar. Pair a client anytime — open RemotePair on your laptop and pick this Mac. Manage everything from the menu bar icon."}
+          ? "XpairHost is running in your menu bar. Control sessions, view status, and stop the host from the menu bar icon."
+          : "XpairHost is running in your menu bar. Pair a client anytime — open Xpair on your laptop and pick this Mac. Manage everything from the menu bar icon."}
       </p>
       {/* Re-toggle summary — same opt-in flags, reflects whatever was chosen on Welcome. */}
       <div className="mt-6">

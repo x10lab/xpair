@@ -1,9 +1,9 @@
-cask "remote-pair" do
+cask "xpair" do
   version "0.5.0a38" # release-pinned (NOT the dev shared/.build-counter, which bumps per build); bump when cutting a release
   sha256 :no_check # alpha pre-release (0.5.0aN); sha re-pinned at release time
 
-  url "https://github.com/x10lab/xpair/releases/download/v#{version}/RemotePair-#{version}.zip"
-  name "RemotePair"
+  url "https://github.com/x10lab/xpair/releases/download/v#{version}/Xpair-#{version}.zip"
+  name "Xpair"
   desc "Client IDE for remote pairing with Claude (VSCodium fork: Sessions sidebar + Browser)"
   homepage "https://github.com/x10lab/xpair"
 
@@ -15,20 +15,20 @@ cask "remote-pair" do
   # Self-signed (not notarized): strip quarantine so Gatekeeper allows launch and TCC (folder
   # access / mic) grants stick to the stable signing identity. Homebrew quarantines downloads by
   # default, so we remove it explicitly post-install.
-  app "RemotePair.app"
+  app "Xpair.app"
 
   postflight do
     system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/RemotePair.app"]
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Xpair.app"]
   end
 
-  uninstall quit: "com.x10lab.remote-pair"
+  uninstall quit: "com.x10lab.xpair"
 
-  zap trash: "~/.remotepair"
+  zap trash: "~/.xpair/client"
 
   caveats <<~EOS
-    RemotePair (client IDE) is self-signed (not notarized). Gatekeeper quarantine is stripped on
+    Xpair (client IDE) is self-signed (not notarized). Gatekeeper quarantine is stripped on
     install. The host side is a separate cask:
-      brew install --cask remote-pair-host
+      brew install --cask xpair-host
   EOS
 end

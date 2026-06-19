@@ -91,10 +91,10 @@ function scrubEvent(value) {
   return walk(value)
 }
 
-// Built RemotePair IDE app candidates (prod identity first, then local).
+// Built Xpair IDE app candidates (prod identity first, then local).
 const IDE_APP_CANDIDATES = [
-  path.join(__dirname, '..', '..', 'ide', 'dist', 'VSCode-darwin-arm64', 'RemotePair.app'),
-  path.join(__dirname, '..', '..', 'ide', 'dist', 'VSCode-darwin-arm64', 'RemotePairLocal.app'),
+  path.join(__dirname, '..', '..', 'ide', 'dist', 'VSCode-darwin-arm64', 'Xpair.app'),
+  path.join(__dirname, '..', '..', 'ide', 'dist', 'VSCode-darwin-arm64', 'XpairLocal.app'),
 ]
 
 let win = null
@@ -136,10 +136,10 @@ function createWindow() {
   })
 }
 
-/** Launch the RemotePair IDE argv-safe (never a shell string). Try the built .app, else fall back. */
+/** Launch the Xpair IDE argv-safe (never a shell string). Try the built .app, else fall back. */
 function launchIDE() {
   const appPath = IDE_APP_CANDIDATES.find((p) => fs.existsSync(p))
-  const args = appPath ? ['-a', appPath] : ['-a', 'RemotePair']
+  const args = appPath ? ['-a', appPath] : ['-a', 'Xpair']
   try {
     cp.spawn('open', args, { detached: true, stdio: 'ignore' }).unref()
   } catch {
@@ -151,7 +151,7 @@ function launchIDE() {
  *  terminal with zero folders and add them later from the IDE), so a connected-but-unmapped client
  *  still counts as onboarded — otherwise the hard guard would re-show onboarding forever. */
 function isOnboarded() {
-  const file = path.join(os.homedir(), '.remote-pair', 'client.env')
+  const file = path.join(os.homedir(), '.xpair', 'host', 'client.env')
   let txt = ''
   try {
     txt = fs.readFileSync(file, 'utf8')
@@ -169,7 +169,7 @@ function isOnboarded() {
 app.whenReady().then(() => {
   // Stamp the install creation time at FIRST RUN, INDEPENDENT of consent (bare epoch-ms, no id =
   // not PII). Gives time_to_wow_ms a real first-launch → first-session base instead of ~0 even
-  // when the onboarding lane is the user's first contact with RemotePair. Idempotent + safe.
+  // when the onboarding lane is the user's first contact with Xpair. Idempotent + safe.
   try {
     telemetry.firstRunStamp()
   } catch {

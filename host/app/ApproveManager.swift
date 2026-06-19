@@ -1,6 +1,6 @@
 // ApproveManager.swift — Launches the approve router as a child of this app (granted identity), on-demand.
 //
-// Clicks/keys must always originate within the RemotePairHost (AX+SR+PostEvent granted) subtree (inherited).
+// Clicks/keys must always originate within the XpairHost (AX+SR+PostEvent granted) subtree (inherited).
 // The router watches the screen (OCR), detects which approval window it is, and routes accordingly. claude/skills only "request".
 
 import Cocoa

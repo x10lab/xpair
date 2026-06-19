@@ -1,6 +1,6 @@
 //! `serve` — the v1a continuous-capture WebSocket JPEG frame server.
 //!
-//! This is the first real streaming path for RemotePair Remote Desktop. It
+//! This is the first real streaming path for Xpair Remote Desktop. It
 //! replaces the v0 ssh-screenshot polling with a persistent capture loop that
 //! pushes JPEG frames over a WebSocket.
 //!

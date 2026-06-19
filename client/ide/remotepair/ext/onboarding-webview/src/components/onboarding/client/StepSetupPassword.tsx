@@ -12,7 +12,7 @@ type Props = {
 };
 
 /**
- * Set-up path: the host is SSH-able but RemotePair is not installed. The user confirms the account
+ * Set-up path: the host is SSH-able but Xpair is not installed. The user confirms the account
  * and (if the host doesn't already trust the SSH key) types the account password RIGHT HERE — no
  * separate OS dialog. The password is handed to the CLI over a pipe (never argv/log/disk), used once
  * to install, then key-based forever. Leave it blank if the Mac already trusts your key.
@@ -37,10 +37,10 @@ export function StepSetupPassword({ peer, user, setUser, password, setPassword }
   return (
     <div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
-        Sign in to install RemotePair
+        Sign in to install Xpair
       </h2>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        {peer.name} doesn't have RemotePair yet. Sign in once so we can set it up — after this it's
+        {peer.name} doesn't have Xpair yet. Sign in once so we can set it up — after this it's
         key-based, no more passwords.
       </p>
 
@@ -73,7 +73,7 @@ export function StepSetupPassword({ peer, user, setUser, password, setPassword }
           className="rounded-lg border-border bg-muted/30 font-mono text-sm"
         />
         <p className="mt-1.5 text-[11px] text-muted-foreground">
-          Used once to install, then never again. RemotePair sends it straight to the host — it's
+          Used once to install, then never again. Xpair sends it straight to the host — it's
           never stored. Leave blank if this Mac already trusts your SSH key.
         </p>
       </div>

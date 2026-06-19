@@ -2,7 +2,7 @@
 //
 // ── M6 two-level update model (cf. RN CodePush) ──────────────────────────────
 // LEVEL-1 (hot, no restart): changes to glue/web (CLI·rules·skills·web bridge/assets·hooks). Swapped
-//   on disk by `remote-pair update` (CLI/ORCH). It does not touch .app/tmux. The app just needs to
+//   on disk by `xpair update` (CLI/ORCH). It does not touch .app/tmux. The app just needs to
 //   not get in the way → that guarantee lives in Installer.swift (same version = true no-op, version bump = refresh resources only).
 // LEVEL-2 (native restart, GATED): handled here in the Updater. Triggered only when the .app **binary**
 //   or the underlying interface contract (InputServer primitive shot/click/key format, status.json schema, tmux-aqua socket path,
@@ -115,7 +115,7 @@ enum Updater {
                   let s = a["browser_download_url"] as? String, let u = URL(string: s) else { return nil }
             return u
         }
-        guard let asset = zips.first(where: { $0.lastPathComponent.lowercased().contains("remotepairhost") }) ?? zips.first else {
+        guard let asset = zips.first(where: { $0.lastPathComponent.lowercased().contains("xpairhost") }) ?? zips.first else {
             return nil
         }
         return Release(tag: tag, assetURL: asset, notes: notes)
@@ -132,7 +132,7 @@ enum Updater {
         }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("RemotePairHost/\(APP_VERSION)", forHTTPHeaderField: "User-Agent")
+        req.setValue("XpairHost/\(APP_VERSION)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { data, resp, err in
             if let err = err { fail(err.localizedDescription); return }
             guard let http = resp as? HTTPURLResponse else { fail("no response"); return }

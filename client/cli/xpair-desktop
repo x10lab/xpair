@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# remote-pair-desktop — open the host screen for viewing via macOS Screen Sharing (VNC).
+# xpair-desktop — open the host screen for viewing via macOS Screen Sharing (VNC).
 #
 # Usage:
-#   remote-pair-desktop [open]   Open vnc://<REMOTE_HOST> in macOS Screen Sharing (default)
-#   remote-pair-desktop check    Check whether REMOTE_HOST is reachable and port 5900 is open (best-effort)
-#   remote-pair-desktop help     Print this help
+#   xpair-desktop [open]   Open vnc://<REMOTE_HOST> in macOS Screen Sharing (default)
+#   xpair-desktop check    Check whether REMOTE_HOST is reachable and port 5900 is open (best-effort)
+#   xpair-desktop help     Print this help
 #
 # Prerequisites (HOST-SIDE MANUAL STEP — like TCC grants):
 #   On the host Mac: System Settings > General > Sharing > enable "Screen Sharing" (or Remote Management).
 #   This exposes port 5900 (VNC). No extra software needed on the client — macOS ships a built-in
 #   Screen Sharing client (/System/Library/CoreServices/Screen Sharing.app).
 #
-# REMOTE_HOST comes from ~/.remote-pair/client.env (set by 'remote-pair config set host <alias>')
+# REMOTE_HOST comes from ~/.xpair/host/client.env (set by 'xpair config set host <alias>')
 #   or from the environment. It must be an ssh alias or hostname resolvable on the client.
 #
-# License: RemotePair is AGPL-3.0-or-later, pure first-party code (no external AGPL deps).
+# License: Xpair is AGPL-3.0-or-later, pure first-party code (no external AGPL deps).
 #   macOS Screen Sharing (vnc://) is an OS-provided client: zero dependency, zero licensing risk.
 #   Screen sharing uses our own host/rd/screen engine.
 #
@@ -25,8 +25,8 @@
 
 set -euo pipefail
 
-# ── config (single source of truth: ~/.remote-pair) ──
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"
+# ── config (single source of truth: ~/.xpair/host) ──
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 for _f in common host client; do
   # shellcheck disable=SC1090
   [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
@@ -44,7 +44,7 @@ ok() { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 require_host() {
   if [ -z "$REMOTE_HOST" ]; then
     err "REMOTE_HOST is not set."
-    printf >&2 '  Set it with:  remote-pair config set host <ssh-alias>\n'
+    printf >&2 '  Set it with:  xpair config set host <ssh-alias>\n'
     printf >&2 '  Or export it: export REMOTE_HOST=<ssh-alias>\n'
     exit 1
   fi
@@ -89,7 +89,7 @@ cmd_check() {
   fi
 
   if [ "$vnc_ok" -eq 1 ]; then
-    info "Host appears ready. Run:  remote-pair-desktop open"
+    info "Host appears ready. Run:  xpair-desktop open"
   fi
 }
 

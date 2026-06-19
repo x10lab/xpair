@@ -8,7 +8,7 @@ export function StepWelcome() {
         <Server className="h-7 w-7" />
       </div>
       <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-        Set up RemotePairHost
+        Set up XpairHost
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
         This Mac will run your sessions 24/7 and accept connections from your

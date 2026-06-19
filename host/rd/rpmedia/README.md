@@ -57,18 +57,18 @@ identical on every OS — satisfying the cross-platform constraint. Transport is
       The capture/swizzle/NAL-reader logic is verified (recovered from the old serve_h264). tokio runtime.
 - [ ] Signaling: bridge `/api/screen/signal/:token` (SDP/ICE relay), webview RTCPeerConnection.
 - [ ] `main.rs` `serve-webrtc` subcommand (cfg feature webrtc).
-- [ ] `remotepair-ext`: v2 mode with RTCPeerConnection + <video>. ssh -L handles signaling only (media is UDP).
-- [ ] Launch RemotePair.app via computer-use to confirm H.264/webrtc rendering + measure static-frame bandwidth.
+- [ ] `xpair-ext`: v2 mode with RTCPeerConnection + <video>. ssh -L handles signaling only (media is UDP).
+- [ ] Launch Xpair.app via computer-use to confirm H.264/webrtc rendering + measure static-frame bandwidth.
 - [ ] Keyframe-on-connect (PLI/force IDR), deny licenses (verify webrtc transitive MIT/Apache).
 
 ### Verification environment notes (G001 harness)
 - Sidecar Screen Recording granted (the release binary captures successfully).
-- Built IDE: `remotepair-ide/VSCode-darwin-arm64/RemotePair.app` (not the installed copy → computer-use
-  request_access requires bundle id `com.x10lab.remotepair-ide`, or registering with LaunchServices via `open` first).
+- Built IDE: `xpair-ide/VSCode-darwin-arm64/Xpair.app` (not the installed copy → computer-use
+  request_access requires bundle id `com.x10lab.xpair`, or registering with LaunchServices via `open` first).
 - The IDE is computer-use tier "click" (no typing) → opening Remote Desktop relies on activity-bar clicks.
 - Local self-loopback: REMOTE_HOST=gh-mac-m1 (remote), ssh localhost needs known_hosts to be supplemented.
   For local verification, the simplest debug path connects the webview directly to ws://127.0.0.1:<port>.
 
 ## License
 Swift/VideoToolbox = Apple EULA (system framework, no linking obligation). The helper is a separate process, so it
-does not conflict with remote-pair's Apache-2.0. Unrelated to AGPL.
+does not conflict with xpair's Apache-2.0. Unrelated to AGPL.

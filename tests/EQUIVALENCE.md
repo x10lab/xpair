@@ -1,6 +1,6 @@
-# remote-pair-launch ↔ claude-iterm-launch Equivalence Audit
+# xpair-launch ↔ claude-iterm-launch Equivalence Audit
 
-Item-by-item verification of whether the new `client/cli/remote-pair-launch` reproduces every behavior of the reference `~/.claude/bin/claude-iterm-launch` (1:1 connection model). Test evidence: `tests/t_*.sh` (116 assertions total, 0 failures).
+Item-by-item verification of whether the new `client/cli/xpair-launch` reproduces every behavior of the reference `~/.claude/bin/claude-iterm-launch` (1:1 connection model). Test evidence: `tests/t_*.sh` (116 assertions total, 0 failures).
 
 ## Behavior Mapping Table
 
@@ -17,7 +17,7 @@ Item-by-item verification of whether the new `client/cli/remote-pair-launch` rep
 | 9 | reach + tailscale exit-node auto-config + local fallback | Same | **SAME** | t_07 s1-3 |
 | 10 | dir-check 3-attempt retry (marker) + creation prompt + local fallback | Same | **SAME** | t_07 s4-6 |
 | 11 | Zombie tab cleanup | Same | **SAME** | t_08 s4 (the kill path is a headless limitation) |
-| 12 | Remote setup: ensure server is running → create session → base64 respawn injection | Same (adapted to app/bundle names `RemotePairHost` / `com.x10lab.remote-pair-host`) | **SAME** | t_06 s1,3,6 |
+| 12 | Remote setup: ensure server is running → create session → base64 respawn injection | Same (adapted to app/bundle names `XpairHost` / `com.x10lab.xpair-host`) | **SAME** | t_06 s1,3,6 |
 | 13 | mosh attach absolute path + `on_tab_close` detach trap + ssh -t fallback | Same | **SAME** | t_06 s4,5 |
 
 ## Intended Differences (DIVERGENCE — Not Restored)

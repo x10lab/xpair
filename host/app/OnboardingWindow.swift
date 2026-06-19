@@ -2,7 +2,7 @@
 //
 // The host menu-bar app now hosts the React onboarding (host/onboarding/dist, bundled into
 // Contents/Resources/onboarding) inside a WKWebView. A WKUserScript injected atDocumentStart
-// defines `window.remotepair` with the same method surface the Electron preload exposed, each
+// defines `window.xpair` with the same method surface the Electron preload exposed, each
 // returning a Promise backed by a single WKScriptMessageHandlerWithReply (`rpbridge`, macOS 11+
 // async reply). The Swift reply handler dispatches by method name.
 //
@@ -38,13 +38,13 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         super.init()
     }
 
-    // The JS shim: define window.remotepair with a Promise-returning method per bridge call. Each
+    // The JS shim: define window.xpair with a Promise-returning method per bridge call. Each
     // method posts {method, args} to the `rpbridge` reply handler and awaits the async reply.
     private static let bridgeShim = """
     (function () {
       const post = (method, args) =>
         window.webkit.messageHandlers.rpbridge.postMessage({ method: method, args: args || [] });
-      window.remotepair = {
+      window.xpair = {
         openPermissionPane: (key) => post('openPermissionPane', [key]),
         requestPermission: (key) => post('requestPermission', [key]),
         startInstall: () => post('startInstall', []),
@@ -109,7 +109,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         let dir = index.deletingLastPathComponent()
         webView.loadFileURL(index, allowingReadAccessTo: dir)
 
-        // RemotePairHost is LSUIElement (menu-bar accessory) → no Dock icon + weak window focus, so
+        // XpairHost is LSUIElement (menu-bar accessory) → no Dock icon + weak window focus, so
         // the onboarding can end up invisible/behind. Temporarily become a regular app so it shows in
         // the Dock and can take focus; revert to .accessory in finish() (menu-bar-only after onboarding).
         NSApp.setActivationPolicy(.regular)

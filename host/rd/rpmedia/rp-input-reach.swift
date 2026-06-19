@@ -3,7 +3,7 @@
 // keyboardSetUnicodeString path, then reads back the focused UI element's value
 // via Accessibility to prove the synthetic CGEvents actually REACHED the target
 // app (not just that we can post them). The known risk: synthetic CGEvent keys
-// don't reach some web-UI popups (per RemotePairHost InputServer's measured note).
+// don't reach some web-UI popups (per XpairHost InputServer's measured note).
 //
 // Usage: rp-input-reach "<text to inject>"   (target app must be frontmost+focused)
 // Emits JSON: {"injected":"…","readback":"…","reached":bool}

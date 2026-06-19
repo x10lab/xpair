@@ -25,7 +25,7 @@ export function ConsentControls({
     let active = true;
     (async () => {
       try {
-        const c = await window.remotepair.getConsent();
+        const c = await window.xpair.getConsent();
         if (active && c) {
           setTelemetryOn(!!c.telemetry);
           setCrashOn(!!c.crash);
@@ -44,13 +44,13 @@ export function ConsentControls({
     setTelemetryOn(t);
     setCrashOn(c);
     try {
-      void window.remotepair.setConsent({ telemetry: t, crash: c });
+      void window.xpair.setConsent({ telemetry: t, crash: c });
     } catch {
       /* best effort — UI state still reflects the choice */
     }
   };
 
-  const heading = variant === "prompt" ? "Before we start" : "Help improve RemotePair (optional)";
+  const heading = variant === "prompt" ? "Before we start" : "Help improve Xpair (optional)";
 
   return (
     <div className="w-full max-w-sm rounded-xl border border-border bg-muted/30 p-4 text-left">

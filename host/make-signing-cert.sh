@@ -1,5 +1,5 @@
 #!/bin/bash
-# make-signing-cert.sh — Creates a self-signed cert for stable RemotePair code signing (login keychain).
+# make-signing-cert.sh — Creates a self-signed cert for stable Xpair code signing (login keychain).
 #
 # Why it's needed: ad-hoc signing changes the cdhash on every rebuild, which invalidates the TCC
 #   (Accessibility / Screen Recording) grant → re-toggle every time.
@@ -13,11 +13,11 @@
 # idempotent: if it already exists, it is not regenerated (a duplicate cert = 'ambiguous' signing failure).
 # To use the same grant identity on another machine, do not create a new one with this script; import the
 # backed-up p12 instead:
-#   security import remote-pair-signing.p12 -k ~/Library/Keychains/login.keychain-db -P <pw> -T /usr/bin/codesign -A
+#   security import xpair-signing.p12 -k ~/Library/Keychains/login.keychain-db -P <pw> -T /usr/bin/codesign -A
 set -euo pipefail
 CN="RemotePair Local Signing"
 KC=~/Library/Keychains/login.keychain-db
-BACKUP="$HOME/Library/Application Support/RemotePair/signing.p12"   # backup outside git
+BACKUP="$HOME/Library/Application Support/Xpair/signing.p12"   # backup outside git
 
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CN"; then
   echo "Already exists: $(security find-identity -v -p codesigning | grep "$CN")"

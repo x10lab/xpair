@@ -46,7 +46,7 @@ export default function App() {
 
   return (
     <WizardShell
-      title="RemotePairHost"
+      title="XpairHost"
       subtitle={STEP_TITLES[w.index]}
       step={w.index}
       totalSteps={w.totalSteps}
@@ -56,8 +56,8 @@ export default function App() {
       nextLabel={w.index === 0 ? "Begin setup" : "Next"}
       footerSlot={
         w.isLast ? (
-          <Button size="sm" onClick={() => window.remotepair.complete()}>
-            Open RemotePair
+          <Button size="sm" onClick={() => window.xpair.complete()}>
+            Open Xpair
           </Button>
         ) : null
       }

@@ -10,7 +10,7 @@ type Props = {
 };
 
 /**
- * Set-up path: the host is SSH-able but RemotePair is not installed. The user confirms which
+ * Set-up path: the host is SSH-able but Xpair is not installed. The user confirms which
  * account to install as. SECURITY (Principle 2): there is intentionally NO password field in this
  * React tree — the one-time account password is collected only by the separate askpass helper
  * process the CLI spawns (SSH_ASKPASS, detached TTY). The renderer never sees the secret.
@@ -35,10 +35,10 @@ export function StepSetupPassword({ peer, user, setUser }: Props) {
   return (
     <div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
-        Sign in to install RemotePair
+        Sign in to install Xpair
       </h2>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        {peer.name} doesn't have RemotePair yet. Sign in once so we can set it up — after this it's
+        {peer.name} doesn't have Xpair yet. Sign in once so we can set it up — after this it's
         key-based, no more passwords.
       </p>
 
@@ -63,7 +63,7 @@ export function StepSetupPassword({ peer, user, setUser }: Props) {
       <FingerprintPanel host={peer.name} fp={fp} firstTime />
 
       <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground">
-        When you continue, a separate macOS prompt will ask for the account password — RemotePair
+        When you continue, a separate macOS prompt will ask for the account password — Xpair
         itself never sees or stores it.
       </p>
     </div>

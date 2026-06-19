@@ -1,6 +1,6 @@
-# notify.conf.example — remote-pair notification configuration example.
-# Actual file location: ~/.remote-pair/notify.conf
-# Copy this file to use it: cp notify.conf.example ~/.remote-pair/notify.conf
+# notify.conf.example — xpair notification configuration example.
+# Actual file location: ~/.xpair/host/notify.conf
+# Copy this file to use it: cp notify.conf.example ~/.xpair/host/notify.conf
 
 # ENABLED_TYPES: specifies which event types to record to the queue and deliver to the client.
 # Comma-separated. Write without spaces.

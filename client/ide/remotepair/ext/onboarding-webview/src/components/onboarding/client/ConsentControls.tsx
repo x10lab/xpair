@@ -50,7 +50,7 @@ export function ConsentControls({
     }
   };
 
-  const heading = variant === "prompt" ? "Before we start" : "Help improve RemotePair (optional)";
+  const heading = variant === "prompt" ? "Before we start" : "Help improve Xpair (optional)";
 
   return (
     <div className="w-full max-w-sm rounded-xl border border-border bg-muted/30 p-4 text-left">

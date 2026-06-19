@@ -1,6 +1,6 @@
 # screen
 
-License-clean screen-capture sidecar for **RemotePair Remote Desktop** — the v1
+License-clean screen-capture sidecar for **Xpair Remote Desktop** — the v1
 high-performance path that replaces the v0 `ssh` + InputServer screenshot polling.
 
 > **Status: v2 (WebRTC) SHIPPED — `serve-webrtc` is the product path.**
@@ -122,7 +122,7 @@ Built and verified on **macOS arm64** (Apple Silicon), Rust 1.96.
 |---|---|---|
 | `scap` | MIT | **rejected on this toolchain** — its ScreenCaptureKit backend (`cidre`) runs `xcodebuild` in `build.rs`, which fails on broken/partial Xcode installs. Tried first per plan. |
 | `screencapturekit` | MIT | viable alternative, stream-oriented API. |
-| **`xcap`** | **Apache-2.0** | **chosen** — simple synchronous one-shot API (`Monitor::all()` → `monitor.capture_image()` → `image::RgbaImage`), no `xcodebuild` dependency, builds cleanly on macOS arm64, and is Apache-2.0 (same license as RemotePair). |
+| **`xcap`** | **Apache-2.0** | **chosen** — simple synchronous one-shot API (`Monitor::all()` → `monitor.capture_image()` → `image::RgbaImage`), no `xcodebuild` dependency, builds cleanly on macOS arm64, and is Apache-2.0 (same license as Xpair). |
 
 All three are permissive; the decision was driven by **build reliability**, not
 license. `xcap` re-exports the `image` crate, so the captured frame encodes to
@@ -132,7 +132,7 @@ PNG with no version skew.
 
 ## License — first-party engine, permissive deps only
 
-RemotePair is **AGPL-3.0-or-later** (dual-licensable — we own the copyright).
+Xpair is **AGPL-3.0-or-later** (dual-licensable — we own the copyright).
 This is pure first-party code. To keep the dual-licensing option, every
 dependency stays **permissive** (MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode /
 MPL-2.0); AGPL is allowed only for our own crate. The policy is enforced
@@ -152,7 +152,7 @@ cargo-deny check            # licenses + bans + sources + advisories
 
 ---
 
-## Integration with RemotePair (v1a deployment)
+## Integration with Xpair (v1a deployment)
 
 The intended topology for v1a:
 
@@ -160,7 +160,7 @@ The intended topology for v1a:
    a routable interface). The sidecar binary needs its **own Screen Recording
    TCC grant** — macOS scopes the permission per-binary, so the host app's grant
    does not cover this binary. It must be a **signed** binary so the grant
-   survives updates (RemotePair already distributes via Homebrew cask for exactly
+   survives updates (Xpair already distributes via Homebrew cask for exactly
    this reason). If the grant is missing, the WS transport still serves clients
    but captured frames come back **black/empty**.
 2. **Client** opens an `ssh -L` tunnel that forwards a local port to the host's

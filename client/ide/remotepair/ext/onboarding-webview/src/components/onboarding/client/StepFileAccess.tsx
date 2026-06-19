@@ -20,12 +20,12 @@ export type Mapping = {
   method: ConnectMethod;
 };
 
-// Convention: if a clientPath contains "/.remote-pair/mounts/" it was created by
+// Convention: if a clientPath contains "/.xpair/host/mounts/" it was created by
 // the mount backend (default_mountpoint places volumes there). FOLDER_MAPS does
 // not store the method, so this is a best-effort inference. Explicit per-mapping
 // persistence + re-mount-on-launch is a separate follow-up.
 function inferMethod(clientPath: string): ConnectMethod {
-  return clientPath.includes("/.remote-pair/mounts/") ? "mount" : "third-party-sync";
+  return clientPath.includes("/.xpair/host/mounts/") ? "mount" : "third-party-sync";
 }
 
 /** Parse the raw FOLDER_MAPS env value (`client::host;client2::host2`) into entries. */

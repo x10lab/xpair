@@ -19,17 +19,17 @@ assert_contains "$(cat "$SSH_CAPTURE")" "base64 -d" "setup script contains base6
 it "ssh-capture/SESSION-line"
 assert_contains "$(cat "$SSH_CAPTURE")" "SESSION='" "setup script contains SESSION='<name>'"
 
-it "ssh-capture/open-RemotePairHost"
-assert_contains "$(cat "$SSH_CAPTURE")" 'open -a "RemotePairHost"' "contains RemotePairHost app open command"
+it "ssh-capture/open-XpairHost"
+assert_contains "$(cat "$SSH_CAPTURE")" 'open -a "XpairHost"' "contains XpairHost app open command"
 
 it "ssh-capture/bundle-prefix"
-assert_contains "$(cat "$SSH_CAPTURE")" "com.x10lab.remote-pair-host" "contains bundle prefix"
+assert_contains "$(cat "$SSH_CAPTURE")" "com.x10lab.xpair-host" "contains bundle prefix"
 
 it "ssh-capture/SOCK-aqua"
 assert_contains "$(cat "$SSH_CAPTURE")" 'SOCK="/tmp/aqua-tmux.sock"' "contains SOCK variable assignment"
 
 it "ssh-capture/computer-use-comment"
-assert_contains "$(cat "$SSH_CAPTURE")" "RemotePairHost" "mentions RemotePairHost in the computer-use context"
+assert_contains "$(cat "$SSH_CAPTURE")" "XpairHost" "mentions XpairHost in the computer-use context"
 
 cleanup_sandbox
 
@@ -124,7 +124,7 @@ assert_contains "$mline" "=foo_2" "mosh attach target is =foo_2"
 cleanup_sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scenario 6: RemotePairHost server-ensure — has-session block + launchctl kickstart
+# Scenario 6: XpairHost server-ensure — has-session block + launchctl kickstart
 # ─────────────────────────────────────────────────────────────────────────────
 new_sandbox
 make_all_mocks
@@ -135,7 +135,7 @@ it "server-ensure/has-session-block"
 assert_contains "$(cat "$SSH_CAPTURE")" "tm has-session" "setup script contains tm has-session block"
 
 it "server-ensure/launchctl-kickstart"
-assert_contains "$(cat "$SSH_CAPTURE")" 'launchctl kickstart "gui/$(id -u)/com.x10lab.remote-pair-host"' "contains launchctl kickstart line"
+assert_contains "$(cat "$SSH_CAPTURE")" 'launchctl kickstart "gui/$(id -u)/com.x10lab.xpair-host"' "contains launchctl kickstart line"
 
 cleanup_sandbox
 

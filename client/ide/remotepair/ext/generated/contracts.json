@@ -4,13 +4,13 @@
     "v1aPort": 8889,
     "v2SignalPort": 8890,
     "inputThrottleMs": 120,
-    "reqFile": "/tmp/remote-pair.input-req",
-    "resFile": "/tmp/remote-pair.input-res"
+    "reqFile": "/tmp/xpair.input-req",
+    "resFile": "/tmp/xpair.input-res"
   },
   "identity": {
-    "product": "RemotePair",
-    "urlProtocol": "remotepair",
-    "ideBundleId": "com.x10lab.remote-pair"
+    "product": "Xpair",
+    "urlProtocol": "xpair",
+    "ideBundleId": "com.x10lab.xpair"
   },
   "version": "0.1.0"
 }

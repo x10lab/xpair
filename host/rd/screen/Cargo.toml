@@ -3,13 +3,13 @@ name = "screen"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "License-clean screen-capture sidecar for RemotePair Remote Desktop (v1 high-performance path). v1a: continuous-capture WebSocket JPEG frame server; v1b (webrtc + VideoToolbox HW encode) TODO."
-repository = "https://github.com/x10lab/remote-pair"
+description = "License-clean screen-capture sidecar for Xpair Remote Desktop (v1 high-performance path). v1a: continuous-capture WebSocket JPEG frame server; v1b (webrtc + VideoToolbox HW encode) TODO."
+repository = "https://github.com/x10lab/xpair"
 publish = false
 
 # ---------------------------------------------------------------------------
 # DEPENDENCY LICENSE POLICY: PERMISSIVE ONLY (MIT / Apache-2.0 / BSD / ISC).
-# RemotePair is AGPL-3.0-or-later; deps stay permissive (no copyleft) to keep dual-licensing.
+# Xpair is AGPL-3.0-or-later; deps stay permissive (no copyleft) to keep dual-licensing.
 # The AGPL firewall is enforced by deny.toml (cargo-deny check licenses).
 # ---------------------------------------------------------------------------
 [dependencies]

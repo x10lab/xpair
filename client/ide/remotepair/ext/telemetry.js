@@ -1,4 +1,4 @@
-// telemetry.js — RemotePair client telemetry (PostHog activation funnel + Sentry crash reports).
+// telemetry.js — Xpair client telemetry (PostHog activation funnel + Sentry crash reports).
 //
 // ZERO external npm deps: node stdlib (https/crypto/fs/os/path) only. This module is shared by
 // BOTH the VSCodium extension host (extension.js) and the Electron onboarding main process
@@ -25,7 +25,7 @@ const { URL } = require("url");
 
 // --- paths / keys ----------------------------------------------------------
 
-const RP_DIR = path.join(os.homedir(), ".remote-pair");
+const RP_DIR = path.join(os.homedir(), ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 
 // client.env keys (FROZEN — see spec "Telemetry Setup").

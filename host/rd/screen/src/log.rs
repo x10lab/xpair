@@ -1,4 +1,4 @@
-//! `log` — the `rust` component's conforming logger for the RemotePair logging
+//! `log` — the `rust` component's conforming logger for the Xpair logging
 //! contract (see `docs/logging.md`).
 //!
 //! Emits the unified line
@@ -7,7 +7,7 @@
 //! [<ISO-8601 ts>] [<LEVEL>] [rust] [<session>] <message>
 //! ```
 //!
-//! to `~/.remote-pair/logs/rust.log`, level-gated by `EnvFilter`
+//! to `~/.xpair/host/logs/rust.log`, level-gated by `EnvFilter`
 //! (`REMOTEPAIR_LOG` > `RUST_LOG` > `info`), with size-based rotate-on-open
 //! (5 MB → `.1` → `.2`, max 3) under a `flock(2)` advisory lock.
 //!
@@ -69,15 +69,15 @@ fn current_session() -> String {
     session_cell().lock().unwrap().clone()
 }
 
-/// `~/.remote-pair/logs`.
+/// `~/.xpair/host/logs`.
 fn log_dir() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".remote-pair").join("logs")
+    home.join(".xpair").join("host").join("logs")
 }
 
-/// `~/.remote-pair/logs/rust.log`.
+/// `~/.xpair/host/logs/rust.log`.
 fn log_path() -> PathBuf {
     log_dir().join("rust.log")
 }
@@ -88,7 +88,7 @@ fn lock_path() -> PathBuf {
     log_dir().join(".rust.log.lock")
 }
 
-/// Create `~/.remote-pair/logs` mode 0700 (idempotent). Logs hold host names and
+/// Create `~/.xpair/host/logs` mode 0700 (idempotent). Logs hold host names and
 /// paths, so the dir is owner-only (contract §1).
 fn ensure_dir() -> std::io::Result<()> {
     let dir = log_dir();
@@ -252,7 +252,7 @@ impl Visit for MessageVisitor {
     }
 }
 
-/// §6 REMOTE_HOST for redaction — env wins, else parsed once from ~/.remote-pair/client.env.
+/// §6 REMOTE_HOST for redaction — env wins, else parsed once from ~/.xpair/host/client.env.
 static REMOTE_HOST: OnceLock<Option<String>> = OnceLock::new();
 fn remote_host() -> Option<String> {
     REMOTE_HOST
@@ -263,7 +263,7 @@ fn remote_host() -> Option<String> {
                 }
             }
             let home = std::env::var_os("HOME")?;
-            let path = std::path::Path::new(&home).join(".remote-pair/client.env");
+            let path = std::path::Path::new(&home).join(".xpair/host/client.env");
             let raw = std::fs::read_to_string(path).ok()?;
             for line in raw.lines() {
                 if let Some(v) = line.trim().strip_prefix("REMOTE_HOST=") {
@@ -279,7 +279,7 @@ fn remote_host() -> Option<String> {
 }
 
 /// §6 redaction: mask the home dir → ~ and REMOTE_HOST → <host> before any sink (logs may be
-/// shipped via `remote-pair logs --collect`). Best-effort, message body only.
+/// shipped via `xpair logs --collect`). Best-effort, message body only.
 fn redact(s: &str) -> String {
     let mut r = s.to_string();
     if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
@@ -374,7 +374,7 @@ fn scrub_outbound(s: &str) -> String {
     r.into_owned()
 }
 
-/// Read a single `KEY=value` line from `~/.remote-pair/client.env` (the same
+/// Read a single `KEY=value` line from `~/.xpair/host/client.env` (the same
 /// file [`remote_host`] parses), honoring quotes. `None` if absent/empty. Used
 /// for the telemetry consent + DSN settings, mirroring the env>file>default
 /// precedent of `REMOTEPAIR_LOG`/`REMOTE_HOST`. Only the crash reporter consumes
@@ -382,7 +382,7 @@ fn scrub_outbound(s: &str) -> String {
 #[cfg(feature = "crash-report")]
 fn client_env_value(key: &str) -> Option<String> {
     let home = std::env::var_os("HOME")?;
-    let path = std::path::Path::new(&home).join(".remote-pair/client.env");
+    let path = std::path::Path::new(&home).join(".xpair/host/client.env");
     let raw = std::fs::read_to_string(path).ok()?;
     let prefix = format!("{key}=");
     for line in raw.lines() {
@@ -410,7 +410,7 @@ fn telemetry_setting(key: &str) -> Option<String> {
 }
 
 /// `crash_report_consent` (spec: gates Sentry; **default false / opt-in**).
-/// Read from `CRASH_REPORT_CONSENT` (env > `~/.remote-pair/client.env`). Truthy
+/// Read from `CRASH_REPORT_CONSENT` (env > `~/.xpair/host/client.env`). Truthy
 /// = `1`/`true`/`yes`/`on` (case-insensitive). Anything else (including absent)
 /// => `false` => Sentry is never initialized => ZERO network calls.
 #[cfg(feature = "crash-report")]
@@ -717,10 +717,10 @@ fn init_crash_reporter() {
 fn init_crash_reporter() {}
 
 /// Install a panic hook that persists a local crash dump (contract §10) so a
-/// panic is recoverable from `remote-pair logs --collect` even though no remote
+/// panic is recoverable from `xpair logs --collect` even though no remote
 /// telemetry is sent. Writes the panic message + location + a full backtrace
 /// (`force_capture`, independent of `RUST_BACKTRACE`) to
-/// `~/.remote-pair/logs/crash-rust-<epoch>.log` (mode 0600), drops a one-line
+/// `~/.xpair/host/logs/crash-rust-<epoch>.log` (mode 0600), drops a one-line
 /// ERROR pointer into `rust.log`, then chains the previous hook (keeps the
 /// default stderr message / abort behavior). Panics are not async-signal
 /// contexts, so allocation + [`redact`] are safe here.
@@ -742,7 +742,7 @@ fn install_panic_hook() {
         let bt = std::backtrace::Backtrace::force_capture();
 
         let body = redact(&format!(
-            "=== RemotePair CRASH (rust panic) ===\n\
+            "=== Xpair CRASH (rust panic) ===\n\
              [{ts}] [PANIC] [{COMP}] [{sess}] {msg} at {loc}\n\n{bt}\n"
         ));
         let path = log_dir().join(format!("crash-{COMP}-{}.log", epoch_secs()));
@@ -754,7 +754,7 @@ fn install_panic_hook() {
             .open(&path)
             .and_then(|mut f| f.write_all(body.as_bytes()));
 
-        // One-line pointer into the normal log so `remote-pair logs` shows it inline.
+        // One-line pointer into the normal log so `xpair logs` shows it inline.
         if let Some(file) = FILE.get() {
             if let Ok(mut f) = file.lock() {
                 let _ = f.write_all(

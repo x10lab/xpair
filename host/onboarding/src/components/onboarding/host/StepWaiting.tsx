@@ -3,7 +3,7 @@ import { Check, Laptop, Wifi } from "lucide-react";
 
 export type ConnectedClient = { name: string; user: string; ageSec: number };
 
-// Connect step: guide the user to bring up RemotePair on their other Mac, then poll the host bridge
+// Connect step: guide the user to bring up Xpair on their other Mac, then poll the host bridge
 // for connected clients. Read-only — there is no disconnect/revoke, only live status.
 export function StepWaiting() {
   const [dots, setDots] = useState(1);
@@ -11,14 +11,14 @@ export function StepWaiting() {
   const [clients, setClients] = useState<ConnectedClient[]>([]);
 
   useEffect(() => {
-    window.remotepair.getHostInfo().then((i) => setHostname(i.hostname)).catch(() => {});
+    window.xpair.getHostInfo().then((i) => setHostname(i.hostname)).catch(() => {});
   }, []);
 
   // Poll the connected-client list every 3s. connectedClients() never throws (host returns [] on error).
   useEffect(() => {
     let alive = true;
     const tick = () => {
-      window.remotepair
+      window.xpair
         .connectedClients()
         .then((list) => { if (alive) setClients(list); })
         .catch(() => {});
@@ -63,7 +63,7 @@ export function StepWaiting() {
           : `Waiting for a client${".".repeat(dots)}`}
       </h2>
       <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-        On your other Mac, open RemotePair — once it can SSH in, it connects automatically.
+        On your other Mac, open Xpair — once it can SSH in, it connects automatically.
       </p>
 
       <div className="mt-6 w-full max-w-xs rounded-xl border border-border bg-muted/30 px-4 py-3 text-left">

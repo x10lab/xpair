@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# bootstrap.sh — RemotePair one-shot install.  For first-time users.
+# bootstrap.sh — Xpair one-shot install.  For first-time users.
 #
 #   curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | bash
 #
 # What it does (in order, idempotent) — installs glue (CLI/approve/Service/launcher) only. App binaries are supplied by Homebrew:
 #   1) prereq check (macOS / git)
-#   2) repo clone or update  → $REMOTE_PAIR_SRC (default ~/.local/share/remote-pair)
+#   2) repo clone or update  → $XPAIR_SRC (default ~/.local/share/xpair)
 #   3) glue+native install + sync (shared/install.sh — manifest reversible)
 #   4) ⚠ host: one-time manual Accessibility/Screen Recording permission toggle guidance (macOS cannot automate this)
 #
-# The host app (RemotePairHost.app) is supplied by Homebrew: brew install --cask remote-pair-host.
+# The host app (XpairHost.app) is supplied by Homebrew: brew install --cask xpair-host.
 # This script does not build/install the app — source builds belong to the maintainer scripts (host/build-*.sh).
 #
 # Non-interactive environment variables (recommended for piped installs):
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/x10lab/xpair.git}"
-SRC="${REMOTE_PAIR_SRC:-$HOME/.local/share/remote-pair}"
+SRC="${XPAIR_SRC:-${REMOTE_PAIR_SRC:-$HOME/.local/share/xpair}}"
 BRANCH="${BRANCH:-main}"
 ROLE="${ROLE:-both}"     # host | client | both
 
@@ -28,7 +28,7 @@ die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 # Source the shared logger (installed by shared/install.sh); no-op fallback keeps warn() safe
 # during the bootstrap clone phase before logging.sh is present.
 # shellcheck disable=SC1090
-[ -f "${RP_DIR:-$HOME/.remote-pair}/bin/logging.sh" ] && . "${RP_DIR:-$HOME/.remote-pair}/bin/logging.sh"
+[ -f "${RP_DIR:-$HOME/.xpair/host}/bin/logging.sh" ] && . "${RP_DIR:-$HOME/.xpair/host}/bin/logging.sh"
 type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; warn(){ printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }; }
 # Use /dev/tty so user input still works under a pipe (curl|bash)
 ask()  { local q="$1" v=""; { printf '%s' "$q" > /dev/tty; read -r v < /dev/tty; } 2>/dev/null || true; printf '%s' "$v"; }
@@ -63,19 +63,19 @@ INSTALL_ARGS=(--role "$ROLE")
 c "install (install.sh --role $ROLE$([ -n "$SYNC_URL" ] && echo ' --with-sync'))"
 ./shared/install.sh "${INSTALL_ARGS[@]}"
 
-# ── host: ensure cliclick (click primitive) + RemotePairHost.app (cask) ──
+# ── host: ensure cliclick (click primitive) + XpairHost.app (cask) ──
 # cliclick = the InputServer's click injector. It is not in the cask bundle (not installed on CI runners), so ensure it via brew on the host.
 #   Without it the click primitive fails at runtime (keys go through osascript, so they are unaffected).
 if [ "$ROLE" != client ]; then
   if command -v brew >/dev/null; then
     command -v cliclick >/dev/null || { c "install cliclick (click primitive)"; brew install cliclick || warn "cliclick install failed — manual: brew install cliclick"; }
     # ensure cask (only when the app is not present yet)
-    if [ ! -d "$HOME/Applications/RemotePairHost.app" ] && [ ! -d /Applications/RemotePairHost.app ]; then
-      c "install RemotePairHost.app (Homebrew cask)"
+    if [ ! -d "$HOME/Applications/XpairHost.app" ] && [ ! -d /Applications/XpairHost.app ]; then
+      c "install XpairHost.app (Homebrew cask)"
       brew tap x10lab/xpair https://github.com/x10lab/xpair 2>/dev/null || true
       brew trust x10lab/xpair 2>/dev/null || true   # trust the third-party tap (recent brew security gate)
-      brew install --cask remote-pair-host \
-        || warn "cask install failed — manual: brew trust x10lab/xpair && brew install --cask remote-pair-host"
+      brew install --cask xpair-host \
+        || warn "cask install failed — manual: brew trust x10lab/xpair && brew install --cask xpair-host"
     fi
   else
     warn "Homebrew not found — required to install the app (cask) + cliclick. Install Homebrew first, then run this again:"
@@ -92,15 +92,15 @@ ok "install complete."
 if [ "$ROLE" != client ]; then
   warn "Final one-time manual step — the part macOS cannot automate (SIP+non-MDM):"
   cat <<EOF
-   In System Settings → Privacy & Security, turn on RemotePairHost:
-     • Accessibility  : RemotePairHost ON
-     • Screen Recording : RemotePairHost ON
-   (if it is not listed, add  /Applications/RemotePairHost.app  with +)
-   After toggling:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.remote-pair-host}
+   In System Settings → Privacy & Security, turn on XpairHost:
+     • Accessibility  : XpairHost ON
+     • Screen Recording : XpairHost ON
+   (if it is not listed, add  /Applications/XpairHost.app  with +)
+   After toggling:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.xpair-host}
 EOF
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
   echo
-  ok "next: 'remote-pair status' / 'remote-pair host'."
+  ok "next: 'xpair status' / 'xpair host'."
 else
-  ok "client install complete — right-click a folder in Finder → Quick Actions → Launch Remote Pair. (run 'remote-pair doctor' to check SSH)"
+  ok "client install complete — right-click a folder in Finder → Quick Actions → Launch Xpair. (run 'xpair doctor' to check SSH)"
 fi

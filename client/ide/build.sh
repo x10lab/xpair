@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# RemotePair IDE build — thin wrapper over the pristine VSCodium recipe in vendor/vscodium/.
+# Xpair IDE build — thin wrapper over the pristine VSCodium recipe in vendor/vscodium/.
 #
 # Vendor separation (Option C): vendor/vscodium/ is PRISTINE VSCodium (git subtree from
-# github.com/VSCodium/vscodium). Everything RemotePair owns lives in remotepair/.
-# This wrapper injects the RemotePair artifacts into the pristine recipe at build time
+# github.com/VSCodium/vscodium). Everything Xpair owns lives in remotepair/.
+# This wrapper injects the Xpair artifacts into the pristine recipe at build time
 # (trap-cleaned so vendor stays byte-pristine for the next `git subtree pull`), then runs
-# the RemotePair build orchestrator with CWD = the recipe root.
+# the Xpair build orchestrator with CWD = the recipe root.
 #
 # Usage:  ./build.sh [dev-build flags]      (e.g. -p assets, -o skip-build, -s skip-source)
 set -e
@@ -40,7 +40,7 @@ COUNTER_FILE="$HERE/../../shared/.build-counter"
 _n=$(( $(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))
 echo "$_n" > "$COUNTER_FILE"
 RP_BUILD_VER="${RP_BUILD_VER:-${RP_BUILD_BASE}${_n}}"
-echo "→ RemotePair build marker: $RP_BUILD_VER  (About → version; counter: $COUNTER_FILE)"
+echo "→ Xpair build marker: $RP_BUILD_VER  (About → version; counter: $COUNTER_FILE)"
 
 cleanup() {
   # restore pristine vendor (so `git subtree pull` stays conflict-free)
@@ -53,8 +53,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 1) inject the RemotePair patches — prepare_vscode.sh applies ../patches/*.patch (glob, name-sorted);
-#    zz- sorts last so they land after all stock + RemotePair-needed patches. The frontend patch is
+# 1) inject the Xpair patches — prepare_vscode.sh applies ../patches/*.patch (glob, name-sorted);
+#    zz- sorts last so they land after all stock + Xpair-needed patches. The frontend patch is
 #    workbench(renderer)-only; the electron-main patch is the single-app onboarding hook in
 #    src/vs/code/electron-main/app.ts (US-B). They touch disjoint files, so order between them is moot.
 cp "$RP/patches/zz-remotepair-ide-frontend.patch" "$INJECTED_PATCH"
@@ -64,7 +64,7 @@ cp "$RP/patches/zz-remotepair-ide-electron-main.patch" "$INJECTED_PATCH_MAIN"
 #    Prod/CI (nameShort != *Local) keep the Keychain. Disjoint file (src/main.ts) from the others.
 cp "$RP/patches/zz-remotepair-ide-electron-main2.patch" "$INJECTED_PATCH_MAIN2"
 
-# 1b) The RemotePair VS Code extension is injected as a BUILTIN (vscode/extensions/remotepair) INSIDE
+# 1b) The Xpair VS Code extension is injected as a BUILTIN (vscode/extensions/remotepair) INSIDE
 #     dev-build.sh — AFTER source prep, right before gulp. It CANNOT be copied here: dev-build.sh wipes
 #     vscode/ on SKIP_SOURCE=no (`rm -rf vscode*` + re-clone) and resets it on SKIP_SOURCE=yes
 #     (`git add . && git reset --hard HEAD`), either of which would delete a pre-build copy. gulp
@@ -86,24 +86,24 @@ cp "$RP/product.overlay.json" "$VENDOR/product.json"
 #     CI keeps the production identity. Override with RP_LOCAL_IDENTITY=0 to build the prod identity locally.
 RP_LOCAL_IDENTITY="${RP_LOCAL_IDENTITY:-$([ -z "$GITHUB_ACTIONS" ] && echo 1 || echo 0)}"
 if [ "$RP_LOCAL_IDENTITY" = "1" ]; then
-  echo "→ local-identity build: RemotePairLocal (isolated lock domain; RP_LOCAL_IDENTITY=0 for prod identity)"
+  echo "→ local-identity build: XpairLocal (isolated lock domain; RP_LOCAL_IDENTITY=0 for prod identity)"
   _pj_tmp="$(mktemp)"
   # NOTE: the VSCodium recipe assumes nameShort == nameLong (gulp names the .app from nameLong,
   # build_cli.sh's codium-tunnel copy looks it up via nameShort) — keep them EQUAL or the CLI
   # copy fails ("No such file"). The single-instance lock is keyed on nameShort (getUserDataPath),
   # so changing nameShort (= nameLong here) is what isolates the lock domain.
-  jq '.nameShort = "RemotePairLocal"
-    | .nameLong = "RemotePairLocal"
-    | .applicationName = "remotepair-local"
-    | .dataFolderName = ".remotepair-local"
-    | .darwinBundleIdentifier = "com.x10lab.remote-pair-local"
-    | .win32MutexName = "remotepairlocal"
-    | .win32AppUserModelId = "x10lab.RemotePairLocal"
-    | .win32DirName = "RemotePairLocal"' \
+  jq '.nameShort = "XpairLocal"
+    | .nameLong = "XpairLocal"
+    | .applicationName = "xpair-local"
+    | .dataFolderName = ".xpair/client-local"
+    | .darwinBundleIdentifier = "com.x10lab.xpair-local"
+    | .win32MutexName = "xpairlocal"
+    | .win32AppUserModelId = "x10lab.XpairLocal"
+    | .win32DirName = "XpairLocal"' \
     "$VENDOR/product.json" > "$_pj_tmp" && mv "$_pj_tmp" "$VENDOR/product.json"
 fi
 
-# 3) run the RemotePair orchestrator (pristine VSCodium dev/build.sh + RemotePair identity)
+# 3) run the Xpair orchestrator (pristine VSCodium dev/build.sh + Xpair identity)
 #    with CWD = recipe root so its relative sources (get_repo.sh, build.sh, …) resolve into vendor.
 ( cd "$VENDOR" && bash "$RP/dev-build.sh" "$@" )
 

@@ -1,4 +1,4 @@
-// TelemetryClient.swift — opt-in, privacy-safe PostHog capture for RemotePairHost.
+// TelemetryClient.swift — opt-in, privacy-safe PostHog capture for XpairHost.
 //
 // Phase 1 (telemetry-funnel spec): the host fires NO funnel events itself — the 7 activation events are
 // client-side. This file exists so the host CAN emit later, and to host the FROZEN event/reason catalog
