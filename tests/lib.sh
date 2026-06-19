@@ -58,6 +58,10 @@ new_sandbox() {
 REMOTE_HOST=${SBX_REMOTE_HOST-test-host}
 FOLDER_MAPS=${SBX_FOLDER_MAPS-}
 EOF
+  # Role marker (SSOT) — ensure_local_host only takes the local tmux-aqua path on a host/both role.
+  # Tests exercising the local-aqua path set SBX_ROLE=both; default leaves no marker (client-ish).
+  [ -n "${SBX_ROLE:-}" ] && printf '%s\n' "$SBX_ROLE" > "$RP_DIR/role"
+  return 0
 }
 
 cleanup_sandbox() { [ -n "${SBX:-}" ] && rm -rf "$SBX"; HOME="$HOME_REAL"; }

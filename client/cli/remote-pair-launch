@@ -471,7 +471,7 @@ if [ "\$NEED_CREATE" = 1 ]; then
   tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c '${HOST_DIR}' "bash \$T"
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached).
-# Use shared logger (shared lock $LOG_DIR/.remote-pair.log.lock, coordinated with Swift) if installed;
+# Use shared logger (shared lock \$LOG_DIR/.remote-pair.log.lock, coordinated with Swift) if installed;
 # fall back to direct append for hosts without logging.sh yet.
 export RP_SESSION="\$SESSION"
 _rp_log="\$HOME/.remote-pair/bin/logging.sh"

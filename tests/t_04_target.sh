@@ -26,7 +26,7 @@ cleanup_sandbox
 # ────────────────────────────────────────────────────────────
 # Scenario 2: REMOTE_HOST set + --local forced → local
 # ────────────────────────────────────────────────────────────
-new_sandbox   # SBX_REMOTE_HOST unset → uses default test-host
+SBX_ROLE=both new_sandbox   # default test-host; both-role → --local uses the local tmux-aqua path
 make_all_mocks
 MOCK_HASSESSION=0 MOCK_CLIENTS="" MOCK_SESS_EXISTS="" \
   run_launcher --local "$SBX"

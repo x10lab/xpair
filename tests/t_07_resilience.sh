@@ -47,7 +47,7 @@ SUDO
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 1: reach failure + tailscale absent → stderr warning + local fallback
 # ─────────────────────────────────────────────────────────────────────────────
-new_sandbox
+SBX_ROLE=both new_sandbox
 # Exclude tailscale — so command -v tailscale fails
 make_all_mocks ssh mosh tmux tmux-aqua claude hangul-romanize launchctl open tput
 _install_sleep_mock
@@ -70,7 +70,7 @@ cleanup_sandbox
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 2: reach failure + tailscale present + online exit-node → still fails after set → local fallback
 # ─────────────────────────────────────────────────────────────────────────────
-new_sandbox
+SBX_ROLE=both new_sandbox
 make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
 _install_sleep_mock
 _install_sudo_mock
@@ -115,7 +115,7 @@ cleanup_sandbox
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 4: dir-check ssherr (3 failures) → local fallback + stderr mentions 3-retry
 # ─────────────────────────────────────────────────────────────────────────────
-new_sandbox
+SBX_ROLE=both new_sandbox
 make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
 _install_sleep_mock
 mkdir -p "$SBX/myproject"
