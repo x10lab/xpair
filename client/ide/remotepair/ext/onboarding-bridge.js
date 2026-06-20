@@ -206,6 +206,43 @@ const bridge = {
     return { ready: true, bin, err: "" };
   },
 
+  // CLI auto-install (component ⓪ — the "no dead end" path). cliReady===false used to be a hard wall;
+  // instead the onboarding calls this to install the BUNDLED client CLI to ~/.local/bin and proceed.
+  // We ship a repo-shaped tree next to this file (build.sh §4.7 → <ext>/cli/{shared,client/cli}/...),
+  // so the SoT installer runs unmodified: `cli/shared/install.sh --role client`. install.sh sources
+  // its own config.sh/lib.sh and derives CLIENT_DIR from its location, so no args/env beyond role are
+  // needed; REMOTE_HOST is only prompted on a tty (none here) so client install is non-interactive.
+  // Returns {ok, err}; only a FALSE here should make App.tsx show the blocking banner (+ Retry).
+  async installCli() {
+    // Prefer the bundled copy (production .app); fall back to the in-repo SoT (dev checkout, where the
+    // bridge runs from client/ide/remotepair/ext → ../../../../shared/install.sh).
+    const candidates = [
+      path.join(__dirname, "cli", "shared", "install.sh"),
+      path.join(__dirname, "..", "..", "..", "..", "shared", "install.sh"),
+    ];
+    let installer = "";
+    for (const c of candidates) {
+      try { if (fs.existsSync(c)) { installer = c; break; } } catch { /* ignore */ }
+    }
+    if (!installer) {
+      return { ok: false, err: "bundled installer not found (cli/shared/install.sh)" };
+    }
+    // RP_YES=1 + no tty ⇒ install.sh skips the interactive REMOTE_HOST prompt and the trailing
+    // onboarding/doctor blocks (all gated on REMOTE_HOST being set, which it is not here).
+    const r = await run("bash", [installer, "--role", "client"], {
+      cwd: path.dirname(installer),
+      env: { ...process.env, RP_YES: "1", PATH: `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}` },
+    });
+    if (r.code !== 0) {
+      return { ok: false, err: r.err || r.out || `installer exited ${r.code}` };
+    }
+    // Confirm the binary actually landed at the canonical path before claiming success.
+    if (!rpBinAbs()) {
+      return { ok: false, err: "installer ran but ~/.local/bin/xpair is still missing" };
+    }
+    return { ok: true, err: "" };
+  },
+
   // Current client config (real state, not hardcoded).
   // SSOT: mappings come from the CLI (`map list --json`), NOT from re-parsing client.env here.
   // rp_set shell-escapes FOLDER_MAPS (e.g. `a::b\;c::d`); the CLI `.`-sources it (unescaping),

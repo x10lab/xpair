@@ -96,6 +96,47 @@ export default function App() {
   }, []);
   const cliBlocked = cli !== null && !cli.ready;
 
+  // No dead end: when the CLI is missing we don't hard-wall the wizard — we install the BUNDLED CLI
+  // (install.sh --role client) and resume. "installing" → spinner; "failed" → blocking banner + Retry.
+  // Only an install FAILURE actually blocks; a successful install re-probes cliReady and unblocks.
+  type InstallCliState = "idle" | "installing" | "failed";
+  const [cliInstall, setCliInstall] = useState<InstallCliState>("idle");
+  const [cliInstallErr, setCliInstallErr] = useState("");
+  const installCliNow = useCallback(async () => {
+    setCliInstall("installing");
+    setCliInstallErr("");
+    try {
+      const r = await window.remotepair.installCli();
+      if (!r.ok) {
+        setCliInstallErr(r.err || "install failed");
+        setCliInstall("failed");
+        return;
+      }
+      // Re-confirm via the real liveness probe before unblocking — never trust the installer's exit
+      // code alone (the global guard already distrusts a bare PATH guess).
+      const probe = await window.remotepair.cliReady();
+      setCli({ ready: !!probe.ready, err: probe.err || "" });
+      if (probe.ready) {
+        setCliInstall("idle");
+      } else {
+        setCliInstallErr(probe.err || "xpair still not runnable after install");
+        setCliInstall("failed");
+      }
+    } catch (e) {
+      setCliInstallErr(String(e));
+      setCliInstall("failed");
+    }
+  }, []);
+
+  // Auto-attempt the install the moment the guard reports the CLI missing (once per missing edge);
+  // re-arms if a later probe flips the CLI back to ready and then missing again.
+  useEffect(() => {
+    if (cliBlocked && cliInstall === "idle") void installCliNow();
+  }, [cliBlocked, cliInstall, installCliNow]);
+  useEffect(() => {
+    if (!cliBlocked && cliInstall === "failed") setCliInstall("idle");
+  }, [cliBlocked, cliInstall]);
+
   // Per-host app guard (Connect/Reconnect): reachable is not enough — the host needs the host app
   // installed AND version-compatible. Only the non-setup paths (manual + reconnect) check this; the
   // setup path INSTALLS the app on the Installing step, so it must not be blocked for "not installed".
@@ -370,40 +411,42 @@ export default function App() {
         )}
       </AnimatedStep>
     </WizardShell>
-      {/* Global hard CLI guard — a full-bleed blocking overlay. While the `xpair` CLI is missing or
-          unrunnable, EVERY step's Next is already disabled (nextDisabled); this overlay makes the
-          reason unmissable and unbypassable (you cannot proceed by guessing). */}
+      {/* Global CLI guard — a full-bleed overlay, but NOT a dead end. When the `xpair` CLI is missing
+          we auto-install the bundled copy (install.sh --role client) and resume. The overlay shows a
+          spinner during install; only an install FAILURE turns it into a blocking banner with Retry. */}
       {cliBlocked && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/85 p-6 backdrop-blur-sm">
-          <div className="max-w-sm rounded-2xl border border-destructive/30 bg-card p-6 text-center shadow-xl">
-            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-              <ShieldAlert className="h-6 w-6" />
+          {cliInstall === "failed" ? (
+            <div className="max-w-sm rounded-2xl border border-destructive/30 bg-card p-6 text-center shadow-xl">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                <ShieldAlert className="h-6 w-6" />
+              </div>
+              <h2 className="text-lg font-semibold text-foreground">
+                Couldn't set up the Xpair CLI
+              </h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Onboarding tried to install the <span className="font-mono">xpair</span> command-line
+                tool to <span className="font-mono">~/.local/bin</span> but it didn't complete.
+              </p>
+              {(cliInstallErr || cli?.err) && (
+                <p className="mt-3 break-words font-mono text-[11px] text-destructive/80">
+                  {cliInstallErr || cli?.err}
+                </p>
+              )}
+              <Button size="sm" className="mt-4" onClick={() => void installCliNow()}>
+                Retry
+              </Button>
             </div>
-            <h2 className="text-lg font-semibold text-foreground">
-              Xpair CLI not installed
-            </h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              The setup wizard drives the <span className="font-mono">xpair</span> command-line tool.
-              Install it to continue — onboarding can't proceed without it.
-            </p>
-            <div className="mt-4 rounded-lg border border-border bg-muted/40 p-3 text-left">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Install
-              </p>
-              <code className="mt-1 block break-words font-mono text-xs text-foreground">
-                bash shared/install.sh --role client
-              </code>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                Then re-run setup. Expected at{" "}
-                <span className="font-mono">~/.local/bin/xpair</span>.
+          ) : (
+            <div className="max-w-sm rounded-2xl border border-border bg-card p-6 text-center shadow-xl">
+              <Loader2 className="mx-auto mb-4 h-8 w-8 animate-spin text-muted-foreground" />
+              <h2 className="text-lg font-semibold text-foreground">Setting up the Xpair CLI</h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Installing the <span className="font-mono">xpair</span> command-line tool to{" "}
+                <span className="font-mono">~/.local/bin</span> — one moment.
               </p>
             </div>
-            {cli?.err && (
-              <p className="mt-3 break-words font-mono text-[11px] text-destructive/80">
-                {cli.err}
-              </p>
-            )}
-          </div>
+          )}
         </div>
       )}
       {/* Build stamp — confirms a launched window is the latest build. */}

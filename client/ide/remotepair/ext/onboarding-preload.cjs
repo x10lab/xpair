@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('remotepair', {
   // Hard guards: cliReady gates the WHOLE wizard (xpair CLI must be installed + runnable);
   // hostAppStatus gates the Connect/Reconnect step (host must have the host app + be version-compatible).
   cliReady: () => rp('cliReady'),
+  // No dead end: when cliReady is false, the onboarding installs the bundled CLI (install.sh
+  // --role client) instead of hard-blocking; only an install failure blocks (with Retry).
+  installCli: () => rp('installCli'),
   hostAppStatus: (host) => rp('hostAppStatus', [host]),
   clientVersion: () => rp('clientVersion'),
   setHost: (host) => rp('setHost', [host]),

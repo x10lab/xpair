@@ -24,6 +24,9 @@ declare global {
       // Hard CLI guard (global): is the `xpair` CLI installed at a real path AND runnable (`xpair
       // status` → code 0)? ready===false blocks the entire wizard (every step's Next disabled).
       cliReady: () => Promise<{ ready: boolean; bin: string; err: string }>
+      // No dead end: install the bundled client CLI to ~/.local/bin (install.sh --role client). The
+      // onboarding calls this when cliReady is false; only ok===false blocks (with Retry).
+      installCli: () => Promise<{ ok: boolean; err: string }>
       // Hard host-app guard (Connect/Reconnect): reachable is not enough — the host must have the
       // Xpair host app installed AND be version-compatible. installed/compatible false → block the step.
       hostAppStatus: (host: string) => Promise<{

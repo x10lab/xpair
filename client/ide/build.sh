@@ -150,6 +150,37 @@ for app in "$HERE"/dist/VSCode-darwin-*/*.app; do
 done
 shopt -u nullglob
 
+# 4.7) bundle the Xpair client CLI INTO the packaged .app (BEFORE re-sign, so the signature covers it).
+#       The IDE-embedded onboarding shells out to the `xpair` CLI; a freshly-installed app may have no
+#       CLI on the machine yet, so the onboarding bridge auto-installs it from this bundled copy
+#       (installCli() → cli/shared/install.sh --role client). We ship a minimal REPO-SHAPED tree so the
+#       SoT installer runs UNMODIFIED: install.sh sources config.sh/lib.sh from its own dir and derives
+#       CLIENT_DIR=<repo>/client/cli — so the layout must be <cli>/shared/* + <cli>/client/cli/*.
+#       Lands at <App>/Contents/Resources/app/extensions/remotepair/cli/ (== onboarding-bridge.js
+#       __dirname + "/cli"; the bridge resolves install.sh there). Why here and not dev-build.sh: the
+#       source-prep `git reset --hard` reverts any pre-gulp copy into vscode/ (same reason as the icon).
+SHARED="$HERE/../../shared"
+CLI_SRC="$HERE/../cli"
+shopt -s nullglob
+for app in "$HERE"/dist/VSCode-darwin-*/*.app; do
+  _cli="$app/Contents/Resources/app/extensions/remotepair/cli"
+  rm -rf "$_cli"
+  mkdir -p "$_cli/shared" "$_cli/client/cli"
+  # install.sh + the files it sources (config.sh, lib.sh) + the client runtime helper it installs
+  # (logging.sh → ~/.xpair/host/bin). install.sh is the SoT — copy it verbatim.
+  for f in install.sh config.sh lib.sh logging.sh; do
+    cp "$SHARED/$f" "$_cli/shared/$f"
+  done
+  # The client CLI scripts install.sh installs to ~/.local/bin (+ the Service + hangul-romanize helper).
+  for f in xpair xpair-launch xpair-mount xpair-desktop xpair-editor xpair-askpass hangul-romanize; do
+    [ -e "$CLI_SRC/$f" ] && cp "$CLI_SRC/$f" "$_cli/client/cli/$f"
+  done
+  cp -R "$CLI_SRC/Launch Xpair.workflow" "$_cli/client/cli/Launch Xpair.workflow"
+  chmod -R u+w "$_cli"
+  echo "→ bundled Xpair client CLI → $(basename "$app")/Contents/Resources/app/extensions/remotepair/cli"
+done
+shopt -u nullglob
+
 # 5) re-sign the macOS app so it actually launches. The gulp build emits an adhoc signature; under a
 #    hardened runtime Electron's V8 JIT needs allow-jit (+ disable-library-validation for a self-signed
 #    identity), and `codesign --deep` strips entitlements — so re-sign inside-out (local-sign.sh).
