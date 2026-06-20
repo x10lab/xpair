@@ -140,25 +140,26 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
         effectiveClient = mr.mountpoint;
       }
 
-      // 4. Record the mapping, then re-read config as the source of truth.
-      await window.remotepair.addMapping(effectiveClient, h);
-      try {
-        const cfg = await window.remotepair.getConfig();
-        const parsed = parseFolderMaps(cfg.folderMaps);
-        setMappings(
-          parsed.length
-            ? parsed
-            : [
-                ...mappings,
-                { clientPath: effectiveClient, hostPath: h, method: formMethod },
-              ],
-        );
-      } catch {
-        setMappings([
-          ...mappings,
-          { clientPath: effectiveClient, hostPath: h, method: formMethod },
-        ]);
+      // 4. Record the mapping — HARD GUARD: the CLI must report success. A non-zero code (or a
+      //    thrown/ENOENT result) means the mapping did NOT land (CLI missing, map add failed); do
+      //    NOT fake it into the UI. Surface the reason and bail.
+      const ar = await window.remotepair.addMapping(effectiveClient, h);
+      if (!ar || ar.code !== 0) {
+        setErr((ar && ar.err) || "Failed to add mapping (xpair map add did not succeed).");
+        return;
       }
+
+      // 5. Confirm the mapping actually persisted by re-reading the CLI's `map list` (source of
+      //    truth). Only reflect what the CLI reports; if the just-added entry isn't there, the add
+      //    silently no-op'd — block instead of showing a phantom row.
+      const cfg = await window.remotepair.getConfig();
+      const parsed = parseFolderMaps(cfg.folderMaps);
+      const landed = parsed.some((m) => m.hostPath === h && m.clientPath === effectiveClient);
+      if (!landed) {
+        setErr("Mapping was not persisted by the CLI — please retry.");
+        return;
+      }
+      setMappings(parsed);
       setHostPath("");
       setClientPath("");
       setClientEdited(false);

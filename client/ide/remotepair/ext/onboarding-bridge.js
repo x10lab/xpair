@@ -26,6 +26,40 @@ function rpBin() {
   return fs.existsSync(local) ? local : "xpair";
 }
 
+/** The xpair binary ONLY when it resolves to a real absolute path on disk; null when it would
+ *  fall back to the bare "xpair" PATH lookup (which silently ENOENTs from a GUI Electron app whose
+ *  inherited PATH omits ~/.local/bin). Used by the hard CLI guard so we never claim "ready" off a
+ *  PATH guess. */
+function rpBinAbs() {
+  const local = path.join(HOME, ".local", "bin", "xpair");
+  try { if (fs.existsSync(local)) return local; } catch { /* ignore */ }
+  return null;
+}
+
+/** Client version SSOT — the same 0.5.0a{N} lockstep stamp the webview build embeds (read from the
+ *  shared monotonic build counter). Repo-relative from this file: ext → remotepair → ide → client →
+ *  repo-root. In a built app bundle the counter is absent, so we fall back to the base "0.5.0a". */
+function clientVersion() {
+  const candidates = [
+    path.join(__dirname, "..", "..", "..", "..", "shared", ".build-counter"),
+    path.join(__dirname, "shared", ".build-counter"),
+  ];
+  for (const f of candidates) {
+    try {
+      const n = fs.readFileSync(f, "utf8").trim();
+      if (n) return `0.5.0a${n}`;
+    } catch { /* try next */ }
+  }
+  return "0.5.0a";
+}
+
+/** Extract the major component of a version string for coarse compatibility (e.g. "0.5.0a3" → "0",
+ *  "1.2.0" → "1"). Empty/garbage → "". */
+function versionMajor(v) {
+  const m = String(v || "").match(/^\s*(\d+)/);
+  return m ? m[1] : "";
+}
+
 /** Resolve the tailscale binary path (macOS .app / brew / std locations), or null if absent.
  *  Sync existsSync probe — Tailscale on macOS often has NO `tailscale` on PATH, only the .app. */
 function resolveTailscale() {
@@ -148,6 +182,28 @@ const bridge = {
   // Bridge + real values: this machine's real identity (replaces hardcoded host/user).
   hostInfo() {
     return { hostname: os.hostname(), user: os.userInfo().username };
+  },
+
+  // CLI hard guard (global): is the `xpair` CLI actually usable on THIS machine? The whole onboarding
+  // shells out to it, so if it isn't there every "real" step silently ENOENTs (code -1) and the wizard
+  // would otherwise sail past. Two checks, both required:
+  //   1. rpBinAbs() resolves to a real absolute path (NOT the bare "xpair" PATH guess that ENOENTs
+  //      from a GUI Electron app whose inherited PATH omits ~/.local/bin).
+  //   2. `xpair status` runs to completion (code 0) — a cheap, side-effect-free liveness probe.
+  // Returns {ready, bin, err}; ready===false → App.tsx raises a global block that disables every Next.
+  async cliReady() {
+    const bin = rpBinAbs();
+    if (!bin) {
+      return { ready: false, bin: "", err: "xpair CLI not found at ~/.local/bin/xpair" };
+    }
+    const r = await run(bin, ["status"]);
+    if (r.code !== 0) {
+      const why = r.code === -1
+        ? `xpair could not be executed: ${r.err || "spawn failed"}`
+        : `xpair status exited ${r.code}: ${r.err || "no output"}`;
+      return { ready: false, bin, err: why };
+    }
+    return { ready: true, bin, err: "" };
   },
 
   // Current client config (real state, not hardcoded).
@@ -369,6 +425,66 @@ const bridge = {
     } catch {
       return { fp: "", err: "fingerprint: bad JSON: " + r.out.trim() };
     }
+  },
+
+  // Host-app hard guard (Connect / Reconnect step): being able to SSH to the host (reachable) is NOT
+  // enough — the host must actually have the Xpair host app installed AND be version-compatible with
+  // this client, or pairing produces a connected-but-dead session that silently does nothing. SSHes
+  // once (key auth, BatchMode, never prompts) and probes:
+  //   installed  — ~/Applications/XpairHost.app exists on the host.
+  //   version    — the host app's status.json `version` field (empty when the app hasn't written it).
+  //   compatible — same MAJOR as this client's version. Unknown host version (app installed but no
+  //                status yet) is treated as compatible (don't hard-block a fresh install that simply
+  //                hasn't stamped status.json); a KNOWN mismatching major is incompatible.
+  // Returns {installed, version, compatible, err}.
+  async hostAppStatus(host) {
+    const h = String(host || "").trim();
+    if (!h) return { installed: false, version: "", compatible: false, err: "no host" };
+    const sshArgs = [
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=6",
+      "-o", "StrictHostKeyChecking=accept-new",
+    ];
+    // One round-trip: print whether the .app dir exists, then the status.json contents.
+    const probe =
+      '[ -d "$HOME/Applications/XpairHost.app" ] && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +
+      'cat "$HOME/.xpair/host/logs/status.json" 2>/dev/null || true';
+    const r = await run("ssh", [...sshArgs, h, probe]);
+    if (r.code !== 0) {
+      return { installed: false, version: "", compatible: false, err: r.err || "could not reach host over SSH" };
+    }
+    const out = r.out || "";
+    const installed = /RP_APP_INSTALLED=1/.test(out);
+    if (!installed) {
+      return { installed: false, version: "", compatible: false, err: "Host has no Xpair host app" };
+    }
+    let version = "";
+    const jsonStart = out.indexOf("{");
+    if (jsonStart !== -1) {
+      try {
+        const j = JSON.parse(out.slice(jsonStart));
+        if (j && typeof j.version === "string") version = j.version;
+      } catch { /* status.json absent/garbled — version stays unknown */ }
+    }
+    const clientV = clientVersion();
+    const hostMajor = versionMajor(version);
+    const clientMajor = versionMajor(clientV);
+    // Unknown host version ⇒ don't block (compatible). Known + same major ⇒ compatible.
+    const compatible = !hostMajor ? true : hostMajor === clientMajor;
+    return {
+      installed: true,
+      version,
+      compatible,
+      err: compatible
+        ? ""
+        : `Host version ${version || "?"} is incompatible with client ${clientV}`,
+    };
+  },
+
+  // Client version (the 0.5.0a{N} lockstep stamp) — exposed so the UI can show "client Y" in an
+  // incompatibility message without re-deriving it.
+  clientVersion() {
+    return clientVersion();
   },
 
   // --- Telemetry (consent-gated PostHog; all no-ops until the user opts in) -------------------

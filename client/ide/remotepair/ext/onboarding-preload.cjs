@@ -9,6 +9,11 @@ const rp = (method, args = []) => ipcRenderer.invoke('rp', { method, args })
 contextBridge.exposeInMainWorld('remotepair', {
   hostInfo: () => rp('hostInfo'),
   getConfig: () => rp('getConfig'),
+  // Hard guards: cliReady gates the WHOLE wizard (xpair CLI must be installed + runnable);
+  // hostAppStatus gates the Connect/Reconnect step (host must have the host app + be version-compatible).
+  cliReady: () => rp('cliReady'),
+  hostAppStatus: (host) => rp('hostAppStatus', [host]),
+  clientVersion: () => rp('clientVersion'),
   setHost: (host) => rp('setHost', [host]),
   addMapping: (clientPath, hostPath) => rp('addMapping', [clientPath, hostPath]),
   setBackend: (sync, mount) => rp('setBackend', [sync, mount]),
