@@ -146,14 +146,10 @@ if [[ "${SKIP_BUILD}" == "no" ]]; then
   cp -R "$_RP_EXT_SRC" vscode/extensions/remotepair
   echo "→ injected Xpair builtin extension → vscode/extensions/remotepair"
 
-  # Xpair app icon (client = orbit3: cube + orbiting sphere). gulp packages the macOS .app icon
-  # from vscode/resources/darwin/code.icns, so overwrite that source here (after source-prep, before
-  # gulp). vscode/ is regenerated each build, so no cleanup needed; vendor subtree stays pristine.
-  _RP_ICON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assets/icon/code.icns"
-  if [ -f "$_RP_ICON" ]; then
-    cp "$_RP_ICON" vscode/resources/darwin/code.icns
-    echo "→ injected Xpair app icon → vscode/resources/darwin/code.icns"
-  fi
+  # Xpair app icon: injection moved to client/ide/build.sh (post-gulp, pre-sign). Overwriting the
+  # in-tree vscode/resources/darwin/code.icns HERE does not stick — it's a tracked stock file and the
+  # source-prep `git reset --hard` reverts it (the builtin ext above survives only as an untracked new
+  # dir). The packaged .app icon is patched after gulp instead, where re-sign then covers it.
 
   . build.sh
 

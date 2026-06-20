@@ -135,6 +135,21 @@ for pj in "$HERE"/dist/VSCode-darwin-*/*.app/Contents/Resources/app/product.json
 done
 shopt -u nullglob
 
+# 4.6) inject the Xpair app icon into the PACKAGED .app (BEFORE re-sign, so the signature covers it).
+#      Why here and not in dev-build.sh: vscode/resources/darwin/code.icns is a TRACKED stock file, so
+#      the `git reset --hard` in build.sh's source-prep reverts any pre-gulp overwrite (the builtin ext
+#      survives only because it's an untracked NEW dir). Patching the final packaged icon is reset-proof.
+shopt -s nullglob
+for app in "$HERE"/dist/VSCode-darwin-*/*.app; do
+  _icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist" 2>/dev/null)"
+  _icon="${_icon%.icns}.icns"
+  if [ -n "$_icon" ] && [ -f "$RP/assets/icon/code.icns" ]; then
+    cp "$RP/assets/icon/code.icns" "$app/Contents/Resources/$_icon"
+    echo "→ injected Xpair app icon → $(basename "$app")/Contents/Resources/$_icon"
+  fi
+done
+shopt -u nullglob
+
 # 5) re-sign the macOS app so it actually launches. The gulp build emits an adhoc signature; under a
 #    hardened runtime Electron's V8 JIT needs allow-jit (+ disable-library-validation for a self-signed
 #    identity), and `codesign --deep` strips entitlements — so re-sign inside-out (local-sign.sh).
