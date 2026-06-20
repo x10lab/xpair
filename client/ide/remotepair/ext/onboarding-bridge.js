@@ -74,6 +74,59 @@ function resolveTailscale() {
   return null;
 }
 
+/** The standard user-tool PATH a GUI Electron app is missing (its inherited PATH is minimal). */
+const RICH_PATH = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
+
+/** Resolve the running ssh-agent's auth socket. A GUI Electron app launched from Finder/Dock does
+ *  NOT inherit SSH_AUTH_SOCK, so ssh can't reach the agent and silently falls back to a password
+ *  prompt even when key auth would succeed in a terminal. On macOS the system ssh-agent socket is a
+ *  stable launchd path under /tmp/com.apple.launchd.*; recover it so probes use key auth. Returns
+ *  the socket path, or "" if none is found (caller simply omits SSH_AUTH_SOCK then). */
+function sshAuthSock() {
+  if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
+  try {
+    // macOS: the system agent socket lives in a per-boot dir named like
+    // /private/tmp/com.apple.launchd.XXXX/Listeners — find the newest one.
+    const tmp = "/private/tmp";
+    const dirs = fs
+      .readdirSync(tmp)
+      .filter((d) => d.startsWith("com.apple.launchd."))
+      .map((d) => path.join(tmp, d, "Listeners"))
+      .filter((p) => {
+        try { return fs.existsSync(p); } catch { return false; }
+      });
+    if (dirs.length) return dirs[dirs.length - 1];
+  } catch { /* no system agent socket — fall through */ }
+  return "";
+}
+
+/** Spawn env for child processes (PATH enrichment + ssh-agent recovery). When a GUI Electron app
+ *  shells out to ssh (directly or via the xpair CLI), this restores both the user PATH and the
+ *  SSH_AUTH_SOCK the desktop launch dropped, so ssh uses key auth instead of falling to password. */
+function spawnEnv(extra = {}) {
+  const env = { ...process.env, PATH: RICH_PATH, ...extra };
+  const sock = sshAuthSock();
+  if (sock) env.SSH_AUTH_SOCK = sock;
+  return env;
+}
+
+/** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
+ *  publickey-only auth, and BatchMode so ssh NEVER drops to a password prompt (which would hang the
+ *  GUI with no tty). Used by every read/probe ssh call; the install path (runSecret) is exempt —
+ *  it legitimately registers the key with the account password. */
+function sshProbeOpts(connectTimeout = 5) {
+  const opts = [
+    "-o", "BatchMode=yes",
+    "-o", `ConnectTimeout=${connectTimeout}`,
+    "-o", "PreferredAuthentications=publickey",
+    "-o", "StrictHostKeyChecking=accept-new",
+  ];
+  try {
+    if (fs.existsSync(SSH_KEY)) opts.push("-o", "IdentitiesOnly=yes", "-i", SSH_KEY);
+  } catch { /* key probe failed — let ssh use the agent / defaults */ }
+  return opts;
+}
+
 /** Run argv-safe; resolve {code, out, err} (never rejects).
  *  When spawned from a GUI Electron app the inherited PATH is minimal; prepend the standard
  *  user-tool locations so `tailscale`, `ssh`, etc. resolve without requiring a shell wrapper. */
@@ -83,10 +136,9 @@ function run(cmd, args, opts = {}) {
     let err = "";
     let child;
     try {
-      const richPath = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
       child = cp.spawn(cmd, args, {
         windowsHide: true,
-        env: { ...process.env, PATH: richPath },
+        env: spawnEnv(),
         ...opts,
       });
     } catch (e) {
@@ -112,10 +164,9 @@ function runSecret(cmd, args, secret) {
     let err = "";
     let child;
     try {
-      const richPath = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
       child = cp.spawn(cmd, args, {
         windowsHide: true,
-        env: { ...process.env, PATH: richPath, RP_ASKPASS_FD: "3" },
+        env: spawnEnv({ RP_ASKPASS_FD: "3" }),
         stdio: ["ignore", "pipe", "pipe", "pipe"], // fd3 = inherited pipe; the child reads the secret
       });
     } catch (e) {
@@ -231,7 +282,7 @@ const bridge = {
     // onboarding/doctor blocks (all gated on REMOTE_HOST being set, which it is not here).
     const r = await run("bash", [installer, "--role", "client"], {
       cwd: path.dirname(installer),
-      env: { ...process.env, RP_YES: "1", PATH: `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}` },
+      env: spawnEnv({ RP_YES: "1" }),
     });
     if (r.code !== 0) {
       return { ok: false, err: r.err || r.out || `installer exited ${r.code}` };
@@ -302,12 +353,7 @@ const bridge = {
   // Connection — real reachability check (hard-gate for the Connect step).
   async sshReachable(host) {
     if (!host) return { reachable: false, err: "no host" };
-    const r = await run("ssh", [
-      "-o", "BatchMode=yes",
-      "-o", "ConnectTimeout=5",
-      "-o", "StrictHostKeyChecking=accept-new",
-      host, "true",
-    ]);
+    const r = await run("ssh", [...sshProbeOpts(5), host, "true"]);
     return { reachable: r.code === 0, err: r.err };
   },
 
@@ -329,12 +375,7 @@ const bridge = {
     if (!p) return { exists: false, err: "no path" };
     const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
     if (!host) return { exists: false, err: "REMOTE_HOST not set" };
-    const r = await run("ssh", [
-      "-o", "BatchMode=yes",
-      "-o", "ConnectTimeout=5",
-      "-o", "StrictHostKeyChecking=accept-new",
-      host, "test", "-e", p,
-    ]);
+    const r = await run("ssh", [...sshProbeOpts(5), host, "test", "-e", p]);
     return { exists: r.code === 0, err: r.err };
   },
 
@@ -477,11 +518,7 @@ const bridge = {
   async hostAppStatus(host) {
     const h = String(host || "").trim();
     if (!h) return { installed: false, version: "", compatible: false, err: "no host" };
-    const sshArgs = [
-      "-o", "BatchMode=yes",
-      "-o", "ConnectTimeout=6",
-      "-o", "StrictHostKeyChecking=accept-new",
-    ];
+    const sshArgs = sshProbeOpts(6);
     // One round-trip: print whether the .app dir exists, then the status.json contents.
     const probe =
       '[ -d "$HOME/Applications/XpairHost.app" ] && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +

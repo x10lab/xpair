@@ -16,6 +16,9 @@ type Props = {
   hideFooter?: boolean;
   footerSlot?: ReactNode;
   centerSlot?: ReactNode;
+  // Persistent status bar pinned below the footer (e.g. background CLI install progress). Never
+  // blocks interaction — purely informational, spanning the full wizard width.
+  statusBar?: ReactNode;
   children: ReactNode;
 };
 
@@ -32,6 +35,7 @@ export function WizardShell({
   hideFooter,
   footerSlot,
   centerSlot,
+  statusBar,
   children,
 }: Props) {
   return (
@@ -77,6 +81,8 @@ export function WizardShell({
           </div>
         </div>
       )}
+
+      {statusBar}
     </div>
   );
 }

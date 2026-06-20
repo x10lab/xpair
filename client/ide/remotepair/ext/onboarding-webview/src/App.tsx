@@ -3,7 +3,7 @@ import { WizardShell } from "@/components/onboarding/WizardShell";
 import { AnimatedStep } from "@/components/onboarding/AnimatedStep";
 import { useWizard } from "@/components/onboarding/useWizard";
 import { Button } from "@/components/ui/button";
-import { Loader2, ShieldAlert } from "lucide-react";
+import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 import { StepWelcome } from "@/components/onboarding/client/StepWelcome";
 import { StepConsent } from "@/components/onboarding/client/StepConsent";
 import {
@@ -54,9 +54,15 @@ const S = {
 
 type LiveState = "idle" | "checking" | "reachable" | "rekeyed" | "offline";
 
-// Global CLI readiness — the whole wizard shells out to the `xpair` CLI, so until it's confirmed
-// installed + runnable every "real" step silently fails. null = not yet checked.
+// CLI readiness — needed only by the CLI-dependent steps (Discover/Connect/Mappings), which shell
+// out to the `xpair` CLI. The CLI-free steps (Welcome/Consent/Installing/Grant) run regardless;
+// while the user is on those we install the bundled CLI in the BACKGROUND (status bar feedback),
+// and a hard gate only kicks in when the user reaches a step that actually needs it. null = not
+// yet checked.
 type CliState = { ready: boolean; err: string } | null;
+// CLI-dependent steps (gate Next only on these): Discover (`xpair discover`), Connect
+// (`config set host` / host-app SSH probe), Mappings (`map add`/`mount`/`map list`).
+const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([2, 3, 6]);
 // Per-host app readiness, checked on the Connect/Reconnect step. null = not yet checked.
 type HostAppState =
   | { installed: boolean; version: string; compatible: boolean; err: string }
@@ -71,8 +77,8 @@ export default function App() {
     capture(EVENTS.ONBOARDING_STARTED);
   }, []);
 
-  // Global hard CLI guard — re-checked on mount, on window focus, and every 10s while the wizard is
-  // open. When ready===false the wizard is fully blocked (every Next disabled + a blocking banner).
+  // CLI readiness — re-checked on mount, on window focus, and every 10s while the wizard is open.
+  // No longer a global wall: ready===false only gates the CLI-dependent steps (see nextDisabled).
   const [cli, setCli] = useState<CliState>(null);
   useEffect(() => {
     let alive = true;
@@ -94,12 +100,13 @@ export default function App() {
       window.clearInterval(id);
     };
   }, []);
-  const cliBlocked = cli !== null && !cli.ready;
+  const cliMissing = cli !== null && !cli.ready;
 
-  // No dead end: when the CLI is missing we don't hard-wall the wizard — we install the BUNDLED CLI
-  // (install.sh --role client) and resume. "installing" → spinner; "failed" → blocking banner + Retry.
-  // Only an install FAILURE actually blocks; a successful install re-probes cliReady and unblocks.
-  type InstallCliState = "idle" | "installing" | "failed";
+  // No dead end: when the CLI is missing we install the BUNDLED CLI (install.sh --role client) in the
+  // BACKGROUND while the user proceeds through the CLI-free intro steps. Progress is surfaced in a
+  // bottom status bar — onboarding is NEVER blocked by the install itself; only the CLI-dependent
+  // steps gate their Next until the CLI is ready (or show the install-failure reason).
+  type InstallCliState = "idle" | "installing" | "ready" | "failed";
   const [cliInstall, setCliInstall] = useState<InstallCliState>("idle");
   const [cliInstallErr, setCliInstallErr] = useState("");
   const installCliNow = useCallback(async () => {
@@ -112,12 +119,11 @@ export default function App() {
         setCliInstall("failed");
         return;
       }
-      // Re-confirm via the real liveness probe before unblocking — never trust the installer's exit
-      // code alone (the global guard already distrusts a bare PATH guess).
+      // Re-confirm via the real liveness probe — never trust the installer's exit code alone.
       const probe = await window.remotepair.cliReady();
       setCli({ ready: !!probe.ready, err: probe.err || "" });
       if (probe.ready) {
-        setCliInstall("idle");
+        setCliInstall("ready");
       } else {
         setCliInstallErr(probe.err || "xpair still not runnable after install");
         setCliInstall("failed");
@@ -128,14 +134,16 @@ export default function App() {
     }
   }, []);
 
-  // Auto-attempt the install the moment the guard reports the CLI missing (once per missing edge);
-  // re-arms if a later probe flips the CLI back to ready and then missing again.
+  // Kick off the background install the moment the probe reports the CLI missing (once per missing
+  // edge). If a later probe flips the CLI back to missing after a "ready"/"failed", re-arm.
   useEffect(() => {
-    if (cliBlocked && cliInstall === "idle") void installCliNow();
-  }, [cliBlocked, cliInstall, installCliNow]);
+    if (cliMissing && cliInstall === "idle") void installCliNow();
+  }, [cliMissing, cliInstall, installCliNow]);
   useEffect(() => {
-    if (!cliBlocked && cliInstall === "failed") setCliInstall("idle");
-  }, [cliBlocked, cliInstall]);
+    // CLI became ready by some other means (already installed / installed out-of-band) → clear any
+    // stale failed/ready status so the bar disappears.
+    if (!cliMissing && cliInstall !== "idle") setCliInstall("idle");
+  }, [cliMissing, cliInstall]);
 
   // Per-host app guard (Connect/Reconnect): reachable is not enough — the host needs the host app
   // installed AND version-compatible. Only the non-setup paths (manual + reconnect) check this; the
@@ -268,8 +276,11 @@ export default function App() {
   }, [requiresHostApp, reachReady, connectTarget]);
 
   const connectReady = reachReady && hostAppReady;
+  // CLI hard gate — ONLY on the CLI-dependent steps, and ONLY when the CLI isn't ready yet. On the
+  // CLI-free intro/setup steps the install runs in the background and never blocks Next.
+  const cliGateActive = CLI_DEPENDENT_STEPS.has(w.index) && cliMissing;
   const nextDisabled =
-    cliBlocked || // global hard CLI guard — block every step until the CLI is installed + runnable.
+    cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
     (w.index === S.CONNECT && (!connectReady || hostAppChecking)) ||
     (w.index === S.GRANT && !grantReady); // wait until host AX + SR are granted
@@ -329,7 +340,15 @@ export default function App() {
       nextDisabled={nextDisabled || live === "checking"}
       nextLabel={nextLabel}
       centerSlot={
-        // Connect step: once reachable, surface WHY the host-app gate blocks (not installed /
+        // CLI-dependent step blocked because the bundled CLI isn't ready yet — say why (installing
+        // vs failed) so the disabled Next isn't a mystery.
+        cliGateActive ? (
+          <p className="truncate text-center text-xs text-muted-foreground">
+            {cliInstall === "failed"
+              ? `xpair CLI install failed — ${cliInstallErr || cli?.err || "see status bar"}`
+              : "waiting for xpair CLI…"}
+          </p>
+        ) : // Connect step: once reachable, surface WHY the host-app gate blocks (not installed /
         // incompatible) so the user isn't staring at a silently-disabled Next.
         requiresHostApp && reachReady && hostApp && !hostAppReady && !hostAppChecking ? (
           <p className="truncate text-center text-xs text-destructive">
@@ -343,6 +362,37 @@ export default function App() {
               ? "Host identity changed — re-pair."
               : "Host unreachable — re-discover."}
           </p>
+        ) : null
+      }
+      statusBar={
+        // Background CLI install progress — a thin, non-blocking bar at the very bottom of the
+        // wizard. Shown only while the install is in flight, just succeeded, or failed; the
+        // onboarding stays fully interactive throughout.
+        cliInstall === "installing" ? (
+          <div className="flex items-center gap-2 border-t border-border/60 bg-muted/30 px-6 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Installing xpair CLI…</span>
+          </div>
+        ) : cliInstall === "ready" ? (
+          <div className="flex items-center gap-2 border-t border-border/60 bg-muted/30 px-6 py-2 text-xs text-muted-foreground">
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+            <span>xpair CLI ready</span>
+          </div>
+        ) : cliInstall === "failed" ? (
+          <div className="flex items-center gap-2 border-t border-destructive/30 bg-destructive/10 px-6 py-2 text-xs text-destructive">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">
+              CLI install failed{(cliInstallErr || cli?.err) ? ` — ${cliInstallErr || cli?.err}` : ""}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 shrink-0 px-2 text-xs"
+              onClick={() => void installCliNow()}
+            >
+              Retry
+            </Button>
+          </div>
         ) : null
       }
       footerSlot={
@@ -411,44 +461,6 @@ export default function App() {
         )}
       </AnimatedStep>
     </WizardShell>
-      {/* Global CLI guard — a full-bleed overlay, but NOT a dead end. When the `xpair` CLI is missing
-          we auto-install the bundled copy (install.sh --role client) and resume. The overlay shows a
-          spinner during install; only an install FAILURE turns it into a blocking banner with Retry. */}
-      {cliBlocked && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/85 p-6 backdrop-blur-sm">
-          {cliInstall === "failed" ? (
-            <div className="max-w-sm rounded-2xl border border-destructive/30 bg-card p-6 text-center shadow-xl">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-                <ShieldAlert className="h-6 w-6" />
-              </div>
-              <h2 className="text-lg font-semibold text-foreground">
-                Couldn't set up the Xpair CLI
-              </h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Onboarding tried to install the <span className="font-mono">xpair</span> command-line
-                tool to <span className="font-mono">~/.local/bin</span> but it didn't complete.
-              </p>
-              {(cliInstallErr || cli?.err) && (
-                <p className="mt-3 break-words font-mono text-[11px] text-destructive/80">
-                  {cliInstallErr || cli?.err}
-                </p>
-              )}
-              <Button size="sm" className="mt-4" onClick={() => void installCliNow()}>
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <div className="max-w-sm rounded-2xl border border-border bg-card p-6 text-center shadow-xl">
-              <Loader2 className="mx-auto mb-4 h-8 w-8 animate-spin text-muted-foreground" />
-              <h2 className="text-lg font-semibold text-foreground">Setting up the Xpair CLI</h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Installing the <span className="font-mono">xpair</span> command-line tool to{" "}
-                <span className="font-mono">~/.local/bin</span> — one moment.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
       {/* Build stamp — confirms a launched window is the latest build. */}
       <div className="pointer-events-none fixed bottom-1 left-2 z-50 select-none font-mono text-[10px] text-muted-foreground/40">
         build {__BUILD_ID__}

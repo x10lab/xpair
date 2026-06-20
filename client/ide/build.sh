@@ -178,6 +178,22 @@ for app in "$HERE"/dist/VSCode-darwin-*/*.app; do
   cp -R "$CLI_SRC/Launch Xpair.workflow" "$_cli/client/cli/Launch Xpair.workflow"
   chmod -R u+w "$_cli"
   echo "→ bundled Xpair client CLI → $(basename "$app")/Contents/Resources/app/extensions/remotepair/cli"
+  # Also bundle the SIGNED host app so the onboarding's `xpair install-host` (default scp mode) finds a
+  # local .app to ship to the host. The installed CLI (~/.local/bin/xpair) runs install-host with
+  # RP_REPO_ROOT=<this cli dir> (config.sh derives REPO_ROOT=<cli>; install.sh persists it to
+  # client.env), so cmd_install_host looks for $RP_REPO_ROOT/{host/,}build/XpairHost.app. Place it at
+  # <cli>/build/ — the same repo-relative path host/build-host.sh produces (<repo>/build/XpairHost.app),
+  # which is cmd_install_host's SECOND lookup branch. Copy AFTER the chmod above (so it doesn't rewrite
+  # the host app's perms) and BEFORE re-sign (so the IDE signature wraps it); cp -R preserves the host
+  # app's own signature (host-side integrity = that signature). Local builds without a host app skip.
+  _hostapp="$HERE/../../build/XpairHost.app"
+  if [ -d "$_hostapp" ]; then
+    mkdir -p "$_cli/build"
+    cp -R "$_hostapp" "$_cli/build/XpairHost.app"
+    echo "→ bundled signed XpairHost.app → $(basename "$app")/Contents/Resources/app/extensions/remotepair/cli/build/XpairHost.app"
+  else
+    echo "  (no $_hostapp — skipping host app bundle; run host/build-host.sh first for a full install-host bundle)"
+  fi
 done
 shopt -u nullglob
 
