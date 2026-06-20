@@ -191,8 +191,18 @@ for app in "$HERE"/dist/VSCode-darwin-*/*.app; do
     mkdir -p "$_cli/build"
     cp -R "$_hostapp" "$_cli/build/XpairHost.app"
     echo "→ bundled signed XpairHost.app → $(basename "$app")/Contents/Resources/app/extensions/remotepair/cli/build/XpairHost.app"
+    # install-host also scp's host GLUE to the host stage (xpair cmd_install_host:1238):
+    #   scp -r $repo_root/host/{rules.txt,skills,hooks} → host:~/.cache/xpair/stage/host/
+    # repo_root resolves to <cli> here, so these must live at <cli>/host/. Without them the host
+    # install fails at "scp: stat local .../cli/host/rules.txt: No such file or directory".
+    mkdir -p "$_cli/host"
+    cp "$HERE/../../host/rules.txt" "$_cli/host/rules.txt"
+    cp -R "$HERE/../../host/skills" "$_cli/host/skills"
+    cp -R "$HERE/../../host/hooks" "$_cli/host/hooks"
+    chmod -R u+w "$_cli/host"
+    echo "→ bundled host glue (rules.txt + skills + hooks) → .../cli/host/"
   else
-    echo "  (no $_hostapp — skipping host app bundle; run host/build-host.sh first for a full install-host bundle)"
+    echo "  (no $_hostapp — skipping host app + glue bundle; run host/build-host.sh first for a full install-host bundle)"
   fi
 done
 shopt -u nullglob
