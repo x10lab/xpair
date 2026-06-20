@@ -211,7 +211,7 @@ P
   fi
 fi
 
-# ── CLIENT: launcher + Service "Launch Remote Pair" ──
+# ── CLIENT: launcher + Service "Launch Xpair" ──
 if is_client; then
   say "[client] launcher + Service"
   install -d "$RP_DIR/bin" 2>/dev/null || mkdir -p "$RP_DIR/bin"
@@ -247,14 +247,14 @@ if is_client; then
   else
     warn "client/cli/xpair-askpass not found — skipping (SSH askpass prompts unavailable)"
   fi
-  svc_src="$CLIENT_DIR/Launch Remote Pair.workflow"
-  svc_dst="$SERVICES_DIR/Launch Remote Pair.workflow"
+  svc_src="$CLIENT_DIR/Launch Xpair.workflow"
+  svc_dst="$SERVICES_DIR/Launch Xpair.workflow"
   if [ -d "$svc_src" ]; then
     [ -e "$svc_dst" ] && rm -rf "$svc_dst"
     mk_dir "$SERVICES_DIR"; record TREE "$svc_dst"
     cp -R "$svc_src" "$svc_dst"
     [ "$SERVICES_DIR" = "$HOME/Library/Services" ] && /System/Library/CoreServices/pbs -flush 2>/dev/null || true
-    say "  Service registered — Finder: right-click folder → Quick Actions → Launch Remote Pair"
+    say "  Service registered — Finder: right-click folder → Quick Actions → Launch Xpair"
   else
     warn "Service template not found: $svc_src (skipping Service install)"
   fi
