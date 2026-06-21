@@ -18,6 +18,14 @@ contextBridge.exposeInMainWorld('remotepair', {
   hostAppStatus: (host) => rp('hostAppStatus', [host]),
   clientVersion: () => rp('clientVersion'),
   setHost: (host) => rp('setHost', [host]),
+  // Engine selection + host-engine hard guard (Engine step). setEngine persists the chosen engine
+  // (config set engine → client.env ENGINE). hostEngineStatus probes whether the engine is installed
+  // AND authenticated on the host; installHostEngine installs it (brew); setHostEngineAuth sets the
+  // host-side API key (handed to the host over the SSH stdin pipe — NEVER argv/log/disk).
+  setEngine: (engine) => rp('setEngine', [engine]),
+  hostEngineStatus: (engine) => rp('hostEngineStatus', [engine]),
+  installHostEngine: (engine) => rp('installHostEngine', [engine]),
+  setHostEngineAuth: (engine, apiKey) => rp('setHostEngineAuth', [engine, apiKey]),
   addMapping: (clientPath, hostPath) => rp('addMapping', [clientPath, hostPath]),
   setBackend: (sync, mount) => rp('setBackend', [sync, mount]),
   mount: (hostPath, mountpoint) => rp('mount', [hostPath, mountpoint]),

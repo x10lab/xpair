@@ -187,6 +187,110 @@ function runSecret(cmd, args, secret) {
   });
 }
 
+/** Like run(), but writes ONE secret line to the child's STDIN (fd 0) then closes it — for handing a
+ *  secret to a remote `read -r KEY` over ssh WITHOUT it ever touching argv (`ps`), a log line, or
+ *  disk. ssh forwards its own stdin to the remote command's stdin, so a single `printf '%s' "$KEY" |`
+ *  isn't needed on the client side — we just pipe the line in. Used ONLY by setHostEngineAuth (the
+ *  engine API key). The secret is written once and the pipe closed immediately. */
+function runSecretStdin(cmd, args, secret) {
+  return new Promise((resolve) => {
+    let out = "";
+    let err = "";
+    let child;
+    try {
+      child = cp.spawn(cmd, args, {
+        windowsHide: true,
+        env: spawnEnv(),
+        stdio: ["pipe", "pipe", "pipe"], // fd0 = secret pipe
+      });
+    } catch (e) {
+      return resolve({ code: -1, out: "", err: String(e && e.message ? e.message : e) });
+    }
+    try {
+      child.stdin.on("error", () => {}); // EPIPE if the remote never reads — benign.
+      child.stdin.write(String(secret) + "\n");
+      child.stdin.end();
+    } catch {
+      /* a write race (child already gone) must never crash the main process */
+    }
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e) => resolve({ code: -1, out, err: String(e.message) }));
+    child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
+  });
+}
+
+// --- Engine constants (claude | codex | opencode) ---------------------------------------------
+// The agent engine runs ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
+const ENGINES = new Set(["claude", "codex", "opencode"]);
+
+// Per-engine host probe: a single shell line (run over key-auth SSH) that prints a RP_* block:
+//   RP_ENGINE_INSTALLED=1|0, RP_ENGINE_VERSION=<v>, RP_ENGINE_AUTHED=1 (only when authed).
+// PATH is enriched first so a Homebrew/npm-global engine resolves under a non-login ssh command.
+// Auth detection is engine-specific:
+//   claude    — ANTHROPIC_API_KEY exported in the login shell, OR ~/.claude/.credentials.json (OAuth).
+//   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
+//   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
+const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
+const ENGINE_PROBE = {
+  claude:
+    PATH_PREFIX +
+    'if command -v claude >/dev/null 2>&1; then echo RP_ENGINE_INSTALLED=1; ' +
+    'echo "RP_ENGINE_VERSION=$(claude --version 2>/dev/null | head -1)"; ' +
+    'KEY="$(bash -lc \'printf %s "$ANTHROPIC_API_KEY"\' 2>/dev/null)"; ' +
+    'if [ -n "$KEY" ] || [ -f "$HOME/.claude/.credentials.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
+    'else echo RP_ENGINE_INSTALLED=0; fi',
+  codex:
+    PATH_PREFIX +
+    'if command -v codex >/dev/null 2>&1; then echo RP_ENGINE_INSTALLED=1; ' +
+    'echo "RP_ENGINE_VERSION=$(codex --version 2>/dev/null | head -1)"; ' +
+    'if codex login status >/dev/null 2>&1 || [ -f "$HOME/.codex/auth.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
+    'else echo RP_ENGINE_INSTALLED=0; fi',
+  opencode:
+    PATH_PREFIX +
+    'if command -v opencode >/dev/null 2>&1; then echo RP_ENGINE_INSTALLED=1; ' +
+    'echo "RP_ENGINE_VERSION=$(opencode --version 2>/dev/null | head -1)"; ' +
+    'KEY="$(bash -lc \'printf %s "${ANTHROPIC_API_KEY}${OPENAI_API_KEY}"\' 2>/dev/null)"; ' +
+    'if [ -n "$KEY" ] || [ -f "$HOME/.local/share/opencode/auth.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
+    'else echo RP_ENGINE_INSTALLED=0; fi',
+};
+
+// Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
+const ENGINE_INSTALL = {
+  claude: 'brew install --quiet claude || npm install -g @anthropic-ai/claude-code',
+  codex: 'brew install --quiet codex',
+  opencode: 'brew install --quiet opencode',
+};
+
+// Per-engine host auth WRITER — a remote shell command that reads ONE secret line from STDIN
+// (`read -r KEY`) and persists it. The key NEVER appears on argv/log/disk on either side:
+//   codex     — pipe the key into `codex login --with-api-key` (reads stdin → ~/.codex/auth.json).
+//   claude    — append `export ANTHROPIC_API_KEY=...` to the login shell rc (idempotent: drop any
+//               prior Xpair-managed line first). claude + opencode both read the provider env at runtime.
+//   opencode  — same provider-env export (opencode reads ANTHROPIC_API_KEY natively).
+// The rc writer rewrites a single Xpair-delimited block so re-running replaces (not duplicates) it,
+// and chmods the rc 600. `read -r KEY` strips the trailing newline; the key stays out of argv.
+function rcExportWriter(varName) {
+  // Determine the login shell rc (zsh default on macOS, bash fallback), append a managed export block.
+  return (
+    'read -r KEY; ' +
+    'case "${SHELL:-}" in *zsh) RC="$HOME/.zshrc";; *bash) RC="$HOME/.bashrc";; *) RC="$HOME/.zshrc";; esac; ' +
+    'touch "$RC"; chmod 600 "$RC" 2>/dev/null || true; ' +
+    'TMP="$(mktemp)"; ' +
+    'grep -v "# >>> xpair ' + varName + ' >>>" "$RC" | grep -v "export ' + varName + '=" | grep -v "# <<< xpair ' + varName + ' <<<" > "$TMP" || true; ' +
+    'mv "$TMP" "$RC"; ' +
+    '{ echo "# >>> xpair ' + varName + ' >>>"; printf \'export ' + varName + '=%s\\n\' "$KEY"; echo "# <<< xpair ' + varName + ' <<<"; } >> "$RC"; ' +
+    'echo RP_AUTH_OK=1'
+  );
+}
+const ENGINE_AUTH_WRITE = {
+  claude: rcExportWriter("ANTHROPIC_API_KEY"),
+  codex:
+    PATH_PREFIX +
+    'read -r KEY; printf %s "$KEY" | codex login --with-api-key >/dev/null 2>&1 && echo RP_AUTH_OK=1',
+  opencode: rcExportWriter("ANTHROPIC_API_KEY"),
+};
+
 /** Parse a KEY="value" env file into an object. */
 function parseEnv(file) {
   const env = {};
@@ -360,6 +464,96 @@ const bridge = {
   // Connection — persist REMOTE_HOST via the CLI.
   async setHost(host) {
     return cli(["config", "set", "host", host]);
+  },
+
+  // Engine — persist the chosen agent engine via the CLI (`config set engine <claude|codex|opencode>`,
+  // → client.env ENGINE, consumed by `xpair launch`). Validates the engine here too so a bad value
+  // never reaches the CLI. Returns {code, out, err}.
+  async setEngine(engine) {
+    if (!ENGINES.has(String(engine))) {
+      return { code: -1, out: "", err: `unknown engine: ${engine}` };
+    }
+    return cli(["config", "set", "engine", String(engine)]);
+  },
+
+  // --- Engine host-readiness hard guard (component — same philosophy as the CLI/host-app guards) ---
+  //
+  // The chosen agent engine runs ON THE HOST (xpair launch SSHes in and execs `claude`/`codex`/
+  // `opencode` there). So before pairing we must confirm THAT engine is installed AND authenticated
+  // on the host, or `xpair launch` dead-ends with "<engine> not found on host" / an auth prompt the
+  // GUI can never answer. These three methods mirror installHost's pattern: probe → install → set
+  // auth, all over key-auth SSH (BatchMode, never prompts).
+
+  // Engine — is `engine` installed AND authenticated on the host? One SSH round-trip (key auth,
+  // BatchMode) runs an engine-specific probe and prints a parseable RP_* block. Auth detection is
+  // engine-specific (each engine stores creds differently); see ENGINE_PROBE below. Returns
+  // {installed, authed, version, err}.
+  async hostEngineStatus(engine) {
+    const e = String(engine || "");
+    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    if (!host) return { installed: false, authed: false, version: "", err: "REMOTE_HOST not set" };
+    const probe = ENGINE_PROBE[e];
+    if (!probe) return { installed: false, authed: false, version: "", err: `unknown engine: ${e}` };
+    const r = await run("ssh", [...sshProbeOpts(6), host, probe]);
+    if (r.code !== 0) {
+      return { installed: false, authed: false, version: "", err: r.err || "could not reach host over SSH" };
+    }
+    const out = r.out || "";
+    const installed = /RP_ENGINE_INSTALLED=1/.test(out);
+    if (!installed) {
+      return { installed: false, authed: false, version: "", err: `Host has no '${e}' installed` };
+    }
+    const authed = /RP_ENGINE_AUTHED=1/.test(out);
+    let version = "";
+    const vm = out.match(/RP_ENGINE_VERSION=(.*)/);
+    if (vm) version = vm[1].trim();
+    return {
+      installed: true,
+      authed,
+      version,
+      err: authed ? "" : `'${e}' is installed on the host but not signed in`,
+    };
+  },
+
+  // Engine — install `engine` on the host over SSH (brew, non-interactive). brew is non-interactive
+  // by default (no tty needed); we run it under a login shell so the host's brew is on PATH. Returns
+  // {ok, err}. Re-probe with hostEngineStatus afterwards — never trust the exit code alone.
+  async installHostEngine(engine) {
+    const e = String(engine || "");
+    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    if (!host) return { ok: false, err: "REMOTE_HOST not set" };
+    if (!ENGINE_INSTALL[e]) return { ok: false, err: `unknown engine: ${e}` };
+    // Login shell so the host's brew (e.g. /opt/homebrew/bin) is on PATH; NONINTERACTIVE=1 keeps brew
+    // from prompting. The formula name differs per engine (ENGINE_INSTALL).
+    const cmd = `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; NONINTERACTIVE=1 ${ENGINE_INSTALL[e]}`;
+    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* brew can take a while */ });
+    if (r.code !== 0) {
+      return { ok: false, err: r.err || r.out || `install exited ${r.code}` };
+    }
+    return { ok: true, err: "" };
+  },
+
+  // Engine — set the host-side API key for `engine`. SECURITY (Principle 2): the key is handed to the
+  // host over the SSH STDIN pipe (runSecret-style: written once, fd closed), NEVER on argv (visible in
+  // `ps`), NEVER in a log line, NEVER an env VALUE. The remote writer reads ONE line from stdin and
+  // persists it engine-specifically (ENGINE_AUTH_WRITE) — codex via its own `login --with-api-key`,
+  // claude/opencode via a provider-env export appended to the host login shell rc (idempotent). The
+  // key is dropped here right after. Returns {ok, err}.
+  async setHostEngineAuth(engine, apiKey) {
+    const e = String(engine || "");
+    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    if (!host) return { ok: false, err: "REMOTE_HOST not set" };
+    if (!apiKey) return { ok: false, err: "no API key" };
+    const writer = ENGINE_AUTH_WRITE[e];
+    if (!writer) return { ok: false, err: `unknown engine: ${e}` };
+    // The remote command reads the key from stdin (`read -r KEY`) — the key never appears on argv.
+    // We pipe it over ssh's stdin via runSecretStdin (fd0), not fd3, since ssh forwards fd0 to the
+    // remote shell directly.
+    const r = await runSecretStdin("ssh", [...sshProbeOpts(15), host, writer], apiKey);
+    if (r.code !== 0) {
+      return { ok: false, err: r.err || r.out || `auth write exited ${r.code}` };
+    }
+    return { ok: true, err: "" };
   },
 
   // Method — record the chosen file-access backend (mount | third-party-sync).

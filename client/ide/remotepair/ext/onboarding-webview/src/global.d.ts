@@ -17,6 +17,9 @@ export interface Peer {
   status: PeerStatus
 }
 
+// Agent engine the host runs under `xpair launch` (config set engine → client.env ENGINE).
+export type EngineId = "claude" | "codex" | "opencode"
+
 declare global {
   interface Window {
     remotepair: {
@@ -44,6 +47,21 @@ declare global {
         mountBackend: string
       }>
       setHost: (host: string) => Promise<any>
+      // Engine selection — persist the chosen agent engine (config set engine → client.env ENGINE).
+      setEngine: (engine: EngineId) => Promise<{ code: number; out: string; err: string }>
+      // Engine host hard guard (Engine step): the engine runs ON THE HOST, so it must be installed
+      // AND authenticated there or `xpair launch` dead-ends. installed/authed false → block the step.
+      hostEngineStatus: (engine: EngineId) => Promise<{
+        installed: boolean
+        authed: boolean
+        version: string
+        err: string
+      }>
+      // Install the engine on the host (brew, non-interactive). Re-probe with hostEngineStatus after.
+      installHostEngine: (engine: EngineId) => Promise<{ ok: boolean; err: string }>
+      // Set the host-side API key for the engine. The key is handed to the host over the SSH stdin
+      // pipe (NEVER argv/log/disk) and persisted engine-specifically. Re-probe afterwards.
+      setHostEngineAuth: (engine: EngineId, apiKey: string) => Promise<{ ok: boolean; err: string }>
       addMapping: (clientPath: string, hostPath: string) => Promise<any>
       setBackend: (sync: string, mount?: string) => Promise<any>
       mount: (hostPath: string, mountpoint?: string) => Promise<{ code: number; out: string; err: string; mountpoint: string }>

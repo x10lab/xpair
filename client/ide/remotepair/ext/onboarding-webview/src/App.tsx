@@ -23,13 +23,15 @@ import {
   StepInstalling,
   type InstallState,
 } from "@/components/onboarding/client/StepInstalling";
-import type { Peer } from "@/global";
+import { StepEngine } from "@/components/onboarding/client/StepEngine";
+import type { EngineId, Peer } from "@/global";
 import { capture, EVENTS } from "@/lib/telemetry";
 
 // Step indices for the discovery flow:
 //   0 Welcome → 1 Before you start (consent) → 2 Discover → 3 Connect/Setup (auto-branch)
 //   → 4 Installing (setup path only, auto-advances) → 5 Grant permissions (setup path only)
-//   → 6 File access & mapping → 7 Done (liveness-gated on every path).
+//   → 6 Choose engine (host engine install/auth hard guard) → 7 File access & mapping
+//   → 8 Done (liveness-gated on every path).
 const STEP_TITLES = [
   "Welcome",
   "Before you start",
@@ -37,6 +39,7 @@ const STEP_TITLES = [
   "Connect",
   "Set up host",
   "Grant permissions",
+  "Choose engine",
   "File access & mapping",
   "Done",
 ];
@@ -48,8 +51,9 @@ const S = {
   CONNECT: 3,
   INSTALL: 4,
   GRANT: 5,
-  MAPPINGS: 6,
-  DONE: 7,
+  ENGINE: 6,
+  MAPPINGS: 7,
+  DONE: 8,
 } as const;
 
 type LiveState = "idle" | "checking" | "reachable" | "rekeyed" | "offline";
@@ -61,15 +65,21 @@ type LiveState = "idle" | "checking" | "reachable" | "rekeyed" | "offline";
 // yet checked.
 type CliState = { ready: boolean; err: string } | null;
 // CLI-dependent steps (gate Next only on these): Discover (`xpair discover`), Connect
-// (`config set host` / host-app SSH probe), Mappings (`map add`/`mount`/`map list`).
-const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([2, 3, 6]);
+// (`config set host` / host-app SSH probe), Engine (`config set engine` + host SSH probes),
+// Mappings (`map add`/`mount`/`map list`).
+const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([
+  S.DISCOVER,
+  S.CONNECT,
+  S.ENGINE,
+  S.MAPPINGS,
+]);
 // Per-host app readiness, checked on the Connect/Reconnect step. null = not yet checked.
 type HostAppState =
   | { installed: boolean; version: string; compatible: boolean; err: string }
   | null;
 
 export default function App() {
-  const w = useWizard(8);
+  const w = useWizard(9);
 
   // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
   // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
@@ -184,6 +194,11 @@ export default function App() {
   const [host, setHost] = useState("");
   const [connState, setConnState] = useState<ConnState>("idle");
 
+  // Engine selection + host-engine readiness, lifted from the Engine step so Next stays HARD-GATED
+  // until the chosen engine is installed AND authenticated on the host.
+  const [engine, setEngine] = useState<EngineId>("claude");
+  const [engineReady, setEngineReady] = useState(false);
+
   // File access & mapping (unchanged step component).
   const [mappings, setMappings] = useState<Mapping[]>([]);
 
@@ -283,7 +298,8 @@ export default function App() {
     cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
     (w.index === S.CONNECT && (!connectReady || hostAppChecking)) ||
-    (w.index === S.GRANT && !grantReady); // wait until host AX + SR are granted
+    (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
+    (w.index === S.ENGINE && !engineReady); // wait until the engine is installed + authed on the host
   // Folder mappings are OPTIONAL — you can attach to a host for screen share / terminal without
   // mapping any folders and add them later from the IDE ("Add Root"), so the Mappings step never
   // blocks Next.
@@ -292,8 +308,8 @@ export default function App() {
   // Installing step.
   const onNext = () => {
     if (w.index === S.CONNECT && !isSetup) {
-      // Reconnect path and manual path both skip the Installing step.
-      w.goTo(S.MAPPINGS, "next");
+      // Reconnect path and manual path both skip the Installing + Grant steps → straight to Engine.
+      w.goTo(S.ENGINE, "next");
       return;
     }
     if (w.index === S.MAPPINGS) {
@@ -307,6 +323,12 @@ export default function App() {
   // both fall back to the setup/password step.
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
+      // Mappings always follows the Engine step.
+      w.goTo(S.ENGINE, "prev");
+      return;
+    }
+    if (w.index === S.ENGINE) {
+      // Engine follows Grant on the setup path, Connect on the reconnect/manual paths.
       w.goTo(isSetup && !manual ? S.GRANT : S.CONNECT, "prev");
       return;
     }
@@ -355,6 +377,10 @@ export default function App() {
             {!hostApp.installed
               ? "Host has no Xpair host app — install it on the host."
               : hostApp.err || "Host version is incompatible with this client."}
+          </p>
+        ) : w.index === S.ENGINE && !engineReady ? (
+          <p className="truncate text-center text-xs text-muted-foreground">
+            Set up {engine} on the host to continue.
           </p>
         ) : w.index === S.MAPPINGS && (live === "offline" || live === "rekeyed") ? (
           <p className="truncate text-center text-xs text-destructive">
@@ -452,6 +478,9 @@ export default function App() {
         )}
         {w.index === S.GRANT && peer && (
           <StepGrantPermissions peer={peer} user={account} onReady={setGrantReady} />
+        )}
+        {w.index === S.ENGINE && (
+          <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
         )}
         {w.index === S.MAPPINGS && (
           <StepFileAccess mappings={mappings} setMappings={setMappings} />
