@@ -1,22 +1,22 @@
 #!/bin/bash
 # config.sh — Single source of tunables. Source-only (do not execute directly).
 #
-# All RemotePair runtime state lives under ~/.remote-pair (self-contained namespace).
-# ~/.claude holds only what the Claude harness needs (approve skill, etc.) — RemotePair
+# All Xpair runtime state lives under ~/.xpair/host (self-contained namespace).
+# ~/.claude holds only what the Claude harness needs (approve skill, etc.) — Xpair
 # behavior does not depend on whether ~/.claude is synced.
 #
 # Config is split by role so client and host files never overwrite each other:
-#   ~/.remote-pair/common.env   LOCAL_BIN, AQUA_SOCK            (shared — values must match on both sides)
-#   ~/.remote-pair/host.env     BUNDLE_PREFIX, APP_NAME, …       (host-only — app/approve/update identity)
-#   ~/.remote-pair/client.env   REMOTE_HOST, FOLDER_MAPS, …      (client-only — attach target, path mappings)
+#   ~/.xpair/host/common.env   LOCAL_BIN, AQUA_SOCK            (shared — values must match on both sides)
+#   ~/.xpair/host/host.env     BUNDLE_PREFIX, APP_NAME, …       (host-only — app/approve/update identity)
+#   ~/.xpair/host/client.env   REMOTE_HOST, FOLDER_MAPS, …      (client-only — attach target, path mappings)
 # Each role install writes only its own file → no cross-role contamination.
 #
 # Priority: environment variable > role env file > derived default.
 # Personal values (hostname, sync paths) are not hard-coded here.
 
 # ── Paths (namespace) ──
-RP_DIR="${RP_DIR:-$HOME/.remote-pair}"                  # RemotePair config/state/logs/rules/manifest. Per-machine, not synced.
-CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"               # Claude harness (skills). RemotePair only installs here; does not depend on it.
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"                  # Xpair config/state/logs/rules/manifest. Per-machine, not synced.
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"               # Claude harness (skills). Xpair only installs here; does not depend on it.
 COMMON_ENV="$RP_DIR/common.env"; HOST_ENV="$RP_DIR/host.env"; CLIENT_ENV="$RP_DIR/client.env"
 MANIFEST="$RP_DIR/.install-manifest"; BACKUP_DIR="$RP_DIR/backups"
 LOG_DIR="$RP_DIR/logs"
@@ -29,15 +29,18 @@ done
 
 # ── Host identity (org-level defaults, no personal values) ──
 RP_ORG="${RP_ORG:-com.x10lab}"
-BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.remote-pair-host}"
-APP_NAME="${APP_NAME:-RemotePairHost}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-${RP_ORG}.xpair-host}"
+APP_NAME="${APP_NAME:-XpairHost}"
 SIGN_CN="${SIGN_CN:-RemotePair Local Signing}"
-GH_REPO="${GH_REPO:-ghyeongl/remote-pair}"             # Updater (GitHub Releases) target owner/repo
+GH_REPO="${GH_REPO:-x10lab/xpair}"             # Updater (GitHub Releases) target owner/repo
 APP_LABEL="$BUNDLE_PREFIX"; WATCHDOG_LABEL="${BUNDLE_PREFIX}-watchdog"
-APP_PATH="$HOME/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"
-APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/remote-pair.approve-request}"
-LOG_FILE="${LOG_FILE:-$LOG_DIR/remote-pair.log}"
-HEARTBEAT_FILE="${HEARTBEAT_FILE:-$LOG_DIR/remote-pair.heartbeat}"
+APP_PATH="/Applications/${APP_NAME}.app"; APP_EXEC="$APP_PATH/Contents/MacOS/${APP_NAME}"   # aligned to the Homebrew cask default location (/Applications)
+APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/xpair.approve-request}"
+LOG_FILE="${LOG_FILE:-$LOG_DIR/xpair.log}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-$LOG_DIR/xpair.heartbeat}"
+# Unified logging contract — see docs/logging.md. Single file-level knob: default INFO,
+# REMOTEPAIR_LOG overrides (trace|debug|info|warn|error). Per-component files live under $LOG_DIR.
+LOG_LEVEL="${REMOTEPAIR_LOG:-${LOG_LEVEL:-info}}"
 RULES_FILE="${RULES_FILE:-$RP_DIR/rules.txt}"           # approve router rules (formerly ~/.claude/auto-approve/rules.txt)
 
 # ── Client config (no personal path defaults) ──
@@ -47,11 +50,20 @@ REMOTE_HOST="${REMOTE_HOST:-}"          # Empty = local-only mode
 #   Format: "clientPath::hostPath;clientPath2::hostPath2"  (identical path → use clientPath==hostPath)
 #   No default — registered on first launch. (generalises legacy SYNC_ROOTS)
 FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"
-LAUNCHER="${LAUNCHER:-$RP_DIR/bin/remote-pair-launch}"
+LAUNCHER="${LAUNCHER:-$RP_DIR/bin/xpair-launch}"
 
 # Terminal app used by the Quick Action / open-gui subcommand.
 # Derived default: iterm2 if iTerm.app is installed, otherwise terminal.
 TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 || echo terminal )}"
+
+EDITOR_PORT="${EDITOR_PORT:-8080}"       # code-server (xpair editor / M4) loopback port
+
+# ── File-access backend (Syncthing vs Mount — see docs/m-mount.md) ──
+# How the client sees host files: syncthing (local synced copy, default) or mount (single
+# source of truth on the host, no sync daemon). Wired into xpair doctor + the wizard.
+SYNC_BACKEND="${SYNC_BACKEND:-syncthing}"   # syncthing | mount
+# Mount transport when SYNC_BACKEND=mount: smb (macOS-native, no kext, default) or sshfs (needs macFUSE).
+MOUNT_BACKEND="${MOUNT_BACKEND:-smb}"        # smb | sshfs
 
 # ── Common ──
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
@@ -61,10 +73,13 @@ SERVICES_DIR="${SERVICES_DIR:-$HOME/Library/Services}"
 
 # ── Repository root + role dirs (host/ client/ shared/ layout) ──
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLIENT_DIR="$REPO_ROOT/client"   # laptop-side artifacts: remote-pair CLI, launcher, Service, hangul-romanize
+CLIENT_DIR="$REPO_ROOT/client/cli"   # laptop-side artifacts: xpair CLI, launcher, Service, hangul-romanize
 HOST_DIR="$REPO_ROOT/host"       # computer-use machine: app sources, build scripts, approve rules, skills
+# Recorded into client.env so the INSTALLED CLI (a COPY in ~/.local/bin, with no repo beside it) can
+# still locate the repo tree for `install-host` staging — onboarding always runs the installed copy.
+RP_REPO_ROOT="${RP_REPO_ROOT:-$REPO_ROOT}"
 
 # Per-role persistence key groups (install writes only to its own file)
 COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)
 HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN GH_REPO APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE RULES_FILE)
-CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP)
+CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND RP_REPO_ROOT)

@@ -1,0 +1,37 @@
+{
+  "$comment": "Single source of truth (SoT) for the Xpair Remote Desktop screen protocol. host/rd/(serve.rs·serve_webrtc.rs) and client/ide/(remote-desktop.js·extension.js) implement this contract, and check-screen-protocol.sh verifies consistency.",
+  "transport": {
+    "v1a_jpeg": {
+      "scheme": "ws",
+      "host": "127.0.0.1",
+      "defaultPort": 8889,
+      "tunnel": "ssh -L <port>:127.0.0.1:<port> <host>",
+      "frame": "binary WebSocket message; whole-frame JPEG",
+      "server": "host/rd: `screen serve`"
+    },
+    "v2_webrtc": {
+      "signalingHost": "127.0.0.1",
+      "defaultSignalPort": 8890,
+      "server": "host/rd: `screen serve-webrtc`",
+      "media": "H.264 / WebRTC"
+    }
+  },
+  "captureParams": {
+    "fps": { "min": 1, "max": 120 },
+    "quality": { "min": 1, "max": 100 },
+    "scale": { "min": 0.1, "max": 1.0 }
+  },
+  "input": {
+    "channel": "host InputServer file channel",
+    "reqFile": "/tmp/xpair.input-req",
+    "resFile": "/tmp/xpair.input-res",
+    "wireFormat": "<verb>\\t<args...>",
+    "throttleMs": 120,
+    "webviewCoords": "relative 0..1 (rx,ry); the extension converts to host pixels using the frame dimensions",
+    "verbs": {
+      "click": "click\\t<x>\\t<y>  ->  click at host display PIXELS",
+      "key": "key\\t<combo>  ->  key combo"
+    }
+  },
+  "webviewToExtMessages": ["click", "key", "ready", "v1Dimensions", "v1Error", "v1FirstFrame", "v2Error", "v2FirstFrame"]
+}

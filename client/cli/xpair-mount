@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# xpair-mount — Mount-based file access for Xpair (ALTERNATIVE to Syncthing).
+#
+# Philosophy / trade-off:
+#   Mount option:    single source of truth on the host — no sync daemon, no conflicts, no local copy.
+#                    Higher interactive latency (every read crosses SSH/SMB). Best for browsing,
+#                    occasional edits, or workflows where zero-conflict matters more than speed.
+#   Syncthing option: local copy — low read latency, offline-capable, but requires daemon + conflict
+#                    resolution. Best for heavy interactive editing with claude locally.
+#
+# Two backends (select via MOUNT_BACKEND env or --backend flag):
+#   smb   (default) — macOS-native, NO kernel extension.  Uses mount_smbfs which ships with macOS.
+#                     HOST PREREQUISITE: System Settings > General > Sharing > File Sharing must be
+#                     enabled on the host, and the target folder must be in the shared list.
+#                     The share name defaults to the top-level folder name (macOS auto-registers it).
+#   sshfs           — Reuses existing SSH key trust. Needs macFUSE + sshfs installed on the CLIENT.
+#                     If absent, this script prints installation guidance and exits non-zero (it will
+#                     NOT attempt to install kernel extensions automatically — that requires user
+#                     approval in System Settings > Privacy & Security).
+#
+# Folder mappings (FOLDER_MAPS) can point at the mountpoint so editors/file-browsers see
+# host files directly without any additional path translation layer.
+#
+# Usage:
+#   xpair-mount [--backend smb|sshfs] mount   <hostPath> [mountpoint]
+#   xpair-mount [--backend smb|sshfs] unmount <mountpoint|hostPath>
+#   xpair-mount status
+#   xpair-mount help
+
+set -euo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# ── config (single source of truth: ~/.xpair/host) ──
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
+for _f in common host client; do
+  # shellcheck disable=SC1090
+  [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
+done
+REMOTE_HOST="${REMOTE_HOST:-}"
+MOUNT_BACKEND="${MOUNT_BACKEND:-smb}"
+
+# Default mountpoint root: ~/.xpair/host/mounts/<host>/<sanitized-path>
+MOUNTS_ROOT="$RP_DIR/mounts"
+
+# Source the shared logger; no-op fallback for partially-updated clients.
+# shellcheck disable=SC1090
+[ -f "$RP_DIR/bin/logging.sh" ] && . "$RP_DIR/bin/logging.sh"
+type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; err(){ printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }; info(){ printf '\033[1;36m▸ %s\033[0m\n' "$*"; }; warn(){ printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }; }
+
+# ── UI-only helper (not err/info/warn — those come from logging.sh or the fallback above) ──
+ok() { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
+
+# ── arg parsing ──
+BACKEND="$MOUNT_BACKEND"
+SUBCMD=""
+SUBCMD_ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --backend|-b)
+      shift
+      [ $# -gt 0 ] || { err "--backend requires smb|sshfs"; exit 2; }
+      BACKEND="$1"; shift ;;
+    --backend=*) BACKEND="${1#--backend=}"; shift ;;
+    mount|unmount|status|help|-h|--help)
+      SUBCMD="$1"; shift
+      while [ $# -gt 0 ]; do SUBCMD_ARGS+=("$1"); shift; done ;;
+    *) err "unknown argument: $1"; exit 2 ;;
+  esac
+done
+SUBCMD="${SUBCMD:-help}"
+
+# ── helpers ──
+require_host() {
+  if [ -z "$REMOTE_HOST" ]; then
+    err "REMOTE_HOST is not set."
+    printf >&2 '  Set it with:  xpair config set host <ssh-alias>\n'
+    printf >&2 '  Or in ~/.xpair/host/client.env:  REMOTE_HOST=<ssh-alias>\n'
+    exit 1
+  fi
+}
+
+# Sanitize a host path into a safe directory-name component.
+# /Users/alice/Projects/foo → Users_alice_Projects_foo
+sanitize_path() {
+  printf '%s' "$1" | LC_ALL=C sed 's|^/||; s|/|_|g; s|[^A-Za-z0-9._-]|_|g'
+}
+
+# Resolve default mountpoint for a given host path.
+default_mountpoint() {
+  local hostpath="$1"
+  local host_slug; host_slug="$(printf '%s' "$REMOTE_HOST" | LC_ALL=C sed 's|[^A-Za-z0-9._-]|_|g')"
+  local path_slug; path_slug="$(sanitize_path "$hostpath")"
+  printf '%s/%s/%s' "$MOUNTS_ROOT" "$host_slug" "$path_slug"
+}
+
+# Detect SMB user on the host (SSH → whoami).
+smb_user() {
+  ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" whoami 2>/dev/null || printf '%s' "$USER"
+}
+
+# Check if a path is currently mounted (appears in `mount` output).
+is_mounted() {
+  local mp="$1"
+  # Normalise trailing slash for consistent matching.
+  mp="${mp%/}"
+  mount 2>/dev/null | grep -qF " on ${mp} " || mount 2>/dev/null | grep -qF " on ${mp}("
+}
+
+# Detect macFUSE + sshfs presence (client-side only — never auto-install).
+check_sshfs_deps() {
+  local missing=0
+  if ! command -v sshfs >/dev/null 2>&1; then
+    err "sshfs not found."
+    printf >&2 '\nInstall steps (client Mac):\n'
+    printf >&2 '  1. Install macFUSE (kernel extension — requires System Settings approval):\n'
+    printf >&2 '       brew install --cask macfuse\n'
+    printf >&2 '     Then: System Settings > Privacy & Security > scroll down > Allow "macFUSE"\n'
+    printf >&2 '     (A reboot may be required on first install.)\n'
+    printf >&2 '  2. Install sshfs:\n'
+    printf >&2 '       brew install gromgit/fuse/sshfs-mac\n'
+    printf >&2 '  3. Re-run this command.\n\n'
+    missing=1
+  fi
+  # Check macFUSE kext is loaded (best-effort — don't fail hard if kextstat is unavailable).
+  if ! mount | grep -q 'macfuse\|osxfuse\|sshfs' 2>/dev/null; then
+    if ! /usr/sbin/kextstat 2>/dev/null | grep -qi 'macfuse\|osxfuse'; then
+      if [ "$missing" -eq 0 ]; then
+        warn "macFUSE kernel extension may not be loaded."
+        printf >&2 '  If mounting fails, open System Settings > Privacy & Security and allow macFUSE,\n'
+        printf >&2 '  then restart your Mac.\n'
+      fi
+    fi
+  fi
+  return "$missing"
+}
+
+# ── subcommand: mount ──
+cmd_mount() {
+  require_host
+
+  local hostpath="${SUBCMD_ARGS[0]:-}"
+  local mountpoint="${SUBCMD_ARGS[1]:-}"
+
+  if [ -z "$hostpath" ]; then
+    err "mount requires a host path.  Usage: xpair-mount mount <hostPath> [mountpoint]"
+    exit 2
+  fi
+
+  # Resolve mountpoint default.
+  if [ -z "$mountpoint" ]; then
+    mountpoint="$(default_mountpoint "$hostpath")"
+  fi
+  mountpoint="${mountpoint%/}"   # strip trailing slash
+
+  # Validate backend.
+  case "$BACKEND" in
+    smb|sshfs) ;;
+    *) err "unknown backend: $BACKEND (must be smb or sshfs)"; exit 2 ;;
+  esac
+
+  # Guard: already mounted?
+  if is_mounted "$mountpoint"; then
+    ok "Already mounted at $mountpoint"
+    return 0
+  fi
+
+  # Guard: mountpoint exists and is non-empty?
+  if [ -d "$mountpoint" ] && [ -n "$(ls -A "$mountpoint" 2>/dev/null)" ]; then
+    warn "Mountpoint $mountpoint is non-empty."
+    printf >&2 '  Mounting over a non-empty directory can hide existing files.\n'
+    printf >&2 '  Proceed? [y/N]: '
+    local ans; read -r ans </dev/tty 2>/dev/null || ans=""
+    case "${ans:-n}" in [yY]*) ;; *) err "Aborted."; exit 1 ;; esac
+  fi
+
+  # Create mountpoint directory if absent.
+  if [ ! -d "$mountpoint" ]; then
+    info "Creating mountpoint: $mountpoint"
+    mkdir -p "$mountpoint" || { err "Could not create $mountpoint"; exit 1; }
+  fi
+
+  case "$BACKEND" in
+    smb)
+      local smb_user_name; smb_user_name="$(smb_user)"
+      # Derive SMB share name: top-level exported folder name (macOS File Sharing uses the
+      # last path component of the shared folder as the share name by default).
+      # e.g. /Users/alice/Projects → share "Projects"; /Users/alice → share "alice"
+      local share_name; share_name="$(basename "$hostpath")"
+      # Sub-path within the share (empty if hostpath IS the share root).
+      # macOS File Sharing shares the exact folder added in System Preferences, so the
+      # mountpoint maps to hostpath directly when share_name == basename(hostpath).
+      local smb_url="//${smb_user_name}@${REMOTE_HOST}/${share_name}"
+      info "Mounting via SMB: $smb_url → $mountpoint"
+      printf >&2 '  Note: the host must have File Sharing enabled:\n'
+      printf >&2 '    System Settings > General > Sharing > File Sharing\n'
+      printf >&2 '  and "%s" must be in the shared folders list.\n' "$hostpath"
+      if ! mount_smbfs "$smb_url" "$mountpoint"; then
+        err "mount_smbfs failed."
+        printf >&2 '  Troubleshooting:\n'
+        printf >&2 '    1. Verify File Sharing is ON on the host (System Settings > General > Sharing).\n'
+        printf >&2 '    2. Ensure the folder "%s" is shared (or a parent folder is shared).\n' "$hostpath"
+        printf >&2 '    3. Check the share name: by default macOS uses the folder'"'"'s basename.\n'
+        printf >&2 '       Override with: MOUNT_BACKEND=smb xpair-mount mount <hostPath> [mountpoint]\n'
+        printf >&2 '       and pass the full path — or use --backend sshfs to avoid SMB altogether.\n'
+        # Clean up empty mountpoint we created.
+        rmdir "$mountpoint" 2>/dev/null || true
+        exit 1
+      fi
+      ok "Mounted $REMOTE_HOST:$hostpath at $mountpoint (SMB)"
+      ;;
+
+    sshfs)
+      check_sshfs_deps || exit 1
+      local volname; volname="rp-$(basename "$hostpath")"
+      info "Mounting via SSHFS: $REMOTE_HOST:$hostpath → $mountpoint"
+      if ! sshfs "${REMOTE_HOST}:${hostpath}" "$mountpoint" \
+          -o reconnect \
+          -o defer_permissions \
+          -o noappledouble \
+          -o volname="$volname" \
+          -o BatchMode=yes; then
+        err "sshfs failed."
+        printf >&2 '  Troubleshooting:\n'
+        printf >&2 '    1. Confirm SSH access: ssh %s ls "%s"\n' "$REMOTE_HOST" "$hostpath"
+        printf >&2 '    2. Confirm macFUSE is allowed in System Settings > Privacy & Security.\n'
+        rmdir "$mountpoint" 2>/dev/null || true
+        exit 1
+      fi
+      ok "Mounted $REMOTE_HOST:$hostpath at $mountpoint (SSHFS)"
+      ;;
+  esac
+
+  printf '  Mountpoint: %s\n' "$mountpoint"
+  printf '  Tip: add FOLDER_MAPS entry so editors resolve to this path:\n'
+  printf '    xpair config set folder-map <localPath>::%s\n' "$mountpoint"
+}
+
+# ── subcommand: unmount ──
+cmd_unmount() {
+  local target="${SUBCMD_ARGS[0]:-}"
+  if [ -z "$target" ]; then
+    err "unmount requires a mountpoint or hostPath.  Usage: xpair-mount unmount <mountpoint|hostPath>"
+    exit 2
+  fi
+
+  # If the target doesn't look like an absolute client path that exists as a directory,
+  # try to resolve it as a host path → default mountpoint.
+  local mountpoint="$target"
+  if [ ! -d "$target" ]; then
+    mountpoint="$(default_mountpoint "$target")"
+    if [ ! -d "$mountpoint" ]; then
+      err "Cannot find mountpoint for: $target"
+      printf >&2 '  Tried: %s\n' "$mountpoint"
+      printf >&2 '  Run: xpair-mount status\n'
+      exit 1
+    fi
+  fi
+  mountpoint="${mountpoint%/}"
+
+  if ! is_mounted "$mountpoint"; then
+    warn "Nothing appears to be mounted at $mountpoint"
+    exit 0
+  fi
+
+  info "Unmounting $mountpoint ..."
+  # Try umount first (works for both SMB and SSHFS); fall back to diskutil unmount.
+  if ! umount "$mountpoint" 2>/dev/null && ! diskutil unmount "$mountpoint" 2>/dev/null; then
+    err "umount failed for $mountpoint"
+    printf >&2 '  If the volume is busy, try:\n'
+    printf >&2 '    diskutil unmount force "%s"\n' "$mountpoint"
+    exit 1
+  fi
+
+  # Verify detached.
+  if is_mounted "$mountpoint"; then
+    err "Unmount command ran but $mountpoint still appears mounted."
+    exit 1
+  fi
+
+  ok "Unmounted $mountpoint"
+  # Remove empty mountpoint dir (best-effort — leave it if non-empty or removal fails).
+  rmdir "$mountpoint" 2>/dev/null && info "Removed empty mountpoint directory." || true
+}
+
+# ── subcommand: status ──
+cmd_status() {
+  info "Active Xpair mounts (via SSHFS or SMB):"
+  local found=0
+
+  # SMB mounts with our remote host or our mounts root.
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      *smbfs*|*sshfs*|*macfuse*|*osxfuse*)
+        # Filter to mounts that are either under our MOUNTS_ROOT or reference REMOTE_HOST.
+        if [ -n "$REMOTE_HOST" ]; then
+          case "$line" in
+            *"$REMOTE_HOST"*|*"$MOUNTS_ROOT"*) printf '  %s\n' "$line"; found=1 ;;
+          esac
+        else
+          case "$line" in
+            *"$MOUNTS_ROOT"*) printf '  %s\n' "$line"; found=1 ;;
+          esac
+        fi
+        ;;
+    esac
+  done < <(mount 2>/dev/null)
+
+  # Also show anything mounted under our mounts root regardless of FS type.
+  while IFS= read -r line; do
+    case "$line" in
+      *smbfs*|*sshfs*|*macfuse*|*osxfuse*) ;;  # already covered above
+      *"$MOUNTS_ROOT"*) printf '  %s\n' "$line"; found=1 ;;
+    esac
+  done < <(mount 2>/dev/null)
+
+  if [ "$found" -eq 0 ]; then
+    printf '  (none)\n'
+  fi
+}
+
+# ── subcommand: help ──
+cmd_help() {
+  sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ── dispatch ──
+case "$SUBCMD" in
+  mount)    cmd_mount ;;
+  unmount)  cmd_unmount ;;
+  status)   cmd_status ;;
+  help|-h|--help) cmd_help ;;
+  *) err "unknown subcommand: $SUBCMD"; cmd_help; exit 2 ;;
+esac

@@ -1,0 +1,1542 @@
+#!/usr/bin/env bash
+# xpair — Xpair single entry-point CLI (client side).
+#
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|codex|opencode>]
+#                              Launch/attach an agent session (remote host/local) for a folder. Prompts to register if unmapped.
+#                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
+#   xpair ls             List host (or local) tmux-aqua sessions + registered folder mappings
+#   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
+#                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
+#   xpair config [list|get <key>|set <key> <value>|maps]
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|codex|opencode).
+#   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
+#   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
+#   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
+#   xpair install-host [--host <a>] [--account <u>] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
+#   xpair doctor         Check SSH key connection, host app, tmux + guidance
+#   xpair approve [--for "<what>"] [--type "key:..|ocr:.."] [--timeout S]   Handle a blocked approval dialog
+#                              --for: which dialog (alias-tolerant)  ·  --type: how to approve — agent decides (key:<combo>|ocr:<label>)
+#   xpair status         Host server, app, heartbeat status
+#   xpair editor [start|status|stop] [<dir>]   Launch/inspect the code-server editor (loopback EDITOR_PORT, default 8080)
+#   xpair desktop [open|check]    Open the host screen via macOS Screen Sharing (vnc://REMOTE_HOST), or check reachability
+#   xpair mount [mount|unmount|status|help] ...   Mount a host folder directly (Syncthing alternative; backends smb|sshfs — see docs/m-mount.md)
+#   xpair notify [-n N]  Pull recent host notifications (Stop/Notification/SubagentStop/approve), filtered by ~/.xpair/host/notify.conf
+#   xpair logs [--host] [-f] [-n N]   Tail logs (local launcher/app; --host = host logs over ssh; -f = follow)
+#   xpair self-update    Update client (launcher/CLI/romanize) to latest from GitHub (keep in sync with host)
+#   xpair update [--check] [--ref <git-ref>]   HOT-SWAP the glue layer (CLI/launchers/approve/host-hooks) without touching the .app/tmux (M6 Level-1). Native .app changes → Level-2 (app Updater).
+#   xpair host           Ensure the tmux-aqua host server is up (when the app is local)
+#   xpair help
+#
+# config: ~/.xpair/host/{common,host,client}.env (finalized by install.sh — outside .claude, self-contained).
+set -euo pipefail
+
+RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
+CLIENT_ENV="$RP_DIR/client.env"
+for _f in common host client; do
+  # shellcheck disable=SC1090
+  [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
+done
+APP_NAME="${APP_NAME:-XpairHost}"
+BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.xpair-host}"
+# Dual-id fallbacks: current shipping id is com.x10lab.xpair-host / XpairHost (above).
+# The 0.5 flip will move the host to the unified id com.x10lab.xpair / Xpair — so we ALSO
+# probe that forward id here. app_pid/app_available/cmd_host accept EITHER id and EITHER app name,
+# making this CLI future-proof across the flip (no false-negative on status/doctor/host).
+FORWARD_BUNDLE="com.x10lab.xpair"
+FORWARD_APP="Xpair"
+LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
+AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
+APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/xpair.approve-request}"
+LOG_FILE="${LOG_FILE:-$RP_DIR/logs/xpair.log}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-$RP_DIR/logs/xpair.heartbeat}"
+REMOTE_HOST="${REMOTE_HOST:-}"
+FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"     # client::host mappings (legacy SYNC_ROOTS compatible)
+LAUNCHER="${LAUNCHER:-$RP_DIR/bin/xpair-launch}"
+# Terminal app for open-gui/onboard. Default iterm2 if iTerm installed, else terminal.
+TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 || echo terminal )}"
+TMUXB="$LOCAL_BIN/tmux-aqua"
+RP_YES="${RP_YES:-0}"
+
+# Absolute path to this CLI (for relaunch via terminal apps). Prefer LOCAL_BIN, fall back to $0.
+SELF_CLI="$LOCAL_BIN/xpair"
+[ -x "$SELF_CLI" ] || SELF_CLI="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
+
+ITERM_PATH="/Applications/iTerm.app"
+TERMINAL_PATH="/System/Applications/Utilities/Terminal.app"
+
+# Source the shared logger (installed by install.sh / self-update); no-op fallback keeps the
+# script functional on a partially-updated client where logging.sh is absent.
+# shellcheck disable=SC1090
+[ -f "$RP_DIR/bin/logging.sh" ] && . "$RP_DIR/bin/logging.sh"
+type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; err(){ printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }; info(){ printf '\033[1;36m▸ %s\033[0m\n' "$*"; }; warn(){ printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }; }
+
+# ── UI helpers (err/info/warn come from logging.sh or the fallback above) ──
+c()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+ok() { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
+
+STATUS_FILE="${STATUS_FILE:-$RP_DIR/logs/status.json}"
+
+tm() { "$TMUXB" -S "$AQUA_SOCK" "$@"; }
+host_up() { [ -x "$TMUXB" ] && tm has-session >/dev/null 2>&1; }
+# launchctl is authoritative for our LaunchAgent. pgrep -f MISSES .app-bundle processes on macOS
+# (false "not running"), which is what misleads agents — so check the label first, pgrep only as fallback.
+app_pid() {
+  local p
+  # Match the configured label OR the forward one (transition-era hosts not yet migrated).
+  p="$(launchctl list 2>/dev/null | awk -v l="$BUNDLE_PREFIX" -v lg="$FORWARD_BUNDLE" '($3==l || $3==lg) && $1 ~ /^[0-9]+$/ {print $1; exit}')"
+  [ -n "$p" ] || p="$(pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null | head -1)"
+  [ -n "$p" ] || p="$(pgrep -f "$FORWARD_APP.app/Contents/MacOS/$FORWARD_APP" 2>/dev/null | head -1)"
+  printf '%s' "$p"
+}
+# Minimal flat-JSON value reader (no jq dep). _jget '<json>' key → value (string or bool/number).
+_jget() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p"; }
+_mark() { [ "$1" = true ] && printf '✓' || printf '✗'; }
+# Are we running INSIDE a Xpair host tmux session? (computer-use available here)
+in_host_session() { case "${TMUX:-}" in *aqua-tmux.sock*) return 0;; *) return 1;; esac; }
+
+# Is the Xpair app available to serve app-dependent commands here?
+#   true if the app is installed locally (bundle/process/status.json) OR we're inside a live host session.
+app_available() {
+  # Existence check covers BOTH install locations (cask → /Applications, manual → ~/Applications)
+  # AND both the new and legacy app names (transition-era hosts not yet migrated).
+  for d in "/Applications" "$HOME/Applications"; do
+    [ -d "$d/$APP_NAME.app" ] && return 0
+    [ -d "$d/$FORWARD_APP.app" ] && return 0
+  done
+  [ -n "$(app_pid)" ] && return 0
+  [ -f "$STATUS_FILE" ] && return 0
+  in_host_session && host_up && return 0
+  return 1
+}
+# Shown when an app-dependent command (approve/host) runs where the host app isn't installed.
+# host = CLI + app;  client = CLI only.  These commands need the app → guide to install it on the host.
+need_app_guidance() {
+  warn "this command needs the $APP_NAME app (the privileged daemon) — set up the HOST Mac:"
+  cat >&2 <<EOF
+   • One-shot host setup (app daemon + approve rules + skills + CLI):
+       curl -fsSL https://raw.githubusercontent.com/${GH_REPO:-x10lab/xpair}/main/shared/bootstrap.sh | ROLE=host bash
+   • App binary only: ${APP_NAME}.zip from Releases → ~/Applications → open once (daemon only;
+     run the host setup above for approve rules + the approve skill).
+       https://github.com/${GH_REPO:-x10lab/xpair}/releases/latest
+   Then grant Accessibility + Screen Recording once. Verify with: xpair status
+   (This client/CLI maps/launches/attaches; approve & host run where the app lives.)
+EOF
+}
+
+# Is there a tty for interactive prompts?
+have_tty() { [ -t 0 ] || [ -e /dev/tty ]; }
+
+# Upsert KEY in client.env (persists mappings/config)
+rp_set() {
+  local k="$1" v="$2" f="$CLIENT_ENV"
+  mkdir -p "$(dirname "$f")"; touch "$f"
+  { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+# ── mappings ──
+map_client_of() { printf '%s' "${1%%::*}"; }
+map_host_of()   { local p="$1" h="${1#*::}"; [ "$h" = "$p" ] && h="$p"; printf '%s' "$h"; }
+
+resolve_host() { # $1=clientDir → echo hostDir (longest-prefix; same path if unmapped)
+  local d="$1" best_c="" best_h="" c h pair IFS=';'
+  for pair in $FOLDER_MAPS; do
+    [ -n "$pair" ] || continue
+    c="$(map_client_of "$pair")"; h="$(map_host_of "$pair")"
+    case "$d" in "$c"|"$c"/*) [ "${#c}" -gt "${#best_c}" ] && { best_c="$c"; best_h="$h"; } ;; esac
+  done
+  [ -n "$best_c" ] && printf '%s%s' "$best_h" "${d#"$best_c"}" || printf '%s' "$d"
+}
+is_mapped() { local d="$1" c pair IFS=';'; for pair in $FOLDER_MAPS; do [ -n "$pair" ] || continue; c="$(map_client_of "$pair")"; case "$d" in "$c"|"$c"/*) return 0 ;; esac; done; return 1; }
+
+cmd_map() {
+  case "${1:-list}" in
+    list|"") local pair IFS=';'
+             if [ "${2:-}" = "--json" ]; then
+               # SSOT machine-readable form for the onboarding bridge (clean client::host, no shell escaping).
+               local sep=''; printf '['
+               for pair in $FOLDER_MAPS; do [ -n "$pair" ] || continue
+                 printf '%s{"client":"%s","host":"%s"}' "$sep" "$(map_client_of "$pair")" "$(map_host_of "$pair")"; sep=','
+               done
+               printf ']\n'
+             else
+               printf 'Folder mappings (client → host):\n'
+               for pair in $FOLDER_MAPS; do [ -n "$pair" ] && printf '  %s  →  %s\n' "$(map_client_of "$pair")" "$(map_host_of "$pair")"; done
+               [ -z "$FOLDER_MAPS" ] && echo "  (none)"
+             fi ;;
+    add) local cd hd
+         cd="$(cd "${2:?clientDir required}" 2>/dev/null && pwd)" || { echo "client path not found: ${2:-}" >&2; return 1; }
+         hd="${3:-$cd}"
+         is_mapped "$cd" && { echo "already mapped (or under a mapped root): $cd"; return 0; }
+         local entry="$cd::$hd"
+         FOLDER_MAPS="${FOLDER_MAPS:+$FOLDER_MAPS;}$entry"; rp_set FOLDER_MAPS "$FOLDER_MAPS"
+         ok "mapping added: $cd  →  $hd" ;;
+    rm)  local d="${2:?clientDir required}" out="" pair IFS=';'
+         for pair in $FOLDER_MAPS; do [ "$(map_client_of "$pair")" = "$d" ] || out="${out:+$out;}$pair"; done
+         FOLDER_MAPS="$out"; rp_set FOLDER_MAPS "$FOLDER_MAPS"; ok "mapping removed: $d" ;;
+    *) echo "map [list|add <clientDir> [hostDir]|rm <clientDir>]" >&2; return 2 ;;
+  esac
+}
+
+cmd_ls() {
+  cmd_map list; echo
+  if [ -n "$REMOTE_HOST" ]; then
+    echo "[$REMOTE_HOST] tmux-aqua sessions:"
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S '$AQUA_SOCK' list-sessions 2>/dev/null" \
+      | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none or unreachable)"
+  else
+    echo "[local] tmux-aqua sessions:"; tm list-sessions 2>/dev/null | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none)"
+  fi
+}
+
+# Shared interactive mapping registration (Option A UX).
+# Used by onboard Step 3 and the lazy [m] branch.
+#   $1 = optional seed client dir. If given, fixes the client folder.
+#        Otherwise input/auto-detect (default candidate: ~/Spaces if it exists, else $PWD).
+# Non-interactive (no tty or RP_YES): auto-register with identity host path.
+map_register_interactive() {
+  local seed="${1:-}" client_dir="" host_dir="" ans=""
+  # Resolve client folder
+  if [ -n "$seed" ]; then
+    client_dir="$(cd "$seed" 2>/dev/null && pwd)" || { warn "client path not found: $seed"; return 1; }
+  else
+    local cand="$PWD"; [ -d "$HOME/Spaces" ] && cand="$HOME/Spaces"
+    if [ "$RP_YES" = 1 ] || ! have_tty; then
+      client_dir="$cand"
+    else
+      { printf 'Client folder to map [%s]: ' "$cand" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+      client_dir="$(cd "${ans:-$cand}" 2>/dev/null && pwd)" || { warn "client path not found: ${ans:-$cand}"; return 1; }
+    fi
+  fi
+
+  # Non-interactive: auto identity register.
+  if [ "$RP_YES" = 1 ] || ! have_tty; then
+    cmd_map add "$client_dir" "$client_dir"
+    return $?
+  fi
+
+  if [ -z "$REMOTE_HOST" ]; then
+    warn "REMOTE_HOST is not set — mapping host paths has no effect. Set a host first ('xpair config set host ...')."
+  fi
+
+  # Host path input: default = identity (client path), validated by ssh '[ -d ]'.
+  while :; do
+    { printf 'Host path that has this content [%s]: ' "$client_dir" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    host_dir="${ans:-$client_dir}"
+    if [ -z "$REMOTE_HOST" ]; then
+      break   # cannot probe without a host; accept as-is
+    fi
+    if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d '$host_dir' ]" 2>/dev/null; then
+      ok "exists on $REMOTE_HOST: $host_dir"
+      break
+    fi
+    warn "not found on $REMOTE_HOST: $host_dir"
+    { printf '  [r] re-enter path  [c] create it on host  [N] cancel: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    case "$ans" in
+      c|C) ssh "$REMOTE_HOST" "mkdir -p '$host_dir'" 2>/dev/null && { ok "created on $REMOTE_HOST: $host_dir"; break; } || { warn "mkdir failed on $REMOTE_HOST"; } ;;
+      r|R) : ;;
+      *)   echo "cancelled."; return 1 ;;
+    esac
+  done
+
+  # This folder only, or a parent sync root?
+  { printf 'Map this folder only, or a parent sync root? [t]his / [p]arent root: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  if [ "$ans" = p ] || [ "$ans" = P ]; then
+    local croot hroot
+    { printf '  Parent client root [%s]: ' "$(dirname "$client_dir")" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    croot="$(cd "${ans:-$(dirname "$client_dir")}" 2>/dev/null && pwd)" || croot="$(dirname "$client_dir")"
+    { printf '  Parent host root [%s]: ' "$(dirname "$host_dir")" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    hroot="${ans:-$(dirname "$host_dir")}"
+    cmd_map add "$croot" "$hroot" && echo "  All subfolders under $croot are now covered."
+  else
+    cmd_map add "$client_dir" "$host_dir"
+  fi
+}
+
+cmd_config() {
+  case "${1:-list}" in
+    list|"")
+      c "Xpair client config"
+      printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(local-only)}"
+      printf '%-12s %s\n' "terminal" "$TERMINAL_APP"
+      printf '%-12s %s\n' "engine"   "${ENGINE:-claude}"
+      printf '%-12s %s\n' "mappings" "$([ -n "$FOLDER_MAPS" ] && printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c . || echo 0)"
+      ;;
+    get)
+      case "${2:-}" in
+        host)     printf '%s\n' "$REMOTE_HOST" ;;
+        terminal) printf '%s\n' "$TERMINAL_APP" ;;
+        engine)   printf '%s\n' "${ENGINE:-claude}" ;;
+        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|codex|opencode
+      esac
+      ;;
+    set)
+      local key="${2:-}" val="${3:-}"
+      case "$key" in
+        host)
+          rp_set REMOTE_HOST "$val"; REMOTE_HOST="$val"
+          if [ -n "$val" ]; then
+            ok "host set: $val"
+            printf '  Checking SSH ... '
+            if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then echo "OK (key auth)"
+            else echo "FAILED"; warn "SSH key auth failed — run 'xpair doctor' for guidance."; fi
+          else
+            ok "host cleared (local-only mode)"
+          fi
+          ;;
+        terminal)
+          case "$val" in
+            iterm2|terminal) rp_set TERMINAL_APP "$val"; TERMINAL_APP="$val"; ok "terminal set: $val" ;;
+            *) echo "config set terminal <iterm2|terminal>" >&2; return 2 ;;
+          esac
+          ;;
+        engine)
+          # Agent engine used by 'xpair launch'. Each engine auto-approves (so none needs the approve
+          # router): claude=--dangerously-skip-permissions, codex=--dangerously-bypass-approvals-and-sandbox,
+          # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT.
+          case "$val" in
+            claude|codex|opencode) rp_set ENGINE "$val"; ENGINE="$val"; ok "engine set: $val" ;;
+            *) echo "config set engine <claude|codex|opencode>" >&2; return 2 ;;
+          esac
+          ;;
+        *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
+      esac
+      ;;
+    maps) cmd_map list ;;
+    *) echo "config [list|get <key>|set <key> <value>|maps]" >&2; return 2 ;;
+  esac
+}
+
+# Open the configured terminal app in a NEW window running 'launch <dir>'.
+cmd_open_gui() {
+  local dir="${1:?dir required}"
+  dir="$(cd "$dir" 2>/dev/null && pwd)" || { echo "folder not found: $1" >&2; return 1; }
+
+  # Pick the app, falling back to the other if the configured one isn't installed.
+  local app="$TERMINAL_APP"
+  if [ "$app" = iterm2 ] && [ ! -d "$ITERM_PATH" ]; then
+    warn "iTerm2 not installed — falling back to Terminal.app"; app=terminal
+  elif [ "$app" = terminal ] && [ ! -e "$TERMINAL_PATH" ] && [ -d "$ITERM_PATH" ]; then
+    warn "Terminal.app not found — falling back to iTerm2"; app=iterm2
+  fi
+
+  # Command string to run in the new window. Quote dir safely.
+  local cmd
+  cmd="exec $(printf '%q' "$SELF_CLI") launch $(printf '%q' "$dir")"
+
+  if [ "$app" = iterm2 ]; then
+    # AppleScript string escaping: backslash and double-quote.
+    local esc="${cmd//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    osascript <<OSA
+tell application "iTerm"
+  activate
+  if (count of windows) is 0 then
+    set targetWindow to (create window with default profile)
+  else
+    tell current window to set newTab to (create tab with default profile)
+    set targetWindow to current window
+  end if
+  tell current session of targetWindow to write text "$esc"
+end tell
+OSA
+  else
+    local esc="${cmd//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    osascript <<OSA
+tell application "Terminal"
+  activate
+  do script "$esc"
+end tell
+OSA
+  fi
+}
+
+# Fancy, re-runnable, pure-bash onboarding (bash 3.2, no new deps).
+cmd_onboard() {
+  local interactive=1
+  { [ "$RP_YES" = 1 ] || ! have_tty; } && interactive=0
+
+  # Header box
+  local title="Xpair client onboarding"
+  local line; line="$(printf '%*s' $(( ${#title} + 2 )) '' | tr ' ' '─')"
+  printf '\033[1;36m┌%s┐\033[0m\n' "$line"
+  printf '\033[1;36m│ %s │\033[0m\n' "$title"
+  printf '\033[1;36m└%s┘\033[0m\n' "$line"
+  echo
+
+  if [ "$interactive" = 0 ]; then
+    echo "Non-interactive mode — applying detected defaults."
+    printf '  host:     %s\n' "${REMOTE_HOST:-(local-only)}"
+    printf '  terminal: %s\n' "$TERMINAL_APP"
+    rp_set TERMINAL_APP "$TERMINAL_APP"
+    echo
+    cmd_doctor || true
+    return 0
+  fi
+
+  local ans=""
+
+  # Detect role: ~/.xpair/host/role — host|client|both (absent = host default, mirrors Installer.swift logic)
+  local _rp_role=""
+  [ -f "$RP_DIR/role" ] && _rp_role="$(cat "$RP_DIR/role" 2>/dev/null || true)"
+  local _is_client=0 _is_host=0
+  case "$_rp_role" in
+    client) _is_client=1 ;;
+    host|both|"") _is_host=1 ;;
+  esac
+
+  # Step 1: REMOTE_HOST
+  c "Step 1/4 — Remote host"
+  printf '  Current: %s\n' "${REMOTE_HOST:-(local-only)}"
+  { printf '  SSH host (blank = local-only): ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  if [ -n "$ans" ]; then
+    cmd_config set host "$ans"
+    # Re-read so subsequent steps see the new value
+    REMOTE_HOST="$ans"
+  else
+    echo "  Keeping: ${REMOTE_HOST:-(local-only)}"
+  fi
+  echo
+
+  # ── CLIENT-ONLY path: SSH-assist + handshake verify; skip local-app/permission steps ──
+  if [ "$_is_client" = 1 ]; then
+    c "Step 2/4 — SSH key setup (client-access-only mode)"
+
+    if [ -z "$REMOTE_HOST" ]; then
+      warn "REMOTE_HOST not set — skipping SSH setup (local-only mode)"
+    else
+      # Check for existing public key
+      local _pubkey=""
+      _pubkey="$(ls "$HOME/.ssh/id_"*.pub 2>/dev/null | head -1 || true)"
+      if [ -z "$_pubkey" ]; then
+        warn "No SSH public key found (~/.ssh/id_*.pub)"
+        { printf '  Generate a new ed25519 key now? [Y/n]: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+        case "${ans:-y}" in
+          [nN]*) echo "  Skipped. Create manually: ssh-keygen -t ed25519" ;;
+          *)
+            ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N "" </dev/null
+            _pubkey="$HOME/.ssh/id_ed25519.pub"
+            ok "Key generated: $_pubkey"
+            ;;
+        esac
+      fi
+
+      if [ -n "$_pubkey" ]; then
+        echo
+        printf '  \033[1mYour public key\033[0m (%s):\n' "$_pubkey"
+        cat "$_pubkey"
+        echo
+        printf '  Add to host with ssh-copy-id? [Y/n]: ' >/dev/tty; read -r ans </dev/tty
+        case "${ans:-y}" in
+          [nN]*) printf '  Manual: append the key above to %s:~/.ssh/authorized_keys\n' "$REMOTE_HOST" ;;
+          *)
+            ssh-copy-id -i "$_pubkey" "$REMOTE_HOST" </dev/tty || warn "ssh-copy-id failed — add the key manually"
+            ;;
+        esac
+        echo
+      fi
+
+      # Verify key auth
+      printf '  Verifying SSH key auth to %s … ' "$REMOTE_HOST" >/dev/tty
+      if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" true 2>/dev/null; then
+        ok "SSH key auth OK — passwordless connection verified"
+      else
+        warn "SSH key auth FAILED. Fix and rerun 'xpair onboard'."
+        printf '  Hint: ssh -o BatchMode=yes %s true && echo OK\n' "$REMOTE_HOST"
+      fi
+    fi
+    echo
+
+    c "Step 3/4 — Terminal app"
+    local has_iterm="no" has_term="no"
+    [ -d "$ITERM_PATH" ] && has_iterm="yes"
+    [ -e "$TERMINAL_PATH" ] && has_term="yes"
+    printf '  iTerm2 installed: %s   Terminal.app: %s\n' "$has_iterm" "$has_term"
+    { printf '  Choose terminal app [iterm2/terminal] (default %s): ' "$TERMINAL_APP" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    case "${ans:-$TERMINAL_APP}" in
+      iterm2|terminal) cmd_config set terminal "${ans:-$TERMINAL_APP}" ;;
+      *) warn "unknown value '$ans' — keeping $TERMINAL_APP" ;;
+    esac
+    echo
+
+    c "Step 4/4 — Folder mapping"
+    cmd_map list
+    { printf '  Register a folder mapping now? [Y/n]: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+    case "${ans:-y}" in [nN]*) echo "  Skipped." ;; *) map_register_interactive || true ;; esac
+    echo
+
+    ok "Onboarding complete (client mode — no local app/permission steps). Edit later with 'xpair config' / 'xpair map'."
+    return 0
+  fi
+
+  # ── HOST / BOTH path: original flow ──
+  # Step 2: Terminal app
+  c "Step 2/4 — Terminal app"
+  local has_iterm="no" has_term="no"
+  [ -d "$ITERM_PATH" ] && has_iterm="yes"
+  [ -e "$TERMINAL_PATH" ] && has_term="yes"
+  printf '  iTerm2 installed: %s   Terminal.app: %s\n' "$has_iterm" "$has_term"
+  { printf '  Choose terminal app [iterm2/terminal] (default %s): ' "$TERMINAL_APP" >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  case "${ans:-$TERMINAL_APP}" in
+    iterm2|terminal) cmd_config set terminal "${ans:-$TERMINAL_APP}" ;;
+    *) warn "unknown value '$ans' — keeping $TERMINAL_APP" ;;
+  esac
+  echo
+
+  # Step 3: Folder mapping
+  c "Step 3/4 — Folder mapping"
+  cmd_map list
+  { printf '  Register a folder mapping now? [Y/n]: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  case "${ans:-y}" in [nN]*) echo "  Skipped." ;; *) map_register_interactive || true ;; esac
+  echo
+
+  # Step 4: doctor + local AX/SR grant gate
+  c "Step 4/4 — Verify (local permissions)"
+  cmd_doctor || true
+  echo
+  # Gate: confirm AX+SR are granted before declaring completion
+  local _sj_local=""
+  [ -f "$STATUS_FILE" ] && _sj_local="$(cat "$STATUS_FILE" 2>/dev/null || true)"
+  if [ -n "$_sj_local" ]; then
+    local _ax _sr
+    _ax="$(_jget "$_sj_local" ax)"; _sr="$(_jget "$_sj_local" sr)"
+    if [ "$_ax" = true ] && [ "$_sr" = true ]; then
+      ok "Onboarding complete. AX✓ SR✓ — computer-use ready. Edit later with 'xpair config' / 'xpair map'."
+    else
+      warn "Not done yet: System Settings → Privacy & Security → turn $APP_NAME ON for Accessibility (AX=$_ax) and Screen Recording (SR=$_sr). Re-run 'xpair onboard' to confirm."
+    fi
+  else
+    ok "Onboarding complete. Edit later with 'xpair config' / 'xpair map'."
+    warn "Could not read status.json — verify AX+SR grants in System Settings if this is a host machine."
+  fi
+}
+
+cmd_launch() {
+  local pass=() dir="" engine=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --local|--remote|--fresh|--yes|-y) pass+=("$1"); [ "$1" = "--yes" ] || [ "$1" = "-y" ] && RP_YES=1; shift ;;
+    --engine) engine="${2:-}"; shift 2 ;;        # per-launch override of client.env ENGINE
+    *) dir="$1"; shift ;;
+  esac; done
+  # Resolve engine: --engine flag wins, else client.env ENGINE, else claude. Validate before passing on.
+  engine="${engine:-${ENGINE:-claude}}"
+  case "$engine" in claude|codex|opencode) : ;; *) echo "unknown engine: $engine (use claude|codex|opencode)" >&2; return 2 ;; esac
+  dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
+  if ! is_mapped "$dir" && [ -n "$REMOTE_HOST" ] && [ "$RP_YES" != 1 ]; then
+    # Active host probe: only when the host is reachable. Resolve the candidate host
+    # path and check whether it actually exists on the host.
+    if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" true 2>/dev/null; then
+      local hostdir; hostdir="$(resolve_host "$dir")"
+      if ssh -n -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d '$hostdir' ]" 2>/dev/null; then
+        # Exists on host → offer to register.
+        c "This folder is outside any registered mapping:"
+        printf '  client: %s\n' "$dir"
+        printf '  host:   %s\n' "$hostdir"
+        ok "exists on $REMOTE_HOST"
+        local ans=""
+        { printf '  Register this mapping for next time? [Y/n]: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+        case "${ans:-y}" in [nN]*) : ;; *) cmd_map add "$dir" "$hostdir" ;; esac
+      else
+        # Missing on host → no "launch once anyway" (tmux would silently fall back to $HOME).
+        c "This folder is outside any registered mapping:"
+        printf '  client: %s\n' "$dir"
+        printf '  host:   %s\n' "$hostdir"
+        warn "not found on $REMOTE_HOST — usually this folder should also exist on the host via sync."
+        local ans=""
+        { printf '  [m] map to the host path that actually has this content
+  [c] create an empty dir on host (new project only — content will not be synced here)
+  [N] cancel
+  choose: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+        case "$ans" in
+          m|M) map_register_interactive "$dir" || return 1 ;;
+          c|C) ssh "$REMOTE_HOST" "mkdir -p '$hostdir'" 2>/dev/null && ok "created on $REMOTE_HOST: $hostdir" || { echo "mkdir failed on $REMOTE_HOST" >&2; return 1; } ;;
+          *)   echo "cancelled." >&2; return 1 ;;
+        esac
+      fi
+      echo "  Edit later with 'xpair config' / 'xpair map'."
+    fi
+    # ssh-probe failure: just proceed — defer to the launcher's own dir-check.
+  fi
+  [ -x "$LAUNCHER" ] || { echo "launcher missing: $LAUNCHER (client install required)" >&2; return 1; }
+  # bash 3.2 + set -u: an empty array "${pass[@]}" is "unbound" → guard with ${arr[@]+...}
+  RP_YES="$RP_YES" RP_ENGINE="$engine" exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
+}
+
+cmd_host() {
+  if host_up; then ok "host server OK ($AQUA_SOCK)"; return 0; fi
+  # Starting the server means launching the local app. If the app isn't installed here, guide instead.
+  # Existence covers BOTH locations (cask /Applications + manual ~/Applications) and BOTH app names (legacy).
+  local _installed=0 d
+  for d in "/Applications" "$HOME/Applications"; do
+    { [ -d "$d/$APP_NAME.app" ] || [ -d "$d/$FORWARD_APP.app" ]; } && { _installed=1; break; }
+  done
+  if [ "$_installed" = 0 ] && [ -z "$(app_pid)" ]; then need_app_guidance; return 1; fi
+  c "host server not running → starting $APP_NAME ..."
+  # Try the current identity first, then fall back to the forward one (open -a / kickstart).
+  open -a "$APP_NAME" 2>/dev/null || open -a "$FORWARD_APP" 2>/dev/null \
+    || launchctl kickstart -k "gui/$(id -u)/$BUNDLE_PREFIX" 2>/dev/null \
+    || launchctl kickstart -k "gui/$(id -u)/$FORWARD_BUNDLE" 2>/dev/null || true
+  for _ in $(seq 1 12); do host_up && { ok "host server OK"; return 0; }; sleep 0.5; done
+  warn "host server failed to start — check System Settings permissions / app install"; return 13
+}
+
+cmd_status() {
+  local p; p="$(app_pid)"
+  if [ -n "$p" ]; then printf '%-14s %s\n' "app" "running (pid $p)"
+  else                 printf '%-14s %s\n' "app" "NOT running"; fi
+  printf '%-14s %s\n' "host server" "$(host_up && echo "up ($AQUA_SOCK)" || echo down)"
+  # Ground truth from the app's status.json — AX/SR are the real computer-use gates.
+  # This lets you tell "app up but NOT granted" (→ re-grant) from "app down" (→ start it) —
+  # instead of guessing. The app rewrites this every ~1s while alive.
+  if [ -f "$STATUS_FILE" ]; then
+    local s sage sts; s="$(cat "$STATUS_FILE" 2>/dev/null)"
+    sts="$(_jget "$s" ts)"; sage=$(( $(date +%s) - ${sts:-0} ))
+    printf '%-14s AX %s  SR %s  FDA %s   (status.json, %ss ago%s)\n' "permissions" \
+      "$(_mark "$(_jget "$s" ax)")" "$(_mark "$(_jget "$s" sr)")" "$(_mark "$(_jget "$s" fda)")" \
+      "$sage" "$([ "$sage" -gt 15 ] && echo ' — STALE, app may be down')"
+    [ "$(_jget "$s" ax)" = true ] && [ "$(_jget "$s" sr)" = true ] || \
+      printf '%-14s %s\n' "" "⚠ computer-use gated: AX+SR must both be ✓. If ✗, the app is running but NOT granted → grant in System Settings (this is NOT 'host down')."
+  elif [ -n "$p" ] || host_up; then
+    printf '%-14s %s\n' "permissions" "unknown (no status.json yet — update host app)"
+  fi
+  if [ -f "$HEARTBEAT_FILE" ]; then
+    local age=$(( $(date +%s) - $(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0) ))
+    printf '%-14s %s\n' "heartbeat" "${age}s ago $([ "$age" -le 90 ] && echo "(fresh)" || echo "(STALE)")"
+  else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
+  in_host_session && printf '%-14s %s\n' "this session" "INSIDE Xpair host → computer-use available here"
+  printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(local-only)}"
+  printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
+  return 0
+}
+
+cmd_doctor() {
+  local fail=0
+  c "Xpair doctor"
+  # If we're ON the host (inside its tmux) or the app's status.json exists, report local app/grant
+  # ground truth FIRST. This is the check that prevents the "host is down" misdiagnosis: the app
+  # liveness comes from launchctl + status.json (reliable), not pgrep (false-negatives on .app).
+  if in_host_session || [ -f "$STATUS_FILE" ]; then
+    c "host app (this machine)"
+    cmd_status | sed 's/^/  /'
+    echo
+  fi
+  # local (client)
+  printf '%-22s %s\n' "launcher" "$([ -x "$LAUNCHER" ] && echo "OK ($LAUNCHER)" || { echo "missing — install.sh --role client"; fail=1; })"
+  printf '%-22s %s\n' "mosh (local)" "$(command -v mosh >/dev/null && echo OK || echo "missing (ssh fallback)")"
+  printf '%-22s %s\n' "folder mappings" "$([ -n "$FOLDER_MAPS" ] && echo "$(printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c .) entries" || echo "none (registered on first launch)")"
+
+  # ── Informational rows (US-006): file-access backend, notify hook. ──
+  # These never affect the verdict (no fail=1) — they help users see what's wired.
+  # (b) file-access backend: mount → check active mount; syncthing → best-effort local daemon probe.
+  local _sync_backend="${SYNC_BACKEND:-syncthing}"
+  if [ "$_sync_backend" = mount ]; then
+    local _mount_tool _mounted="not mounted"
+    if _mount_tool="$(_resolve_client_tool xpair-mount 2>/dev/null)"; then
+      if "$_mount_tool" status 2>/dev/null | grep -qvE '^\s*\(none\)\s*$' \
+         && "$_mount_tool" status 2>/dev/null | grep -qE '(smbfs|sshfs|macfuse|osxfuse|mounts)'; then
+        _mounted="mounted"
+      fi
+    fi
+    printf '%-22s %s\n' "file access (mount)" "backend=${MOUNT_BACKEND:-smb} — $_mounted"
+  else
+    # syncthing is optional/external — never hard-fail; just report reachability of the local GUI/API.
+    local _st="not detected (optional — only needed if you use Syncthing sync)"
+    if command -v curl >/dev/null 2>&1; then
+      curl -sf -o /dev/null --max-time 2 http://127.0.0.1:8384/ 2>/dev/null && _st="up (127.0.0.1:8384)"
+    elif command -v nc >/dev/null 2>&1; then
+      nc -z -G 2 127.0.0.1 8384 >/dev/null 2>&1 && _st="up (127.0.0.1:8384)"
+    fi
+    printf '%-22s %s\n' "file access (sync)" "Syncthing $_st"
+  fi
+  # (c) notify hook: is host notification forwarding installed on the host? Best-effort over SSH.
+  if [ -n "$REMOTE_HOST" ]; then
+    printf '%-22s %s\n' "host notify hook" "$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" 'grep -q xpair-notify ~/.claude/settings.json 2>/dev/null' 2>/dev/null && echo "OK (forwarding installed)" || echo "not detected (install.sh --role host on the host)")"
+  else
+    printf '%-22s %s\n' "host notify hook" "n/a (no REMOTE_HOST — host-side hook)"
+  fi
+
+  if [ -z "$REMOTE_HOST" ]; then
+    warn "REMOTE_HOST not set — local-only mode (skipping remote checks)"; return "$fail"
+  fi
+  # SSH key connection
+  printf '%-22s ' "SSH ($REMOTE_HOST)"
+  if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" true 2>/dev/null; then
+    echo "OK (key auth passed)"
+  else
+    echo "FAILED"; fail=1
+    warn "SSH key auth failed. Fix with one of:"
+    cat >&2 <<EOF
+   1) No key? Create one:   ssh-keygen -t ed25519
+   2) Register the public key on the host:   ssh-copy-id $REMOTE_HOST
+   3) Check the Host alias (IdentityFile/User/HostName) in ~/.ssh/config
+   4) Using an SSH agent (e.g. 1Password): approve/unlock it (xpair approve can auto-click)
+   Verify:   ssh -o BatchMode=yes $REMOTE_HOST true && echo OK
+EOF
+    return "$fail"
+  fi
+  # host-side config
+  local rb='$HOME/.local/bin/tmux-aqua'
+  printf '%-22s %s\n' "host tmux-aqua" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -x $rb ]" 2>/dev/null && echo OK || { echo "missing — run install.sh --role host on the host"; fail=1; })"
+  printf '%-22s %s\n' "host app" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -d ~/Applications/$APP_NAME.app ]" 2>/dev/null && echo "OK ($APP_NAME.app)" || { echo "missing"; fail=1; })"
+  printf '%-22s %s\n' "host server" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "$rb -S '$AQUA_SOCK' has-session" 2>/dev/null && echo "up" || echo "down (check app launch/permissions)")"
+  # approve path (skill + hook) — the key to clearing GUI approval dialogs on a headless host. Both are installed by install.sh --role host.
+  printf '%-22s %s\n' "host approve skill" "$(ssh -o BatchMode=yes "$REMOTE_HOST" '[ -f ~/.claude/skills/approve/SKILL.md ]' 2>/dev/null && echo OK || { echo "missing — install.sh --role host"; fail=1; })"
+  printf '%-22s %s\n' "host approve hook" "$(ssh -o BatchMode=yes "$REMOTE_HOST" 'grep -q xpair-approve-reminder ~/.claude/settings.json 2>/dev/null' 2>/dev/null && echo OK || { echo "missing — install.sh --role host (or python3 absent)"; fail=1; })"
+  # AX/SR grant — the real gate for computer-use (= approve clicks/screenshots). Read from status.json (ground truth).
+  local sj; sj="$(ssh -o BatchMode=yes "$REMOTE_HOST" 'cat ~/.xpair/host/logs/status.json 2>/dev/null' 2>/dev/null)"
+  if [ -n "$sj" ]; then
+    local ax sr; ax="$(_jget "$sj" ax)"; sr="$(_jget "$sj" sr)"
+    printf '%-22s %s\n' "host AX+SR grant" "$([ "$ax" = true ] && [ "$sr" = true ] && echo "OK (AX✓ SR✓)" || { echo "NOT granted (AX $(_mark "$ax") SR $(_mark "$sr")) — turn these ON in System Settings for computer-use/approve to work"; fail=1; })"
+  else
+    printf '%-22s %s\n' "host AX+SR grant" "unknown (status.json absent — update the host app)"
+  fi
+  [ "$fail" = 0 ] && ok "all good — xpair launch ready" || warn "check the items above"
+  return "$fail"
+}
+
+cmd_approve() {
+  local forhint="" type="" timeout=22     # longer than the router's adaptive polling (~18s default)
+  while [ $# -gt 0 ]; do case "$1" in
+    --for|--label|--expect) forhint="${2:-}"; shift 2 ;;   # hint for which approval dialog (rule id/free text; alias-tolerant)
+    --type) type="${2:-}"; shift 2 ;;                       # how to approve — key:<combo> | ocr:<label> (the agent picks the method)
+    --timeout) timeout="${2:-22}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; return 2 ;;
+  esac; done
+  # approve needs the privileged app. If it isn't here (e.g. a client-only machine), guide to install
+  # the host app instead of silently sending a trigger nobody will pick up.
+  if ! app_available; then need_app_guidance; return 1; fi
+  # base0 = log length just before triggering (so we show only this request's router log to the agent)
+  local base0=0; [ -f "$LOG_FILE" ] && base0=$(wc -l < "$LOG_FILE")
+  local base="$base0"
+  # Pass the hint: the router reads the .label file to prioritize the matching rule + use it as a haiku prior, then consumes it.
+  if [ -n "$forhint" ]; then printf '%s\n' "$forhint" > "$APPROVE_TRIGGER.label" 2>/dev/null || true
+  else rm -f "$APPROVE_TRIGGER.label" 2>/dev/null || true; fi
+  if [ -n "$type" ]; then printf '%s\n' "$type" > "$APPROVE_TRIGGER.type" 2>/dev/null || true
+  else rm -f "$APPROVE_TRIGGER.type" 2>/dev/null || true; fi
+  : > "$APPROVE_TRIGGER" 2>/dev/null || { echo "failed to write trigger: $APPROVE_TRIGGER" >&2; return 1; }
+  echo "approve request → $APP_NAME${forhint:+ (expect: $forhint)} (observing up to ${timeout}s)"
+  # Print only this request's router log lines (so the agent can read the result and decide next steps).
+  _router_trail() { [ -f "$LOG_FILE" ] || return 0; local tot; tot=$(wc -l < "$LOG_FILE"); [ "$tot" -gt "$base0" ] && tail -n "$(( tot - base0 ))" "$LOG_FILE" | grep 'router:'; }
+  local end=$(( $(date +%s) + timeout ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if [ -f "$LOG_FILE" ]; then
+      local now; now=$(wc -l < "$LOG_FILE")
+      if [ "$now" -gt "$base" ]; then
+        local new; new=$(tail -n "$(( now - base ))" "$LOG_FILE")
+        if printf '%s\n' "$new" | grep -qiE 'router:.*success'; then
+          _router_trail | sed 's/^/  /'
+          echo "✓ handled (window-close verified)"; return 0
+        fi
+        base="$now"
+      fi
+    fi
+    sleep 0.5
+  done
+  # Timeout/failure: show this request's router log so the agent can read the cause and decide.
+  echo "✗ not handled within ${timeout}s — router log:" >&2
+  local trail; trail="$(_router_trail)"
+  if [ -n "$trail" ]; then printf '%s\n' "$trail" | sed 's/^/  /' >&2
+  else echo "  (no router log — check app/permissions/trigger. full: $LOG_FILE)" >&2; fi
+  echo "  → If the window appears late: re-trigger non-blocking, then immediately retry the blocked call. For an unknown window, add a rule to $RP_DIR/rules.txt." >&2
+  return 1
+}
+
+# xpair logs [--host] [-f] [-n N] [--collect]
+#   default: tail all local logs (glob $LOG_DIR/*.log).
+#   --host: tail host logs over ssh.  -f: follow.  --collect: tar+gzip $LOG_DIR for bug reports.
+cmd_logs() {
+  local host=0 follow=0 n=200 collect=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --host)      host=1; shift ;;
+    -f|--follow) follow=1; shift ;;
+    -n)          n="${2:-200}"; shift 2 ;;
+    --collect)   collect=1; shift ;;
+    *)           shift ;;
+  esac; done
+
+  # --collect: tar+gzip $LOG_DIR → $LOG_DIR/xpair-logs-<stamp>.tgz and print path
+  if [ "$collect" = 1 ]; then
+    local stamp out
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    out="${RP_DIR}/logs/xpair-logs-${stamp}.tgz"
+    tar -czf "$out" -C "$(dirname "${RP_DIR}/logs")" "$(basename "${RP_DIR}/logs")" 2>/dev/null \
+      || { warn "collect: tar failed"; return 1; }
+    printf '%s\n' "$out"
+    return
+  fi
+
+  if [ "$host" = 1 ]; then
+    [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — 'xpair config set host <ssh-host>'" >&2; return 1; }
+    local rl='$HOME/.xpair/host/logs'
+    if [ "$follow" = 1 ]; then exec ssh -t "$REMOTE_HOST" "tail -n $n -F $rl/*.log 2>/dev/null"
+    else ssh "$REMOTE_HOST" "tail -n $n $rl/*.log 2>/dev/null || echo '(no host logs at ~/.xpair/host/logs)'"; fi
+    return
+  fi
+
+  # Local: glob all *.log files in $LOG_DIR (covers cli.log, xpair.log, launchd captures, etc.)
+  local log_dir="${RP_DIR}/logs"
+  if [ "$follow" = 1 ]; then
+    # shellcheck disable=SC2086
+    exec tail -n "$n" -F "$log_dir"/*.log 2>/dev/null
+  else
+    # shellcheck disable=SC2086
+    tail -n "$n" "$log_dir"/*.log 2>/dev/null || echo "(no local logs at $log_dir)"
+  fi
+}
+
+# Self-update the client (launcher/CLI/romanize) to the latest from GitHub — prevents version drift with the host app (e.g. unrecognized --type).
+cmd_self_update() {
+  local repo="${GH_REPO:-x10lab/xpair}" ref="${1:-main}"
+  local base="https://raw.githubusercontent.com/$repo/$ref/client/cli"
+  c "self-update ← $repo@$ref"
+  local tmp; tmp="$(mktemp -d)" || { warn "mktemp failed"; return 1; }
+  local got=0 f
+  for f in xpair xpair-launch hangul-romanize; do
+    curl -fsSL "$base/$f" -o "$tmp/$f" 2>/dev/null && [ -s "$tmp/$f" ] && got=$((got+1))
+  done
+  # logging.sh lives in shared/, not client/ — fetch separately so a flat client loop won't 404.
+  local shared_base="https://raw.githubusercontent.com/$repo/$ref/shared"
+  curl -fsSL "$shared_base/logging.sh" -o "$tmp/logging.sh" 2>/dev/null && [ -s "$tmp/logging.sh" ] && got=$((got+1))
+  [ "$got" -ge 2 ] || { warn "download failed (got=$got) — check network/repo"; rm -rf "$tmp"; return 1; }
+  [ -s "$tmp/xpair" ]        && { chmod +x "$tmp/xpair";        mv "$tmp/xpair" "$SELF_CLI" && ok "CLI → $SELF_CLI"; }
+  [ -s "$tmp/xpair-launch" ] && { chmod +x "$tmp/xpair-launch"; mkdir -p "$(dirname "$LAUNCHER")"; mv "$tmp/xpair-launch" "$LAUNCHER" && ok "launcher → $LAUNCHER"; }
+  [ -s "$tmp/hangul-romanize" ]    && { chmod +x "$tmp/hangul-romanize";    mkdir -p "$RP_DIR/bin"; mv "$tmp/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; }
+  [ -s "$tmp/logging.sh" ]         && { mkdir -p "$RP_DIR/bin"; mv "$tmp/logging.sh" "$RP_DIR/bin/logging.sh" && ok "logger → $RP_DIR/bin/logging.sh"; }
+  rm -rf "$tmp"; ok "self-update complete — applies from the next invocation"
+}
+
+# Resolve a sibling client tool (installed → LOCAL_BIN/~/.xpair/host/bin → repo copy).
+# Echoes the path, or returns 1. Used by editor/desktop to resolve their launcher.
+_resolve_client_tool() {
+  local name="$1" p=""
+  if command -v "$name" >/dev/null 2>&1; then p="$(command -v "$name")"
+  elif [ -x "$LOCAL_BIN/$name" ]; then p="$LOCAL_BIN/$name"
+  elif [ -x "$RP_DIR/bin/$name" ]; then p="$RP_DIR/bin/$name"
+  else
+    local _repo; _repo="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$name"
+    [ -x "$_repo" ] && p="$_repo"
+  fi
+  [ -n "$p" ] && { printf '%s' "$p"; return 0; }
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Discovery / remote-install (components ②④ — plan C1–C5).
+# Shared, security-sensitive helpers live here so cmd_discover/
+# cmd_install_host reuse ONE implementation. The CLI is the brain; the Electron
+# bridge (onboarding-bridge.js) just shells these verbs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── shared SSH-key helpers (factored from cmd_onboard keygen path :391) ──
+# Echo the path to the client's ed25519 public key, generating the keypair
+# (passphrase-less, like cmd_onboard :391) if none exists. id_ed25519 is the key
+# the ssh-config block (C4) pins, so we standardize on it.
+rp_ssh_pubkey() {
+  local key="$HOME/.ssh/id_ed25519" pub="$HOME/.ssh/id_ed25519.pub"
+  if [ ! -f "$pub" ]; then
+    # Always generate/use the DEFAULT id_ed25519 — rp_ssh_config_write pins
+    # IdentityFile ~/.ssh/id_ed25519, so the authorized key MUST be that same keypair.
+    # (No alternate id_ed25519*.pub fallback: it would authorize a key the ssh-config
+    # alias never offers → reconnect fails.)
+    mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh" 2>/dev/null || true
+    ssh-keygen -t ed25519 -f "$key" -N "" </dev/null >/dev/null 2>&1 \
+      || { err "ssh-keygen failed"; return 1; }
+  fi
+  printf '%s' "$pub"
+}
+
+# Locate the bundled askpass helper (sibling of this CLI / installed copy).
+rp_askpass_path() { _resolve_client_tool xpair-askpass 2>/dev/null || true; }
+
+# ── C4. ~/.ssh/config managed-block writer (NET-NEW) ──
+# Idempotently upsert a sentinel-delimited managed block for one Host alias.
+# Atomic (temp+rename), preserves file mode, never touches lines outside the
+# per-alias sentinels, and leaves foreign Host*/Include/Match blocks untouched.
+#   rp_ssh_config_write <alias> <hostname> <user> [identity_file]
+RP_SSH_CFG="${RP_SSH_CFG:-$HOME/.ssh/config}"
+rp_ssh_config_write() {
+  local alias="$1" hostname="$2" user="$3" identity="${4:-$HOME/.ssh/id_ed25519}"
+  [ -n "$alias" ] && [ -n "$hostname" ] && [ -n "$user" ] || { err "rp_ssh_config_write: alias/hostname/user required"; return 2; }
+  local cfg="$RP_SSH_CFG" dir; dir="$(dirname "$cfg")"
+  mkdir -p "$dir"; chmod 700 "$dir" 2>/dev/null || true
+  [ -f "$cfg" ] || { : > "$cfg"; chmod 600 "$cfg" 2>/dev/null || true; }
+
+  # Per-alias sentinels so multiple managed hosts coexist; one block per alias.
+  local beg="# >>> xpair: $alias >>>"
+  local end="# <<< xpair: $alias <<<"
+  local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/rp-sshcfg.XXXXXX")" || { err "mktemp failed"; return 1; }
+
+  # Copy everything EXCEPT the existing managed block for this alias (drop it; we re-emit).
+  awk -v b="$beg" -v e="$end" '
+    $0==b {skip=1; next}
+    $0==e {skip=0; next}
+    skip!=1 {print}
+  ' "$cfg" > "$tmp" 2>/dev/null || { rm -f "$tmp"; err "awk failed"; return 1; }
+
+  # Append the freshly-rendered managed block.
+  {
+    printf '%s\n' "$beg"
+    printf 'Host %s\n' "$alias"
+    printf '  HostName %s\n' "$hostname"
+    printf '  User %s\n' "$user"
+    printf '  IdentityFile %s\n' "$identity"
+    printf '  AddKeysToAgent yes\n'
+    printf '  UseKeychain yes\n'
+    printf '  HostKeyAlgorithms ssh-ed25519\n'
+    printf '%s\n' "$end"
+  } >> "$tmp"
+
+  # Preserve mode, atomic replace.
+  local mode; mode="$(stat -f '%Lp' "$cfg" 2>/dev/null || echo 600)"
+  mv "$tmp" "$cfg" && chmod "$mode" "$cfg" 2>/dev/null || { err "ssh-config write failed"; return 1; }
+  return 0
+}
+
+# Normalize a fingerprint to the canonical "SHA256:…" form (accept bare base64).
+rp_norm_fp() { case "$1" in SHA256:*) printf '%s' "$1" ;; *) printf 'SHA256:%s' "$1" ;; esac; }
+
+# ── C1. xpair discover [--json] [--timeout S] ──
+# Concurrent LAN (Bonjour via dns-sd) + Tailscale discovery → normalized JSON
+# peer list on stdout (the Electron bridge calls this). Schema per peer:
+#   {"name","addrs":[…],"source":"lan|tailscale|ssh","fp":"SHA256:…"|null,
+#    "status":"reconnect|connect|setup"}
+# Dedup by host-key fingerprint; cross-reference ~/.ssh/config + client.env.
+RP_BONJOUR_TYPE="_xpair._tcp"
+# Auto-detect the Tailscale CLI across install layouts (App Store sandbox, brew, manual).
+rp_tailscale_bin() {
+  local p
+  for p in \
+    /Applications/Tailscale.app/Contents/MacOS/Tailscale \
+    /opt/homebrew/bin/tailscale \
+    /usr/local/bin/tailscale ; do
+    [ -x "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  p="$(command -v tailscale 2>/dev/null || true)"; [ -n "$p" ] && { printf '%s' "$p"; return 0; }
+  return 1
+}
+
+# Is <name-or-host> already in ~/.ssh/config (managed or foreign Host alias)?
+_rp_in_ssh_config() {
+  local q="$1"; [ -f "$RP_SSH_CFG" ] || return 1
+  awk -v q="$q" 'BEGIN{IGNORECASE=1} /^[[:space:]]*Host([[:space:]]|=)/ {for(i=2;i<=NF;i++) if($i==q) {f=1}} END{exit f?0:1}' "$RP_SSH_CFG"
+}
+# status for a peer: reconnect (known in config / REMOTE_HOST), else connect (Xpair role), else setup.
+_rp_peer_status() {
+  local name="$1" addr="$2" role="$3"
+  if [ -n "$name" ] && _rp_in_ssh_config "$name"; then printf 'reconnect'; return; fi
+  if [ -n "$addr" ] && _rp_in_ssh_config "$addr"; then printf 'reconnect'; return; fi
+  if [ -n "${REMOTE_HOST:-}" ] && { [ "$REMOTE_HOST" = "$name" ] || [ "$REMOTE_HOST" = "$addr" ]; }; then printf 'reconnect'; return; fi
+  # A peer advertising the Xpair service (any role) → account-password connect; otherwise plain SSH setup.
+  case "$role" in host|both|client) printf 'connect' ;; *) printf 'setup' ;; esac
+}
+
+cmd_discover() {
+  # JSON is the only output mode (the Electron bridge consumes it); --json is
+  # accepted for an explicit, self-documenting bridge contract but is the default.
+  local timeout=4 _fp_host=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --json) shift ;;
+    --timeout) timeout="${2:-4}"; shift 2 ;;
+    --fingerprint) _fp_host="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac; done
+  case "$timeout" in (''|*[!0-9]*) timeout=4 ;; esac
+
+  # --fingerprint <host>: fetch ONE host's ed25519 key fingerprint via ssh-keyscan, for the
+  # Electron bridge's hostKeyFingerprint() on the manual-entry path (host not in the Bonjour/
+  # Tailscale peer list, so no advertised TXT fp to TOFU against). Emits {"fp":"SHA256:…"} or
+  # {"fp":null,"err":"…"}. Matches `ssh-keygen -lf` form (same as the host's advertised fp).
+  if [ -n "$_fp_host" ]; then
+    local _ks _fpv="" _scan_host _scan_port
+    # ssh-keyscan does NOT honor ssh_config Host aliases (it resolves the literal string via DNS),
+    # so an alias like "gh-mac-m1" (HostName 192.168.x) would fail to scan. Resolve the alias to its
+    # real HostName + Port via `ssh -G` first; fall back to the literal for a bare host/IP.
+    _scan_host="$(ssh -G "$_fp_host" 2>/dev/null | awk '/^hostname /{print $2; exit}')"
+    [ -n "$_scan_host" ] || _scan_host="$_fp_host"
+    _scan_port="$(ssh -G "$_fp_host" 2>/dev/null | awk '/^port /{print $2; exit}')"
+    [ -n "$_scan_port" ] || _scan_port=22
+    _ks="$(ssh-keyscan -t ed25519 -T "$timeout" -p "$_scan_port" "$_scan_host" 2>/dev/null)" || true
+    [ -n "$_ks" ] && _fpv="$(printf '%s\n' "$_ks" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' | head -1)"
+    if [ -n "$_fpv" ]; then printf '{"fp":"%s"}\n' "$_fpv"
+    else printf '{"fp":null,"err":"could not fetch host key for %s"}\n' "$_fp_host"; fi
+    return 0
+  fi
+
+  # Collect peers as tab-separated records: name \t addr \t source \t fp \t role
+  # then dedup by fp (fall back to name) and emit JSON. We use a temp file rather
+  # than a subshell pipe so the awk emitter sees the whole set.
+  local rec; rec="$(mktemp "${TMPDIR:-/tmp}/rp-disc.XXXXXX")" || { err "mktemp failed"; return 1; }
+  # shellcheck disable=SC2064
+  trap "rm -f '$rec'" RETURN
+
+  # ── LAN: Bonjour browse → resolve TXT (hn/v/role/fp) ──
+  # dns-sd never exits on its own, so each phase is run bounded-then-killed. The browse needs the
+  # full window to collect every advertiser, but a `-L` resolve returns its TXT near-instantly — so
+  # resolves use a SHORT cap and run in PARALLEL (one bg job per instance) instead of serially. This
+  # turns the old browse(timeout) + N×resolve(timeout) cost into browse(timeout) + 1×resolve_to,
+  # cutting a multi-host discover from ~17s to ~5s. (BUG #5)
+  if command -v dns-sd >/dev/null 2>&1; then
+    local resolve_to=1   # TXT comes back immediately; only the kill is bounded
+    local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
+    ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & local bpid=$!
+    ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
+    wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
+    # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>". Collect unique instance
+    # names, then fan out one resolve per name into its own temp file, all at once.
+    local svcname lk; local -a _lpids=() _lfiles=() _lnames=()
+    while IFS= read -r line; do
+      case "$line" in *" Add "*) ;; *) continue ;; esac
+      svcname="$(printf '%s' "$line" | sed -n 's/.*'"$RP_BONJOUR_TYPE"'\.[[:space:]]*\(.*\)$/\1/p')"
+      [ -n "$svcname" ] || continue
+      case " ${_lnames[*]:-} " in *" $svcname "*) continue ;; esac   # dedup browse repeats
+      lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
+      ( dns-sd -t "$resolve_to" -L "$svcname" "$RP_BONJOUR_TYPE" >"$lk" 2>/dev/null ) & local _p=$!
+      ( sleep "$resolve_to"; kill "$_p" 2>/dev/null ) >/dev/null 2>&1 &
+      _lpids+=("$_p"); _lfiles+=("$lk"); _lnames+=("$svcname")
+    done < "$browse"
+    rm -f "$browse"
+    # Barrier: wait for every parallel resolve to finish (or be killed), then parse each TXT.
+    local _i
+    for _i in "${!_lpids[@]}"; do wait "${_lpids[$_i]}" 2>/dev/null || true; done
+    for _i in "${!_lfiles[@]}"; do
+      lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
+      # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
+      local txt hn fp role addr
+      txt="$(cat "$lk" 2>/dev/null)"
+      addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
+      hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
+      fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
+      role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
+      [ -n "$hn" ] || hn="$svcname"
+      [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
+      rm -f "$lk"
+    done
+  fi
+
+  # ── Tailscale: parse `tailscale status --json` peers ──
+  local ts; ts="$(rp_tailscale_bin || true)"
+  if [ -n "$ts" ] && command -v python3 >/dev/null 2>&1; then
+    "$ts" status --json 2>/dev/null | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for p in (d.get("Peer") or {}).values():
+    # XpairHost is a macOS app — never surface iOS/iPadOS/Linux/Windows/Android tailnet
+    # devices (iPhone, iPad, Raspberry Pi, …) as installable host candidates. Only skip when the
+    # OS is KNOWN-non-macOS (keep unknown/empty to avoid dropping a real Mac with missing metadata).
+    os_ = (p.get("OS") or "").strip().lower()
+    if os_ and os_ != "macos": continue
+    name = (p.get("DNSName") or p.get("HostName") or "").rstrip(".")
+    if not name: continue
+    addrs = p.get("TailscaleIPs") or []
+    addr = addrs[0] if addrs else name
+    online = "online" if p.get("Online") else "offline"
+    # name, addr, source, fp(empty), role(empty); status hint via role col left blank
+    print("%s\t%s\t%s\t%s\t%s" % (name, addr, "tailscale", "", online))
+' >> "$rec" 2>/dev/null || true
+  fi
+
+  # ── Dedup by fp (fallback name) + cross-reference config; emit JSON array ──
+  python3 - "$rec" <<'PY'
+import json, sys, subprocess, os, re
+recfile = sys.argv[1]
+peers = {}
+order = []
+def load_cfg_aliases():
+    cfg = os.environ.get("RP_SSH_CFG") or os.path.expanduser("~/.ssh/config")
+    al = set()
+    try:
+        for ln in open(cfg):
+            m = re.match(r"\s*Host[\s=]+(.*)", ln, re.I)
+            if m:
+                for tok in m.group(1).split():
+                    al.add(tok)
+    except Exception:
+        pass
+    return al
+cfg_aliases = load_cfg_aliases()
+remote_host = os.environ.get("REMOTE_HOST", "")
+
+def host_app_present(target):
+    # Is XpairHost.app actually installed on this host? ssh-config presence only means
+    # "we can reach it" — a host whose app was removed/never-installed must show 'setup' (needs
+    # install), not 'reconnect'. Returns True (confirmed present), False (confirmed absent), or
+    # None (couldn't verify within budget — slow/cold link, auth-only-via-agent, etc.).
+    #
+    # The probe targets the ssh-config alias's HOSTNAME (often a LAN IP), which can be cold/slow to
+    # connect (ARP, sleeping host) even when ultimately reachable. Hardened ssh opts keep it from
+    # hanging on a stale ControlMaster socket or password/keyboard-interactive fallback, and a tight
+    # ConnectTimeout + subprocess cap bound the wait. On timeout we return None (NOT False) so the
+    # caller can decide; status_for treats "couldn't confirm" as 'setup' (idempotent (re)install).
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "ConnectionAttempts=1",
+             "-o", "ControlMaster=no", "-o", "ControlPath=none",
+             "-o", "PreferredAuthentications=publickey", "-o", "NumberOfPasswordPrompts=0",
+             "-o", "StrictHostKeyChecking=accept-new", "-T", "-n", target,
+             "[ -d /Applications/XpairHost.app ] || [ -d $HOME/Applications/XpairHost.app ]"],
+            timeout=6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    except Exception:
+        return None
+
+def status_for(name, addr, role):
+    if name in cfg_aliases or addr in cfg_aliases or name == remote_host or addr == remote_host:
+        # Known in ssh config. Only claim 'reconnect' when the host app is CONFIRMED installed; a
+        # confirmed-absent OR unverifiable host shows 'setup' so the user lands on the (idempotent)
+        # install path instead of a misleading reconnect that would fail. (host_app_present returns
+        # None when the probe times out on a cold/slow link — treat that as "not confirmed".)
+        present = host_app_present(name if name in cfg_aliases else addr)
+        return "reconnect" if present is True else "setup"
+    if role in ("host", "both", "client"):
+        return "connect"
+    return "setup"
+
+try:
+    lines = open(recfile).read().splitlines()
+except Exception:
+    lines = []
+for ln in lines:
+    if not ln.strip():
+        continue
+    parts = ln.split("\t")
+    while len(parts) < 5:
+        parts.append("")
+    name, addr, source, fp, role = parts[:5]
+    key = fp if fp else ("name:" + name)
+    if key not in peers:
+        peers[key] = {"name": name, "addrs": [], "sources": [], "fp": fp or None, "_role": role}
+        order.append(key)
+    p = peers[key]
+    if addr and addr not in p["addrs"]:
+        p["addrs"].append(addr)
+    if source and source not in p["sources"]:
+        p["sources"].append(source)
+    if (not p["fp"]) and fp:
+        p["fp"] = fp
+    if (not p["_role"]) and role in ("host", "both", "client"):
+        p["_role"] = role
+
+def alias_for(name, addrs):
+    # Prefer an ssh-config Host alias for this peer (matched by full name, the short
+    # first label of a tailnet FQDN like 'gh-mac-m1.tailXXXX.ts.net' -> 'gh-mac-m1', or
+    # any addr). Using the alias makes install/connect/tunnel use the alias's IdentityFile
+    # + User (key auth) instead of a bare tailnet FQDN/IP that needs a password or fails.
+    short = name.split(".")[0]
+    for cand in [name, short] + list(addrs):
+        if cand and cand in cfg_aliases:
+            return cand
+    return None
+
+out = []
+for key in order:
+    p = peers[key]
+    name = p["name"]
+    alias = alias_for(name, p["addrs"])
+    if alias and alias != name:
+        name = alias  # surface the ssh-config alias as the connect/install target
+    addr = p["addrs"][0] if p["addrs"] else name
+    src = p["sources"][0] if p["sources"] else "ssh"
+    # The canonical SSH target for install/connect/pair. When the peer matches an ssh-config Host
+    # alias, that alias is the ONLY target that carries an IdentityFile + User (key auth) — a bare
+    # discovered address (e.g. a tailnet 100.x IP not in ssh config) would fall back to password
+    # auth and hang the GUI askpass. So: alias-known -> the alias name; otherwise the address.
+    target = name if (name in cfg_aliases or name == remote_host) else (addr or name)
+    out.append({
+        "name": name,
+        "addrs": p["addrs"],
+        "target": target,
+        "source": src,
+        "sources": p["sources"],
+        "fp": p["fp"],
+        "status": status_for(name, addr, p["_role"]),
+    })
+print(json.dumps(out))
+PY
+}
+
+# ── C3. xpair install-host [--host <addr>] [--account <user>] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
+# Idempotent, integrity-verified remote install-or-repair over SSH.
+#   default: scp the locally-built, already-signed build/XpairHost.app and
+#            run shared/install.sh --role host against it (integrity by signature).
+#   --bootstrap: explicit opt-in to curl|bash; REQUIRES --sha256 of the fetched
+#                script and a pinned --ref; aborts before any host exec on mismatch.
+cmd_install_host() {
+  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --host)      host="${2:-}"; shift 2 ;;
+    --account)   account="${2:-}"; shift 2 ;;
+    --bootstrap) use_bootstrap=1; shift ;;
+    --sha256)    sha="${2:-}"; shift 2 ;;
+    --ref)       ref="${2:-main}"; shift 2 ;;
+    --force)     force=1; shift ;;   # reinstall even if an install is detected (re-setup / version swap)
+    *) echo "install-host [--host <addr>] [--account <user>] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
+  esac; done
+  [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
+  local target="$host"; [ -n "$account" ] && target="$account@$host"
+
+  # SSH with NO controlling TTY (stdin </dev/null) so SSH_ASKPASS_REQUIRE=force routes any password
+  # prompt to the helper (C5), never the terminal.
+  local askpass; askpass="$(rp_askpass_path)"
+  local SSHENV=()
+  if [ -n "$askpass" ]; then
+    SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0")
+    # The onboarding hands us the account password on an inherited pipe FD (RP_ASKPASS_FD) so the
+    # askpass helper reads it from the pipe (Path 1) instead of popping a SEPARATE GUI dialog — the
+    # password is collected INSIDE the onboarding window. Propagate the FD number through
+    # env → ssh → askpass (the descriptor itself is inherited, never re-opened or written to disk).
+    [ -n "${RP_ASKPASS_FD:-}" ] && SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
+  fi
+  # Multiplex the WHOLE install over ONE SSH connection: authenticate once (by key, or the password
+  # read a SINGLE time from the pipe), then reuse the master for every rm/scp/install.sh. This makes
+  # a one-shot password pipe sufficient (no repeated prompt → no half-installed dead-end) and is
+  # faster. A unique ControlPath avoids colliding with any stale mux socket; it is torn down on
+  # return. StrictHostKeyChecking=accept-new because the host key was already confirmed (TOFU) in the
+  # onboarding fingerprint step — so a first connect never blocks on an interactive host-key prompt
+  # (which, with askpass forced, would otherwise hang a GUI dialog and fail the install).
+  local RP_CM; RP_CM="$(mktemp -u "${TMPDIR:-/tmp}/rp-cm-XXXXXX")"
+  local RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
+                    -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
+  # shellcheck disable=SC2064
+  trap "ssh -O exit -o 'ControlPath=$RP_CM' '$target' >/dev/null 2>&1; rm -f '$RP_CM'" RETURN
+  _rp_ssh() { "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$@" </dev/null; }
+
+  # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
+  c "checking $target for an existing $APP_NAME install …"
+  if [ "$force" != 1 ] && _rp_ssh -o BatchMode=yes "$target" "[ -d ~/Applications/$APP_NAME.app ] || [ -d /Applications/$APP_NAME.app ]" 2>/dev/null; then
+    ok "$APP_NAME already installed on $target → re-registering (no reinstall)"
+    _rp_ssh "$target" "launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX 2>/dev/null || open -a $APP_NAME 2>/dev/null || true" 2>/dev/null || true
+  else
+    # ── 2. Install with integrity ──
+    # repo_root: the INSTALLED CLI (~/.local/bin/xpair) is a COPY, so $0/../.. is $HOME — NOT
+    # the repo. The onboarding bridge always invokes the installed copy, so resolve the real tree:
+    # RP_REPO_ROOT (env, or auto-sourced from client.env at startup) wins; else the run-from-repo
+    # location ($0/../..). Validate the candidate actually holds shared/install.sh.
+    local repo_root here cand; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    repo_root=""
+    for cand in "${RP_REPO_ROOT:-}" "$here/../.."; do
+      [ -n "$cand" ] || continue
+      cand="$(cd "$cand" 2>/dev/null && pwd)" || continue
+      [ -f "$cand/shared/install.sh" ] && { repo_root="$cand"; break; }
+    done
+    if [ "$use_bootstrap" = 1 ]; then
+      # Opt-in curl|bash: pin a ref + verify a published SHA256 BEFORE any host exec.
+      [ -n "$sha" ] || { err "--bootstrap requires --sha256 <hex> (no unverified curl|bash)"; return 2; }
+      c "fetching bootstrap.sh @ $ref and verifying SHA256 before remote exec …"
+      local btmp; btmp="$(mktemp "${TMPDIR:-/tmp}/rp-boot.XXXXXX")"
+      curl -fsSL "https://raw.githubusercontent.com/${GH_REPO:-x10lab/xpair}/$ref/shared/bootstrap.sh" -o "$btmp" \
+        || { err "bootstrap fetch failed"; rm -f "$btmp"; return 1; }
+      local got; got="$(shasum -a 256 "$btmp" 2>/dev/null | awk '{print $1}')"
+      if [ "$got" != "$sha" ]; then
+        err "SHA256 mismatch — aborting before any host exec (expected $sha, got $got)"; rm -f "$btmp"; return 1
+      fi
+      ok "checksum verified — running pinned bootstrap on $target"
+      _rp_ssh "$target" "ROLE=host BRANCH=$ref bash -s" < "$btmp" || { rm -f "$btmp"; err "remote bootstrap failed"; return 1; }
+      rm -f "$btmp"
+    else
+      # Default: scp the locally-built SIGNED .app + install.sh; integrity = signature.
+      [ -n "$repo_root" ] || { err "install-host: cannot locate the Xpair repo tree (no shared/install.sh via RP_REPO_ROOT or \$0/../..). Set RP_REPO_ROOT=<repo> in ~/.xpair/host/client.env, run from the repo, or use --bootstrap --sha256 <hex> for a release install."; return 1; }
+      # build-host.sh writes build/<app> relative to its CWD: host/build/ when run from host/, or
+      # build/ when run from the repo root. Accept either so a repo-root build is found too.
+      local appsrc="$repo_root/host/build/$APP_NAME.app"
+      [ -d "$appsrc" ] || appsrc="$repo_root/build/$APP_NAME.app"
+      [ -d "$appsrc" ] || { err "no local signed app: $repo_root/{host/,}build/$APP_NAME.app — run host/build-host.sh first (or use --bootstrap --sha256)"; return 1; }
+      c "scp signed $APP_NAME.app + install tree → $target (integrity by code signature) …"
+      # Stage a MINIMAL repo mirror so install.sh --role host resolves its deps: it sources config.sh +
+      # lib.sh from its own dir, and config.sh sets REPO_ROOT = <stage>/shared/.. = <stage>, so build/
+      # and host/ must live under <stage>. rsync over the detached-ssh wrapper needs -e plumbing; scp -r
+      # is sufficient and reuses the same askpass env.
+      _rp_ssh "$target" "rm -rf ~/.cache/xpair/stage && mkdir -p ~/.cache/xpair/stage/shared ~/.cache/xpair/stage/host ~/.cache/xpair/stage/client ~/.cache/xpair/stage/build" 2>/dev/null || true
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" "$repo_root"/shared/*.sh "$target:~/.cache/xpair/stage/shared/" </dev/null \
+        || { err "scp of shared/ failed"; return 1; }
+      # role=host also (re)installs the client CLI tools from client/cli/ — stage them too.
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" -r "$repo_root/client/cli" "$target:~/.cache/xpair/stage/client/" </dev/null \
+        || { err "scp of client/cli failed"; return 1; }
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" -r "$repo_root/host/rules.txt" "$repo_root/host/skills" "$repo_root/host/hooks" "$target:~/.cache/xpair/stage/host/" </dev/null \
+        || { err "scp of host resources failed"; return 1; }
+      "${SSHENV[@]}" scp "${RP_SSHOPTS[@]}" -r "$appsrc" "$target:~/.cache/xpair/stage/build/" </dev/null \
+        || { err "scp of signed app failed"; return 1; }
+      _rp_ssh "$target" "cd ~/.cache/xpair/stage && RP_YES=1 bash shared/install.sh --role host" \
+        || { err "remote install.sh failed"; return 1; }
+      ok "signed app installed on $target"
+    fi
+  fi
+
+  # Authorize the client's key on the host over the SAME askpass (password) SSH
+  # connection — for BOTH the fresh-install AND the already-installed paths. This is
+  # what REPLACES PIN pairing: a host that is already running but has never seen this
+  # client's key must still authorize it (the old PIN scenario). Without this,
+  # BatchMode=yes (key-only) calls below — and every later editor/desktop/notify call
+  # — would fail despite a "successful" install/re-register. Idempotent (grep -qxF),
+  # so re-running on an already-authorized host is a no-op.
+  local pubpath; pubpath="$(rp_ssh_pubkey)" || { err "could not resolve client pubkey"; return 1; }
+  local pubdata; pubdata="$(cat "$pubpath" 2>/dev/null)"
+  [ -n "$pubdata" ] || { err "empty client pubkey: $pubpath"; return 1; }
+  c "authorizing client key on $target (over the password connection) …"
+  # ssh-copy-id-style append: idempotent (grep -qxF guard), correct perms. Rides the
+  # SAME multiplexed master (RP_SSHOPTS/SSHENV) the connection authenticated — so no
+  # re-auth, no separate password prompt, no host-key prompt. The pubkey is piped
+  # into ssh and read via $(cat) on the host; we do NOT use _rp_ssh (it hardcodes
+  # </dev/null, which would drop the piped key).
+  local rp_authcmd='umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys; key=$(cat); grep -qxF "$key" ~/.ssh/authorized_keys || printf "%s\n" "$key" >> ~/.ssh/authorized_keys'
+  printf '%s\n' "$pubdata" | "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "$rp_authcmd" \
+    || { err "failed to authorize client key on $target"; return 1; }
+  ok "client key authorized on $target"
+
+  # Persist the host so the extension/CLI (which read client.env) find a configured
+  # host after onboarding — mirrors the pair path's rp_set REMOTE_HOST.
+  rp_set REMOTE_HOST "$host"; REMOTE_HOST="$host"
+  ok "host set: $host"
+
+  # ── 3. Post-install: TCC handoff + GUI-session account warning ──
+  local guiuser; guiuser="$(_rp_ssh -o BatchMode=yes "$target" 'stat -f%Su /dev/console 2>/dev/null' 2>/dev/null | tr -d '\r')"
+  if [ -n "$account" ] && [ -n "$guiuser" ] && [ "$account" != "$guiuser" ]; then
+    warn "target account '$account' ≠ host GUI-session account '$guiuser' — TCC grant must be done while logged in as the GUI user on the host's screen."
+  fi
+  c "Next, on the HOST's physical screen: System Settings → Privacy & Security →"
+  printf '   turn %s ON for Accessibility + Screen Recording (macOS cannot grant these remotely).\n' "$APP_NAME"
+  ok "install-host complete for $target"
+}
+
+# ── host-permissions [--host <addr>] ──
+# SSH-read the host app's status.json (HOST:~/.xpair/host/logs/status.json, rewritten every ~1s by
+# the app's tick loop) and emit {alive,ax,sr,fda} as JSON. The onboarding's post-install step polls
+# this to show whether the user has granted Accessibility / Screen Recording / Full Disk Access on
+# the host's own screen (macOS forbids granting these remotely). Key auth only + bounded + anti-hang
+# so it never prompts: TOFU + any password already happened at install.
+cmd_host_permissions() {
+  local host="${REMOTE_HOST:-}"
+  while [ $# -gt 0 ]; do case "$1" in
+    --host) host="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac; done
+  [ -n "$host" ] || { printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no host"}\n'; return 0; }
+  local raw
+  raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
+             -o ControlMaster=no -o ControlPath=none \
+             -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 \
+             -o StrictHostKeyChecking=accept-new -T -n "$host" \
+             'cat ~/.xpair/host/logs/status.json 2>/dev/null' </dev/null 2>/dev/null)" || true
+  if [ -z "$raw" ]; then
+    printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no status.json (host app not running?)"}\n'
+    return 0
+  fi
+  printf '%s' "$raw" | python3 -c '
+import json, sys, time
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(json.dumps({"alive": False, "ax": False, "sr": False, "fda": False, "err": "bad status.json"})); sys.exit(0)
+ts = d.get("ts", 0) or 0
+# The host rewrites status.json every ~1s while alive; treat a stamp within 10s as live.
+alive = bool(d.get("pid")) and (time.time() - ts) < 10
+print(json.dumps({"alive": alive, "ax": bool(d.get("ax")), "sr": bool(d.get("sr")), "fda": bool(d.get("fda")), "err": ""}))
+'
+}
+
+# xpair editor — code-server launcher (M4). Thin pass-through to xpair-editor.
+cmd_editor() {
+  local tool; tool="$(_resolve_client_tool xpair-editor)" \
+    || { echo "xpair-editor not found (install client, or run from the repo)" >&2; return 1; }
+  exec "$tool" "$@"
+}
+
+# xpair desktop — macOS Screen Sharing launcher (M5). Thin pass-through to xpair-desktop.
+cmd_desktop() {
+  local tool; tool="$(_resolve_client_tool xpair-desktop)" \
+    || { echo "xpair-desktop not found (install client, or run from the repo)" >&2; return 1; }
+  exec "$tool" "$@"
+}
+
+# xpair mount — host-folder mount (Syncthing alternative; see docs/m-mount.md).
+# Thin pass-through to xpair-mount (mount/unmount/status/help; backends smb|sshfs).
+cmd_mount() {
+  local tool; tool="$(_resolve_client_tool xpair-mount)" \
+    || { echo "xpair-mount not found (install client, or run from the repo)" >&2; return 1; }
+  exec "$tool" "$@"
+}
+
+# xpair notify — CLI parity with the web notifications panel.
+# Best-effort SSH pull of the host queue (~/.xpair/host/notifications/queue.jsonl), filtered by the
+# LOCAL ~/.xpair/host/notify.conf ENABLED_TYPES. Prints recent events. Never errors hard (queue is
+# advisory): unreachable host / missing queue / absent python3 all degrade to an empty list.
+cmd_notify() {
+  local n=20
+  while [ $# -gt 0 ]; do case "$1" in
+    -n) n="${2:-20}"; shift 2 ;;
+    *)  shift ;;
+  esac; done
+  # Validate n is a positive integer — guards against remote shell injection via 'tail -n $n'.
+  case "$n" in (''|*[!0-9]*) n=20 ;; esac
+  [ -n "$REMOTE_HOST" ] || { warn "no REMOTE_HOST configured — notify pulls from the host ('xpair config set host <ssh-host>')"; return 0; }
+
+  # Local ENABLED_TYPES filter (mirror xpair-notify.sh parsing). Default: all on.
+  local enabled="Stop,Notification,SubagentStop,approve"
+  local conf="$RP_DIR/notify.conf"
+  if [ -f "$conf" ]; then
+    local v; v="$(sed -n 's/^[[:space:]]*ENABLED_TYPES[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' "$conf" | tail -1)"
+    # An explicit empty value (ENABLED_TYPES=) means "all off" — honor it; only fall back when the key is absent.
+    if grep -qE '^[[:space:]]*ENABLED_TYPES[[:space:]]*=' "$conf" 2>/dev/null; then enabled="${v// /}"; fi
+  fi
+
+  # Pull the tail of the host queue (best-effort; never hard-fail).
+  local rq='$HOME/.xpair/host/notifications/queue.jsonl'
+  local raw; raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "tail -n $n $rq 2>/dev/null" 2>/dev/null || true)"
+  if [ -z "$raw" ]; then c "no recent host notifications (host unreachable, or queue empty)"; return 0; fi
+
+  # Filter by ENABLED_TYPES + pretty-print. Prefer python3 (robust JSON); degrade to a raw dump.
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$raw" | _RP_ENABLED="$enabled" python3 -c '
+import json, os, sys, time
+enabled = set(t for t in os.environ.get("_RP_ENABLED", "").split(",") if t)
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    typ = ev.get("type", "")
+    if enabled and typ and typ not in enabled:
+        continue
+    rows.append(ev)
+if not rows:
+    print("\033[1;36m▸ no notifications match ENABLED_TYPES=%s\033[0m" % ",".join(sorted(enabled)))
+    sys.exit(0)
+now = int(time.time())
+for ev in rows:
+    ts = ev.get("ts", 0)
+    try: age = now - int(ts)
+    except Exception: age = 0
+    ago = ("%ds" % age) if age < 90 else ("%dm" % (age // 60)) if age < 3600 else ("%dh" % (age // 3600))
+    typ = ev.get("type", "?")
+    title = ev.get("title", "")
+    msg = (ev.get("message", "") or "").replace("\n", " ")
+    if len(msg) > 100: msg = msg[:99] + "…"
+    print("\033[1;33m[%-12s]\033[0m %s ago  %s" % (typ, ago, title))
+    if msg: print("                %s" % msg)
+'
+  else
+    warn "python3 absent — raw queue dump (no type filter):"
+    printf '%s\n' "$raw"
+  fi
+  return 0
+}
+
+# xpair update — M6 LEVEL-1: CodePush-style HOT-SWAP of the glue layer ONLY.
+#
+# 2-level update model:
+#   Level-1 (this command): re-install the *glue* layer (CLI, launchers,
+#     approve rules/skills, host hooks) from the repo/source WITHOUT touching the running .app or the
+#     tmux-aqua server. No relaunch. This is hot-swappable because it's all interpreted scripts/assets.
+#   Level-2 (NOT here): the native .app binary itself. If the repo's app version differs from the
+#     running status.json version, the binary must be updated by the app's own Updater (with the
+#     session/consent gate). This command refuses to touch the binary and tells you to use Level-2.
+#
+# Detection: compare the repo VERSION (host/build-host.sh RP_VERSION → Casks fallback) against the
+# running app version (status.json "version"). Mismatch ⇒ a Level-2 native update is also required.
+cmd_update() {
+  local check=0 ref="main"
+  while [ $# -gt 0 ]; do case "$1" in
+    --check) check=1; shift ;;
+    --ref)   ref="${2:-main}"; shift 2 ;;
+    -h|--help)
+      sed -n '/^# xpair update — M6/,/^cmd_update()/p' "$0" | sed 's/^# \{0,1\}//; /^cmd_update()/d'
+      return 0 ;;
+    *) echo "update [--check] [--ref <git-ref>]" >&2; return 2 ;;
+  esac; done
+
+  # Locate the repo/source layout. Glue hot-swap re-runs the installer scoped to the client glue.
+  # CLI lives at <repo>/client/cli/xpair, so the repo root (the dir that
+  # contains shared/) is two levels up from here, not one.
+  local repo_root="" here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+  if [ -f "$here/../../shared/install.sh" ]; then repo_root="$(cd "$here/../.." 2>/dev/null && pwd)"; fi
+
+  # ── Detect glue-only vs native binary mismatch ──
+  # Running app version (status.json ground truth).
+  local running_ver=""
+  [ -f "$STATUS_FILE" ] && running_ver="$(_jget "$(cat "$STATUS_FILE" 2>/dev/null)" version)"
+  # Repo app version: host/build-host.sh RP_VERSION default, else Casks/*.rb, else unknown.
+  local repo_ver=""
+  if [ -n "$repo_root" ] && [ -f "$repo_root/host/build-host.sh" ]; then
+    repo_ver="$(sed -n 's/^VERSION="${RP_VERSION:-\([0-9.]*\)}".*/\1/p' "$repo_root/host/build-host.sh" | head -1)"
+  fi
+  if [ -z "$repo_ver" ] && [ -n "$repo_root" ]; then
+    repo_ver="$(sed -n 's/^[[:space:]]*version "\([0-9.]*\)".*/\1/p' "$repo_root"/Casks/*.rb 2>/dev/null | head -1)"
+  fi
+
+  c "xpair update (M6 Level-1 glue hot-swap)"
+  printf '  %-16s %s\n' "running app" "${running_ver:-unknown (status.json absent — app may be down)}"
+  printf '  %-16s %s\n' "repo/source" "${repo_ver:-unknown}"
+
+  local native_needed=0
+  if [ -n "$running_ver" ] && [ -n "$repo_ver" ] && [ "$running_ver" != "$repo_ver" ]; then
+    native_needed=1
+  fi
+
+  if [ "$check" = 1 ]; then
+    if [ "$native_needed" = 1 ]; then
+      warn "Level-2 native update required: app binary $running_ver → $repo_ver (use the app's Updater — session/consent gated)."
+    else
+      ok "no native mismatch — Level-1 glue hot-swap is sufficient."
+    fi
+    return 0
+  fi
+
+  # ── Level-2 guard: NEVER hot-swap the binary here. ──
+  if [ "$native_needed" = 1 ]; then
+    warn "App binary version mismatch ($running_ver → $repo_ver)."
+    cat >&2 <<EOF
+   This is a Level-2 NATIVE update — the .app binary changed. Level-1 (this command) will NOT
+   touch the running app or tmux server. Apply the native update via the app's own Updater, which
+   gates on the current session + user consent:
+     • Host menubar: $APP_NAME → "Check for updates…"   (or the app auto-checks GitHub Releases)
+     • The Updater downloads ${APP_NAME}.zip, prompts, and swaps the binary safely.
+   After the native update lands, re-run 'xpair update' to refresh the glue layer too.
+EOF
+    return 12
+  fi
+
+  # ── Level-1 hot-swap. Reuse the existing self-update machinery (network path) OR re-run the
+  #    repo installer scoped to client glue (local repo path). Neither relaunches the .app/tmux. ──
+  if [ -n "$repo_root" ] && [ -f "$repo_root/shared/install.sh" ]; then
+    c "glue hot-swap ← local repo ($repo_root) — re-installing client glue (--no-native, no relaunch)"
+    # --no-native keeps the app/LaunchAgent untouched; install.sh re-installs CLI/launchers/etc.
+    if RP_YES=1 bash "$repo_root/shared/install.sh" --role client --no-native --no-sync; then
+      ok "glue layer hot-swapped (app + tmux untouched). New code applies on next invocation."
+    else
+      warn "repo installer failed — falling back to network self-update"; cmd_self_update "$ref"
+    fi
+  else
+    c "no local repo — glue hot-swap via network self-update (GitHub @$ref)"
+    cmd_self_update "$ref"
+    warn "network self-update covers CLI/launcher/romanize only. For the full glue layer (approve rules/skills, host hooks), run from a repo checkout or re-run host install."
+  fi
+}
+
+case "${1:-help}" in
+  launch)  shift; cmd_launch "$@" ;;
+  ls)      cmd_ls ;;
+  map)     shift; cmd_map "$@" ;;
+  roots)   shift; cmd_map "$@" ;;     # legacy alias
+  config)  shift; cmd_config "$@" ;;
+  onboard) cmd_onboard ;;
+  open-gui) shift; cmd_open_gui "$@" ;;
+  discover) shift; cmd_discover "$@" ;;
+  install-host) shift; cmd_install_host "$@" ;;
+  host-permissions) shift; cmd_host_permissions "$@" ;;
+  doctor)  cmd_doctor ;;
+  approve) shift; cmd_approve "$@" ;;
+  status)  cmd_status ;;
+  editor)  shift; cmd_editor "$@" ;;
+  desktop) shift; cmd_desktop "$@" ;;
+  mount)   shift; cmd_mount "$@" ;;
+  notify)  shift; cmd_notify "$@" ;;
+  logs)    shift; cmd_logs "$@" ;;
+  self-update) shift; cmd_self_update "$@" ;;
+  update)  shift; cmd_update "$@" ;;
+  host)    cmd_host ;;
+  help|-h|--help) sed -n '3,27p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,27p' "$0"; exit 2 ;;
+esac

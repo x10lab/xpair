@@ -1,0 +1,299 @@
+// OnboardingWindow.swift — in-process onboarding, replacing the standalone Electron app.
+//
+// The host menu-bar app now hosts the React onboarding (host/onboarding/dist, bundled into
+// Contents/Resources/onboarding) inside a WKWebView. A WKUserScript injected atDocumentStart
+// defines `window.xpair` with the same method surface the Electron preload exposed, each
+// returning a Promise backed by a single WKScriptMessageHandlerWithReply (`rpbridge`, macOS 11+
+// async reply). The Swift reply handler dispatches by method name.
+//
+// Engine guard (claude | codex | opencode): unlike the client (which probes/installs the engine on
+// the host OVER SSH), the host onboarding runs entirely on THIS machine, so engineStatus/installEngine/
+// setEngineAuth/setEngine execute locally via EngineGuard (login-shell Process). The chosen engine is
+// persisted to ~/.xpair/host/host.env (the host-side counterpart of the client's client.env ENGINE).
+//
+// This window is shown by AppDelegate ONLY while Screen Recording is not granted (the hard run-gate).
+// onComplete fires when the React Done → complete() posts; closing it before SR is granted quits the app.
+
+import Cocoa
+import WebKit
+
+final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandlerWithReply {
+    /// `runGate` = the launch-time hard gate (full flow; dismissing while ungranted quits the app).
+    /// `grantOnly` = the menu-bar "Grant Permissions…" entry: deep-link to the Permissions step on a
+    /// still-running app; closing the window NEVER quits.
+    enum Mode { case runGate, grantOnly }
+
+    private var window: NSWindow!
+    private var webView: WKWebView!
+    private let onComplete: () -> Void
+    private let mode: Mode
+    /// Deep-link the React onboarding to a specific step on open (e.g. "permissions"). nil = start at
+    /// the beginning (Welcome) — used by "Configure…" to show the whole flow from scratch.
+    private let initialStep: String?
+    // Set true once the React side calls complete() (Screen Recording granted). Distinguishes a
+    // legitimate finish from the user dismissing the window while still ungranted (→ hard gate quit).
+    private var completed = false
+
+    /// onComplete is invoked on the main thread when the React onboarding signals completion.
+    /// `initialStep` deep-links the flow (e.g. "permissions"); nil starts at Welcome.
+    init(mode: Mode = .runGate, initialStep: String? = nil, onComplete: @escaping () -> Void) {
+        self.mode = mode
+        self.initialStep = initialStep
+        self.onComplete = onComplete
+        super.init()
+    }
+
+    // The JS shim: define window.xpair with a Promise-returning method per bridge call. Each
+    // method posts {method, args} to the `rpbridge` reply handler and awaits the async reply.
+    private static let bridgeShim = """
+    (function () {
+      const post = (method, args) =>
+        window.webkit.messageHandlers.rpbridge.postMessage({ method: method, args: args || [] });
+      window.xpair = {
+        openPermissionPane: (key) => post('openPermissionPane', [key]),
+        requestPermission: (key) => post('requestPermission', [key]),
+        startInstall: () => post('startInstall', []),
+        getInstallStatus: () => post('getInstallStatus', []),
+        getHostInfo: () => post('getHostInfo', []),
+        getStatus: () => post('getStatus', []),
+        getConsent: () => post('getConsent', []),
+        setConsent: (c) => post('setConsent', [c]),
+        connectedClients: () => post('connectedClients', []),
+        engineStatus: (engine) => post('engineStatus', [engine]),
+        installEngine: (engine) => post('installEngine', [engine]),
+        setEngineAuth: (engine, key) => post('setEngineAuth', [engine, key]),
+        setEngine: (engine) => post('setEngine', [engine]),
+        complete: () => post('complete', []),
+      };
+    })();
+    """
+
+    /// Build + show the onboarding window. Main thread only.
+    func show() {
+        assert(Thread.isMainThread, "OnboardingWindow.show must run on the main thread")
+
+        let config = WKWebViewConfiguration()
+        let controller = WKUserContentController()
+        let script = WKUserScript(source: Self.bridgeShim,
+                                  injectionTime: .atDocumentStart,
+                                  forMainFrameOnly: true)
+        controller.addUserScript(script)
+        // Deep-link the React onboarding straight to a specific step (e.g. "permissions" / "connect").
+        // Injected atDocumentStart (before the app bundle runs) so App.tsx reads it on first render.
+        // nil = start at Welcome (the whole flow from scratch), so inject nothing.
+        if let step = initialStep {
+            let stepScript = WKUserScript(source: "window.__rp_initialStep = '\(step)';",
+                                          injectionTime: .atDocumentStart,
+                                          forMainFrameOnly: true)
+            controller.addUserScript(stepScript)
+        }
+        controller.addScriptMessageHandler(self, contentWorld: .page, name: "rpbridge")
+        config.userContentController = controller
+
+        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 720, height: 560), configuration: config)
+
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.title = APP_NAME
+        window.contentView = webView
+        window.delegate = self
+        window.center()
+
+        // The React build uses vite base './', so index.html references its assets relatively.
+        // Load via file:// granting read access to the onboarding resource dir so the relative
+        // asset requests resolve.
+        guard let index = Bundle.main.url(forResource: "index",
+                                          withExtension: "html",
+                                          subdirectory: "onboarding") else {
+            log(.error, "onboarding: Contents/Resources/onboarding/index.html missing in bundle")
+            // Without the UI we cannot gate interactively — fail closed (app quits via the gate path).
+            return
+        }
+        let dir = index.deletingLastPathComponent()
+        webView.loadFileURL(index, allowingReadAccessTo: dir)
+
+        // XpairHost is LSUIElement (menu-bar accessory) → no Dock icon + weak window focus, so
+        // the onboarding can end up invisible/behind. Temporarily become a regular app so it shows in
+        // the Dock and can take focus; revert to .accessory in finish() (menu-bar-only after onboarding).
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        log(.info, "onboarding window shown (run-gate; activation → regular for Dock + focus)")
+    }
+
+    // MARK: - WKScriptMessageHandlerWithReply (async reply, macOS 11+)
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard let body = message.body as? [String: Any],
+              let method = body["method"] as? String else {
+            replyHandler(nil, "rpbridge: malformed message")
+            return
+        }
+        let args = body["args"] as? [Any] ?? []
+
+        switch method {
+        case "getStatus":
+            replyHandler([
+                "alive": true,
+                "ax": Permissions.axTrusted(),
+                "sr": Permissions.srGranted(),
+                "fda": Permissions.fdaGranted(),
+            ], nil)
+
+        case "requestPermission":
+            if let key = args.first as? String { Permissions.request(key) }
+            replyHandler(nil, nil)
+
+        case "openPermissionPane":
+            if let key = args.first as? String { openPane(key) }
+            replyHandler(nil, nil)
+
+        case "getHostInfo":
+            replyHandler([
+                "hostname": Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
+                "user": NSUserName(),
+            ], nil)
+
+        case "getInstallStatus":
+            // Already installed (the app self-launched this onboarding), so report ready.
+            replyHandler(["appAlive": true, "launchAgentPresent": true, "serverUp": true], nil)
+
+        case "startInstall":
+            // No-op: installation already happened before onboarding is shown.
+            replyHandler(nil, nil)
+
+        case "getConsent":
+            // Both flags are opt-in (default OFF via AppDelegate's UserDefaults.register). The
+            // onboarding reads/writes the SAME keys the rest of the host uses (Settings, startup
+            // gates), so there is one source of truth.
+            replyHandler([
+                "telemetry": UserDefaults.standard.bool(forKey: TelemetryClient.consentKey),
+                "crash": UserDefaults.standard.bool(forKey: SentryBridge.consentKey),
+            ], nil)
+
+        case "setConsent":
+            // Persist the user's opt-in choices. Defensive about JS payload types: only treat an
+            // explicit Bool true as ON; anything else (missing/null/non-bool) leaves it OFF.
+            if let c = args.first as? [String: Any] {
+                UserDefaults.standard.set((c["telemetry"] as? Bool) ?? false,
+                                          forKey: TelemetryClient.consentKey)
+                UserDefaults.standard.set((c["crash"] as? Bool) ?? false,
+                                          forKey: SentryBridge.consentKey)
+            }
+            replyHandler(nil, nil)
+
+        case "connectedClients":
+            // Read-only: the connected-client list (ts within the freshness window). Reuses the same
+            // helper the menu bar uses. Never throws to the renderer — list() returns [] on any error.
+            let clients = ConnectedClients.list().map {
+                ["name": $0.name, "user": $0.user, "ageSec": $0.ageSec] as [String: Any]
+            }
+            replyHandler(clients, nil)
+
+        case "engineStatus":
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
+                replyHandler(["installed": false, "authed": false, "version": "", "err": "unknown engine"], nil)
+                return
+            }
+            // Probe the LOCAL machine (this is the host's own onboarding). Async off the main thread so
+            // the login-shell probe never blocks the UI; reply on completion.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let s = EngineGuard.status(engine)
+                replyHandler(["installed": s.installed, "authed": s.authed,
+                              "version": s.version, "err": s.err], nil)
+            }
+
+        case "installEngine":
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
+                replyHandler(["ok": false, "err": "unknown engine"], nil)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = EngineGuard.install(engine)
+                replyHandler(["ok": r.ok, "err": r.err], nil)
+            }
+
+        case "setEngineAuth":
+            // args = [engine, key]. The key MUST NOT reach argv/log/disk-plaintext: EngineGuard.setAuth
+            // feeds it to the child over stdin only. Drop it from this scope as soon as it's handed off.
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine),
+                  args.count > 1, let key = args[1] as? String, !key.isEmpty else {
+                replyHandler(["ok": false, "err": "missing engine or key"], nil)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = EngineGuard.setAuth(engine, key: key)
+                replyHandler(["ok": r.ok, "err": r.err], nil)
+            }
+
+        case "setEngine":
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
+                replyHandler(["ok": false, "err": "unknown engine"], nil)
+                return
+            }
+            let r = EngineGuard.persist(engine)
+            replyHandler(["ok": r.ok, "err": r.err], nil)
+
+        case "complete":
+            replyHandler(nil, nil)
+            finish()
+
+        default:
+            replyHandler(nil, "rpbridge: unknown method \(method)")
+        }
+    }
+
+    // MARK: - helpers
+
+    private func openPane(_ key: String) {
+        let urls = [
+            "ax": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            "sr": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            "fda": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        ]
+        guard let s = urls[key], let url = URL(string: s) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// React Done → complete(): close the window and start serving.
+    private func finish() {
+        completed = true
+        // Consent was already persisted via setConsent during onboarding. Re-run the Sentry gate so
+        // an opt-in chosen here takes effect THIS session without a restart. Safe: startup ran with
+        // consent OFF (Noop backend), so this is the first real init when crash consent is now ON.
+        SentryBridge.setupIfConsented()
+        log(.info, "onboarding complete → starting serving")
+        window.close()
+        // Revert to menu-bar-only (LSUIElement) now that onboarding is done.
+        NSApp.setActivationPolicy(.accessory)
+        onComplete()
+    }
+
+    // MARK: - NSWindowDelegate (hard gate)
+
+    func windowWillClose(_ notification: Notification) {
+        switch mode {
+        case .runGate:
+            // Launch gate: dismissing while AX/SR are still ungranted (and not completed) quits the
+            // app. (allGranted = axTrusted && srGranted.)
+            if !completed && !Permissions.allGranted() {
+                log(.warn, "onboarding dismissed without Accessibility+Screen Recording — quitting (hard gate)")
+                NSApp.terminate(nil)
+            }
+        case .grantOnly:
+            // Menu-bar "Grant Permissions…": the app is already running — closing must NOT quit it.
+            // Just revert the temporary .regular activation policy show() set back to menu-bar-only
+            // (finish() already does this on the completed path).
+            if !completed { NSApp.setActivationPolicy(.accessory) }
+        }
+    }
+}

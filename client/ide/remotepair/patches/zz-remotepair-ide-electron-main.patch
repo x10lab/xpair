@@ -1,0 +1,49 @@
+diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
+index d886313c..3368da50 100644
+--- a/src/vs/code/electron-main/app.ts
++++ b/src/vs/code/electron-main/app.ts
+@@ -7,6 +7,8 @@ import { app, Details, GPUFeatureStatus, powerMonitor, protocol, session, Sessio
+ import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
+ import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
+ import { hostname, release } from 'os';
++import { existsSync } from 'fs'; // RemotePair: onboarding hook
++import { createRequire } from 'node:module'; // RemotePair: onboarding hook
+ import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
+ import { VSBuffer } from '../../base/common/buffer.js';
+ import { toErrorMessage } from '../../base/common/errorMessage.js';
+@@ -1321,6 +1323,35 @@ export class CodeApplication extends Disposable {
+ 	}
+ 
+ 	private async openFirstWindow(accessor: ServicesAccessor, initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
++		// RemotePair: single-app onboarding hook. On first run, suppress the workbench window and show
++		// the pre-workbench onboarding BrowserWindow instead; on completion re-enter the normal open.
++		// All window logic lives in the RemotePair-owned `onboarding-main.cjs` (shipped as a builtin
++		// extension). Any resolve/require failure falls through to the NORMAL open (never break startup).
++		try {
++			const nodeRequire = createRequire(import.meta.url);
++			const extRoot = this.environmentMainService.builtinExtensionsPath;
++			let resolved: string | undefined;
++			for (const dir of ['x10lab.remotepair', 'remotepair']) {
++				const candidate = join(extRoot, dir, 'onboarding-main.cjs');
++				if (existsSync(candidate)) { resolved = candidate; break; }
++			}
++			if (resolved) {
++				const ob = nodeRequire(resolved);
++				if (ob && typeof ob.shouldOnboard === 'function' && ob.shouldOnboard()) {
++					ob.openOnboardingWindow({
++						electron: nodeRequire('electron'),
++						onComplete: () => { this.doOpenFirstWindow(accessor, initialProtocolUrls); },
++					});
++					return [];
++				}
++			}
++		} catch (error) {
++			this.logService.error('[RemotePair] onboarding hook skipped, opening normally', error);
++		}
++		return this.doOpenFirstWindow(accessor, initialProtocolUrls);
++	}
++
++	private async doOpenFirstWindow(accessor: ServicesAccessor, initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
+ 		const windowsMainService = this.windowsMainService = accessor.get(IWindowsMainService);
+ 		this.auxiliaryWindowsMainService = accessor.get(IAuxiliaryWindowsMainService);
+ 

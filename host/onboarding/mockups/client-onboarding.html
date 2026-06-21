@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xpair — Client Onboarding (discovery → pair → connect) mockup</title>
+<style>
+  .dark {
+    --background: oklch(0.129 0.042 264.695);
+    --foreground: oklch(0.984 0.003 247.858);
+    --card: oklch(0.208 0.042 265.755);
+    --primary: oklch(0.929 0.013 255.508);
+    --primary-foreground: oklch(0.208 0.042 265.755);
+    --muted: oklch(0.279 0.041 260.031);
+    --muted-foreground: oklch(0.704 0.04 256.788);
+    --border: oklch(1 0 0 / 12%);
+    --destructive: oklch(0.704 0.191 22.216);
+    --accent-blue: oklch(0.696 0.17 162.48);   /* teal = LAN */
+    --accent-violet: oklch(0.627 0.265 303.9); /* violet = tailscale */
+  }
+  * { box-sizing: border-box; border-color: var(--border); margin: 0; padding: 0; }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 32px 64px;
+  }
+  .page-title { text-align:center; margin-bottom: 6px; font-size: 20px; font-weight: 650; letter-spacing:-0.01em; }
+  .page-sub { text-align:center; margin-bottom: 36px; font-size: 13px; color: var(--muted-foreground); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 440px);
+    gap: 40px 36px;
+    justify-content: center;
+  }
+  .frame-wrap { display:flex; flex-direction:column; gap:10px; }
+  .frame-label { font-size: 12px; color: var(--muted-foreground); padding-left: 4px; }
+  .frame-label b { color: var(--foreground); font-weight:600; }
+  .tag { display:inline-block; font-size:10px; padding:1px 6px; border-radius:6px; margin-left:6px;
+         background: color-mix(in oklab, var(--primary) 12%, transparent); color: var(--muted-foreground); }
+
+  /* ── macOS window chrome ───────────────────────────── */
+  .win {
+    width: 440px; height: 564px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.02) inset;
+  }
+  .titlebar {
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 13px 18px 13px 16px;
+    border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+    position: relative;
+  }
+  .lights { display:flex; gap:7px; position:absolute; left:16px; top:16px; }
+  .lights i { width:11px; height:11px; border-radius:50%; display:block; }
+  .lights .r{background:#ff5f57}.lights .y{background:#febc2e}.lights .g{background:#28c840}
+  .tb-text { margin-left: 64px; min-width:0; }
+  .tb-text h1 { font-size: 13px; font-weight: 600; }
+  .tb-text p { font-size: 11px; color: var(--muted-foreground); margin-top:1px; }
+  .dots { display:flex; align-items:center; gap:6px; }
+  .dots span { height:6px; border-radius:9999px; background: var(--border); transition:all .3s; display:block; }
+  .dots span.cur { width:24px; background: var(--primary); }
+  .dots span.done { width:6px; background: color-mix(in oklab, var(--primary) 60%, transparent); }
+  .dots span.todo { width:6px; }
+
+  .body { flex:1; padding: 30px 30px; overflow:hidden; }
+  .footer {
+    display:grid; grid-template-columns: 1fr auto; align-items:center;
+    padding: 14px 18px; border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+    background: color-mix(in oklab, var(--muted) 18%, transparent);
+  }
+  .btn {
+    font-size: 13px; font-weight: 500; border-radius: 8px; padding: 7px 14px; cursor: default;
+    border: 1px solid transparent; display:inline-flex; align-items:center; gap:6px;
+  }
+  .btn-primary { background: var(--primary); color: var(--primary-foreground); }
+  .btn-ghost { background: transparent; color: var(--muted-foreground); }
+  .btn-outline { background: transparent; color: var(--foreground); border-color: var(--border); }
+  .btn-sm { font-size:12px; padding:6px 11px; }
+  .row-end { display:flex; gap:8px; justify-content:flex-end; }
+
+  /* ── step content helpers ──────────────────────────── */
+  .center { display:flex; flex-direction:column; align-items:center; text-align:center; }
+  .icon-badge { width:62px; height:62px; border-radius:18px; display:flex; align-items:center; justify-content:center;
+                background: color-mix(in oklab, var(--primary) 10%, transparent); color: var(--primary); margin-bottom: 22px; }
+  .icon-badge.round { border-radius:50%; }
+  h2.title { font-size: 22px; font-weight: 650; letter-spacing:-0.015em; }
+  h2.title.sm { font-size: 19px; }
+  .lead { margin-top: 12px; max-width: 320px; font-size: 13.5px; line-height:1.5; color: var(--muted-foreground); }
+  .hint { margin-top: 8px; font-size: 12px; color: var(--muted-foreground); }
+  .hint b { color: var(--foreground); font-weight:600; }
+  .bullets { margin-top: 24px; width:100%; max-width:320px; display:flex; flex-direction:column; gap:10px; text-align:left; }
+  .bullets li { list-style:none; display:flex; gap:9px; align-items:flex-start; font-size:13.5px; color:var(--muted-foreground); }
+  .bullets li::before { content:""; width:6px;height:6px;border-radius:50%; background:var(--primary); margin-top:7px; flex:none; }
+
+  /* radar */
+  .radar { position:relative; width:84px; height:84px; margin-bottom: 22px; }
+  .radar .ring { position:absolute; inset:0; border-radius:50%; border:1px solid var(--primary); animation: radar 1.8s ease-out infinite; }
+  .radar .ring:nth-child(2){ animation-delay:.7s; }
+  @keyframes radar { 0%{transform:scale(.5);opacity:.6} 100%{transform:scale(2.2);opacity:0} }
+  .radar .core { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  .radar .core div { width:50px;height:50px;border-radius:50%; display:flex;align-items:center;justify-content:center;
+                     background: color-mix(in oklab, var(--primary) 16%, transparent); color:var(--primary); }
+
+  /* peer list */
+  .peer {
+    display:flex; align-items:center; gap:12px; padding:13px 14px; border-radius:12px;
+    border:1px solid var(--border); margin-bottom:10px; cursor:default;
+  }
+  .peer.primary { border-color: color-mix(in oklab, var(--primary) 35%, transparent);
+                  background: color-mix(in oklab, var(--primary) 6%, transparent); }
+  .peer .pic { width:38px;height:38px;border-radius:10px; display:flex;align-items:center;justify-content:center;
+               background: var(--muted); color: var(--muted-foreground); flex:none; }
+  .peer .pic.on { background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary); }
+  .peer .meta { flex:1; min-width:0; }
+  .peer .meta .nm { font-size:14px; font-weight:600; display:flex; align-items:center; gap:7px; }
+  .peer .meta .sub { font-size:11.5px; color:var(--muted-foreground); font-family:ui-monospace,Menlo,monospace; margin-top:2px; }
+  .badge { font-size:10px; font-weight:600; padding:1px 7px; border-radius:6px; letter-spacing:.02em; }
+  .badge.lan { background: color-mix(in oklab, var(--accent-blue) 20%, transparent); color: var(--accent-blue); }
+  .badge.ts  { background: color-mix(in oklab, var(--accent-violet) 22%, transparent); color: var(--accent-violet); }
+  .badge.ssh { background: color-mix(in oklab, var(--muted) 60%, transparent); color: var(--muted-foreground); }
+  .peer .warnhint { font-size:10.5px; color: color-mix(in oklab, var(--accent-violet) 70%, var(--muted-foreground)); margin-top:3px; display:flex; gap:5px; align-items:center; }
+  .pill-setup { font-size:10px; font-weight:600; padding:3px 9px; border-radius:7px; background: color-mix(in oklab, var(--primary) 14%, transparent); color: var(--primary); flex:none; }
+
+  /* connect-as form */
+  .field { text-align:left; margin-top:16px; }
+  .field .l { font-size:11px; color:var(--muted-foreground); margin-bottom:6px; display:block; }
+  .inputrow { display:flex; align-items:center; gap:0; border:1px solid var(--border); border-radius:10px; overflow:hidden;
+              background: color-mix(in oklab, var(--muted) 12%, transparent); }
+  .inputrow .in { flex:1; min-width:0; padding:10px 12px; font-size:13.5px; color:var(--foreground); font-family:ui-monospace,Menlo,monospace; display:flex; align-items:center; gap:6px; }
+  .inputrow .at { padding:10px 12px; font-size:13px; color:var(--muted-foreground); border-left:1px solid var(--border); background: color-mix(in oklab, var(--muted) 20%, transparent); white-space:nowrap; }
+  .caret { width:1px; height:16px; background:var(--primary); display:inline-block; animation:soft .9s steps(1) infinite; }
+  @keyframes soft { 50%{opacity:0} }
+  .keyfound { margin-top:14px; display:flex; gap:8px; align-items:center; font-size:12px; color: color-mix(in oklab, var(--accent-blue) 70%, var(--foreground));
+              border:1px solid color-mix(in oklab, var(--accent-blue) 30%, transparent); background: color-mix(in oklab, var(--accent-blue) 7%, transparent); border-radius:10px; padding:9px 12px; }
+
+  /* askpass helper overlay */
+  .scrim { position:absolute; inset:0; background: rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; }
+  .askpass { width:300px; background: oklch(0.24 0.03 265); border:1px solid rgba(255,255,255,.14); border-radius:13px;
+             padding:24px 18px 14px; box-shadow:0 20px 50px -12px rgba(0,0,0,.8); text-align:center; position:relative; }
+  .askpass .ttl { font-size:13px; font-weight:600; }
+  .askpass .ds { font-size:11px; color:var(--muted-foreground); margin-top:5px; line-height:1.45; }
+  .askpass .pw { margin-top:13px; border:1px solid var(--border); border-radius:8px; padding:8px 10px; text-align:left; font-family:ui-monospace,Menlo,monospace; font-size:13px; background: rgba(0,0,0,.25); }
+  .askpass .btns { display:flex; gap:8px; margin-top:13px; }
+  .askpass .btns .btn { flex:1; justify-content:center; }
+  .helper-tag { position:absolute; top:8px; right:10px; font-size:9px; color:var(--muted-foreground); background:rgba(0,0,0,.4); padding:2px 7px; border-radius:6px; }
+  .chev { color: var(--muted-foreground); flex:none; }
+  .scanline { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--muted-foreground); margin-top:4px; }
+  .spinner { width:13px;height:13px;border-radius:50%; border:2px solid var(--border); border-top-color:var(--primary); animation:spin .8s linear infinite; flex:none; }
+  @keyframes spin { to { transform: rotate(360deg) } }
+
+  .sect-h { font-size:18px; font-weight:650; letter-spacing:-0.01em; }
+  .sect-p { font-size:13px; color:var(--muted-foreground); margin-top:6px; line-height:1.5; }
+
+  /* empty/diagnose callout */
+  .callout { margin-top:18px; border:1px solid var(--border); border-radius:12px; padding:13px 14px; text-align:left;
+             background: color-mix(in oklab, var(--muted) 16%, transparent); }
+  .callout .ch { display:flex; gap:9px; align-items:flex-start; }
+  .callout .ico { width:30px;height:30px;border-radius:8px;flex:none; display:flex;align-items:center;justify-content:center;
+                  background: color-mix(in oklab, var(--destructive) 16%, transparent); color: var(--destructive); }
+  .callout .ico.warn { background: color-mix(in oklab, var(--accent-violet) 16%, transparent); color: var(--accent-violet); }
+  .callout .tt { font-size:13px; font-weight:600; }
+  .callout .dd { font-size:11.5px; color:var(--muted-foreground); margin-top:2px; line-height:1.45; }
+  .fallback { margin-top:12px; display:flex; flex-direction:column; gap:8px; }
+  .fb { display:flex; align-items:center; gap:11px; padding:11px 13px; border:1px solid var(--border); border-radius:11px; }
+  .fb .ico { width:32px;height:32px;border-radius:9px;flex:none; display:flex;align-items:center;justify-content:center;
+             background: var(--muted); color: var(--muted-foreground); }
+  .fb .t { flex:1; min-width:0; }
+  .fb .t .a { font-size:13px; font-weight:600; }
+  .fb .t .b { font-size:11px; color:var(--muted-foreground); margin-top:1px; }
+
+  /* PIN */
+  .pin { display:flex; gap:9px; justify-content:center; margin-top:22px; }
+  .pin span { width:42px;height:52px; border-radius:11px; border:1px solid var(--border); background: color-mix(in oklab, var(--muted) 14%, transparent);
+              display:flex;align-items:center;justify-content:center; font-size:24px; font-weight:600; font-family:ui-monospace,Menlo,monospace; }
+  .pin span.filled { border-color: color-mix(in oklab, var(--primary) 45%, transparent); color:var(--foreground); }
+  .pin span.cursor { border-color: var(--primary); }
+  .fp { margin-top:22px; border:1px solid var(--border); border-radius:12px; padding:13px 14px; text-align:left;
+        background: color-mix(in oklab, var(--muted) 16%, transparent); }
+  .fp .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted-foreground); display:flex; gap:6px; align-items:center; }
+  .fp .val { margin-top:7px; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:var(--foreground); word-break:break-all; line-height:1.5; }
+  .fp .ask { margin-top:9px; font-size:11.5px; color:var(--muted-foreground); }
+
+  /* connect progress steps */
+  .steps { margin-top:24px; display:flex; flex-direction:column; gap:13px; width:100%; max-width:330px; text-align:left; }
+  .st { display:flex; align-items:center; gap:12px; font-size:13.5px; }
+  .st .b { width:24px;height:24px;border-radius:50%; flex:none; display:flex;align-items:center;justify-content:center; font-size:11px; }
+  .st.done .b { background: color-mix(in oklab, var(--primary) 18%, transparent); color: var(--primary); }
+  .st.done .x { color: var(--foreground); }
+  .st.now .b  { background: color-mix(in oklab, var(--primary) 14%, transparent); color: var(--primary); }
+  .st.now .x  { color: var(--foreground); font-weight:600; }
+  .st.todo .b { background: var(--muted); color: var(--muted-foreground); }
+  .st.todo .x { color: var(--muted-foreground); }
+  .pbar { margin-top:26px; width:100%; max-width:330px; }
+  .pbar .track { height:3px; border-radius:9999px; background: color-mix(in oklab, var(--border) 80%, transparent); overflow:hidden; }
+  .pbar .fill { height:100%; border-radius:9999px; background: color-mix(in oklab, var(--primary) 60%, transparent); }
+  .pbar .cap { display:flex; justify-content:space-between; font-size:10px; color:var(--muted-foreground); margin-bottom:6px; }
+
+  .legend { max-width: 1360px; margin: 0 auto 30px; font-size:12px; color:var(--muted-foreground); display:flex; gap:18px; flex-wrap:wrap; justify-content:center; }
+  .legend i { display:inline-flex; align-items:center; gap:6px; }
+  .legend .sw { width:10px;height:10px;border-radius:3px; display:block; }
+  svg { display:block; }
+</style>
+</head>
+<body>
+  <div class="page-title">Xpair — Client onboarding</div>
+  <div class="page-sub">discovery → pair → connect · embedded Electron client (mockup for review)</div>
+
+  <div class="legend">
+    <i><span class="sw" style="background:color-mix(in oklab, var(--accent-blue) 60%, transparent)"></span> LAN (Bonjour) — zero-config, 옆자리</i>
+    <i><span class="sw" style="background:color-mix(in oklab, var(--accent-violet) 60%, transparent)"></span> Tailscale — 이미 깔려있으면 동급 발견</i>
+    <i><span class="sw" style="background:color-mix(in oklab, var(--destructive) 60%, transparent)"></span> 빈 상태 / 진단 / 폴백</i>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+<script>
+// ── inline icon set (lucide-ish) ─────────────────────────────
+const I = {
+  laptop:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>',
+  server:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg>',
+  wifi:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><path d="M12 20h.01"/></svg>',
+  check:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  check_sm:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  chev:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+  shield:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/></svg>',
+  lock:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  alert:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>',
+  globe:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>',
+  terminal:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6M12 19h8"/></svg>',
+  search:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  download:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
+  key:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8-8M16 3l3 3-2.5 2.5L14 6"/></svg>',
+  box:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>',
+};
+
+// ── window chrome ─────────────────────────────────────────────
+function dots(cur, total=5){
+  let s='';
+  for(let i=0;i<total;i++){ const c = i===cur?'cur':(i<cur?'done':'todo'); s+=`<span class="${c}"></span>`; }
+  return `<div class="dots">${s}</div>`;
+}
+function win({sub, step, body, prev=true, nextLabel='Continue', nextKind='primary', extraFooter=''}){
+  const prevBtn = prev ? `<button class="btn btn-ghost btn-sm">‹ Previous</button>` : '<span></span>';
+  const next = nextLabel ? `<button class="btn btn-${nextKind} btn-sm">${nextLabel}</button>` : '';
+  return `
+  <div class="win">
+    <div class="titlebar">
+      <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="tb-text"><h1>Xpair</h1><p>${sub}</p></div>
+      ${dots(step)}
+    </div>
+    <div class="body">${body}</div>
+    <div class="footer">${prevBtn}<div class="row-end">${extraFooter}${next}</div></div>
+  </div>`;
+}
+function frame(label, tag, html){
+  return `<div class="frame-wrap"><div class="frame-label"><b>${label}</b>${tag?`<span class="tag">${tag}</span>`:''}</div>${html}</div>`;
+}
+
+// ── 1. Welcome ───────────────────────────────────────────────
+const welcome = win({ sub:'Welcome', step:0, prev:false, nextLabel:'Find my host',
+  body:`<div class="center">
+    <div class="icon-badge">${I.laptop}</div>
+    <h2 class="title">Connect to your host</h2>
+    <p class="lead">Xpair will look for the Mac that runs your sessions — on this Wi-Fi first, no setup needed.</p>
+    <p class="hint">Make sure <b>XpairHost</b> is running on the other Mac.</p>
+    <ul class="bullets">
+      <li>Find your host automatically</li>
+      <li>Confirm with a short pairing code</li>
+      <li>Connect — keys are set up for you</li>
+    </ul>
+  </div>`});
+
+// ── 2. Discover · scanning ───────────────────────────────────
+const scanning = win({ sub:'Finding your host', step:1, nextLabel:'',
+  body:`<div class="center">
+    <div class="radar"><span class="ring"></span><span class="ring"></span>
+      <div class="core"><div>${I.wifi}</div></div></div>
+    <h2 class="title sm">Looking for your host…</h2>
+    <p class="lead">Scanning this network for Macs running XpairHost.</p>
+    <div class="scanline" style="margin-top:18px"><span class="spinner"></span> Bonjour · same Wi-Fi</div>
+    <div class="scanline"><span class="spinner"></span> Tailscale · your tailnet</div>
+  </div>`});
+
+// ── 3. Discover · found (deduped by fingerprint; per-peer status) ──
+const found = win({ sub:'3 Macs found', step:1, nextLabel:'', extraFooter:`<button class="btn btn-ghost btn-sm">Enter manually</button>`,
+  body:`<div>
+    <div class="sect-h">Found your host</div>
+    <div class="sect-p" style="margin-bottom:18px">Same machine on Wi-Fi and Tailscale is shown once (matched by host key).</div>
+
+    <!-- known / already in ~/.ssh/config → Reconnect, no password/bootstrap. Merged LAN+TS = one row -->
+    <div class="peer primary">
+      <div class="pic on">${I.server}</div>
+      <div class="meta"><div class="nm">gh-mac-m1 <span class="badge lan">LAN</span><span class="badge ts">TS</span></div>
+        <div class="sub">192.168.1.12 · 100.84.21.7</div></div>
+      <div class="pill-setup">Reconnect</div>
+    </div>
+
+    <!-- discoverable, advertising Xpair, not yet in my config → Connect -->
+    <div class="peer">
+      <div class="pic">${I.server}</div>
+      <div class="meta"><div class="nm">gh-mac-studio <span class="badge ts">TAILSCALE</span></div>
+        <div class="sub">100.84.21.7</div></div>
+      <div class="pill-setup">Connect</div>
+    </div>
+
+    <!-- SSH-able but Xpair not installed → Set up (client installs over SSH) -->
+    <div class="peer">
+      <div class="pic">${I.server}</div>
+      <div class="meta"><div class="nm">gh-mac-mini <span class="badge ssh">SSH</span></div>
+        <div class="sub">192.168.1.31</div>
+        <div class="warnhint">${I.download} Xpair not installed — we'll set it up</div></div>
+      <div class="pill-setup">Set up</div>
+    </div>
+
+    <div class="scanline" style="margin-top:14px"><span class="spinner"></span> still looking…</div>
+  </div>`});
+
+// ── 4. Discover · empty / diagnose / fallback ────────────────
+const empty = win({ sub:'No host found', step:1, nextLabel:'', extraFooter:`<button class="btn btn-ghost btn-sm">Enter manually</button>`,
+  body:`<div>
+    <div class="center" style="margin-bottom:4px">
+      <div class="icon-badge round" style="background:color-mix(in oklab, var(--muted) 30%, transparent); color:var(--muted-foreground); width:54px;height:54px;margin-bottom:14px">${I.search}</div>
+      <h2 class="title sm">No other Mac here yet</h2>
+      <p class="lead" style="max-width:300px">We couldn't see a host on this network.</p>
+    </div>
+    <div class="callout">
+      <div class="ch"><div class="ico warn">${I.alert}</div>
+        <div><div class="tt">On the same Wi-Fi?</div>
+          <div class="dd">Public/office Wi-Fi often blocks devices from seeing each other. If so, use Tailscale below.</div></div></div>
+    </div>
+    <div class="fallback">
+      <div class="fb"><div class="ico">${I.globe}</div>
+        <div class="t"><div class="a">Connect over Internet (Uses Tailscale)</div><div class="b">Works anywhere · needs Tailscale on both Macs (~2 min)</div></div>
+        <div class="chev">${I.chev}</div></div>
+      <div class="fb"><div class="ico">${I.terminal}</div>
+        <div class="t"><div class="a">Enter host manually</div><div class="b">Type an ssh host or IP yourself</div></div>
+        <div class="chev">${I.chev}</div></div>
+    </div>
+  </div>`});
+
+// ── 5. Connect · PIN (host already running → NO account password) ──
+const connectPin = win({ sub:'Connect to gh-mac-m1', step:2, nextLabel:'Pair & connect',
+  body:`<div class="center">
+    <div class="icon-badge round">${I.shield}</div>
+    <h2 class="title sm">Enter the pairing code</h2>
+    <p class="lead">Xpair is running on <b style="color:var(--foreground)">gh-mac-m1</b>. Read the 6-digit code on its menu bar and type it here.</p>
+    <div class="pin">
+      <span class="filled">4</span><span class="filled">8</span><span class="filled">2</span>
+      <span class="cursor">1</span><span></span><span></span>
+    </div>
+    <div class="keyfound" style="margin-top:18px">${I.check_sm} No account password needed — the host registers your key.</div>
+    <div class="fp">
+      <div class="lbl">${I.lock} Host key fingerprint</div>
+      <div class="val">SHA256:Xr4uK9…2bQ7  ed25519</div>
+      <div class="ask">Matches what gh-mac-m1 shows? You're connecting to the right Mac.</div>
+    </div>
+  </div>`});
+
+// ── 6. Set up · account password via askpass helper (host NOT installed) ──
+const setupPassword = win({ sub:'Set up gh-mac-mini', step:2, nextLabel:'', prev:true,
+  body:`<div>
+    <div class="sect-h">Sign in to install Xpair</div>
+    <div class="sect-p" style="margin-bottom:4px">gh-mac-mini doesn't have Xpair yet. Sign in once so we can set it up — after this it's key-based, no more passwords.</div>
+    <div class="field">
+      <span class="l">Connect as</span>
+      <div class="inputrow">
+        <div class="in">ghyeong <span class="caret"></span></div>
+        <div class="at">@ gh-mac-mini</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted-foreground);margin-top:6px">Defaults to your username. Change it for a different account on that Mac.</div>
+    </div>
+    <div class="fp" style="margin-top:16px">
+      <div class="lbl">${I.lock} Host key fingerprint</div>
+      <div class="val">SHA256:9fAa1c…Lp0e  ed25519</div>
+      <div class="ask">First time connecting — confirm this is the right Mac.</div>
+    </div>
+  </div>`,
+  // askpass helper overlays the window: the password goes to ssh, not the app.
+  });
+// inject the askpass scrim overlay into the set-up window
+const setupPasswordOverlay = setupPassword.replace('<div class="footer">', `
+    <div class="scrim">
+      <div class="askpass">
+        <div class="helper-tag">separate helper · app can't read this</div>
+        <div class="ttl">SSH wants the password for</div>
+        <div class="ds">ghyeong@gh-mac-mini<br/>(asked once — then key-based)</div>
+        <div class="pw">•••••••• <span class="caret"></span></div>
+        <div class="btns"><button class="btn btn-outline btn-sm">Cancel</button><button class="btn btn-primary btn-sm">OK</button></div>
+      </div>
+    </div>
+    <div class="footer">`);
+
+// ── 7. Installing host remotely (over SSH) + permission handoff ──
+const installing = win({ sub:'Installing on gh-mac-mini', step:3, prev:false, nextLabel:'',
+  body:`<div>
+    <div class="center" style="margin-bottom:2px">
+      <div class="icon-badge round" style="width:52px;height:52px;margin-bottom:12px">${I.box}</div>
+      <h2 class="title sm">Setting up the host</h2>
+      <p class="lead" style="max-width:300px">Installing XpairHost on gh-mac-mini over SSH.</p>
+    </div>
+    <div class="steps" style="max-width:340px;margin-left:auto;margin-right:auto">
+      <div class="st done"><span class="b">${I.check_sm}</span><span class="x">Authorized SSH key</span></div>
+      <div class="st done"><span class="b">${I.check_sm}</span><span class="x">Pushed XpairHost.app</span></div>
+      <div class="st now"><span class="b"><span class="spinner" style="width:11px;height:11px;border-width:1.5px"></span></span><span class="x">Registering launch agent</span></div>
+      <div class="st todo"><span class="b">4</span><span class="x">Starting host</span></div>
+    </div>
+    <div class="callout" style="margin-top:18px">
+      <div class="ch"><div class="ico warn">${I.shield}</div>
+        <div><div class="tt">One thing only you can do</div>
+          <div class="dd">macOS won't let us grant permissions remotely. On <b style="color:var(--foreground)">gh-mac-mini</b>, turn on Accessibility, Screen Recording & Full Disk Access — its own setup window will pop up.</div></div></div>
+      <div class="dd" style="margin-top:9px;padding-left:39px">⚠︎ That Mac must be <b style="color:var(--foreground)">logged in as ghyeong on its screen</b> for input & screen share to work.</div>
+    </div>
+  </div>`});
+
+// ── 7. Done ──────────────────────────────────────────────────
+const done = win({ sub:'Done', step:4, prev:false, nextLabel:'Open Xpair', nextKind:'primary',
+  body:`<div class="center">
+    <div class="icon-badge round">${I.check}</div>
+    <h2 class="title">You're connected</h2>
+    <p class="lead">Xpair is paired with <b style="color:var(--foreground)">gh-mac-m1</b>. Your sessions live there and stay alive 24/7.</p>
+    <div class="peer primary" style="margin-top:24px; width:300px; cursor:default">
+      <div class="pic on">${I.server}</div>
+      <div class="meta"><div class="nm">gh-mac-m1 <span class="badge lan">LAN</span></div>
+        <div class="sub">ghyeong · 192.168.1.12</div></div>
+      <div style="color:var(--primary)">${I.check_sm}</div>
+    </div>
+  </div>`});
+
+const items = [
+  frame('1 · Welcome', 'component ⑤ shell', welcome),
+  frame('2 · Discover — scanning (Bonjour + Tailscale)', 'component ①②', scanning),
+  frame('3 · Discover — found · deduped, per-peer status', 'component ①② · reconnect/connect/setup', found),
+  frame('4 · Discover — empty → diagnose + fallback', 'component ②⑤ · T3/T4', empty),
+  frame('5 · Connect — PIN (host running, NO password)', 'component ③ · wow path', connectPin),
+  frame('6 · Set up — account password via askpass helper', 'component ③④ · host not installed', setupPasswordOverlay),
+  frame('7 · Installing host over SSH + permission handoff', 'component ④ · remote install + TCC', installing),
+  frame('8 · Done — connected', 'component ⑤', done),
+];
+document.getElementById('grid').innerHTML = items.join('');
+</script>
+</body>
+</html>

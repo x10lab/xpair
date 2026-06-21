@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<!--
+  Xpair — Sessions sidebar surface mockup (session manager + list + picker)
+  Faithful-but-clean reconstruction of the patched VSCodium workbench surface.
+
+  Reconstructed from (read-only source of truth):
+    client/ide/remotepair/patches/zz-remotepair-ide-frontend.patch
+      - media/remotePairSessions.css          (sidebar chrome + "+" New Session overlay)
+      - media/remotePairSessionManager.css     (bottom-panel session cards/rows)
+      - remotePairTerminalSidebar.ts           (".remotepair-terminal-sidebar" container, view title "+")
+      - remotePairSessionPicker.ts             ("Start a session" picker + 4 kind cards)
+      - remotePairSessionManager.ts            ("Attached/Detached/History" tabs, session cards DOM)
+
+  Real class names, DOM structure, text labels, and icons come from those files.
+  Sample content (session names, host id, states) is representative, populated so the
+  design is visible with zero JS / zero runtime. No external dependencies.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xpair — Sessions sidebar</title>
+<style>
+/* ============================================================
+   Xpair surface mockup preamble — shared design tokens
+   Values from VSCode "Default Dark Modern" theme palette.
+   Inline this verbatim at the top of every surface mockup.
+   ============================================================ */
+:root{
+  /* typography */
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+
+  /* base text + icons */
+  --vscode-foreground: #cccccc;
+  --vscode-icon-foreground: #cccccc;
+
+  /* focus + borders */
+  --vscode-focusBorder: #0078d4;
+  --vscode-widget-border: #313131;
+
+  /* widgets / popovers */
+  --vscode-editorWidget-background: #202020;
+
+  /* activity bar */
+  --vscode-activityBar-foreground: #d7d7d7;
+  --vscode-activityBar-inactiveForeground: #868686;
+
+  /* lists + toolbars (hover states) */
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  /* links */
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+
+  /* scrollbar */
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+
+  /* convenience tokens used by the base layer below
+     (not referenced by the patch CSS, but handy for mockups) */
+  --rp-bg: #1f1f1f;
+  --rp-sidebar-bg: #181818;
+}
+
+/* ---- minimal base layer ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body{
+  margin: 0;
+  padding: 0;
+  background: var(--rp-bg, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   SURFACE CSS — adapted from the patch's two added stylesheets.
+   var(--vscode-*) tokens are kept (they resolve from the preamble
+   above). Monaco-internal layout rules irrelevant to the look are
+   dropped; the editor-group / sidebar chrome below is reconstructed
+   minimally for the mockup so the surface reads correctly.
+   ============================================================ */
+
+/* ---------------------------------------------------------------------------------------------
+ *  remotePairSessions.css — sidebar chrome + custom "+" (New Session) overlay.
+ *-------------------------------------------------------------------------------------------- */
+.monaco-workbench .remotepair-terminal-sidebar {
+  position: relative;
+}
+
+/* The embedded EditorPart renders its own editor-group action toolbar; for the
+   Sessions sidebar we replace it with our single "+" New Session button. */
+.monaco-workbench .remotepair-terminal-sidebar .editor-actions {
+  display: none !important;
+}
+
+/* "+" New Session button, top-right of the Sessions body.
+   (Current build renders the same "+" as a MenuId.ViewTitle navigation action;
+    this overlay rule is preserved verbatim from remotePairSessions.css.) */
+.monaco-workbench .remotepair-sessions-add {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  z-index: 12;
+  width: 24px;
+  height: 24px;
+  line-height: 22px;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 400;
+  cursor: pointer;
+  border-radius: 5px;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  user-select: none;
+}
+
+.monaco-workbench .remotepair-sessions-add:hover,
+.monaco-workbench .remotepair-sessions-add:focus {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  outline: none;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ *  remotePairSessionManager.css — bottom-panel session tabs: each tab (Attached / Detached /
+ *  History) renders ONLY its own category as a single horizontally-scrolling row of cards.
+ *-------------------------------------------------------------------------------------------- */
+.monaco-workbench .remotepair-session-manager {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 8px 12px;
+  overflow: hidden;
+}
+
+/* One horizontally-scrollable row of cards for the active category. */
+.monaco-workbench .remotepair-session-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+  /* Thin horizontal scrollbar so the row stays short. */
+  scrollbar-width: thin;
+}
+.monaco-workbench .remotepair-session-row::-webkit-scrollbar { height: 6px; }
+.monaco-workbench .remotepair-session-row::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.4)); border-radius: 3px; }
+
+/* Substantial session cards — only one category shows at a time, so there is room. */
+.monaco-workbench .remotepair-session-card {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-width: 120px;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  user-select: none;
+}
+
+/* The card label takes the available room and ellipsizes; the close button stays pinned right. */
+.monaco-workbench .remotepair-session-card .remotepair-session-card-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monaco-workbench .remotepair-session-card:hover,
+.monaco-workbench .remotepair-session-card:focus {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  outline: none;
+}
+
+/* Active session: the same rounded card, highlighted with a focus-colored outline so the
+ * currently-active session stands out. */
+.monaco-workbench .remotepair-session-card.remotepair-session-card-active {
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  outline: 1px solid var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  outline-offset: -1px;
+}
+
+/* Native-style close "X": small, right-aligned codicon. Shown on hover or when the card is active. */
+.monaco-workbench .remotepair-session-card .remotepair-session-card-close {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 14px;
+  line-height: 18px;
+  opacity: 0;
+  cursor: pointer;
+  color: inherit;
+}
+.monaco-workbench .remotepair-session-card:hover .remotepair-session-card-close,
+.monaco-workbench .remotepair-session-card:focus .remotepair-session-card-close,
+.monaco-workbench .remotepair-session-card.remotepair-session-card-active .remotepair-session-card-close {
+  opacity: 0.8;
+}
+.monaco-workbench .remotepair-session-card .remotepair-session-card-close:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  border-radius: 4px;
+}
+
+/* Read-only history cards (persisted titles that are not reattachable): no pointer affordance. */
+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly {
+  cursor: default;
+  opacity: 0.6;
+}
+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly:hover {
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  border-color: var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
+}
+
+.monaco-workbench .remotepair-session-empty {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-style: italic;
+  opacity: 0.45;
+  user-select: none;
+}
+
+/* ============================================================
+   MOCKUP CHROME — minimal reconstruction of the workbench frame
+   so the real components above sit in a believable context.
+   These are not part of the patch; they only stage the surface.
+   ============================================================ */
+.mockup-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--rp-bg);
+}
+.mockup-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Activity bar (left rail, icon column) */
+.activitybar {
+  flex: 0 0 48px;
+  background: var(--rp-sidebar-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 6px;
+  gap: 2px;
+}
+.activitybar .ab-item {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-activityBar-inactiveForeground);
+  position: relative;
+  cursor: pointer;
+}
+.activitybar .ab-item:hover { color: var(--vscode-activityBar-foreground); }
+.activitybar .ab-item.active { color: var(--vscode-activityBar-foreground); }
+.activitybar .ab-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 8px; bottom: 8px;
+  width: 2px;
+  background: var(--vscode-activityBar-foreground);
+}
+
+/* Sidebar shell hosting the Sessions view container */
+.sidebar {
+  flex: 0 0 300px;
+  min-width: 220px;
+  background: var(--rp-sidebar-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Composite/view title bar — "SESSIONS" + the "+" navigation action */
+.composite-title {
+  flex: 0 0 35px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 20px;
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: .04em;
+  color: var(--vscode-foreground);
+  opacity: .8;
+}
+.composite-title .title-label { flex: 1 1 auto; }
+.composite-title .actions { display: flex; align-items: center; gap: 2px; }
+.composite-title .action-item {
+  width: 28px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 5px;
+  color: var(--vscode-icon-foreground);
+  cursor: pointer;
+}
+.composite-title .action-item:hover { background: var(--vscode-toolbar-hoverBackground); }
+
+/* Embedded EditorPart inside the sidebar: tab strip + body */
+.embedded-editor {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--rp-bg);
+}
+.editor-tabs {
+  flex: 0 0 35px;
+  display: flex;
+  align-items: stretch;
+  background: var(--rp-sidebar-bg);
+  border-bottom: 1px solid var(--vscode-widget-border);
+  overflow: hidden;
+}
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  max-width: 160px;
+  font-size: 13px;
+  color: var(--vscode-activityBar-inactiveForeground);
+  border-right: 1px solid var(--vscode-widget-border);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.editor-tab .tab-label { overflow: hidden; text-overflow: ellipsis; }
+.editor-tab .tab-close {
+  font-size: 14px; opacity: 0; width: 16px; text-align: center; border-radius: 4px;
+}
+.editor-tab:hover .tab-close { opacity: .7; }
+.editor-tab.active {
+  color: var(--vscode-foreground);
+  background: var(--rp-bg);
+  border-top: 1px solid var(--vscode-focusBorder);
+}
+.editor-tab.active .tab-close { opacity: .7; }
+.editor-body { flex: 1 1 auto; min-height: 0; position: relative; overflow: auto; }
+
+/* Picker root styling is set inline in remotePairSessionPicker.ts via element.style.cssText;
+   we mirror those exact inline styles on the DOM below, so no extra class rules are needed. */
+
+/* Bottom panel hosting the session manager (Attached/Detached/History composite tabs) */
+.panel {
+  flex: 0 0 132px;
+  border-top: 1px solid var(--vscode-widget-border);
+  background: var(--rp-bg);
+  display: flex;
+  flex-direction: column;
+}
+.panel-tabs {
+  flex: 0 0 35px;
+  display: flex;
+  align-items: stretch;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+.panel-tab {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--vscode-activityBar-inactiveForeground);
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+.panel-tab:hover { color: var(--vscode-foreground); }
+.panel-tab.active {
+  color: var(--vscode-foreground);
+  border-bottom-color: var(--vscode-foreground);
+}
+.panel-tab .badge {
+  margin-left: 6px;
+  font-size: 10px;
+  min-width: 16px;
+  text-align: center;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  opacity: .8;
+}
+.panel-body { flex: 1 1 auto; min-height: 0; }
+
+/* Status indicator dot used inside attached session cards (sample affordance) */
+.rp-status-dot {
+  flex: 0 0 auto;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 8px;
+  background: #3fb950; /* attached / live */
+}
+.rp-status-dot.detached { background: #d29922; } /* detached / idle */
+.rp-host-badge {
+  flex: 0 0 auto;
+  margin-right: 8px;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(77, 170, 252, 0.18);
+  color: var(--vscode-textLink-foreground);
+  letter-spacing: .02em;
+}
+
+/* Inline codicon glyph sizing for the SVG icons used as close "X" / "+" */
+.codicon { display: inline-flex; align-items: center; justify-content: center; }
+.codicon svg { width: 1em; height: 1em; display: block; fill: currentColor; }
+.remotepair-session-card-close.codicon svg { width: 14px; height: 14px; }
+.remotepair-sessions-add .codicon svg,
+.composite-title .action-item .codicon svg { width: 16px; height: 16px; }
+</style>
+</head>
+
+<body class="monaco-workbench">
+  <div class="mockup-shell">
+    <div class="mockup-main">
+
+      <!-- Activity bar (left rail). The Sessions container is selected. -->
+      <div class="activitybar" role="tablist" aria-label="Active View Switcher">
+        <div class="ab-item active" title="Sessions" aria-label="Sessions" role="tab" aria-selected="true">
+          <!-- codicon: remote / sessions glyph -->
+          <span class="codicon" aria-hidden="true">
+            <svg viewBox="0 0 16 16"><path d="M2 2h12v9H9.5l-1.5 1.5L6.5 11H2V2zm1 1v7h3.9l1.1 1.1L9.1 10H13V3H3z"/></svg>
+          </span>
+        </div>
+        <div class="ab-item" title="Explorer" aria-label="Explorer" role="tab">
+          <span class="codicon" aria-hidden="true">
+            <svg viewBox="0 0 16 16"><path d="M1 2h5l1 1h8v11H1V2zm1 1v10h12V4H6.6L5.6 3H2z"/></svg>
+          </span>
+        </div>
+        <div class="ab-item" title="Search" aria-label="Search" role="tab">
+          <span class="codicon" aria-hidden="true">
+            <svg viewBox="0 0 16 16"><path d="M11.7 10.3a5 5 0 1 0-1.4 1.4l3 3 1.4-1.4-3-3zM7 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"/></svg>
+          </span>
+        </div>
+        <div class="ab-item" title="Source Control" aria-label="Source Control" role="tab">
+          <span class="codicon" aria-hidden="true">
+            <svg viewBox="0 0 16 16"><path d="M5 3.5a1.5 1.5 0 1 1-2 1.4v6.2a1.5 1.5 0 1 1-1 0V4.9A1.5 1.5 0 0 1 4 2a1.5 1.5 0 0 1 1 1.5zm6 0A1.5 1.5 0 1 1 9.5 5h-1A2.5 2.5 0 0 0 6 7.5v1.6a1.5 1.5 0 1 1-1 0V7.5A3.5 3.5 0 0 1 8.5 4h1A1.5 1.5 0 0 1 11 3.5z"/></svg>
+          </span>
+        </div>
+      </div>
+
+      <!--
+        Sessions sidebar = ".remotepair-terminal-sidebar" (renderBody adds this class).
+        The view container & view name are both "Sessions" (remotePairTerminalSidebar.ts).
+        The "+" New Session action lives in the view title (MenuId.ViewTitle, Codicon.add).
+        The body embeds an EditorPart whose first editor is the New Session picker.
+      -->
+      <div class="sidebar">
+
+        <!-- Composite/view title row: "Sessions" + the "+" navigation action -->
+        <div class="composite-title">
+          <span class="title-label">Sessions</span>
+          <div class="actions">
+            <!-- id: remotepair.terminalSidebar.newSession · title: "New Session" · icon: Codicon.add -->
+            <div class="action-item" role="button" tabindex="0" title="New Session" aria-label="New Session">
+              <span class="codicon codicon-add" aria-hidden="true">
+                <svg viewBox="0 0 16 16"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Embedded EditorPart: container also tagged .remotepair-terminal-sidebar + .part.editor -->
+        <div class="remotepair-terminal-sidebar part editor">
+
+          <!-- Editor tab strip. The "New Session" picker tab is active; running sessions
+               from PICKER_CARDS open as terminal tabs alongside it. -->
+          <div class="editor-tabs">
+            <div class="editor-tab active" role="tab" aria-selected="true" title="New Session">
+              <span class="tab-label">New Session</span>
+              <span class="tab-close codicon codicon-close" aria-hidden="true">
+                <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+              </span>
+            </div>
+            <div class="editor-tab" role="tab" title="claude · gh-mac-m1">
+              <span class="tab-label">claude · gh-mac-m1</span>
+              <span class="tab-close codicon codicon-close" aria-hidden="true">
+                <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+              </span>
+            </div>
+          </div>
+
+          <!-- Editor body: the active editor is the in-tab New Session picker.
+               DOM + inline styles mirror remotePairSessionPicker.ts createEditor() exactly:
+                 root  = $('div.remotepair-session-picker') with style.cssText set inline
+                 title = $('div') "Start a session"
+                 card  = $('div')[role=button][tabindex=0] with inline border/padding style
+                          → label $('div')  + desc $('div')
+               PICKER_CARDS = Claude (remote) / Shell / Codex / Gemini -->
+          <div class="editor-body">
+            <div class="remotepair-session-picker"
+                 style="height:100%;width:100%;overflow:auto;padding:16px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;">
+
+              <div style="font-size:13px;font-weight:600;opacity:0.8;margin-bottom:4px;">Start a session</div>
+
+              <div role="button" tabindex="0"
+                   style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+                <div style="font-weight:600;font-size:13px;">Claude (remote)</div>
+                <div style="font-size:11px;opacity:0.65;margin-top:2px;">mosh + tmux + claude on the host</div>
+              </div>
+
+              <div role="button" tabindex="0"
+                   style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+                <div style="font-weight:600;font-size:13px;">Shell</div>
+                <div style="font-size:11px;opacity:0.65;margin-top:2px;">local zsh</div>
+              </div>
+
+              <div role="button" tabindex="0"
+                   style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+                <div style="font-weight:600;font-size:13px;">Codex</div>
+                <div style="font-size:11px;opacity:0.65;margin-top:2px;">codex CLI</div>
+              </div>
+
+              <div role="button" tabindex="0"
+                   style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+                <div style="font-weight:600;font-size:13px;">Gemini</div>
+                <div style="font-size:11px;opacity:0.65;margin-top:2px;">gemini CLI</div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Editor area (out of scope for this surface — shown faintly for context). -->
+      <div style="flex:1 1 auto; min-width:0; display:flex; flex-direction:column;">
+        <div style="flex:0 0 35px; border-bottom:1px solid var(--vscode-widget-border); display:flex; align-items:center; padding:0 16px; color:var(--vscode-activityBar-inactiveForeground); font-size:13px;">
+          Editor
+        </div>
+        <div style="flex:1 1 auto; display:flex; align-items:center; justify-content:center; opacity:.25; font-size:13px;">
+          (editor area — not part of this surface)
+        </div>
+
+        <!--
+          Bottom panel = the Xpair Session Manager.
+          Three Panel view containers registered as composite tabs: Attached / Detached / History.
+          Each category view: renderBody adds .remotepair-session-manager, then a single
+          .remotepair-session-row of cards. We show the Attached tab active.
+        -->
+        <div class="panel">
+          <div class="panel-tabs" role="tablist" aria-label="Sessions">
+            <!-- registerSessionTab(... "Attached" ... ) -->
+            <div class="panel-tab active" role="tab" aria-selected="true">
+              Attached <span class="badge">3</span>
+            </div>
+            <!-- registerSessionTab(... "Detached" ... ) -->
+            <div class="panel-tab" role="tab">
+              Detached <span class="badge">1</span>
+            </div>
+            <!-- registerSessionTab(... "History" ... ) -->
+            <div class="panel-tab" role="tab">
+              History
+            </div>
+          </div>
+
+          <div class="panel-body">
+            <!-- Active = Attached category view -->
+            <div class="remotepair-session-manager">
+              <div class="remotepair-session-row">
+
+                <!-- addCard(): .remotepair-session-card [role=button][tabindex=0][title=text]
+                     → .remotepair-session-card-label + (optional) .remotepair-session-card-close.codicon.codicon-close
+                     The currently revealed/active session gets .remotepair-session-card-active. -->
+
+                <!-- Host session — the active, revealed terminal -->
+                <div class="remotepair-session-card remotepair-session-card-active"
+                     role="button" tabindex="0" title="claude · gh-mac-m1">
+                  <span class="rp-status-dot" title="attached"></span>
+                  <span class="rp-host-badge">HOST</span>
+                  <span class="remotepair-session-card-label">claude · gh-mac-m1</span>
+                  <span class="remotepair-session-card-close codicon codicon-close"
+                        role="button" title="Close Session" aria-label="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+
+                <!-- A named shell session -->
+                <div class="remotepair-session-card"
+                     role="button" tabindex="0" title="shell · api-refactor">
+                  <span class="rp-status-dot" title="attached"></span>
+                  <span class="remotepair-session-card-label">shell · api-refactor</span>
+                  <span class="remotepair-session-card-close codicon codicon-close"
+                        role="button" title="Close Session" aria-label="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+
+                <!-- A codex session -->
+                <div class="remotepair-session-card"
+                     role="button" tabindex="0" title="codex · review-pass">
+                  <span class="rp-status-dot" title="attached"></span>
+                  <span class="remotepair-session-card-label">codex · review-pass</span>
+                  <span class="remotepair-session-card-close codicon codicon-close"
+                        role="button" title="Close Session" aria-label="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+
+              </div>
+            </div>
+
+            <!--
+              For reference, the Detached and History categories render the same
+              .remotepair-session-manager > .remotepair-session-row structure:
+                - Detached: addCard(name, reattach) with a .remotepair-session-dot.detached
+                - History:  addDisplayCard() → .remotepair-session-card.remotepair-session-card-readonly
+                            (close title "Remove from History")
+                - Empty states: .remotepair-session-empty
+                    "No attached sessions" / "No detached sessions" / "No history"
+              These hidden samples document the alternate states without JS.
+            -->
+            <div class="remotepair-session-manager" hidden data-category="detached">
+              <div class="remotepair-session-row">
+                <div class="remotepair-session-card" role="button" tabindex="0" title="gemini · spec-draft">
+                  <span class="rp-status-dot detached" title="detached"></span>
+                  <span class="remotepair-session-card-label">gemini · spec-draft</span>
+                  <span class="remotepair-session-card-close codicon codicon-close" role="button" title="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="remotepair-session-manager" hidden data-category="history">
+              <div class="remotepair-session-row">
+                <div class="remotepair-session-card remotepair-session-card-readonly" title="claude · onboarding-flow">
+                  <span class="remotepair-session-card-label">claude · onboarding-flow</span>
+                  <span class="remotepair-session-card-close codicon codicon-close" role="button" title="Remove from History">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+                <div class="remotepair-session-card remotepair-session-card-readonly" title="shell · build-debug">
+                  <span class="remotepair-session-card-label">shell · build-debug</span>
+                  <span class="remotepair-session-card-close codicon codicon-close" role="button" title="Remove from History">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty-state sample (e.g. Detached with nothing): .remotepair-session-empty -->
+            <div class="remotepair-session-manager" hidden data-category="empty">
+              <div class="remotepair-session-row">
+                <div class="remotepair-session-empty">No detached sessions</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</body>
+</html>

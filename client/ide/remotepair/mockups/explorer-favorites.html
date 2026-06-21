@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<!--
+  Xpair surface mockup — "Browser" Explorer with Favorites / folders / browser actions.
+
+  Faithful (but clean) reconstruction of the patched VSCodium workbench surface owned by:
+    - src/vs/workbench/contrib/files/browser/remotePairFavorites.ts   (C2 Favorites view + store)
+    - src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts (row-1 Explorer/Search/Extensions, per-folder star + '+')
+    - src/vs/workbench/contrib/files/browser/remotePairBrowserRouter.ts  (Explorer<->Search inner router)
+    - src/vs/workbench/contrib/files/browser/views/explorerView.ts       (C1 below-list "Add Root" footer)
+    - src/vs/workbench/contrib/files/browser/media/explorerviewlet.css   (all Xpair CSS below)
+
+  DOM class names and CSS are extracted verbatim from zz-remotepair-ide-frontend.patch.
+  No JS, no external fonts/assets — codicon glyphs are inlined as SVG. Dark theme.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xpair — Browser (Explorer + Favorites)</title>
+<style>
+/* ============================================================
+   Xpair surface mockup preamble — shared design tokens
+   Values from VSCode "Default Dark Modern" theme palette.
+   Inline this verbatim at the top of every surface mockup.
+   ============================================================ */
+:root{
+  /* typography */
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+
+  /* base text + icons */
+  --vscode-foreground: #cccccc;
+  --vscode-icon-foreground: #cccccc;
+
+  /* focus + borders */
+  --vscode-focusBorder: #0078d4;
+  --vscode-widget-border: #313131;
+
+  /* widgets / popovers */
+  --vscode-editorWidget-background: #202020;
+
+  /* activity bar */
+  --vscode-activityBar-foreground: #d7d7d7;
+  --vscode-activityBar-inactiveForeground: #868686;
+
+  /* lists + toolbars (hover states) */
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  /* links */
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+
+  /* scrollbar */
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+
+  /* convenience tokens used by the base layer below
+     (not referenced by the patch CSS, but handy for mockups) */
+  --rp-bg: #1f1f1f;
+  --rp-sidebar-bg: #181818;
+}
+
+/* ---- minimal base layer ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body{
+  margin: 0;
+  padding: 0;
+  background: var(--rp-bg, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   Surface CSS — Xpair explorer / favorites
+   Extracted from explorerviewlet.css (the only Xpair-owned
+   styling for this surface) plus the minimal VSCode workbench
+   scaffolding needed to make the structure legible as a sidebar.
+   var(--vscode-*) tokens resolve from the preamble above.
+   ============================================================ */
+
+/* ---- workbench scaffolding (host chrome around the patched surface) ---- */
+.monaco-workbench{
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Activity bar (left rail) — minimal, for context only */
+.activitybar{
+  flex: 0 0 48px;
+  background: var(--rp-sidebar-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 6px;
+  gap: 2px;
+}
+.activitybar .action-item{
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-activityBar-inactiveForeground);
+  cursor: pointer;
+  position: relative;
+}
+.activitybar .action-item.checked{
+  color: var(--vscode-activityBar-foreground);
+}
+.activitybar .action-item.checked::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--vscode-activityBar-foreground);
+}
+.activitybar .action-item:hover{ color: var(--vscode-activityBar-foreground); }
+
+/* The "Browser" view container (relabeled Explorer / VIEWLET_ID) */
+.pane-composite-part{
+  flex: 0 0 300px;
+  background: var(--rp-sidebar-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.monaco-workbench .pane-composite-part .content{
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Row-1: container title bar — "BROWSER" + navigation actions
+   (Explorer | Search | Extensions). C4: forced 2-row header. */
+.composite.title{
+  flex: 0 0 35px;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 20px;
+  border-bottom: 1px solid transparent;
+}
+.composite.title .title-label{
+  flex: 1 1 auto;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composite.title .title-actions{
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.composite.title .title-actions .action-item{
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--vscode-icon-foreground);
+}
+.composite.title .title-actions .action-item:hover{
+  background: var(--vscode-toolbar-hoverBackground);
+}
+.composite.title .title-actions .action-item.checked{
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* Pane (the active view: the Explorer file tree pane) */
+.split-view-view{
+  display: flex;
+  flex-direction: column;
+}
+.pane{
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Row-2: active-view header (file-tree view title + its native actions +
+   the C4.2 dynamic root label rendered as span.description). */
+.pane > .pane-header{
+  flex: 0 0 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pane > .pane-header .twisty{
+  flex: 0 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-icon-foreground);
+}
+.pane > .pane-header .title{
+  flex: 0 0 auto;
+  color: var(--vscode-foreground);
+}
+.pane > .pane-header .description{
+  flex: 1 1 auto;
+  margin-left: 8px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pane > .pane-header .actions{
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+}
+.pane:hover > .pane-header .actions{ opacity: 1; }
+.pane > .pane-header .actions .action-item{
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--vscode-icon-foreground);
+}
+.pane > .pane-header .actions .action-item:hover{
+  background: var(--vscode-toolbar-hoverBackground);
+}
+.pane > .pane-body{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- explorer file tree (monaco-list scaffolding) ---- */
+.explorer-folders-view{ height: 100%; overflow: auto; }
+.monaco-list{ height: 100%; }
+.monaco-list-rows{ display: flex; flex-direction: column; }
+.monaco-list-row{
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 12px 0 0;
+  cursor: pointer;
+}
+.monaco-list-row:hover{ background: var(--vscode-list-hoverBackground); }
+.monaco-list-row.selected,
+.monaco-list-row.focused{ background: var(--vscode-list-hoverBackground); }
+.monaco-list-row.focused{ outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.monaco-tl-indent{ flex: 0 0 auto; }
+.monaco-tl-twistie{
+  flex: 0 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-icon-foreground);
+}
+.monaco-tl-twistie.collapsed svg{ transform: rotate(-90deg); }
+.monaco-icon-label{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.monaco-icon-label .file-icon{
+  flex: 0 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c09553; /* folder glyph tint, like seti folder */
+}
+.monaco-icon-label .label-name{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Xpair (C1): below-list "Add Root" footer
+   (verbatim from explorerviewlet.css)
+   ============================================================ */
+/* The explorer pane body becomes a flex column so the folder list (flex:1) and the
+   Add Root footer (fixed) stack; the tree height is reserved in layoutBody so the
+   footer is always visible ~20px below the list. */
+.rp-explorer-body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+.rp-explorer-body > .explorer-folders-view {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+.rp-add-root-footer {
+    flex: 0 0 auto;
+    display: flex;
+    margin-top: 20px;
+    padding: 0 8px 8px;
+}
+.rp-add-root-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: var(--vscode-textLink-foreground);
+    user-select: none;
+}
+.rp-add-root-button:hover {
+    color: var(--vscode-textLink-activeForeground);
+    text-decoration: underline;
+}
+.rp-add-root-button:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
+}
+.rp-add-root-icon {
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   Xpair (C2): Favorites view (bottom of Browser container)
+   (verbatim from explorerviewlet.css)
+   ============================================================ */
+.monaco-workbench .remotepair-favorites .remotepair-favorites-list {
+    display: flex;
+    flex-direction: column;
+    padding: 2px 0;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-empty {
+    padding: 6px 12px;
+    opacity: 0.6;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-row {
+    display: flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px 0 12px;
+    cursor: pointer;
+    user-select: none;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-row:hover,
+.monaco-workbench .remotepair-favorites .remotepair-favorites-row:focus {
+    background: var(--vscode-list-hoverBackground);
+    outline: none;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-label {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* Inline actions ('+' / 'X'): right-aligned, revealed on row hover/focus. */
+.monaco-workbench .remotepair-favorites .remotepair-favorites-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 6px;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-action {
+    opacity: 0;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-row:hover .remotepair-favorites-action,
+.monaco-workbench .remotepair-favorites .remotepair-favorites-row:focus .remotepair-favorites-action {
+    opacity: 0.8;
+}
+.monaco-workbench .remotepair-favorites .remotepair-favorites-action:hover {
+    opacity: 1;
+    background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+/* ============================================================
+   Xpair (C3): per-folder-row hover controls (star + '+')
+   (verbatim from explorerviewlet.css)
+   ============================================================ */
+/* Rendered by the IExplorerFileContribution into each row's contents container; absolute,
+   right-aligned, revealed on row hover/focus/selection (like native explorer inline actions).
+   Only present on folder rows (the contribution hides itself on files/unresolved rows — DR-6). */
+.monaco-workbench .explorer-folders-view .remotepair-folder-row-actions {
+    position: absolute;
+    right: 4px;
+    top: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    z-index: 12;
+}
+.monaco-workbench .explorer-folders-view .remotepair-folder-row-action {
+    opacity: 0;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+    font-size: 14px;
+}
+/* Keep the star visible (dimmed) when the folder is already favorited, even without hover, so
+   the favorite state is discoverable; the '+' stays hover-only. */
+.monaco-workbench .explorer-folders-view .remotepair-folder-row-action.remotepair-folder-row-action-active {
+    opacity: 0.65;
+}
+.monaco-workbench .explorer-folders-view .monaco-list-row:hover .remotepair-folder-row-action,
+.monaco-workbench .explorer-folders-view .monaco-list-row.focused .remotepair-folder-row-action,
+.monaco-workbench .explorer-folders-view .monaco-list-row.selected .remotepair-folder-row-action {
+    opacity: 0.8;
+}
+.monaco-workbench .explorer-folders-view .remotepair-folder-row-action:hover {
+    opacity: 1;
+    background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+/* The C3 star reflects favorite state via two codicon glyph classes set in JS:
+   .codicon-star-full (favorited) / .codicon-star-empty (not). The active class
+   keeps the filled star tinted so the favorited state is discoverable without hover. */
+.remotepair-folder-row-action.remotepair-folder-row-action-active .icon-star-full{ color: #e2c08d; }
+
+/* ---- inline codicon SVG sizing (replaces the codicon font glyphs) ---- */
+.codicon{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-icon-foreground);
+}
+.codicon svg{ width: 16px; height: 16px; display: block; fill: currentColor; }
+.remotepair-folder-row-action.codicon svg,
+.remotepair-favorites-action.codicon svg{ width: 16px; height: 16px; }
+</style>
+</head>
+<body>
+
+<!-- monaco-workbench: activity bar + the relabeled "Browser" view container -->
+<div class="monaco-workbench">
+
+  <!-- Activity bar (context only). "Browser" (files) is the active item. -->
+  <div class="activitybar" role="toolbar" aria-label="Active View Switcher">
+    <div class="action-item checked" title="Browser" aria-label="Browser">
+      <!-- codicon: files -->
+      <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 2.5h-6l-1-1H2.5l-1 1v11l1 1h11l1-1v-9l-1-1zm0 9.5h-12V2.5h4.793l1 1H14.5v8z"/></svg></span>
+    </div>
+    <div class="action-item" title="Search" aria-label="Search">
+      <!-- codicon: search -->
+      <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M15.25 14.31 11.4 10.46a5.5 5.5 0 1 0-.94.94l3.85 3.85.94-.94zM6.5 11a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg></span>
+    </div>
+    <div class="action-item" title="Source Control" aria-label="Source Control">
+      <!-- codicon: source-control -->
+      <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12 3.5a2 2 0 1 0-2.5 1.94v.31A2.25 2.25 0 0 1 7.25 8H5.44a2 2 0 1 0 0 1H7.25A3.25 3.25 0 0 0 10.5 5.75v-.31A2 2 0 0 0 12 3.5zM3.5 9.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm6.5-5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg></span>
+    </div>
+    <div class="action-item" title="Extensions" aria-label="Extensions">
+      <!-- codicon: extensions -->
+      <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2h3v1.5a1 1 0 1 0 2 0V2h3v3H10a1 1 0 1 0 0 2h1.5v3h-3V8.5a1 1 0 1 0-2 0V10h-3V7H5a1 1 0 1 0 0-2H3.5V2z"/></svg></span>
+    </div>
+  </div>
+
+  <!-- The "Browser" pane-composite (relabeled Explorer; VIEWLET_ID) -->
+  <div class="pane-composite-part" role="navigation" aria-label="Browser">
+
+    <!-- Row-1: container title bar with the C4.3 inner-router actions.
+         "Explorer | Search" route inside the Browser frame; Extensions opens its viewlet. -->
+    <div class="composite title">
+      <h2 class="title-label">Browser</h2>
+      <div class="title-actions" role="toolbar" aria-label="Browser actions">
+        <!-- remotepair.browser.routeExplorer (icon: files), order 9, checked (current route) -->
+        <div class="action-item checked" title="Explorer" aria-label="Explorer">
+          <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 2.5h-6l-1-1H2.5l-1 1v11l1 1h11l1-1v-9l-1-1zm0 9.5h-12V2.5h4.793l1 1H14.5v8z"/></svg></span>
+        </div>
+        <!-- remotepair.browser.search (icon: search), order 10 -->
+        <div class="action-item" title="Search" aria-label="Search">
+          <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M15.25 14.31 11.4 10.46a5.5 5.5 0 1 0-.94.94l3.85 3.85.94-.94zM6.5 11a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg></span>
+        </div>
+        <!-- remotepair.browser.extensions (icon: extensions), order 11 -->
+        <div class="action-item" title="Extensions" aria-label="Extensions">
+          <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2h3v1.5a1 1 0 1 0 2 0V2h3v3H10a1 1 0 1 0 0 2h1.5v3h-3V8.5a1 1 0 1 0-2 0V10h-3V7H5a1 1 0 1 0 0-2H3.5V2z"/></svg></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- content: the file-tree view pane, then (registered as a sibling, order:100) the Favorites view -->
+    <div class="content">
+
+      <!-- ============================================================
+           VIEW 1 — Explorer file tree pane (order:1)
+           pane-body uses .rp-explorer-body (C1): tree (flex:1) + Add Root footer
+           ============================================================ -->
+      <div class="split-view-view" style="flex: 1 1 auto; min-height: 0;">
+        <div class="pane">
+
+          <!-- Row-2: active-view header. span.description = C4.2 dynamic root label
+               (name of the root that owns the focused resource; shown only with >1 root). -->
+          <div class="pane-header" role="button" aria-expanded="true" tabindex="0">
+            <span class="twisty">
+              <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z" transform="rotate(90 8 8)"/></svg></span>
+            </span>
+            <span class="title">Browser</span>
+            <span class="description">api-gateway</span>
+            <div class="actions" role="toolbar" aria-label="Explorer actions">
+              <div class="action-item" title="New File...">
+                <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 1.1 13 4.6l.4 1V14l-1 1H4l-1-1V2l1-1h4.5l1 .1zM9 2H4v12h8V6H9V2zm1 .9V5h2.1L10 2.9z"/></svg></span>
+              </div>
+              <div class="action-item" title="New Folder...">
+                <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 4H7.7l-.85-1.5L6 2H1.5l-1 1v10l1 1h13l1-1V5l-1-1zM13.5 13h-11V3h3l.85 1.5.43.5h6.32v8z"/></svg></span>
+              </div>
+              <div class="action-item" title="Refresh Explorer">
+                <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.45 4.2A6 6 0 1 0 14 8h-1.1a4.9 4.9 0 1 1-.46-3H10v1h4V3h-1v1.2z"/></svg></span>
+              </div>
+              <div class="action-item" title="Collapse Folders in Explorer">
+                <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 9H4v1h5V9zm0-3H4v1h5V6zm3-4H2.5l-1 1v11l1 1H12l1-1V3l-1-1zm0 12H2.5V3H12v11z"/></svg></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- pane-body = .rp-explorer-body: folder list (flex:1) above the C1 Add Root footer -->
+          <div class="pane-body">
+            <div class="rp-explorer-body">
+
+              <!-- ----- the folder tree ----- -->
+              <div class="explorer-folders-view">
+                <div class="monaco-list" role="tree" aria-label="Files Explorer">
+                  <div class="monaco-list-rows">
+
+                    <!-- ROOT 1 (mounted host folder) — favorited, so the star stays dimmed/visible.
+                         C3 per-folder-row controls: star (filled = favorited) + '+'. -->
+                    <div class="monaco-list-row selected" style="padding-left: 8px;" aria-level="1" role="treeitem" aria-expanded="true">
+                      <span class="monaco-tl-twistie">
+                        <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z" transform="rotate(90 8 8)"/></svg></span>
+                      </span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#c09553" d="M14.5 4H7.7l-.85-1.5L6 2H1.5l-1 1v10l1 1h13l1-1V5l-1-1z"/></svg></span>
+                        <span class="label-name">api-gateway</span>
+                      </span>
+                      <div class="remotepair-folder-row-actions">
+                        <!-- filled star, favorited (active) -->
+                        <div class="remotepair-folder-row-action codicon codicon-star-full remotepair-folder-row-action-active" role="button" title="Toggle Favorite">
+                          <span class="icon-star-full"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 6 5.6l-4.5.65L4.75 9.4 4 13.9 8 11.8l4 2.1-.75-4.5L14.5 6.25 10 5.6 8 1.5z"/></svg></span>
+                        </div>
+                        <!-- '+' new session here -->
+                        <div class="remotepair-folder-row-action codicon codicon-add" role="button" title="New Session Here">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- child folder of ROOT 1 (expanded), not favorited -->
+                    <div class="monaco-list-row" style="padding-left: 24px;" aria-level="2" role="treeitem" aria-expanded="true">
+                      <span class="monaco-tl-twistie">
+                        <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z" transform="rotate(90 8 8)"/></svg></span>
+                      </span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#c09553" d="M14.5 4H7.7l-.85-1.5L6 2H1.5l-1 1v10l1 1h13l1-1V5l-1-1z"/></svg></span>
+                        <span class="label-name">src</span>
+                      </span>
+                      <div class="remotepair-folder-row-actions">
+                        <!-- outline star, not favorited -->
+                        <div class="remotepair-folder-row-action codicon codicon-star-empty" role="button" title="Toggle Favorite">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 6 5.6l-4.5.65L4.75 9.4 4 13.9 8 11.8l4 2.1-.75-4.5L14.5 6.25 10 5.6 8 1.5zm0 2.3 1.32 2.68 2.96.43-2.14 2.09.5 2.95L8 10.55l-2.64 1.39.5-2.95L3.72 6.9l2.96-.43L8 3.8z"/></svg>
+                        </div>
+                        <div class="remotepair-folder-row-action codicon codicon-add" role="button" title="New Session Here">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- file row (no C3 controls; the contribution hides itself on files — DR-6) -->
+                    <div class="monaco-list-row" style="padding-left: 40px;" aria-level="3" role="treeitem">
+                      <span class="monaco-tl-twistie"></span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#519aba" d="M9.5 1.1 13 4.6l.4 1V14l-1 1H4l-1-1V2l1-1h4.5l1 .1zM9 2H4v12h8V6H9V2z"/></svg></span>
+                        <span class="label-name">server.ts</span>
+                      </span>
+                    </div>
+
+                    <!-- file row -->
+                    <div class="monaco-list-row" style="padding-left: 40px;" aria-level="3" role="treeitem">
+                      <span class="monaco-tl-twistie"></span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#cbcb41" d="M9.5 1.1 13 4.6l.4 1V14l-1 1H4l-1-1V2l1-1h4.5l1 .1zM9 2H4v12h8V6H9V2z"/></svg></span>
+                        <span class="label-name">routes.ts</span>
+                      </span>
+                    </div>
+
+                    <!-- collapsed child folder of ROOT 1, not favorited -->
+                    <div class="monaco-list-row" style="padding-left: 24px;" aria-level="2" role="treeitem" aria-expanded="false">
+                      <span class="monaco-tl-twistie collapsed">
+                        <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z"/></svg></span>
+                      </span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#c09553" d="M14.5 4H7.7l-.85-1.5L6 2H1.5l-1 1v10l1 1h13l1-1V5l-1-1z"/></svg></span>
+                        <span class="label-name">test</span>
+                      </span>
+                      <div class="remotepair-folder-row-actions">
+                        <div class="remotepair-folder-row-action codicon codicon-star-empty" role="button" title="Toggle Favorite">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 6 5.6l-4.5.65L4.75 9.4 4 13.9 8 11.8l4 2.1-.75-4.5L14.5 6.25 10 5.6 8 1.5zm0 2.3 1.32 2.68 2.96.43-2.14 2.09.5 2.95L8 10.55l-2.64 1.39.5-2.95L3.72 6.9l2.96-.43L8 3.8z"/></svg>
+                        </div>
+                        <div class="remotepair-folder-row-action codicon codicon-add" role="button" title="New Session Here">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- ROOT 2 (mounted host folder), collapsed, favorited (star dimmed-visible) -->
+                    <div class="monaco-list-row" style="padding-left: 8px;" aria-level="1" role="treeitem" aria-expanded="false">
+                      <span class="monaco-tl-twistie collapsed">
+                        <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z"/></svg></span>
+                      </span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#c09553" d="M14.5 4H7.7l-.85-1.5L6 2H1.5l-1 1v10l1 1h13l1-1V5l-1-1z"/></svg></span>
+                        <span class="label-name">web-client</span>
+                      </span>
+                      <div class="remotepair-folder-row-actions">
+                        <div class="remotepair-folder-row-action codicon codicon-star-full remotepair-folder-row-action-active" role="button" title="Toggle Favorite">
+                          <span class="icon-star-full"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 6 5.6l-4.5.65L4.75 9.4 4 13.9 8 11.8l4 2.1-.75-4.5L14.5 6.25 10 5.6 8 1.5z"/></svg></span>
+                        </div>
+                        <div class="remotepair-folder-row-action codicon codicon-add" role="button" title="New Session Here">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- ROOT 3 (mounted host folder), collapsed, not favorited -->
+                    <div class="monaco-list-row" style="padding-left: 8px;" aria-level="1" role="treeitem" aria-expanded="false">
+                      <span class="monaco-tl-twistie collapsed">
+                        <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z"/></svg></span>
+                      </span>
+                      <span class="monaco-icon-label">
+                        <span class="file-icon"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="#c09553" d="M14.5 4H7.7l-.85-1.5L6 2H1.5l-1 1v10l1 1h13l1-1V5l-1-1z"/></svg></span>
+                        <span class="label-name">infra</span>
+                      </span>
+                      <div class="remotepair-folder-row-actions">
+                        <div class="remotepair-folder-row-action codicon codicon-star-empty" role="button" title="Toggle Favorite">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 6 5.6l-4.5.65L4.75 9.4 4 13.9 8 11.8l4 2.1-.75-4.5L14.5 6.25 10 5.6 8 1.5zm0 2.3 1.32 2.68 2.96.43-2.14 2.09.5 2.95L8 10.55l-2.64 1.39.5-2.95L3.72 6.9l2.96-.43L8 3.8z"/></svg>
+                        </div>
+                        <div class="remotepair-folder-row-action codicon codicon-add" role="button" title="New Session Here">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+              </div>
+
+              <!-- ----- C1: below-list "Add Root" footer -----
+                   <a.rp-add-root-button> with rootFolderOpened icon + "Add Root" label.
+                   Runs the mount-first `remotepair.browser.addRoot` command. -->
+              <div class="rp-add-root-footer">
+                <a class="rp-add-root-button" role="button" tabindex="0"
+                   title="Mount a host folder and add it as a Browser root">
+                  <span class="rp-add-root-icon codicon">
+                    <!-- codicon: root-folder-opened (distinct from new-folder, AC6) -->
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2 .5 3v10l1 1h1.2l1.7-5.3.9-.7H14.5V5l-1-1H7.7l-.85-1.5L6 2H1.5zm12.6 7H5.4l-1.6 5h9.3l1.7-5h-.7z"/></svg>
+                  </span>
+                  <span class="rp-add-root-label">Add Root</span>
+                </a>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ============================================================
+           VIEW 2 — Xpair Favorites (C2), registered order:100 so it
+           sits at the bottom of the Browser container (like Outline/Timeline).
+           container.classList.add('remotepair-favorites'); list = .remotepair-favorites-list
+           ============================================================ -->
+      <div class="split-view-view" style="flex: 0 0 auto;">
+        <div class="pane">
+
+          <div class="pane-header" role="button" aria-expanded="true" tabindex="0">
+            <span class="twisty">
+              <span class="codicon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 13.7 11.4 8 5.7 2.3l-.94.94L9.5 8l-4.74 4.76.94.94z" transform="rotate(90 8 8)"/></svg></span>
+            </span>
+            <span class="title">Favorites</span>
+          </div>
+
+          <div class="pane-body">
+            <!-- renderBody: container.classList.add('remotepair-favorites') -->
+            <div class="remotepair-favorites">
+              <div class="remotepair-favorites-list">
+
+                <!-- favorite row: label + inline '+' (new session here) + inline 'X' (remove) -->
+                <div class="remotepair-favorites-row" role="button" tabindex="0" title="/home/dev/api-gateway">
+                  <span class="remotepair-favorites-label">api-gateway</span>
+                  <div class="remotepair-favorites-actions">
+                    <!-- codicon: add -->
+                    <div class="remotepair-favorites-action codicon codicon-add" role="button" tabindex="0" title="New Session Here">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                    </div>
+                    <!-- codicon: close -->
+                    <div class="remotepair-favorites-action codicon codicon-close" role="button" tabindex="0" title="Remove from Favorites">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 8.71 11.65 12.36 12.36 11.65 8.71 8 12.36 4.35 11.65 3.64 8 7.29 4.35 3.64 3.64 4.35 7.29 8 3.64 11.65 4.35 12.36 8 8.71z"/></svg>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="remotepair-favorites-row" role="button" tabindex="0" title="/home/dev/web-client">
+                  <span class="remotepair-favorites-label">web-client</span>
+                  <div class="remotepair-favorites-actions">
+                    <div class="remotepair-favorites-action codicon codicon-add" role="button" tabindex="0" title="New Session Here">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                    </div>
+                    <div class="remotepair-favorites-action codicon codicon-close" role="button" tabindex="0" title="Remove from Favorites">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 8.71 11.65 12.36 12.36 11.65 8.71 8 12.36 4.35 11.65 3.64 8 7.29 4.35 3.64 3.64 4.35 7.29 8 3.64 11.65 4.35 12.36 8 8.71z"/></svg>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="remotepair-favorites-row" role="button" tabindex="0" title="/srv/shared/design-system">
+                  <span class="remotepair-favorites-label">design-system</span>
+                  <div class="remotepair-favorites-actions">
+                    <div class="remotepair-favorites-action codicon codicon-add" role="button" tabindex="0" title="New Session Here">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 7H9V2H7v5H2v2h5v5h2V9h5V7z"/></svg>
+                    </div>
+                    <div class="remotepair-favorites-action codicon codicon-close" role="button" tabindex="0" title="Remove from Favorites">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 8.71 11.65 12.36 12.36 11.65 8.71 8 12.36 4.35 11.65 3.64 8 7.29 4.35 3.64 3.64 4.35 7.29 8 3.64 11.65 4.35 12.36 8 8.71z"/></svg>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Empty-state variant (shown when getFavorites() === []) — rendered here
+                     dimmed for reference; the live view shows EITHER rows OR this message.
+                <div class="remotepair-favorites-empty">Star a folder to add it here.</div>
+                -->
+
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

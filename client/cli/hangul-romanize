@@ -1,0 +1,38 @@
+#!/usr/bin/env perl
+# hangul-romanize — Converts Hangul to Revised Romanization to build a tmux
+# session name as a safe ASCII identifier. Deterministic and offline (uses only
+# perl, which ships with macOS by default).
+# - Hangul syllables (0xAC00–0xD7A3) are decomposed into initial/medial/final and rendered in RR.
+# - [A-Za-z0-9] is kept as-is; every other character (whitespace, ., :, emoji, Han characters, etc.) becomes '_'.
+# - Runs of '_' are collapsed into one. (A leading '_' is kept: ".claude" → "_claude")
+# Input: argv (or stdin if none). Output: the converted result (no trailing newline).
+#
+# e.g. 창업스터디 → changeopseuteodi,  경인일보 → gyeonginilbo,  문서 → munseo
+use strict;
+use warnings;
+use Unicode::Normalize qw(NFC);   # macOS filenames are NFD (decomposed jamo) — must recompose into syllables to convert
+
+# 19 initials, 21 medials, 28 finals (final 0 = no batchim). RR standard notation.
+my @L = ("g","kk","n","d","tt","r","m","b","pp","s","ss","","j","jj","ch","k","t","p","h");
+my @V = ("a","ae","ya","yae","eo","e","yeo","ye","o","wa","wae","oe","yo","u","wo","we","wi","yu","eu","ui","i");
+my @T = ("","k","k","k","n","n","n","t","l","k","m","p","t","t","p","l","m","p","p","t","t","ng","t","t","k","t","p","t");
+
+my $in = @ARGV ? join(" ", @ARGV) : do { local $/; my $s = <STDIN>; defined $s ? $s : "" };
+utf8::decode($in);              # UTF-8 octets → characters
+$in = NFC($in);                 # NFD (decomposed) → NFC (composed syllables) — handles macOS basename
+$in =~ s/\R+\z//;               # strip trailing newline
+
+my $out = "";
+for my $ch (split //, $in) {
+  my $c = ord($ch);
+  if ($c >= 0xAC00 && $c <= 0xD7A3) {
+    my $s = $c - 0xAC00;
+    $out .= $L[int($s / 588)] . $V[int(($s % 588) / 28)] . $T[$s % 28];
+  } elsif ($ch =~ /[A-Za-z0-9_-]/) {
+    $out .= $ch;
+  } else {
+    $out .= "_";
+  }
+}
+$out =~ s/_+/_/g;               # collapse runs of '_'
+print $out;

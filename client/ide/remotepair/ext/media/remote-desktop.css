@@ -1,0 +1,131 @@
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-foreground, #ccc);
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  background: #000;
+}
+
+#screen {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  cursor: crosshair;
+  display: block;
+}
+
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.72);
+  pointer-events: none;
+}
+
+#overlay.hidden {
+  display: none;
+}
+
+#overlay-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  opacity: 0.95;
+}
+
+#overlay-msg {
+  max-width: 80%;
+  white-space: pre-line;
+  opacity: 0.8;
+  line-height: 1.4;
+}
+
+#badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+
+#badge.on {
+  background: var(--vscode-testing-iconPassed, #2ea043);
+  color: #fff;
+}
+
+#badge.off {
+  background: var(--vscode-input-background, #3a3d41);
+  color: var(--vscode-descriptionForeground, #aaa);
+}
+
+#screen-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  cursor: crosshair;
+  display: none; /* hidden until v1 activates */
+}
+
+#screen-video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  cursor: crosshair;
+  display: none; /* hidden until v2 (WebRTC) activates */
+}
+
+#mode-badge {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  opacity: 0.75;
+  pointer-events: none;
+  user-select: none;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+#mode-badge.mode-v1 {
+  background: var(--vscode-charts-blue, #1e88e5);
+  color: #fff;
+}
+
+#mode-badge.mode-v0 {
+  background: var(--vscode-input-background, #3a3d41);
+  color: var(--vscode-descriptionForeground, #aaa);
+}

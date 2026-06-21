@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Xpair — Remote Desktop Panel</title>
+<style>
+/* ============================================================
+   Xpair surface mockup preamble — shared design tokens
+   Values from VSCode "Default Dark Modern" theme palette.
+   Inline this verbatim at the top of every surface mockup.
+   ============================================================ */
+:root{
+  /* typography */
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+
+  /* base text + icons */
+  --vscode-foreground: #cccccc;
+  --vscode-icon-foreground: #cccccc;
+
+  /* focus + borders */
+  --vscode-focusBorder: #0078d4;
+  --vscode-widget-border: #313131;
+
+  /* widgets / popovers */
+  --vscode-editorWidget-background: #202020;
+
+  /* activity bar */
+  --vscode-activityBar-foreground: #d7d7d7;
+  --vscode-activityBar-inactiveForeground: #868686;
+
+  /* lists + toolbars (hover states) */
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  /* links */
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+
+  /* scrollbar */
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+
+  /* convenience tokens used by the base layer below
+     (not referenced by the patch CSS, but handy for mockups) */
+  --rp-bg: #1f1f1f;
+  --rp-sidebar-bg: #181818;
+}
+
+/* ---- minimal base layer ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body{
+  margin: 0;
+  padding: 0;
+  background: var(--rp-bg, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   Remote Desktop panel CSS — adapted verbatim from
+   ext/media/remote-desktop.css. var(--vscode-*) references that
+   are NOT defined in the preamble above have been resolved to
+   their Default Dark Modern theme values inline.
+   ============================================================ */
+
+/* NOTE: in the shipped webview these rules apply to <html>/<body>
+   which fill the editor panel. In this mockup the same rules are
+   scoped to .rp-stage-host so multiple connection states can be
+   shown side by side on one page. The original full-viewport
+   declarations are preserved in comments for fidelity.
+
+   html, body {
+     margin: 0; padding: 0; height: 100%; overflow: hidden;
+     background: var(--vscode-editor-background, #1e1e1e);
+     color: var(--vscode-foreground, #ccc);
+     font-family: var(--vscode-font-family, sans-serif);
+     font-size: var(--vscode-font-size, 13px);
+   }
+*/
+
+#stage,
+.rp-stage-host {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  background: #000;
+}
+
+#screen {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  cursor: crosshair;
+  display: block;
+}
+
+#overlay,
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.72);
+  pointer-events: none;
+}
+
+#overlay.hidden,
+.overlay.hidden {
+  display: none;
+}
+
+#overlay-title,
+.overlay-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  opacity: 0.95;
+}
+
+#overlay-msg,
+.overlay-msg {
+  max-width: 80%;
+  white-space: pre-line;
+  opacity: 0.8;
+  line-height: 1.4;
+}
+
+#badge,
+.badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+
+#badge.on,
+.badge.on {
+  /* var(--vscode-testing-iconPassed) -> #2ea043 */
+  background: #2ea043;
+  color: #fff;
+}
+
+#badge.off,
+.badge.off {
+  /* var(--vscode-input-background) -> #313131 (Default Dark Modern) */
+  background: #313131;
+  /* var(--vscode-descriptionForeground) -> #9d9d9d */
+  color: #9d9d9d;
+}
+
+#screen-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  cursor: crosshair;
+  display: none; /* hidden until v1 activates */
+}
+
+#screen-video,
+.screen-video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  cursor: crosshair;
+  display: block; /* shipped JS sets display:block on init */
+}
+
+#mode-badge,
+.mode-badge {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  opacity: 0.75;
+  pointer-events: none;
+  user-select: none;
+  /* var(--vscode-editor-font-family) -> monospace stack */
+  font-family: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+}
+
+#mode-badge.mode-v1,
+.mode-badge.mode-v1 {
+  /* var(--vscode-charts-blue) -> #3794ff (Default Dark Modern) */
+  background: #3794ff;
+  color: #fff;
+}
+
+#mode-badge.mode-v0,
+.mode-badge.mode-v0 {
+  /* var(--vscode-input-background) -> #313131 */
+  background: #313131;
+  /* var(--vscode-descriptionForeground) -> #9d9d9d */
+  color: #9d9d9d;
+}
+
+/* ============================================================
+   Mockup-only chrome. Not part of the shipped webview — used
+   purely to label the connection states for the design reader.
+   ============================================================ */
+
+.mock-page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+.mock-head {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--vscode-foreground);
+}
+
+.mock-sub {
+  margin: 0 0 28px;
+  font-size: 12.5px;
+  color: #9d9d9d;
+  max-width: 70ch;
+}
+
+.mock-sub code {
+  font-family: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+  font-size: 11.5px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--vscode-textLink-foreground);
+}
+
+.mock-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+
+.mock-card {
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.mock-card-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--vscode-activityBar-foreground);
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.mock-card-label .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.mock-card-label .dot.connecting { background: #d7912b; }
+.mock-card-label .dot.live       { background: #2ea043; }
+.mock-card-label .dot.error      { background: #f14c4c; }
+.mock-card-label .dot.idle       { background: #868686; }
+
+.mock-card-note {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11px;
+  color: #868686;
+  font-family: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+}
+
+/* Each card hosts a real <video>-surface stage at a fixed
+   aspect so the overlay/badge geometry reads truthfully. The
+   .rp-stage-host height override replaces the 100vh full-panel
+   sizing used in production. */
+.mock-card .rp-stage-host {
+  height: 300px;
+}
+
+/* A faux desktop frame standing in for the live H.264 <video>
+   stream so the "live" state shows content under the badge. */
+.faux-desktop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 20% 0%, #1b2740 0%, #0c1018 55%, #060809 100%);
+  display: block;
+}
+.faux-desktop .menubar {
+  height: 22px;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.faux-desktop .menubar .apple { font-weight: 700; opacity: 0.85; }
+.faux-desktop .win {
+  position: absolute;
+  border-radius: 8px;
+  background: rgba(20, 22, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.faux-desktop .win .titlebar {
+  height: 24px;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.faux-desktop .win .titlebar i {
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+}
+.faux-desktop .win .titlebar i.r { background: #ff5f57; }
+.faux-desktop .win .titlebar i.y { background: #febc2e; }
+.faux-desktop .win .titlebar i.g { background: #28c840; }
+.faux-desktop .win .body {
+  padding: 12px;
+  font-family: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  color: rgba(220, 230, 245, 0.82);
+  white-space: pre;
+}
+.faux-desktop .win .body .kw { color: #c586c0; }
+.faux-desktop .win .body .fn { color: #4daafc; }
+.faux-desktop .win .body .st { color: #ce9178; }
+.faux-desktop .win .body .cm { color: #6a9955; }
+
+.win-1 { top: 44px; left: 32px; width: 58%; }
+.win-2 { bottom: 26px; right: 30px; width: 40%; }
+
+/* spinner used inside the connecting overlay */
+.rp-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: rp-spin 0.9s linear infinite;
+  margin-bottom: 2px;
+}
+@keyframes rp-spin { to { transform: rotate(360deg); } }
+
+.mock-foot {
+  margin-top: 34px;
+  padding-top: 18px;
+  border-top: 1px solid var(--vscode-widget-border);
+  font-size: 11.5px;
+  color: #868686;
+  line-height: 1.7;
+}
+.mock-foot b { color: #b5b5b5; font-weight: 600; }
+.mock-foot code {
+  font-family: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+  font-size: 11px;
+  color: var(--vscode-textLink-foreground);
+}
+
+@media (max-width: 760px) {
+  .mock-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+  <div class="mock-page">
+    <h1 class="mock-head">Xpair · Remote Desktop</h1>
+    <p class="mock-sub">
+      View-only WebRTC screen mirror rendered inside a VSCodium editor webview
+      (<code>remotepair.openRemoteDesktop</code>). The live surface is a single
+      <code>&lt;video id="screen-video"&gt;</code> filling a black <code>#stage</code>,
+      with an <code>#overlay</code> for connection state and an <code>#badge</code>
+      that is permanently <em>view-only</em> (no remote cursor/keyboard input).
+      Below are the real DOM + classes shown across each connection state.
+    </p>
+
+    <div class="mock-grid">
+
+      <!-- ── State 1: Connecting (default boot state) ─────────────── -->
+      <section class="mock-card">
+        <div class="mock-card-label">
+          <span class="dot connecting"></span>
+          Connecting
+          <span class="mock-card-note">overlay visible</span>
+        </div>
+        <!-- SHIPPED DOM (#stage scoped to .rp-stage-host for the mockup) -->
+        <div class="rp-stage-host" id="stage" tabindex="0">
+          <video class="screen-video" id="screen-video" autoplay muted playsinline></video>
+          <div class="overlay" id="overlay">
+            <div class="rp-spinner" aria-hidden="true"></div>
+            <div class="overlay-title" id="overlay-title">Xpair</div>
+            <div class="overlay-msg" id="overlay-msg">Connecting to host…</div>
+          </div>
+          <div class="badge off" id="badge" title="View-only (no remote control)">view-only</div>
+        </div>
+      </section>
+
+      <!-- ── State 2: Live (frame received, overlay hidden) ───────── -->
+      <section class="mock-card">
+        <div class="mock-card-label">
+          <span class="dot live"></span>
+          Live stream
+          <span class="mock-card-note">overlay.hidden</span>
+        </div>
+        <div class="rp-stage-host" tabindex="0">
+          <!-- Stand-in for the decoded H.264 <video> stream content -->
+          <div class="screen-video faux-desktop" role="img" aria-label="Remote host desktop, view-only">
+            <div class="menubar">
+              <span class="apple"></span>
+              <span>Finder</span><span>Edit</span><span>View</span><span>Window</span>
+              <span style="margin-left:auto">10:24</span>
+            </div>
+            <div class="win win-1">
+              <div class="titlebar"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+<div class="body"><span class="cm">// host/rd/screen/src/serve_webrtc.rs</span>
+<span class="kw">pub async fn</span> <span class="fn">serve</span>(cfg: Config) -&gt; Result&lt;()&gt; {
+    <span class="kw">let</span> track = <span class="fn">h264_track</span>(<span class="st">"screen0"</span>);
+    pc.<span class="fn">add_track</span>(track).<span class="kw">await</span>?;
+    <span class="fn">log</span>::<span class="fn">info</span>!(<span class="st">"peer connected"</span>);
+}</div>
+            </div>
+            <div class="win win-2">
+              <div class="titlebar"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+<div class="body"><span class="cm">$ xpair status</span>
+host    <span class="fn">online</span>
+stream  <span class="fn">webrtc/h264</span>
+fps     <span class="fn">58</span>
+input   view-only</div>
+            </div>
+          </div>
+          <!-- overlay present in DOM but .hidden once a frame arrives -->
+          <div class="overlay hidden" id="overlay">
+            <div class="overlay-title">Xpair</div>
+            <div class="overlay-msg">Connecting to host…</div>
+          </div>
+          <!-- mode-badge: defined in CSS (left), shows transport class -->
+          <div class="mode-badge mode-v1" title="WebRTC transport">webrtc</div>
+          <div class="badge off" id="badge" title="View-only (no remote control)">view-only</div>
+        </div>
+      </section>
+
+      <!-- ── State 3: No host configured ──────────────────────────── -->
+      <section class="mock-card">
+        <div class="mock-card-label">
+          <span class="dot idle"></span>
+          No host configured
+          <span class="mock-card-note">state="no-host"</span>
+        </div>
+        <div class="rp-stage-host" tabindex="0">
+          <video class="screen-video" id="screen-video" autoplay muted playsinline></video>
+          <div class="overlay" id="overlay">
+            <div class="overlay-title" id="overlay-title">Xpair</div>
+            <div class="overlay-msg" id="overlay-msg">REMOTE_HOST is not set in ~/.xpair/host/client.env</div>
+          </div>
+          <div class="badge off" id="badge" title="View-only (no remote control)">view-only</div>
+        </div>
+      </section>
+
+      <!-- ── State 4: Error ───────────────────────────────────────── -->
+      <section class="mock-card">
+        <div class="mock-card-label">
+          <span class="dot error"></span>
+          Connection error
+          <span class="mock-card-note">state="error"</span>
+        </div>
+        <div class="rp-stage-host" tabindex="0">
+          <video class="screen-video" id="screen-video" autoplay muted playsinline></video>
+          <div class="overlay" id="overlay">
+            <div class="overlay-title" id="overlay-title">Xpair</div>
+            <div class="overlay-msg" id="overlay-msg">Error: peer connection failed
+Is XpairHost.app running on the host (screen serve-webrtc)?</div>
+          </div>
+          <div class="badge off" id="badge" title="View-only (no remote control)">view-only</div>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="mock-foot">
+      <b>Reconstructed from source of truth:</b>
+      DOM &amp; copy from <code>ext/extension.js</code> (<code>RemoteDesktopPanel.getHtml</code>)
+      and <code>ext/media/remote-desktop.js</code> (overlay/badge state machine);
+      styling from <code>ext/media/remote-desktop.css</code>.<br>
+      <b>Real classes/IDs:</b>
+      <code>#stage</code>, <code>#screen-video</code>, <code>#overlay</code> /
+      <code>.hidden</code>, <code>#overlay-title</code>, <code>#overlay-msg</code>,
+      <code>#badge</code> / <code>.on</code> / <code>.off</code>,
+      <code>#mode-badge</code> / <code>.mode-v1</code> / <code>.mode-v0</code>,
+      <code>#screen</code>, <code>#screen-canvas</code> (legacy v1).
+    </div>
+  </div>
+</body>
+</html>

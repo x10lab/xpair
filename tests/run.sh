@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/run.sh — 모든 tests/t_*.sh 실행, PASS/FAIL 집계. 실패 시 비0 종료.
+# tests/run.sh — runs all tests/t_*.sh, tallies PASS/FAIL. Exits non-zero on failure.
 cd "$(dirname "$0")"
 export HOME_REAL="$HOME"
 TOTP=0; TOTF=0; FILES=0
@@ -13,7 +13,7 @@ for t in t_*.sh; do
   p="$(printf '%s' "$s" | sed -n 's/.*pass=\([0-9]*\).*/\1/p')"
   f="$(printf '%s' "$s" | sed -n 's/.*fail=\([0-9]*\).*/\1/p')"
   [ -z "$p" ] && p=0; [ -z "$f" ] && f=0
-  # 요약 라인이 없고 rc!=0 이면 파일 자체가 비정상 종료 → 1 fail 로 계상
+  # No summary line and rc!=0 means the file itself exited abnormally → count it as 1 fail
   if [ -z "$s" ] && [ "$rc" != 0 ]; then f=$((f+1)); printf '  (no summary, rc=%s — counted as fail)\n' "$rc"; fi
   TOTP=$((TOTP+p)); TOTF=$((TOTF+f))
 done

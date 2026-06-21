@@ -1,5 +1,5 @@
-# RemotePair approve rules v2 — 런타임 위치: ~/.claude/auto-approve/rules.txt
-# id <TAB> marker(감지 OCR 텍스트, 부분일치) <TAB> action
-#   action: ocr:<라벨|..>(버튼 텍스트 찾아 클릭) | key:<콤보>(cmd+return, return, esc)
+# Xpair approve rules v2 — runtime location: ~/.claude/auto-approve/rules.txt
+# id <TAB> marker (detected OCR text, partial match) <TAB> action
+#   action: ocr:<label|..> (find the button text and click it) | key:<combo> (cmd+return, return, esc)
 1Password	Access Requested	ocr:Authorize|Authorize Once|승인|허용|확인
 Claude for Chrome	New permissions required	key:cmd+return|return

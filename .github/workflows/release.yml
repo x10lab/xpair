@@ -1,6 +1,6 @@
 name: Release
 
-# Build + sign RemotePairHost.app with the stable self-signed cert and publish a GitHub Release.
+# Build + sign XpairHost.app with the stable self-signed cert and publish a GitHub Release.
 # Trigger: push a tag like `v0.4.0`  (or run manually with a version input).
 #
 # Requires two repo secrets (the stable signing identity — grant persistence depends on it):
@@ -37,21 +37,51 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Releasing v$v"
 
-      - name: Install build deps (tmux-aqua)
-        run: brew install libevent ncurses utf8proc
+      - name: Install build deps (tmux-aqua + cliclick for bundle embed)
+        run: brew install libevent ncurses utf8proc cliclick
+
+      # The screen sidecar (Contents/Helpers/screen, --features webrtc) is built by
+      # build-host.sh via cargo. macos-latest runners have no Rust toolchain, so install it.
+      - name: Install Rust toolchain (for screen sidecar)
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cache cargo registry + the screen crate's target dir (ephemeral runners have no
+      # warm cache; the webrtc build is ~1min). Keyed on the crate's Cargo.lock.
+      - name: Cache cargo (screen sidecar)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            host/rd/screen/target
+          key: cargo-screen-${{ runner.os }}-${{ hashFiles('host/rd/screen/Cargo.lock') }}
+          restore-keys: |
+            cargo-screen-${{ runner.os }}-
 
       - name: Build patched tmux-aqua
         run: ./host/build-tmux-aqua.sh
 
-      # One step: import cert → build+sign → verify cert → publish.
-      # MUST be a single shell: `security list-keychains -s` and the unlock are session-scoped,
-      # so the keychain has to be set up and consumed by build-host's codesign in the same process.
-      - name: Build, sign, verify, and publish
+      # The client IDE (client/ide/build.sh) is a VSCodium fork build — it needs the exact node from
+      # client/ide/.nvmrc (22.x). cargo for the `code` CLI is already installed by the Rust step above.
+      - name: Setup Node.js (for the client IDE build)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: client/ide/.nvmrc
+
+      # One step: import cert → build+sign+verify HOST and the client IDE (Xpair.app) → publish
+      # all assets to one prerelease. MUST be a single shell: `security list-keychains -s` and the
+      # unlock are session-scoped, so the keychain must be set up + consumed by both builds' codesign
+      # in the same process.
+      - name: Build, sign, verify, and publish (host + client IDE)
         env:
           P12_B64: ${{ secrets.SIGNING_P12_BASE64 }}
           P12_PW: ${{ secrets.SIGNING_P12_PASSWORD }}
           RP_VERSION: ${{ steps.ver.outputs.version }}
           GH_TOKEN: ${{ github.token }}
+          # The client-IDE npm install pulls binaries from GitHub (e.g. @vscode/ripgrep, playwright);
+          # without an authenticated token they hit anonymous rate limits → HTTP 403 → "Npm install
+          # failed too many times". The VSCodium recipe reads GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -e
           if [ -z "$P12_B64" ]; then
@@ -78,16 +108,33 @@ jobs:
           # Build + sign + verify (build-host finds the cert by CN in the search list above).
           ./host/build-host.sh
 
-          # Gate: the asset MUST be signed with the stable cert (not ad-hoc) before we publish.
-          codesign -dvv build/RemotePairHost.app 2>&1 | grep -q "Authority=RemotePair Local Signing" \
-            || { echo "::error::app was signed ad-hoc, not with the stable cert — refusing to publish"; exit 1; }
-          codesign --verify --strict build/RemotePairHost.app
-          echo "signed with stable cert ✓"
+          # Gate: the host asset MUST be signed with the stable cert (not ad-hoc) before we publish.
+          codesign -dvv build/XpairHost.app 2>&1 | grep -q "Authority=RemotePair Local Signing" \
+            || { echo "::error::host app was signed ad-hoc, not with the stable cert — refusing to publish"; exit 1; }
+          codesign --verify --strict build/XpairHost.app
+          echo "host signed with stable cert ✓"
 
-          # Publish. Ship both a versioned asset and a stable-named copy so the GUI install
-          # link (releases/latest/download/RemotePairHost.zip) is always valid regardless of version.
-          ZIP="build/RemotePairHost-${RP_VERSION}.zip"
-          STABLE="build/RemotePairHost.zip"
-          ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent RemotePairHost.app "RemotePairHost-${RP_VERSION}.zip" )
-          cp "$ZIP" "$STABLE"
-          gh release create "v${RP_VERSION}" "$ZIP" "$STABLE" --title "v${RP_VERSION}" --generate-notes
+          # ── Client IDE: build the PRODUCTION identity (Xpair.app) signed with the SAME cert. ──
+          # In CI ($GITHUB_ACTIONS set) build.sh defaults RP_LOCAL_IDENTITY=0 (prod identity, not
+          # XpairLocal); set it explicitly for clarity. RP_BUILD_VER pins the version to the tag
+          # (skips the shared shared/.build-counter so the release version == the tag, no drift).
+          ( cd client/ide && RP_LOCAL_IDENTITY=0 RP_BUILD_VER="${RP_VERSION}" ./build.sh )
+          IDE_APP="client/ide/dist/VSCode-darwin-arm64/Xpair.app"
+          [ -d "$IDE_APP" ] || { echo "::error::IDE build did not produce $IDE_APP — prod-identity build failed (got XpairLocal?)"; exit 1; }
+          codesign -dvv "$IDE_APP" 2>&1 | grep -q "Authority=RemotePair Local Signing" \
+            || { echo "::error::IDE app was signed ad-hoc, not with the stable cert — refusing to publish"; exit 1; }
+          codesign --verify --strict "$IDE_APP"
+          echo "IDE signed with stable cert ✓"
+
+          # Publish. Ship versioned + stable-named copies of BOTH host and IDE so the GUI/cask install
+          # links (releases/latest/download/{XpairHost,Xpair}.zip) stay valid across versions.
+          HOST_ZIP="build/XpairHost-${RP_VERSION}.zip"; HOST_STABLE="build/XpairHost.zip"
+          ( cd build && /usr/bin/ditto -c -k --sequesterRsrc --keepParent XpairHost.app "XpairHost-${RP_VERSION}.zip" )
+          cp "$HOST_ZIP" "$HOST_STABLE"
+          IDE_ZIP="client/ide/dist/Xpair-${RP_VERSION}.zip"; IDE_STABLE="client/ide/dist/Xpair.zip"
+          ( cd "client/ide/dist/VSCode-darwin-arm64" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent Xpair.app "../Xpair-${RP_VERSION}.zip" )
+          cp "$IDE_ZIP" "$IDE_STABLE"
+          # Alpha builds (version has a letter suffix, e.g. 0.5.0a38) → mark Pre-release and NOT
+          # latest, so the host Updater (tracks /releases/latest, excludes pre-releases) ignores them.
+          PRE=""; case "$RP_VERSION" in *[a-z]*) PRE="--prerelease --latest=false";; esac
+          gh release create "v${RP_VERSION}" "$HOST_ZIP" "$HOST_STABLE" "$IDE_ZIP" "$IDE_STABLE" --title "v${RP_VERSION}" --generate-notes $PRE
