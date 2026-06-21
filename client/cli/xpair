@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # xpair — Xpair single entry-point CLI (client side).
 #
-#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes]
-#                              Launch/attach a claude session (remote host/local) for a folder. Prompts to register if unmapped.
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|codex|opencode>]
+#                              Launch/attach an agent session (remote host/local) for a folder. Prompts to register if unmapped.
+#                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
 #   xpair ls             List host (or local) tmux-aqua sessions + registered folder mappings
 #   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
 #   xpair config [list|get <key>|set <key> <value>|maps]
-#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal).
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|codex|opencode).
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
@@ -257,13 +258,15 @@ cmd_config() {
       c "Xpair client config"
       printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(local-only)}"
       printf '%-12s %s\n' "terminal" "$TERMINAL_APP"
+      printf '%-12s %s\n' "engine"   "${ENGINE:-claude}"
       printf '%-12s %s\n' "mappings" "$([ -n "$FOLDER_MAPS" ] && printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c . || echo 0)"
       ;;
     get)
       case "${2:-}" in
         host)     printf '%s\n' "$REMOTE_HOST" ;;
         terminal) printf '%s\n' "$TERMINAL_APP" ;;
-        *) echo "config get <host|terminal>" >&2; return 2 ;;
+        engine)   printf '%s\n' "${ENGINE:-claude}" ;;
+        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|codex|opencode
       esac
       ;;
     set)
@@ -286,7 +289,16 @@ cmd_config() {
             *) echo "config set terminal <iterm2|terminal>" >&2; return 2 ;;
           esac
           ;;
-        *) echo "config set <host|terminal> <value>" >&2; return 2 ;;
+        engine)
+          # Agent engine used by 'xpair launch'. Each engine auto-approves (so none needs the approve
+          # router): claude=--dangerously-skip-permissions, codex=--dangerously-bypass-approvals-and-sandbox,
+          # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT.
+          case "$val" in
+            claude|codex|opencode) rp_set ENGINE "$val"; ENGINE="$val"; ok "engine set: $val" ;;
+            *) echo "config set engine <claude|codex|opencode>" >&2; return 2 ;;
+          esac
+          ;;
+        *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
       esac
       ;;
     maps) cmd_map list ;;
@@ -498,11 +510,15 @@ cmd_onboard() {
 }
 
 cmd_launch() {
-  local pass=() dir=""
+  local pass=() dir="" engine=""
   while [ $# -gt 0 ]; do case "$1" in
     --local|--remote|--fresh|--yes|-y) pass+=("$1"); [ "$1" = "--yes" ] || [ "$1" = "-y" ] && RP_YES=1; shift ;;
+    --engine) engine="${2:-}"; shift 2 ;;        # per-launch override of client.env ENGINE
     *) dir="$1"; shift ;;
   esac; done
+  # Resolve engine: --engine flag wins, else client.env ENGINE, else claude. Validate before passing on.
+  engine="${engine:-${ENGINE:-claude}}"
+  case "$engine" in claude|codex|opencode) : ;; *) echo "unknown engine: $engine (use claude|codex|opencode)" >&2; return 2 ;; esac
   dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
   if ! is_mapped "$dir" && [ -n "$REMOTE_HOST" ] && [ "$RP_YES" != 1 ]; then
     # Active host probe: only when the host is reachable. Resolve the candidate host
@@ -541,7 +557,7 @@ cmd_launch() {
   fi
   [ -x "$LAUNCHER" ] || { echo "launcher missing: $LAUNCHER (client install required)" >&2; return 1; }
   # bash 3.2 + set -u: an empty array "${pass[@]}" is "unbound" → guard with ${arr[@]+...}
-  RP_YES="$RP_YES" exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
+  RP_YES="$RP_YES" RP_ENGINE="$engine" exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
 }
 
 cmd_host() {

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# xpair-launch — open a claude session (remote host or local) for a single folder and attach.
+# xpair-launch — open an agent session (claude or codex; remote host or local) for a single folder and attach.
+# Engine is chosen via RP_ENGINE (set by 'xpair launch --engine <claude|codex>') or client.env ENGINE (default claude).
 #
 # Key behavior (1:1 connection only — no session sharing / multi-attach):
 #   • Path mapping: client folder → host folder (FOLDER_MAPS; content is identical via external sync
@@ -32,6 +33,10 @@ AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 MOSH_SERVER="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}"
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
+# Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
+# otherwise client.env ENGINE; default claude. Validated below — unknown values fall back to claude.
+RP_ENGINE="${RP_ENGINE:-${ENGINE:-claude}}"
+case "$RP_ENGINE" in claude|codex|opencode) : ;; *) RP_ENGINE=claude ;; esac
 
 # Source the shared logger; no-op fallback for partially-updated clients.
 # shellcheck disable=SC1090
@@ -132,8 +137,19 @@ _proj_base() {
 LOCAL_PROJ="${LOCAL_HOST}_$(_proj_base "$PROJECT_DIR")"
 LOCAL_PROJ="${LOCAL_PROJ//[.:]/_}"
 
-# ── respawn body (claude + crash restart) ──
+# ── respawn body (engine + crash restart) ──
+# Dispatches on RP_ENGINE. The EXIT-trap process-group kill is common to all engines
+# (any agent CLI child must be reaped on tmux/bash exit). Engine-specific launch logic lives
+# in respawn_body_<engine>.
 respawn_body() {
+  case "$RP_ENGINE" in
+    codex)    respawn_body_codex ;;
+    opencode) respawn_body_opencode ;;
+    *)        respawn_body_claude ;;
+  esac
+}
+
+respawn_body_claude() {
   # CL_CONTINUE=1 → resume last conversation (--resume); otherwise fresh.
   # CLAUDE_WARP_RC env var = tmux session name = RC. Injected by launcher via temp file (SSOT).
   cat <<'RESPAWN'
@@ -173,6 +189,68 @@ while :; do
   fi
   [ $? -eq 0 ] && break
   printf '\n[claude crashed — restarting in 3s, Ctrl+C to abort]\n'
+  sleep 3 || break
+done
+RESPAWN
+}
+
+respawn_body_codex() {
+  # CL_CONTINUE=1 → resume the most recent session (codex resume --last); otherwise fresh.
+  # codex has no --remote-control / RC concept (that is claude-only) and no recorded-id resume —
+  # it uses its own --last picker, so the claude RC/RESUME_SID/~/.claude/last-session logic is
+  # intentionally absent here. --dangerously-bypass-approvals-and-sandbox is codex's auto-approve
+  # (claude --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
+  cat <<'RESPAWN'
+# Reap codex children when tmux/bash exits — bash has huponexit OFF by default, so without this
+# the EXIT trap (process-group kill) the agent CLI could survive as an orphan reparented to init.
+trap 'kill -- -$$ 2>/dev/null' EXIT
+
+# codex must be present on the host (resolved on the host, not the client).
+command -v codex >/dev/null 2>&1 || {
+  printf '\n[codex not found on host — install it (brew install codex) or use --engine claude]\n' >&2
+  exit 11
+}
+while :; do
+  if [ "${CL_CONTINUE:-0}" = 1 ]; then
+    codex --dangerously-bypass-approvals-and-sandbox resume --last || codex --dangerously-bypass-approvals-and-sandbox
+  else
+    codex --dangerously-bypass-approvals-and-sandbox
+  fi
+  [ $? -eq 0 ] && break
+  printf '\n[codex crashed — restarting in 3s, Ctrl+C to abort]\n'
+  sleep 3 || break
+done
+RESPAWN
+}
+
+respawn_body_opencode() {
+  # CL_CONTINUE=1 → continue the last session (opencode --continue); otherwise fresh.
+  # opencode's interactive TUI has NO auto-approve flag (--dangerously-skip-permissions exists ONLY on
+  # the non-interactive `run` subcommand). Auto-approve for the TUI is config-based: the `permission`
+  # block. We inject it non-destructively via OPENCODE_CONFIG_CONTENT (an inline-JSON env override that
+  # MERGES with the user's existing global/project config — verified), so the user's mcp/etc. config is
+  # preserved. This is opencode's equivalent of claude --dangerously-skip-permissions, so the approve
+  # router is not needed for opencode. opencode runs in the cwd (tmux is already there) — no project arg.
+  cat <<'RESPAWN'
+# Reap opencode children when tmux/bash exits — bash has huponexit OFF by default, so without this
+# EXIT trap (process-group kill) the agent CLI could survive as an orphan reparented to init.
+trap 'kill -- -$$ 2>/dev/null' EXIT
+
+# opencode must be present on the host (resolved on the host, not the client).
+command -v opencode >/dev/null 2>&1 || {
+  printf '\n[opencode not found on host — install it (brew install opencode) or use --engine claude]\n' >&2
+  exit 11
+}
+# Auto-approve via inline config merge (TUI has no skip-permissions flag). Merges with existing config.
+export OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"allow","bash":"allow","webfetch":"allow"}}'
+while :; do
+  if [ "${CL_CONTINUE:-0}" = 1 ]; then
+    opencode --continue || opencode
+  else
+    opencode
+  fi
+  [ $? -eq 0 ] && break
+  printf '\n[opencode crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
 done
 RESPAWN
@@ -255,7 +333,7 @@ ensure_local_host() {
 
 # ---------------- local launch (function — also used as fallback when remote fails) ----------------
 launch_local() {
-  command -v claude >/dev/null 2>&1 || die "claude not found on $LOCAL_HOST (PATH=$PATH)" 11
+  command -v "$RP_ENGINE" >/dev/null 2>&1 || die "$RP_ENGINE not found on $LOCAL_HOST (PATH=$PATH)" 11
   local T; T="$(mktemp -t claude-respawn.XXXXXX)"
   sync_claude_local
   cd "$PROJECT_DIR"                                 # local: host == client
@@ -326,8 +404,8 @@ else
   _rn="${_rn_out%% *}"; _rs="${_rn_out#* }"
   _ln_out="$(_local_next_n "$LOCAL_PROJ")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
-  printf 'Launch claude for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
-    "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
+  printf 'Launch %s for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
+    "$RP_ENGINE" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
   ans="$(ask 'select [1/2]: ')"; [ "${ans:-1}" = 2 ] && TARGET=local || TARGET=remote
 fi
 [ "$TARGET" = local ] && launch_local
@@ -428,8 +506,8 @@ set -e
 export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
-if ! command -v claude >/dev/null 2>&1; then
-  printf 'claude not found on %s (PATH=%s)\n' "\$(hostname -s)" "\$PATH" >&2
+if ! command -v ${RP_ENGINE} >/dev/null 2>&1; then
+  printf '${RP_ENGINE} not found on %s (PATH=%s) — install it (brew install ${RP_ENGINE}) or use --engine claude\n' "\$(hostname -s)" "\$PATH" >&2
   exit 11
 fi
 # Optional ~/.claude sync (only when present — not a Xpair requirement)
