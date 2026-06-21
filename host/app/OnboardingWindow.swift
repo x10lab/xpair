@@ -6,6 +6,11 @@
 // returning a Promise backed by a single WKScriptMessageHandlerWithReply (`rpbridge`, macOS 11+
 // async reply). The Swift reply handler dispatches by method name.
 //
+// Engine guard (claude | codex | opencode): unlike the client (which probes/installs the engine on
+// the host OVER SSH), the host onboarding runs entirely on THIS machine, so engineStatus/installEngine/
+// setEngineAuth/setEngine execute locally via EngineGuard (login-shell Process). The chosen engine is
+// persisted to ~/.xpair/host/host.env (the host-side counterpart of the client's client.env ENGINE).
+//
 // This window is shown by AppDelegate ONLY while Screen Recording is not granted (the hard run-gate).
 // onComplete fires when the React Done → complete() posts; closing it before SR is granted quits the app.
 
@@ -54,6 +59,10 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         getConsent: () => post('getConsent', []),
         setConsent: (c) => post('setConsent', [c]),
         connectedClients: () => post('connectedClients', []),
+        engineStatus: (engine) => post('engineStatus', [engine]),
+        installEngine: (engine) => post('installEngine', [engine]),
+        setEngineAuth: (engine, key) => post('setEngineAuth', [engine, key]),
+        setEngine: (engine) => post('setEngine', [engine]),
         complete: () => post('complete', []),
       };
     })();
@@ -189,6 +198,50 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
                 ["name": $0.name, "user": $0.user, "ageSec": $0.ageSec] as [String: Any]
             }
             replyHandler(clients, nil)
+
+        case "engineStatus":
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
+                replyHandler(["installed": false, "authed": false, "version": "", "err": "unknown engine"], nil)
+                return
+            }
+            // Probe the LOCAL machine (this is the host's own onboarding). Async off the main thread so
+            // the login-shell probe never blocks the UI; reply on completion.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let s = EngineGuard.status(engine)
+                replyHandler(["installed": s.installed, "authed": s.authed,
+                              "version": s.version, "err": s.err], nil)
+            }
+
+        case "installEngine":
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
+                replyHandler(["ok": false, "err": "unknown engine"], nil)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = EngineGuard.install(engine)
+                replyHandler(["ok": r.ok, "err": r.err], nil)
+            }
+
+        case "setEngineAuth":
+            // args = [engine, key]. The key MUST NOT reach argv/log/disk-plaintext: EngineGuard.setAuth
+            // feeds it to the child over stdin only. Drop it from this scope as soon as it's handed off.
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine),
+                  args.count > 1, let key = args[1] as? String, !key.isEmpty else {
+                replyHandler(["ok": false, "err": "missing engine or key"], nil)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = EngineGuard.setAuth(engine, key: key)
+                replyHandler(["ok": r.ok, "err": r.err], nil)
+            }
+
+        case "setEngine":
+            guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
+                replyHandler(["ok": false, "err": "unknown engine"], nil)
+                return
+            }
+            let r = EngineGuard.persist(engine)
+            replyHandler(["ok": r.ok, "err": r.err], nil)
 
         case "complete":
             replyHandler(nil, nil)

@@ -10,10 +10,13 @@ import {
 } from "@/components/onboarding/host/StepPermissions";
 import { StepWaiting } from "@/components/onboarding/host/StepWaiting";
 import { StepDone } from "@/components/onboarding/host/StepDone";
+import { StepEngine } from "@/components/onboarding/host/StepEngine";
+import type { EngineId } from "@/global";
 
 // The app self-launches this onboarding AFTER it is already installed, so there is no install step:
-// Welcome(0) → Permissions(1) → Connect(2) → Done(3).
-const STEP_TITLES = ["Welcome", "Permissions", "Connect", "Done"];
+// Welcome(0) → Permissions(1) → Engine(2) → Connect(3) → Done(4). Engine follows the permission grant:
+// the agent engine must be installed AND signed in on this host before pairing is useful.
+const STEP_TITLES = ["Welcome", "Permissions", "Engine", "Connect", "Done"];
 
 export default function App() {
   // The host can deep-link this onboarding to a specific step (menu-bar "Permissions…"/"Connect…"):
@@ -23,13 +26,17 @@ export default function App() {
     typeof window !== "undefined"
       ? (window as unknown as { __rp_initialStep?: string }).__rp_initialStep
       : undefined;
-  const initialStep = deepLink === "permissions" ? 1 : deepLink === "connect" ? 2 : 0;
-  const w = useWizard(4, initialStep);
+  const initialStep =
+    deepLink === "permissions" ? 1 : deepLink === "engine" ? 2 : deepLink === "connect" ? 3 : 0;
+  const w = useWizard(5, initialStep);
   const [perm, setPerm] = useState<PermState>({
     ax: "pending",
     sr: "pending",
     fda: "pending",
   });
+  const [engine, setEngine] = useState<EngineId>("claude");
+  // HARD-GATE for the Engine step: the chosen engine must be installed AND signed in on this host.
+  const [engineReady, setEngineReady] = useState(false);
 
   // The Permissions "Next" gate requires Accessibility + Screen Recording (both required:
   // approve auto-click needs AX, screen-share/OCR needs SR). Full Disk Access is recommended.
@@ -38,7 +45,7 @@ export default function App() {
     [perm.ax, perm.sr],
   );
 
-  const nextDisabled = w.index === 1 && !ready;
+  const nextDisabled = (w.index === 1 && !ready) || (w.index === 2 && !engineReady);
 
   const handleNext = useCallback(() => {
     w.next();
@@ -66,8 +73,11 @@ export default function App() {
       <AnimatedStep stepKey={w.index} direction={w.direction}>
         {w.index === 0 && <StepWelcome />}
         {w.index === 1 && <StepPermissions state={perm} setState={setPerm} />}
-        {w.index === 2 && <StepWaiting />}
-        {w.index === 3 && <StepDone />}
+        {w.index === 2 && (
+          <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
+        )}
+        {w.index === 3 && <StepWaiting />}
+        {w.index === 4 && <StepDone />}
       </AnimatedStep>
     </WizardShell>
   );
