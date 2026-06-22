@@ -661,35 +661,139 @@ export RP_SESSION="$ACTUAL_SESSION"
 # so the Xpair IDE shows it in the Sessions sidebar header before mosh/ssh takes over the tty.
 printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
+remote_attach_ssh() {
+  printf 'attaching via ssh -t -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
+  ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
+}
+
+resolve_xpair_cli() {
+  if command -v xpair >/dev/null 2>&1; then
+    command -v xpair
+  elif [ -x "$LOCAL_BIN/xpair" ]; then
+    printf '%s\n' "$LOCAL_BIN/xpair"
+  elif [ -x "$RP_DIR/bin/xpair" ]; then
+    printf '%s\n' "$RP_DIR/bin/xpair"
+  else
+    return 1
+  fi
+}
+
+reinstall_mosh() {
+  local rc=0
+  printf 'reinstalling mosh on this client and %s ...\n' "$REMOTE_HOST"
+  if command -v brew >/dev/null 2>&1; then
+    if ! brew reinstall mosh; then
+      brew install mosh || rc=1
+    fi
+    hash -r 2>/dev/null || true
+  else
+    printf 'Homebrew not found locally. Install mosh manually: brew install mosh\n' >&2
+    rc=1
+  fi
+  if ! ssh "$REMOTE_HOST" 'if command -v brew >/dev/null 2>&1; then brew reinstall mosh || brew install mosh; else exit 127; fi'; then
+    printf 'host mosh reinstall failed. On %s, install mosh or run setup repair.\n' "$REMOTE_HOST" >&2
+    rc=1
+  fi
+  return "$rc"
+}
+
+repair_remote_setup() {
+  local xp
+  if ! xp="$(resolve_xpair_cli)"; then
+    printf 'xpair CLI not found; run setup repair from a terminal with xpair on PATH.\n' >&2
+    return 1
+  fi
+  "$xp" install-host --host "$REMOTE_HOST" --force
+}
+
+RECOVERY_ACTION=""
+choose_attach_recovery() {
+  local transport="$1" rc="$2" ans=""
+  printf '\n%s attach failed (exit=%s).\n' "$transport" "$rc" >&2
+  printf 'The host tmux session is preserved: %s:%s\n' "$REMOTE_HOST" "$ACTUAL_SESSION" >&2
+  if [ "$RP_YES" = 1 ] || ! have_tty; then
+    if [ "$transport" = ssh ]; then
+      printf 'SSH fallback also failed; leaving the session detached for the next retry.\n' >&2
+      return "$rc"
+    fi
+    printf 'No interactive prompt is available; trying SSH fallback for the preserved session.\n' >&2
+    RECOVERY_ACTION=ssh
+    return 0
+  fi
+  while :; do
+    cat >&2 <<EOF
+Recovery options:
+  [1] Attach with SSH fallback
+  [2] Retry mosh
+  [3] Reinstall mosh on client and host, then retry mosh
+  [4] Repair Xpair host setup, then retry mosh
+  [5] Leave the session detached and exit
+EOF
+    ans="$(ask 'choose [1/2/3/4/5] (default 1): ')"
+    case "${ans:-1}" in
+      1|s|S|ssh) RECOVERY_ACTION=ssh; return 0 ;;
+      2|r|R|retry) RECOVERY_ACTION=mosh; return 0 ;;
+      3)
+        reinstall_mosh || printf 'mosh reinstall did not complete; the session is still preserved.\n' >&2
+        RECOVERY_ACTION=mosh
+        return 0 ;;
+      4)
+        repair_remote_setup || printf 'setup repair did not complete; the session is still preserved.\n' >&2
+        RECOVERY_ACTION=mosh
+        return 0 ;;
+      5|q|Q|exit)
+        printf 'leaving tmux session detached: %s:%s\n' "$REMOTE_HOST" "$ACTUAL_SESSION" >&2
+        return "$rc" ;;
+      *) printf 'unknown choice: %s\n' "$ans" >&2 ;;
+    esac
+  done
+}
+
 # Phase 2: attach via mosh (UDP-based — resilient to tmux freezes / network hiccups).
-# Fall back to ssh -t if mosh is unavailable.
-if command -v mosh >/dev/null 2>&1; then
-  printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
-  # Specify full paths for mosh-server and tmux-aqua (patched) — bypasses non-interactive PATH.
-  # Commands after mosh '--' are execvp'd directly (no shell) → variables like '$HOME' are NOT expanded.
-  # → tmux-aqua must be an absolute path. Since host and client share the same user (same home path),
-  #   expand local $HOME to build the absolute path (remote home == local home). This also keeps
-  #   'attach -d -t =SESS' clean in the mosh-client argv so zombie/RN pgrep matching works correctly.
-  # Attach to the Xpair fixed socket — independent of client (mosh) context; claude is a server child.
-  # No timeout intentionally — if the client sleeps for a long time, mosh restores the session on wake (roaming).
-  #
-  # Invariant "tmux attached ⟺ open tab on client" enforcement:
-  # On tab close (HUP/TERM) → immediately detach the remote session → remaining mosh-server also exits.
-  # (mosh has no goodbye handshake, so without this a stale attach persists until the next launch.)
-  # Normal detach (Ctrl-b d) and take-over kick are clean exits → trap does not fire → new attach unaffected.
-  # Cleanup is forked as a background orphan so it runs to completion even after the tab's tty is reclaimed.
-  # The only case where stale state remains is a client crash where signal propagation is impossible —
-  # the next attach -d recovers it (dual safety net).
-  on_tab_close() {
-    ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
-        "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} detach-client -s $(sh_quote "=$ACTUAL_SESSION")" \
-        >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-    exit 129
-  }
-  trap on_tab_close HUP TERM
-  mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION"
-  exit $?
-else
-  printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$ACTUAL_SESSION"
-  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
-fi
+# Fall back to ssh -t if mosh is unavailable or if a mosh attach cannot be recovered.
+ATTACH_MODE=mosh
+command -v mosh >/dev/null 2>&1 || ATTACH_MODE=ssh
+while :; do
+  ATTACH_RC=0
+  if [ "$ATTACH_MODE" = mosh ] && command -v mosh >/dev/null 2>&1; then
+    printf 'attaching via mosh -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
+    # Specify full paths for mosh-server and tmux-aqua (patched) — bypasses non-interactive PATH.
+    # Commands after mosh '--' are execvp'd directly (no shell) → variables like '$HOME' are NOT expanded.
+    # → tmux-aqua must be an absolute path. Since host and client share the same user (same home path),
+    #   expand local $HOME to build the absolute path (remote home == local home). This also keeps
+    #   'attach -d -t =SESS' clean in the mosh-client argv so zombie/RN pgrep matching works correctly.
+    # Attach to the Xpair fixed socket — independent of client (mosh) context; claude is a server child.
+    # No timeout intentionally — if the client sleeps for a long time, mosh restores the session on wake (roaming).
+    #
+    # Invariant "tmux attached ⟺ open tab on client" enforcement:
+    # On tab close (HUP/TERM) → immediately detach the remote session → remaining mosh-server also exits.
+    # (mosh has no goodbye handshake, so without this a stale attach persists until the next launch.)
+    # Normal detach (Ctrl-b d) and take-over kick are clean exits → trap does not fire → new attach unaffected.
+    # Cleanup is forked as a background orphan so it runs to completion even after the tab's tty is reclaimed.
+    # The only case where stale state remains is a client crash where signal propagation is impossible —
+    # the next attach -d recovers it (dual safety net).
+    on_tab_close() {
+      ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
+          "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} detach-client -s $(sh_quote "=$ACTUAL_SESSION")" \
+          >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+      exit 129
+    }
+    trap on_tab_close HUP TERM
+    mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION" || ATTACH_RC=$?
+    trap - HUP TERM
+    [ "$ATTACH_RC" = 0 ] && exit 0
+    choose_attach_recovery mosh "$ATTACH_RC" || exit $?
+    ATTACH_MODE="$RECOVERY_ACTION"
+    continue
+  fi
+
+  if [ "$ATTACH_MODE" = mosh ]; then
+    printf 'mosh not found after recovery action; using SSH fallback for tmux "%s".\n' "$ACTUAL_SESSION" >&2
+  elif ! command -v mosh >/dev/null 2>&1; then
+    printf 'mosh not found -> falling back to ssh -t (attach tmux "%s") ...\n' "$ACTUAL_SESSION"
+  fi
+  remote_attach_ssh || ATTACH_RC=$?
+  [ "$ATTACH_RC" = 0 ] && exit 0
+  choose_attach_recovery ssh "$ATTACH_RC" || exit $?
+  ATTACH_MODE="$RECOVERY_ACTION"
+done
