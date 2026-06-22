@@ -65,9 +65,9 @@ fi
 type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; }
 
 # ── args ──
-TARGET_PREF=""; FRESH=0; RP_YES="${RP_YES:-0}"; DIR_ARG=""
+TARGET_PREF=""; LOCAL_MODE_EXPLICIT=0; FRESH=0; RP_YES="${RP_YES:-0}"; DIR_ARG=""
 while [ $# -gt 0 ]; do case "$1" in
-  --local)  TARGET_PREF=local; shift ;;
+  --local)  TARGET_PREF=local; LOCAL_MODE_EXPLICIT=1; shift ;;
   --remote) TARGET_PREF=remote; shift ;;
   --fresh)  FRESH=1; shift ;;
   --yes|-y) RP_YES=1; shift ;;
@@ -405,7 +405,7 @@ ensure_local_host() {
 # "attached" is based on live client tabs on this machine, so even if a dead mosh-server
 # leaves a stale attach on the remote tmux, we take over the lowest _N without spawning extras.
 
-# ---------------- local launch (function — also used as fallback when remote fails) ----------------
+# ---------------- local launch (explicit local target only) ----------------
 launch_local() {
   command -v "$RP_ENGINE" >/dev/null 2>&1 || die "$RP_ENGINE not found on $LOCAL_HOST (PATH=$PATH)" 11
   local T; T="$(mktemp -t claude-respawn.XXXXXX)"
@@ -486,39 +486,34 @@ else
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
   printf 'Launch %s for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
     "$(engine_label "$RP_ENGINE")" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
-  ans="$(ask 'select [1/2]: ')"; [ "${ans:-1}" = 2 ] && TARGET=local || TARGET=remote
+  ans="$(ask 'select [1/2]: ')"
+  if [ "${ans:-1}" = 2 ]; then
+    TARGET=local
+    LOCAL_MODE_EXPLICIT=1
+  else
+    TARGET=remote
+  fi
 fi
-[ "$TARGET" = local ] && launch_local
+if [ "$TARGET" = local ]; then
+  [ "$LOCAL_MODE_EXPLICIT" = 1 ] || die "local launch requires explicit local mode — rerun with --local, or configure a remote host with 'xpair config set host <ssh-host>'" 1
+  launch_local
+fi
 [ -n "$REMOTE_HOST" ] || die "no valid REMOTE_HOST configured — run 'xpair config set host <ssh-host>' or use --local" 1
 
 # Expose ssh errors verbatim — timeout/key-rejection/host-key errors must appear on screen + in log.
 reach() { ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" true; }
 
+remote_disconnect_diag() {
+  local reason="$1" rc="${2:-20}"
+  printf 'remote launch stopped: %s\n' "$reason" >&2
+  printf 'please connect/reconnect to %s (LAN, VPN, or Tailscale), then rerun xpair launch.\n' "$REMOTE_HOST" >&2
+  printf 'Xpair will not change Tailscale exit-node settings or fall back to local automatically.\n' >&2
+  printf 'For a local session, rerun explicitly: xpair launch --local %s\n' "$(sh_quote "$PROJECT_DIR")" >&2
+  exit "$rc"
+}
+
 if ! reach; then
-  if command -v tailscale >/dev/null 2>&1; then
-    exit_node="$(tailscale status --json 2>/dev/null \
-      | /usr/bin/python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-for p in (d.get("Peer") or {}).values():
-    if p.get("ExitNodeOption") and p.get("Online"):
-        print((p.get("DNSName") or "").rstrip("."))
-        break
-' )"
-    if [ -n "$exit_node" ]; then
-      printf 'setting tailscale exit node: %s\n' "$exit_node"
-      sudo tailscale set --exit-node="$exit_node" || true
-      sleep 2
-    else
-      printf 'no online exit-node candidate in `tailscale status`\n' >&2
-    fi
-  else
-    printf '  ⚠ tailscale CLI not found (cannot auto-set exit-node) — retrying reach / falling back to local\n' >&2
-  fi
-  if ! reach; then
-    printf '⚠ cannot reach %s — falling back to local (%s) automatically (check status bar).\n' "$REMOTE_HOST" "$LOCAL_HOST" >&2
-    launch_local
-  fi
+  remote_disconnect_diag "cannot reach $REMOTE_HOST by SSH" 20
 fi
 
 # ---- check that the host folder (mapped path) exists ----
@@ -542,8 +537,7 @@ case "$DIR_CHECK" in
       *)     die "cancelled: directory missing on host ($HOST_DIR)" 5 ;;
     esac ;;
   *)
-    printf '⚠ %s dir-check ssh failed 3 times — falling back to local (%s).\n' "$REMOTE_HOST" "$LOCAL_HOST" >&2
-    launch_local ;;
+    remote_disconnect_diag "$REMOTE_HOST dir-check ssh failed 3 times" 21 ;;
 esac
 
 # ── zombie tab cleanup ──
