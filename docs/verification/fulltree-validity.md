@@ -4,7 +4,7 @@ Third verification axis: does each user-flow PATH still exist in the current pro
 Per top-level root, a codex worker read the real code and walked the tree BFS top-down,
 flagging stale subtrees (path diverged from reality; cascades to descendants).
 
-Total: ~97 stale prefixes across 18/20 roots (211, 422 pending rerun).
+Total: 115 stale prefixes across all 20 roots.
 
 ## 111
 Entry flow: Xpair IDE-embedded first-run client onboarding. `shouldOnboard()` opens the pre-workbench onboarding window when `REMOTE_HOST` is absent; the current UI is Welcome -> Before you start -> Find your host. Discover polls `xpair discover --json`, then branches peer rows by `setup` / `connect` / `reconnect`, or falls back to manual SSH connect.
@@ -191,6 +191,30 @@ STALE_PREFIXES 2
 
 ---
 
+## 211
+Entry flow: Finder Quick Action `Launch Xpair` for `public.folder` input. Current code passes Finder selections to `xpair open-gui`, which opens iTerm/Terminal with `exec xpair launch <dir>`; `xpair launch` then execs `xpair-launch` for mapped host-path launch/attach.
+
+Code read: `client/cli/Launch Xpair.workflow/Contents/Info.plist`, `client/cli/Launch Xpair.workflow/Contents/document.wflow`, `client/cli/xpair`, `client/cli/xpair-launch`. Corroborating tests read: `client/cli/folder-mapping-launch.test.js`, `client/cli/session-restore.test.js`, `client/cli/detached-session-handling.test.js`, `tests/t_06_remote_setup.sh`, `tests/t_08_logging_zombie.sh`.
+
+### STALE
+- `2112113` : remote setup no longer decides create/take-over/fresh from remote attached state; `_N` is chosen client-side first, and the remote script only creates or reattaches the injected session.
+- `2112213` : there is no user-facing force-takeover action for an already attached lower `_N`; live lower sessions are skipped to the next fresh number.
+- `2112223` : a race where `_1` becomes attached during status checking is not re-routed to fresh-number selection; the already chosen session is used with `attach -d`.
+- `211313` : SSH reach failure after remote/default selection does not route to an SSH/auth failure flow; launcher retries/Tailscale-checks and then falls back to local launch.
+- `211332` : even with explicit `--remote`, unreachable host follows the same retry/Tailscale/local fallback path, not a direct SSH/auth failure branch.
+- `2113113` : if the host path disappears inside the remote setup script, current code emits `host dir missing` and fails remote setup; it does not re-enter the missing-dir/mapping repair flow.
+- `2114212` : mosh failure before screen display exits through `mosh` status; there is no Xpair route to the SSH/auth failure flow.
+- `2114222` : ssh fallback auth/reach/key failure exits through the `ssh -t` command, not a dedicated Xpair SSH/auth failure flow.
+- `2114223` : if ssh connects but tmux-aqua/session is missing during attach, current code surfaces the remote command failure; it does not route to a host-app/tmux/session diagnostic flow.
+- `211523` : unrecovered network loss has no route to a CLI failure flow; mosh keeps roaming or the attach command exits while the host session remains.
+
+### VALID
+Main path matches current code: Finder folder service -> `xpair open-gui` -> terminal `xpair launch <dir>` -> longest-prefix mapped host path/session base -> remote/default or local target -> host dir check -> XpairHost tmux-aqua create/reattach -> mosh or ssh attach.
+
+STALE_PREFIXES 10
+
+---
+
 ## 212
 Entry flow: Finder Quick Action `Launch Xpair` for a selected folder. The service accepts Finder `public.folder` input, runs `~/.local/bin/xpair open-gui "$d"`, and that opens Terminal/iTerm with `xpair launch <dir>`. Code read: `client/cli/Launch Xpair.workflow/Contents/Info.plist`, `client/cli/Launch Xpair.workflow/Contents/document.wflow`, `client/cli/xpair`, `client/cli/xpair-launch`.
 
@@ -335,6 +359,26 @@ Code read: `host/app/AppDelegate.swift`, `host/app/OnboardingWindow.swift`, `hos
 The ready menu and all other checked main paths exist in current code: no-selection/close terminals, `Permissions...` request/settings actions, `Connect...` guide and connected-client polling, `Set up...` full onboarding, update failure/latest/apply-with-session-gate branches, About OK/Open GitHub, Sessions down/none/attached/detached rows with terminate confirmation, Quit, read-only permission/screen-share/client/session status rows, and no direct Settings/logs/diagnostics/status detail menu entries.
 
 STALE_PREFIXES 1
+
+---
+
+## 422
+Entry flow: host-ready client connection from Xpair IDE launch/onboarding through discovery or manual SSH, host-app/engine guards, and host-visible client heartbeat. Code read: `client/ide/remotepair/ext/onboarding-main.cjs`, `onboarding-preload.cjs`, `onboarding-webview/src/App.tsx`, `StepDiscover.tsx`, `StepConnect.tsx`, `StepReconnect.tsx`, `StepSetupPassword.tsx`, `StepInstalling.tsx`, `StepGrantPermissions.tsx`, `StepEngine.tsx`, `onboarding-bridge.js`, `heartbeat.js`, `extension.js`, `client/cli/xpair`, `client/onboarding/electron/main.cjs`, `host/app/AppDelegate.swift`, `host/app/BonjourAdvertiser.swift`, `host/app/ConnectedClients.swift`, `host/app/OnboardingWindow.swift`, and `host/onboarding/src/components/onboarding/host/StepWaiting.tsx`.
+
+### STALE
+- `4221` : No current code/UI can show a client install guide when the Xpair IDE is not installed; the host waiting UI only says to open Xpair, and an absent client app cannot enter onboarding.
+- `42231` : Bonjour-found rows are not currently reachable: the client scans `_xpair._tcp`, while the host advertises `_remotepair._tcp`; Tailscale/manual discovery still exist.
+- `422411` : Reconnect success no longer routes to `111118` or directly back to workbench from that step; it enables Next, then current onboarding continues through host-app/engine gates.
+- `4224222` : During `Check connection`, the host input is disabled and there is no in-flight change-host or alternate-host selection path.
+- `4224314` : A failed manual/Connect probe already is on the manual host input surface; there is no separate `Enter manually` / `Connect over Internet` transition from that failure state.
+- `42244` : The post-host-app-guard sequence is stale; current non-setup paths go `Engine -> File access & mapping -> liveness -> Done`, while only the setup/install path has the Grant permissions step.
+- `4225113` : The Host menu has no `Restart tmux host` item wired to `HostManager.forceRestart()`.
+- `4225114` : The Host menu has read-only status/session rows, but no Host-menu `Open Logs` action; logs are exposed from the IDE command/CLI surface instead.
+
+### VALID
+Current main paths match for IDE launch gating (`REMOTE_HOST` missing, existing config, or `.force-onboarding`), discovery/manual fallback, reconnect and manual SSH BatchMode probes, host-app guard, setup install plus permission grant, engine guard, optional mappings, workbench host probe, and client heartbeat display via `~/.xpair/host/clients/*.json` with a 90s freshness window.
+
+STALE_PREFIXES 8
 
 ---
 
