@@ -2818,10 +2818,10 @@ index 0000000..6e5d586
 +			const k = new StandardKeyboardEvent(e as KeyboardEvent);
 +			if (k.equals(KeyCode.Enter) || k.equals(KeyCode.Space)) { k.preventDefault(); onClick(); }
 +		}));
-+		if (opts?.onClose) {
-+			const onClose = opts.onClose;
++		const onClose = this.cardCloseHandler(text, opts);
++		if (onClose) {
 +			const close = append(card, $('.remotepair-session-card-close.codicon.codicon-close'));
-+			close.title = localize('remotepairCloseSession', "Close Session");
++			close.title = this.cardCloseTitle();
 +			close.setAttribute('role', 'button');
 +			close.tabIndex = 0;
 +			this.cardDisposables.add(addDisposableListener(close, EventType.MOUSE_DOWN, (e) => {
@@ -2844,23 +2844,23 @@ index 0000000..6e5d586
 +		}
 +	}
 +
-+	/** Append a non-actionable (display-only) tab — used for History entries that are not
-+	 *  reattachable (persisted titles, not real session names). The X removes the entry from the
-+	 *  persisted history when `onClose` is supplied. */
-+	private addDisplayCard(text: string, onClose?: () => void): void {
-+		const card = append(this.row!, $('.remotepair-session-card.remotepair-session-card-readonly'));
-+		card.title = text;
-+		const label = append(card, $('.remotepair-session-card-label'));
-+		label.textContent = text;
-+		if (onClose) {
-+			const close = append(card, $('.remotepair-session-card-close.codicon.codicon-close'));
-+			close.title = localize('remotepairRemoveHistory', "Remove from History");
-+			close.setAttribute('role', 'button');
-+			this.cardDisposables.add(addDisposableListener(close, EventType.CLICK, (e) => {
-+				e.stopPropagation();
-+				onClose();
-+			}));
++	/** Return the close action for a session card. History cards without an explicit
++	 *  close handler remove their persisted entry; other rows close only when the
++	 *  caller provides a close action (attached sessions dispose live terminals). */
++	private cardCloseHandler(text: string, opts?: { onClose?: () => void }): (() => void) | undefined {
++		if (opts?.onClose) {
++			return opts.onClose;
 +		}
++		if (this.category === 'history' && this.readHistory().includes(text)) {
++			return () => this.removeHistory(text);
++		}
++		return undefined;
++	}
++
++	private cardCloseTitle(): string {
++		return this.category === 'history'
++			? localize('remotepairRemoveHistory', "Remove from History")
++			: localize('remotepairCloseSession', "Close Session");
 +	}
 +
 +	/** Render an empty-state message in the row. */
@@ -2952,16 +2952,16 @@ index 0000000..6e5d586
 +			}
 +			return;
 +		}
-+		// Fallback: the persisted last-seen set holds display TITLES (e.g. "zsh"), which are not
-+		// valid `xpair attach` names — render them display-only rather than wiring a reattach
-+		// that would silently fail.
++		// Fallback: the persisted last-seen set holds validated session names surfaced as
++		// terminal titles by the launcher, so they can use the same reattach path.
++		// Invalid/generic terminal titles are filtered before persistence.
 +		const persisted = this.readHistory();
 +		if (persisted.length === 0) {
 +			this.addEmpty(localize('remotepairNoHistory', "No history"));
 +			return;
 +		}
 +		for (const name of persisted) {
-+			this.addDisplayCard(name, () => this.removeHistory(name));
++			this.addCard(name, () => reattach(name));
 +		}
 +	}
 +
@@ -2985,17 +2985,17 @@ index 0000000..6e5d586
 +		}
 +		try {
 +			const parsed = JSON.parse(raw);
-+			return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string') : [];
++			return Array.isArray(parsed) ? parsed.map(n => typeof n === 'string' ? n.trim() : '').filter(n => n !== 'Session' && SESSION_NAME_RE.test(n)) : [];
 +		} catch (e) {
 +			rpLog('warn', `history storage parse failed; resetting to empty: ${e instanceof Error ? e.message : String(e)}`);
 +			return [];
 +		}
 +	}
 +
-+	/** Merge newly-seen names into the persisted last-seen set, then refresh the History tab.
-+	 *  Skips empty/generic titles (e.g. the "Session" fallback) which carry no useful history. */
++	/** Merge newly-seen session names into the persisted last-seen set, then refresh the History tab.
++	 *  Skips empty/generic/invalid titles which cannot be exact `xpair attach` targets. */
 +	private recordHistory(names: readonly string[]): void {
-+		const meaningful = names.filter(n => !!n && n.trim() !== '' && n !== 'Session');
++		const meaningful = names.map(n => n.trim()).filter(n => n !== 'Session' && SESSION_NAME_RE.test(n));
 +		if (meaningful.length === 0) {
 +			return;
 +		}
