@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# xpair-launch — open an agent session (Claude Code, Codex, or OpenCode; remote host or local) for a single folder and attach.
-# Engine is chosen interactively, via RP_ENGINE (set by 'xpair launch --engine <claude|codex|opencode>'), or client.env ENGINE.
+# xpair-launch — open a session (Claude Code, Codex, OpenCode, or Shell; remote host or local) for a single folder and attach.
+# Engine is chosen interactively, via RP_ENGINE (set by 'xpair launch --engine <claude|codex|opencode|shell>'), or client.env ENGINE.
 #
 # Key behavior (1:1 connection only — no session sharing / multi-attach):
 #   • Path mapping: client folder → host folder (FOLDER_MAPS; content is identical via external sync
@@ -13,7 +13,7 @@
 #                   XpairHost → claude inherits its permissions
 #   • non-interactive: RP_YES=1 (or --yes) skips all prompts (auto dir creation, etc.)
 #
-# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>] [<dir>]
+# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode|shell>] [<dir>]
 #         (typically called via 'xpair launch <dir>' or a Finder Service)
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -33,14 +33,14 @@ AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 MOSH_SERVER="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}"
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
-# Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
+# Engine selection (claude|codex|opencode|shell). RP_ENGINE (env, set by 'xpair launch --engine') wins;
 # otherwise client.env ENGINE; default claude. Validated below — unknown values fall back to claude.
 RP_ENGINE="${RP_ENGINE:-${ENGINE:-claude}}"
 RP_ENGINE_EXPLICIT="${RP_ENGINE_EXPLICIT:-0}"
 canonical_engine() {
   case "${1:-}" in
     claude|claudecode|claude-code) printf 'claude' ;;
-    codex|opencode) printf '%s' "$1" ;;
+    codex|opencode|shell) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -78,7 +78,7 @@ esac; done
 if _canon="$(canonical_engine "$RP_ENGINE")"; then
   RP_ENGINE="$_canon"
 else
-  printf 'unknown engine: %s (use claude|claudecode|codex|opencode)\n' "$RP_ENGINE" >&2
+  printf 'unknown engine: %s (use claude|claudecode|codex|opencode|shell)\n' "$RP_ENGINE" >&2
   exit 2
 fi
 
@@ -112,6 +112,7 @@ engine_label() {
     claude) printf 'Claude Code' ;;
     codex) printf 'Codex' ;;
     opencode) printf 'OpenCode' ;;
+    shell) printf 'Shell' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -124,21 +125,24 @@ choose_engine() {
   case "$RP_ENGINE" in
     codex) def=2 ;;
     opencode) def=3 ;;
+    shell) def=4 ;;
     *) def=1 ;;
   esac
 
-  local d1="" d2="" d3=""
+  local d1="" d2="" d3="" d4=""
   [ "$def" = 1 ] && d1=" (default)"
   [ "$def" = 2 ] && d2=" (default)"
   [ "$def" = 3 ] && d3=" (default)"
-  printf 'Agent engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] OpenCode%s\n' \
-    "$d1" "$d2" "$d3"
-  ans="$(ask "select engine [1/2/3] (default $def): ")"
+  [ "$def" = 4 ] && d4=" (default)"
+  printf 'Session engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] OpenCode%s\n  [4] Shell%s\n' \
+    "$d1" "$d2" "$d3" "$d4"
+  ans="$(ask "select engine [1/2/3/4] (default $def): ")"
   choice="${ans:-$def}"
   case "$choice" in
     1|claude|claudecode|claude-code) RP_ENGINE=claude ;;
     2|codex) RP_ENGINE=codex ;;
     3|opencode) RP_ENGINE=opencode ;;
+    4|shell) RP_ENGINE=shell ;;
     *) printf 'unknown engine selection: %s — keeping %s\n' "$choice" "$(engine_label "$RP_ENGINE")" >&2 ;;
   esac
 }
@@ -219,6 +223,7 @@ respawn_body() {
   case "$RP_ENGINE" in
     codex)    respawn_body_codex ;;
     opencode) respawn_body_opencode ;;
+    shell)    respawn_body_shell ;;
     *)        respawn_body_claude ;;
   esac
 }
@@ -330,6 +335,13 @@ done
 RESPAWN
 }
 
+respawn_body_shell() {
+  cat <<'RESPAWN'
+# Plain shell session; no agent binary or auth is required.
+exec "${SHELL:-/bin/zsh}" -l
+RESPAWN
+}
+
 # ── optional ~/.claude git sync (only when present — not a Xpair requirement) ──
 # Heavy parallel sync intentionally omitted (~/.claude sync is opt-in).
 # --resume pointers are per-machine local, so sync is not needed for basic operation.
@@ -407,7 +419,7 @@ ensure_local_host() {
 
 # ---------------- local launch (function — also used as fallback when remote fails) ----------------
 launch_local() {
-  command -v "$RP_ENGINE" >/dev/null 2>&1 || die "$RP_ENGINE not found on $LOCAL_HOST (PATH=$PATH)" 11
+  [ "$RP_ENGINE" = shell ] || command -v "$RP_ENGINE" >/dev/null 2>&1 || die "$RP_ENGINE not found on $LOCAL_HOST (PATH=$PATH)" 11
   local T; T="$(mktemp -t claude-respawn.XXXXXX)"
   sync_claude_local
   cd "$PROJECT_DIR"                                 # local: host == client
@@ -587,7 +599,7 @@ set -e
 export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
-if ! command -v ${RP_ENGINE} >/dev/null 2>&1; then
+if [ "${RP_ENGINE}" != shell ] && ! command -v "${RP_ENGINE}" >/dev/null 2>&1; then
   printf '${RP_ENGINE} not found on %s (PATH=%s) — install it (brew install ${RP_ENGINE}) or use --engine claude\n' "\$(hostname -s)" "\$PATH" >&2
   exit 11
 fi

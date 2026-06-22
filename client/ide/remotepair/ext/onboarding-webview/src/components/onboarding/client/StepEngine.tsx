@@ -20,13 +20,15 @@ const ENGINES: { id: EngineId; label: string; blurb: string }[] = [
   { id: "claude", label: "Claude Code", blurb: "Anthropic — the default." },
   { id: "codex", label: "Codex", blurb: "OpenAI — GPT models." },
   { id: "opencode", label: "opencode", blurb: "Open-source, multi-provider." },
+  { id: "shell" as EngineId, label: "Shell", blurb: "Plain login shell session." },
 ];
 
 /**
- * Engine step: the user picks the agent engine (claude | codex | opencode) and we HARD-GATE on that
- * engine being installed AND authenticated ON THE HOST (it runs there under `xpair launch`). Same
+ * Engine step: the user picks the session engine (claude | codex | opencode | shell). Agent engines
+ * are HARD-GATED on being installed AND authenticated ON THE HOST (they run there under `xpair launch`). Same
  * philosophy as the CLI / host-app guards: block → resolve action (install / set API key) → re-probe
  * → only pass when the host is actually ready.
+ *   shell              → first-class login shell session; no agent install/auth required.
  *   !installed         → "Install on host" (brew, non-interactive) → re-probe.
  *   installed, !authed → API key field → setHostEngineAuth (key over SSH stdin pipe) → re-probe.
  * Browser-OAuth engines (codex ChatGPT login, opencode `auth login`) can't be driven over SSH — for
@@ -43,6 +45,13 @@ export function StepEngine({ engine, setEngine, onReady }: Props) {
   const probe = useCallback(async (e: EngineId) => {
     setProbing(true);
     setActionErr("");
+    if (String(e) === "shell") {
+      const r = { installed: true, authed: true, version: "", err: "" };
+      setStatus(r);
+      onReady(true);
+      setProbing(false);
+      return;
+    }
     try {
       const r = await window.remotepair.hostEngineStatus(e);
       setStatus(r);
@@ -121,7 +130,7 @@ export function StepEngine({ engine, setEngine, onReady }: Props) {
         pair — we'll check and set it up.
       </p>
 
-      <div className="mt-5 grid grid-cols-3 gap-2">
+      <div className="mt-5 grid grid-cols-4 gap-2">
         {ENGINES.map((e) => {
           const selected = engine === e.id;
           return (
@@ -156,8 +165,9 @@ export function StepEngine({ engine, setEngine, onReady }: Props) {
         {!probing && status && ready && (
           <span className="flex items-center gap-2 text-primary">
             <Check className="h-3.5 w-3.5" />
-            {engine} is installed{status.version ? ` (${status.version})` : ""} and signed in on the
-            host. Continue.
+            {String(engine) === "shell"
+              ? "Shell session is ready on the host. Continue."
+              : `${engine} is installed${status.version ? ` (${status.version})` : ""} and signed in on the host. Continue.`}
           </span>
         )}
 
