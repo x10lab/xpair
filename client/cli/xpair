@@ -1025,6 +1025,7 @@ rp_norm_fp() { case "$1" in SHA256:*) printf '%s' "$1" ;; *) printf 'SHA256:%s' 
 #    "status":"reconnect|connect|setup"}
 # Dedup by host-key fingerprint; cross-reference ~/.ssh/config + client.env.
 RP_BONJOUR_TYPE="_xpair._tcp"
+RP_LEGACY_BONJOUR_TYPE="_remotepair._tcp"
 # Auto-detect the Tailscale CLI across install layouts (App Store sandbox, brew, manual).
 rp_tailscale_bin() {
   local p
@@ -1100,40 +1101,48 @@ cmd_discover() {
   # cutting a multi-host discover from ~17s to ~5s. (BUG #5)
   if command -v dns-sd >/dev/null 2>&1; then
     local resolve_to=1   # TXT comes back immediately; only the kill is bounded
-    local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
-    ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & local bpid=$!
-    ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
-    wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
-    # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>". Collect unique instance
-    # names, then fan out one resolve per name into its own temp file, all at once.
-    local svcname lk; local -a _lpids=() _lfiles=() _lnames=()
-    while IFS= read -r line; do
-      case "$line" in *" Add "*) ;; *) continue ;; esac
-      svcname="$(printf '%s' "$line" | sed -n 's/.*'"$RP_BONJOUR_TYPE"'\.[[:space:]]*\(.*\)$/\1/p')"
-      [ -n "$svcname" ] || continue
-      case " ${_lnames[*]:-} " in *" $svcname "*) continue ;; esac   # dedup browse repeats
-      lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
-      ( dns-sd -t "$resolve_to" -L "$svcname" "$RP_BONJOUR_TYPE" >"$lk" 2>/dev/null ) & local _p=$!
-      ( sleep "$resolve_to"; kill "$_p" 2>/dev/null ) >/dev/null 2>&1 &
-      _lpids+=("$_p"); _lfiles+=("$lk"); _lnames+=("$svcname")
-    done < "$browse"
-    rm -f "$browse"
-    # Barrier: wait for every parallel resolve to finish (or be killed), then parse each TXT.
-    local _i
-    for _i in "${!_lpids[@]}"; do wait "${_lpids[$_i]}" 2>/dev/null || true; done
-    for _i in "${!_lfiles[@]}"; do
-      lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
-      # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
-      local txt hn fp role addr
-      txt="$(cat "$lk" 2>/dev/null)"
-      addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
-      hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
-      fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
-      role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
-      [ -n "$hn" ] || hn="$svcname"
-      [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
-      printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
-      rm -f "$lk"
+    local bonjour_type
+    for bonjour_type in "$RP_BONJOUR_TYPE" "$RP_LEGACY_BONJOUR_TYPE"; do
+      local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
+      local bpid
+      if [ "$bonjour_type" = "$RP_BONJOUR_TYPE" ]; then
+        ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & bpid=$!
+      else
+        ( dns-sd -t "$timeout" -B "$bonjour_type" >"$browse" 2>/dev/null ) & bpid=$!
+      fi
+      ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
+      wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
+      # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>". Collect unique instance
+      # names, then fan out one resolve per name into its own temp file, all at once.
+      local svcname lk; local -a _lpids=() _lfiles=() _lnames=()
+      while IFS= read -r line; do
+        case "$line" in *" Add "*) ;; *) continue ;; esac
+        svcname="$(printf '%s' "$line" | sed -n 's/.*'"$bonjour_type"'\.[[:space:]]*\(.*\)$/\1/p')"
+        [ -n "$svcname" ] || continue
+        case " ${_lnames[*]:-} " in *" $svcname "*) continue ;; esac   # dedup browse repeats
+        lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
+        ( dns-sd -t "$resolve_to" -L "$svcname" "$bonjour_type" >"$lk" 2>/dev/null ) & local _p=$!
+        ( sleep "$resolve_to"; kill "$_p" 2>/dev/null ) >/dev/null 2>&1 &
+        _lpids+=("$_p"); _lfiles+=("$lk"); _lnames+=("$svcname")
+      done < "$browse"
+      rm -f "$browse"
+      # Barrier: wait for every parallel resolve to finish (or be killed), then parse each TXT.
+      local _i
+      for _i in "${!_lpids[@]}"; do wait "${_lpids[$_i]}" 2>/dev/null || true; done
+      for _i in "${!_lfiles[@]}"; do
+        lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
+        # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
+        local txt hn fp role addr
+        txt="$(cat "$lk" 2>/dev/null)"
+        addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
+        hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
+        fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
+        role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
+        [ -n "$hn" ] || hn="$svcname"
+        [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
+        rm -f "$lk"
+      done
     done
   fi
 

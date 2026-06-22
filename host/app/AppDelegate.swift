@@ -9,7 +9,7 @@ import Cocoa
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let host = HostManager()
     let approve = ApproveManager()
-    let advertiser = BonjourAdvertiser()   // ① LAN discovery: advertise _remotepair._tcp (host role only)
+    let advertiser = BonjourAdvertiser()   // ① LAN discovery: advertise _xpair._tcp (host role only)
     var statusItem: NSStatusItem!
     var menu: NSMenu!
     var hostTimer: Timer?

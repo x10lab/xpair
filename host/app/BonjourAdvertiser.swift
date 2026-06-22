@@ -1,7 +1,8 @@
 // BonjourAdvertiser.swift — LAN discovery, host side.
 //
-// Advertises this Mac as `_remotepair._tcp` on the local network so an Xpair client
-// can discover it via Bonjour (NWBrowser / `dns-sd -B`) for `xpair discover`. TXT record carries:
+// Advertises this Mac as `_xpair._tcp` on the local network so an Xpair client
+// can discover it via Bonjour (NWBrowser / `dns-sd -B`) for `xpair discover`.
+// A legacy `_remotepair._tcp` advertisement is kept for older clients. TXT record carries:
 //   hn   = friendly hostname        v   = app version (Config.swift APP_VERSION)
 //   role = currentRole() (host|both)  fp = ed25519 host-key fingerprint (HostKey.swift, for TOFU)
 //
@@ -16,21 +17,32 @@ import Foundation
 import Network
 
 final class BonjourAdvertiser {
-    static let serviceType = "_remotepair._tcp"
-    private var listener: NWListener?
+    static let serviceType = "_xpair._tcp"
+    static let legacyServiceType = "_remotepair._tcp"
+    private static var serviceTypes: [String] { [serviceType, legacyServiceType] }
+    private var listeners: [NWListener] = []
 
     /// Idempotent: (re)start the advertiser unless it is already up. Safe to call every tick.
     func ensureAdvertising() {
-        switch listener?.state {
-        case .some(.ready), .some(.setup), .some(.waiting):
-            return                      // already advertising (or coming up)
-        default:
-            start()                     // nil / cancelled / failed → (re)start
+        guard listeners.count == BonjourAdvertiser.serviceTypes.count else {
+            start()
+            return
         }
+        if listeners.allSatisfy({ listener in
+            switch listener.state {
+            case .ready, .setup, .waiting:
+                return true
+            default:
+                return false
+            }
+        }) {
+            return                      // already advertising (or coming up)
+        }
+        start()                         // nil / cancelled / failed → (re)start
     }
 
     private func start() {
-        listener?.cancel()
+        stop()
         let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
 
         var txt = NWTXTRecord()
@@ -40,27 +52,29 @@ final class BonjourAdvertiser {
         txt["role"] = role.isEmpty ? "host" : role
         if let fp = hostKeyFingerprint() { txt["fp"] = fp }
 
-        do {
-            let l = try NWListener(using: .tcp)
-            l.service = NWListener.Service(name: name, type: BonjourAdvertiser.serviceType,
-                                          domain: nil, txtRecord: txt)
-            l.stateUpdateHandler = { state in
-                if case .failed(let err) = state {
-                    log(.warn, "BONJOUR: advertiser failed: \(err) — retry next tick")
+        for serviceType in BonjourAdvertiser.serviceTypes {
+            do {
+                let l = try NWListener(using: .tcp)
+                l.service = NWListener.Service(name: name, type: serviceType,
+                                              domain: nil, txtRecord: txt)
+                l.stateUpdateHandler = { state in
+                    if case .failed(let err) = state {
+                        log(.warn, "BONJOUR: advertiser failed for \(serviceType): \(err) — retry next tick")
+                    }
                 }
+                // Discovery-only: we don't serve anything here. Drop any connection immediately.
+                l.newConnectionHandler = { conn in conn.cancel() }
+                l.start(queue: .main)
+                listeners.append(l)
+                log("BONJOUR: advertising \(serviceType) as \(name)")
+            } catch {
+                log(.warn, "BONJOUR: cannot start advertiser for \(serviceType): \(error)")
             }
-            // Discovery-only: we don't serve anything here. Drop any connection immediately.
-            l.newConnectionHandler = { conn in conn.cancel() }
-            l.start(queue: .main)
-            listener = l
-            log("BONJOUR: advertising \(BonjourAdvertiser.serviceType) as \(name)")
-        } catch {
-            log(.warn, "BONJOUR: cannot start advertiser: \(error)")
         }
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
+        listeners.forEach { $0.cancel() }
+        listeners.removeAll()
     }
 }
