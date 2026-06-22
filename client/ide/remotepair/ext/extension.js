@@ -24,7 +24,7 @@ const telemetry = require("./telemetry.js");
 // the host over SSH so the host can show this client as connected. Self-contained, stdlib-only,
 // fire-and-forget (never crashes/blocks the IDE).
 const heartbeat = require("./heartbeat.js");
-const { listSessionsFromCli } = require("./session-list.js");
+const { listSessionsFromCli, checkSessionAvailableFromCli } = require("./session-list.js");
 
 // --- constants -------------------------------------------------------------
 
@@ -1470,6 +1470,9 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
     vscode.commands.registerCommand("remotepair.sessions.listJson", () =>
       listSessionsFromCli(runXpairCli, { log })
+    ),
+    vscode.commands.registerCommand("remotepair.sessions.checkAttach", (name) =>
+      checkSessionAvailableFromCli(runXpairCli, name, { log })
     ),
     vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
     vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),

@@ -19,7 +19,8 @@
   "main": "./extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:remotepair.sessions.listJson"
+    "onCommand:remotepair.sessions.listJson",
+    "onCommand:remotepair.sessions.checkAttach"
   ],
   "contributes": {
     "commands": [

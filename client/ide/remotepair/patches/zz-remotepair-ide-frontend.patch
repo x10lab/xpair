@@ -2579,7 +2579,7 @@ index 0000000..6e5d586
 + */
 +export interface AttachedSessionsProvider {
 +	getAttached(): readonly AttachedSessionInfo[];
-+	reveal(id: string): void;
++	reveal(id: string): boolean;
 +	/** Close (dispose) the attached session identified by `id`. Optional → default no-op. */
 +	close?(id: string): void;
 +	/** The id of the currently-active attached session, if known. Optional → default undefined. */
@@ -2624,6 +2624,7 @@ index 0000000..6e5d586
 +let sessionRefreshInFlight = false;
 +let sessionRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 +let sessionListUnavailable = false;
++let sessionCardCause: string | undefined;
 +const SESSION_REFRESH_RETRY_MS = 1000;
 +const SESSION_REFRESH_INTERVAL_MS = 10000;
 +const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
@@ -2657,6 +2658,22 @@ index 0000000..6e5d586
 +
 +function commandResultUnavailable(value: unknown): boolean {
 +	return isRecord(value) && value.unavailable === true;
++}
++
++function commandResultCause(value: unknown): string | undefined {
++	if (!isRecord(value) || typeof value.cause !== 'string') {
++		return undefined;
++	}
++	const cause = value.cause.trim();
++	return cause || undefined;
++}
++
++export function setSessionCardCause(cause: string | undefined): void {
++	if (sessionCardCause === cause) {
++		return;
++	}
++	sessionCardCause = cause;
++	sessionDataChangeEmitter.fire();
 +}
 +
 +function cachedDetachedSessions(): readonly string[] {
@@ -2727,6 +2744,53 @@ index 0000000..6e5d586
 +		return;
 +	}
 +	reattacher(name);
++}
++
++function applySessionCheckResult(value: unknown): string | undefined {
++	const nextUnavailable = commandResultUnavailable(value);
++	const unavailableChanged = sessionListUnavailable !== nextUnavailable;
++	sessionListUnavailable = nextUnavailable;
++	const next = normalizeSessionCommandResult(value);
++	const cacheChanged = !sameSessionCache(liveSessionCache, next);
++	const cause = commandResultCause(value);
++	const causeChanged = sessionCardCause !== cause;
++	if (cacheChanged) {
++		liveSessionCache = next;
++	}
++	if (causeChanged) {
++		sessionCardCause = cause;
++	}
++	if (unavailableChanged || cacheChanged || causeChanged) {
++		sessionDataChangeEmitter.fire();
++	}
++	return cause;
++}
++
++function validateAndReattach(name: string, commandService: ICommandService): void {
++	if (!SESSION_NAME_RE.test(name)) {
++		setSessionCardCause(localize('remotepairInvalidSessionCard', "This session card is invalid. The list was refreshed; choose another session or start a new one."));
++		refreshSessionData(commandService);
++		return;
++	}
++	if (!reattacher) {
++		setSessionCardCause(localize('remotepairSessionAttachUnavailable', "Session attach is not ready yet. Reopen Sessions or retry in a moment."));
++		refreshSessionData(commandService);
++		return;
++	}
++	commandService.executeCommand('remotepair.sessions.checkAttach', name).then((value) => {
++		const cause = applySessionCheckResult(value);
++		if (isRecord(value) && value.ok === true) {
++			setSessionCardCause(undefined);
++			reattach(name);
++			return;
++		}
++		setSessionCardCause(cause ?? localize('remotepairSessionAttachCheckFailed', "Session is no longer available. The list was refreshed; choose another session or start a new one."));
++		scheduleSessionRefresh(commandService, SESSION_REFRESH_RETRY_MS);
++	}, (error) => {
++		rpLog('warn', `session attach check failed for ${name}: ${error instanceof Error ? error.message : String(error)}`);
++		setSessionCardCause(localize('remotepairSessionStatusUnavailable', "Session status unavailable. Check the host connection, then retry."));
++		refreshSessionData(commandService);
++	});
 +}
 +
 +function shellSingleQuote(value: string): string {
@@ -2876,6 +2940,7 @@ index 0000000..6e5d586
 +		}
 +		clearNode(row);
 +		this.cardDisposables.clear();
++		const cause = sessionCardCause;
 +
 +		if (attachedProvider) {
 +			// Primary source: the Sessions sidebar tracks its own terminals (S0 isolation means
@@ -2884,12 +2949,21 @@ index 0000000..6e5d586
 +			const sessions = provider.getAttached();
 +			this.recordHistory(sessions.map(s => s.title));
 +			if (sessions.length === 0) {
-+				this.addEmpty(localize('remotepairNoAttached', "No attached sessions"));
++				this.addEmpty(cause ?? localize('remotepairNoAttached', "No attached sessions"));
 +				return;
++			}
++			if (cause) {
++				this.addEmpty(cause);
 +			}
 +			const activeId = provider.getActiveId?.();
 +			for (const session of sessions) {
-+				this.addCard(session.title, () => provider.reveal(session.id), {
++				this.addCard(session.title, () => {
++					if (provider.reveal(session.id) === false) {
++						setSessionCardCause(localize('remotepairAttachedSessionGone', "That attached terminal is gone. The Attached list was refreshed."));
++					} else {
++						setSessionCardCause(undefined);
++					}
++				}, {
 +					active: !!activeId && session.id === activeId,
 +					onClose: provider.close ? () => provider.close!(session.id) : undefined,
 +				});
@@ -2899,8 +2973,11 @@ index 0000000..6e5d586
 +			const instances = this.terminalService.instances;
 +			this.recordHistory(instances.map(i => i.title));
 +			if (instances.length === 0) {
-+				this.addEmpty(localize('remotepairNoAttached', "No attached sessions"));
++				this.addEmpty(cause ?? localize('remotepairNoAttached', "No attached sessions"));
 +				return;
++			}
++			if (cause) {
++				this.addEmpty(cause);
 +			}
 +			const active = this.terminalService.activeInstance;
 +			for (const instance of instances) {
@@ -2920,16 +2997,19 @@ index 0000000..6e5d586
 +		clearNode(row);
 +		this.cardDisposables.clear();
 +		if (sessionListUnavailable) {
-+			this.addEmpty(localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
++			this.addEmpty(sessionCardCause ?? localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
 +			return;
 +		}
 +		const names = dataProvider?.getDetached() ?? cachedDetachedSessions();
 +		if (names.length === 0) {
-+			this.addEmpty(localize('remotepairNoDetached', "No detached sessions"));
++			this.addEmpty(sessionCardCause ?? localize('remotepairNoDetached', "No detached sessions"));
 +			return;
 +		}
++		if (sessionCardCause) {
++			this.addEmpty(sessionCardCause);
++		}
 +		for (const name of names) {
-+			this.addCard(name, () => reattach(name));
++			this.addCard(name, () => validateAndReattach(name, this.commandService));
 +		}
 +	}
 +
@@ -2941,14 +3021,17 @@ index 0000000..6e5d586
 +		clearNode(row);
 +		this.cardDisposables.clear();
 +		if (sessionListUnavailable) {
-+			this.addEmpty(localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
++			this.addEmpty(sessionCardCause ?? localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
 +			return;
 +		}
 +		// Live provider names are real, reattachable session names → clickable.
 +		const providerNames = dataProvider?.getHistory() ?? cachedHistorySessions();
 +		if (providerNames && providerNames.length > 0) {
++			if (sessionCardCause) {
++				this.addEmpty(sessionCardCause);
++			}
 +			for (const name of providerNames) {
-+				this.addCard(name, () => reattach(name));
++				this.addCard(name, () => validateAndReattach(name, this.commandService));
 +			}
 +			return;
 +		}
@@ -2957,7 +3040,7 @@ index 0000000..6e5d586
 +		// that would silently fail.
 +		const persisted = this.readHistory();
 +		if (persisted.length === 0) {
-+			this.addEmpty(localize('remotepairNoHistory', "No history"));
++			this.addEmpty(sessionCardCause ?? localize('remotepairNoHistory', "No history"));
 +			return;
 +		}
 +		for (const name of persisted) {
@@ -3263,7 +3346,7 @@ index 00000000..820a8de4
 +import { EditorInput } from '../../../common/editor/editorInput.js';
 +import { SessionPickerInput } from './remotePairSessionPicker.js';
 +import { VIEWLET_ID as BROWSER_VIEWLET_ID } from '../../files/common/files.js';
-+import { setSessionReattacher, setAttachedSessionsProvider, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
++import { setSessionReattacher, setAttachedSessionsProvider, setSessionCardCause, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
 +import { rpLog } from './remotePairLog.js';
 +
 +export const REMOTEPAIR_TERMINAL_SIDEBAR_ID = 'remotepair.terminalSidebar';
@@ -3363,9 +3446,19 @@ index 00000000..820a8de4
 +			reveal: (id) => {
 +				const v = this.attached.get(id);
 +				if (v) {
-+					v.group.openEditor(v.input, { pinned: true }).then(undefined, (e) => { rpLog('warn', `reveal: openEditor failed for attached session id=${id}: ${e}`); /* best-effort */ });
++					v.group.openEditor(v.input, { pinned: true }).then(() => setSessionCardCause(undefined), (e) => {
++						rpLog('warn', `reveal: openEditor failed for attached session id=${id}: ${e}`);
++						this.attached.delete(id);
++						setSessionCardCause(localize('remotepairAttachedRevealFailed', "That attached terminal could not be shown. The Attached list was refreshed."));
++						notifyAttachedSessionsChanged();
++					});
 +					v.instance.focus(true);
++					return true;
 +				}
++				rpLog('warn', `reveal: attached session id=${id} is stale; removing card`);
++				setSessionCardCause(localize('remotepairAttachedSessionGone', "That attached terminal is gone. The Attached list was refreshed."));
++				notifyAttachedSessionsChanged();
++				return false;
 +			},
 +			// Close (dispose) the attached session — the instance's onDisposed handler removes it
 +			// from `this.attached` and notifies the Attached row. Public dispose() only.
