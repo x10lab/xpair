@@ -244,6 +244,11 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
             replyHandler(["ok": r.ok, "err": r.err], nil)
 
         case "complete":
+            guard Permissions.allGranted() else {
+                log(.warn, "onboarding complete requested before Accessibility+Screen Recording — staying in onboarding")
+                replyHandler(nil, nil)
+                return
+            }
             replyHandler(nil, nil)
             finish()
 
