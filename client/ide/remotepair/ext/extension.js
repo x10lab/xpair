@@ -704,42 +704,97 @@ async function ensureExtensions(interactive) {
 // --- connect to host --------------------------------------------------------
 
 /**
- * Core connection logic: opens the host filesystem over SSH (open-remote-ssh).
+ * Core connection logic: keep host selection inside the Xpair Client flow.
  * @param {string} host validated host alias
+ * @param {RemoteDesktopPanel} [panel]
  */
-async function _doConnectHost(host) {
-  // Preferred: open the host filesystem directly via open-remote-ssh's authority,
-  // no prompt. Authority format is "ssh-remote+<host>" (from the extension).
-  const home = `/Users/${process.env.USER || os.userInfo().username || ""}`.replace(/\/$/, "");
-  const remotePath = home && home !== "/Users/" ? home : "/";
-  try {
-    const uri = vscode.Uri.from({
-      scheme: "vscode-remote",
-      authority: `ssh-remote+${host}`,
-      path: remotePath,
-    });
-    await vscode.commands.executeCommand("vscode.openFolder", uri, { forceNewWindow: true });
-    log(`connectHost: opened ${uri.toString()}`);
-    // WOW moment: remote host filesystem opened = first session live. time_to_wow_ms is measured
-    // from install_id creation time (0 base => omit so we never report a bogus duration).
-    const wowBase = telemetry.installTs();
-    telemetry.capture(telemetry.EVENTS.FIRST_SESSION_STARTED, {
-      ...(wowBase ? { time_to_wow_ms: Date.now() - wowBase } : {}),
-    });
+async function _doConnectHost(host, panel) {
+  log(`connectHost: routing ${host} through Xpair surfaces`);
+
+  const reach = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Xpair: checking ${host}`, cancellable: false },
+    async () => {
+      const res = await sshRun(host, "true", { timeoutMs: 6000 });
+      return {
+        ok: res.code === 0,
+        detail: (res.stderr || res.stdout || "").trim().split(/\r?\n/).slice(-2).join(" "),
+      };
+    }
+  );
+
+  if (!reach.ok) {
+    log(`connectHost: host check failed for ${host}: ${reach.detail || "unreachable"}`, "warn");
+    const retry = "Retry";
+    const setup = "Set up again";
+    const picked = await vscode.window.showWarningMessage(
+      `Xpair: ${host} is not reachable. Stay in the Xpair setup flow to recover the host connection.`,
+      retry,
+      setup
+    );
+    if (picked === retry) {
+      await _doConnectHost(host, panel);
+    } else if (picked === setup) {
+      runSetup();
+    }
     return;
-  } catch (e) {
-    log(`connectHost: vscode.openFolder failed: ${e && e.message ? e.message : e}`);
   }
-  // Fallback: trigger open-remote-ssh's own prompt (it will ask for the host).
+
+  let clientDirs = reconcileBrowserRoots();
+
   try {
-    await vscode.commands.executeCommand("openremotessh.openEmptyWindow");
-    return;
+    await vscode.commands.executeCommand("remotepair.terminalSidebar");
   } catch (e) {
-    log(`connectHost: openremotessh.openEmptyWindow failed: ${e && e.message ? e.message : e}`);
+    log(`connectHost: reveal terminal sidebar failed: ${e && e.message ? e.message : e}`, "warn");
   }
-  // Last resort: instructions.
+  try {
+    await vscode.commands.executeCommand("remotepair.sessions.attached.view.focus", { preserveFocus: true });
+  } catch (e) {
+    log(`connectHost: reveal sessions panel failed: ${e && e.message ? e.message : e}`, "warn");
+  }
+
+  if (clientDirs.length === 0) {
+    try {
+      await vscode.commands.executeCommand("workbench.view.explorer");
+    } catch (e) {
+      log(`connectHost: reveal Browser empty-state failed: ${e && e.message ? e.message : e}`, "warn");
+    }
+    const addRootChoice = "Add Root";
+    const setup = "Run setup";
+    const picked = await vscode.window.showInformationMessage(
+      "Xpair: no mapped Browser roots are configured for this host.",
+      addRootChoice,
+      setup
+    );
+    if (picked === addRootChoice) {
+      await addRoot();
+      clientDirs = reconcileBrowserRoots();
+    } else if (picked === setup) {
+      setupFileAccess();
+      return;
+    } else {
+      return;
+    }
+    if (clientDirs.length === 0) {
+      return;
+    }
+  }
+
+  launchRemoteClaude();
+
+  try {
+    if (panel) {
+      await panel.reveal();
+      panel.refresh();
+    } else {
+      await vscode.commands.executeCommand("remotepair.openRemoteDesktop");
+      await vscode.commands.executeCommand("remotepair.remoteDesktop.refresh");
+    }
+  } catch (e) {
+    log(`connectHost: RD recovery failed: ${e && e.message ? e.message : e}`, "warn");
+  }
+
   vscode.window.showInformationMessage(
-    `Xpair: open the Remote Explorer and connect to "${host}" via Open Remote - SSH.`
+    `Xpair: ${host} selected. Sessions, Browser mapping, and Remote Desktop are recovering in this window.`
   );
 }
 
@@ -747,7 +802,7 @@ async function _doConnectHost(host) {
  * Show a QuickPick listing the configured endpoint(s) (currently REMOTE_HOST from
  * client.env = one item), then connect to the selected host.
  */
-async function connectHost() {
+async function connectHost(panel) {
   const host = getValidHost();
   if (!host) {
     vscode.window.showWarningMessage(
@@ -763,7 +818,7 @@ async function connectHost() {
     {
       label: `$(remote) ${host}`,
       description: "REMOTE_HOST (client.env)",
-      detail: `Connect to ${host} via Open Remote - SSH`,
+      detail: `Recover Xpair connection, mappings, sessions, and RD for ${host}`,
       host,
     },
   ];
@@ -777,7 +832,7 @@ async function connectHost() {
 
   if (!picked) return; // user cancelled
   log(`connectHost: user selected ${picked.host}`);
-  await _doConnectHost(picked.host);
+  await _doConnectHost(picked.host, panel);
 }
 
 // --- launch remote Claude ---------------------------------------------------
@@ -1465,7 +1520,7 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
     vscode.commands.registerCommand("remotepair.runSetup", () => runSetup()),
     vscode.commands.registerCommand("remotepair.endSessionReonboard", () => endSessionReonboard()),
-    vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
+    vscode.commands.registerCommand("remotepair.connectHost", () => connectHost(panel)),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
     vscode.commands.registerCommand("remotepair.sessions.listJson", () =>
