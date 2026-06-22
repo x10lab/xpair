@@ -32,7 +32,7 @@ BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.xpair-host}"
 REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin}"          # path evaluated on the remote side (preserve quoting)
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
-MOSH_SERVER="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}"
+MOSH_SERVER="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}"   # bundled in XpairHost.app (static, brew-free); see host/build-mosh.sh
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
 # Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;

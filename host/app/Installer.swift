@@ -150,6 +150,23 @@ enum Installer {
             }
         } else { log(.warn, "bundled tmux-aqua not found (\(tmuxSrc))") }
 
+        // 4a. mosh-server symlink → bundled Helpers/mosh-server (resilient-attach host side). The client
+        //     attaches with `mosh --server=~/.local/bin/mosh-server`, so it must live in LOCAL_BIN next to
+        //     tmux-aqua. OPTIONAL: unlike tmux-aqua, a missing mosh-server is not fatal — the CLI falls back
+        //     to `ssh -t` when it is absent (so this is debug-logged, not a warning).
+        let moshSrc = "\(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path)/mosh-server"
+        let moshLink = "\(LOCAL_BIN)/mosh-server"
+        if fm.fileExists(atPath: moshSrc) {
+            ensureDir(LOCAL_BIN)
+            let cur = try? fm.destinationOfSymbolicLink(atPath: moshLink)
+            if cur != moshSrc {
+                do { try fm.removeItem(atPath: moshLink) }
+                catch { log(.debug, "mosh-server stale link remove skipped (\(moshLink)): \(error)") }
+                do { try fm.createSymbolicLink(atPath: moshLink, withDestinationPath: moshSrc); log(.info, "mosh-server link → \(moshSrc)") }
+                catch { log(.error, "mosh-server link failed: \(error)") }
+            }
+        } else { log(.debug, "bundled mosh-server not found (\(moshSrc)) — attach uses ssh fallback") }
+
         // 4b. Two screen-sharing symlinks → bundled Helpers/{screen,rp-screencap}.
         //     Resolves the stable path ~/.xpair/host/bin/<name> that extensions/docs call to the bundle's signed binary
         //     (after retiring SSH deploy, the bundle is the only delivery path). Being symlinks, on .app update they always
