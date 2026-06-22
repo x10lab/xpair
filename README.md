@@ -10,15 +10,13 @@ Run the agent you already subscribe to — **Claude**, **Codex**, or **OpenCode*
 
 > **Naming:** The product is **Xpair** end to end — app, CLI, and bundle identifiers all use it (`XpairHost.app`, the `Xpair` IDE, the `xpair` CLI, `com.x10lab.xpair*`). The repo is [`x10lab/xpair`](https://github.com/x10lab/xpair). (Older builds shipped as *RemotePair*; if you have one installed, uninstall it before moving to Xpair — the bundle id changed, so macOS permissions don't carry over.)
 
-![Xpair architecture](assets/architecture.png)
+<p align="center">
+  <img src="assets/ide-hero.png" alt="The Xpair IDE — Sessions sidebar, Remote Desktop tab, and Attached/Detached host sessions" width="860">
+</p>
 
 - **Host Mac** — runs your agent inside persistent tmux sessions, 24/7, with computer-use working.
 - **Client** — the Xpair IDE (a VSCodium fork) or the `xpair` CLI; attach with a Finder right-click.
 - **Mobile** — reach the same sessions from any SSH/mosh client, including Claude Code on your phone.
-
-<p align="center">
-  <img src="assets/ide-hero.png" alt="The Xpair IDE — Sessions sidebar, Remote Desktop tab, and Attached/Detached host sessions" width="860">
-</p>
 
 ---
 
@@ -35,6 +33,8 @@ Prefer to do it by hand? See [Installation](#installation) below. Either way, fi
 ---
 
 ## Features
+
+![Xpair architecture](assets/architecture.png)
 
 ### Computer-use that survives going remote
 Run your agent over SSH and macOS strips its Accessibility (AX) and Screen Recording (SR) grants, so screenshot/click/type silently stop. A privileged menu-bar app (`XpairHost.app`) owns the grants and keeps the agent inside its process subtree, so computer-use keeps working no matter which client is attached.

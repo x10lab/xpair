@@ -10,15 +10,13 @@
 
 > **이름 안내:** 제품명은 **Xpair**이며 앱·CLI·번들 식별자 전부 Xpair를 씁니다(`XpairHost.app`, `Xpair` IDE, `xpair` CLI, `com.x10lab.xpair*`). 저장소는 [`x10lab/xpair`](https://github.com/x10lab/xpair)입니다. (예전 빌드는 *RemotePair*로 출하됐습니다 — 설치돼 있다면 Xpair로 옮기기 전에 제거하세요. bundle id가 바뀌어 권한이 그대로 넘어오지 않습니다.)
 
-![Xpair 아키텍처](assets/architecture.png)
+<p align="center">
+  <img src="assets/ide-hero.png" alt="Xpair IDE — Sessions 사이드바, Remote Desktop 탭, Attached/Detached 호스트 세션" width="860">
+</p>
 
 - **호스트 Mac** — 에이전트를 영속 tmux 세션 안에서, Computer Use가 살아 있는 채로 24/7 돌립니다.
 - **클라이언트** — Xpair IDE(VSCodium 포크) 또는 `xpair` CLI; Finder 우클릭으로 붙습니다.
 - **모바일** — 폰의 Claude Code를 포함한 모든 SSH/mosh 클라이언트에서 같은 세션에 들어갑니다.
-
-<p align="center">
-  <img src="assets/ide-hero.png" alt="Xpair IDE — Sessions 사이드바, Remote Desktop 탭, Attached/Detached 호스트 세션" width="860">
-</p>
 
 ---
 
@@ -35,6 +33,8 @@ Set up Xpair (https://github.com/x10lab/xpair) on this Mac. Fetch and read its R
 ---
 
 ## 기능
+
+![Xpair 아키텍처](assets/architecture.png)
 
 ### 원격으로 가도 살아남는 Computer Use
 에이전트를 SSH로 띄우면 macOS가 손쉬운 사용(AX)·화면 기록(SR) 권한을 떼어버려 스크린샷·클릭·타이핑이 조용히 멈춥니다. 권한을 쥔 메뉴바 앱(`XpairHost.app`)이 그 권한을 소유하고 에이전트를 자기 프로세스 하위 트리 안에 두기 때문에, 어떤 클라이언트가 붙어 있든 Computer Use가 계속 작동합니다.
