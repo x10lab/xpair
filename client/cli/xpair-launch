@@ -7,7 +7,7 @@
 #                   but absolute paths may differ)
 #   • Session name: deterministic, based on host path with host-prefix (<HOST>_…) —
 #                   just glance at the status bar to know which machine you're on
-#   • _N numbering: if _1 already has a client (tab) attached → _2 is opened fresh;
+#   • _N numbering: if _1 already has a client (local tab or host tmux client) attached → _2 is opened fresh;
 #                   detached sessions are taken over with attach -d
 #   • computer-use: session is added to the patched tmux-aqua server socket started by
 #                   XpairHost → claude inherits its permissions
@@ -361,11 +361,15 @@ _local_next_n() {
   fi
 }
 
-# _remote_next_n REMOTE_PROJ_BASE — echo "N state" (best-effort; local pgrep only)
+# _remote_next_n REMOTE_PROJ_BASE [HOST_ATTACHED_SESSIONS] — echo "N state" (best-effort)
 # state: "new/reattach" (N==1, can't cheaply know remote detached state) | "fresh" (N>1)
 _remote_next_n() {
-  local base="$1" n=1
-  while pgrep -f "mosh-client.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1; do
+  local base="$1" attached="${2:-}" n=1
+  # Skip any _N that already has a live client, whether visible as a local mosh tab
+  # or as an attached client on the host tmux server.
+  while pgrep -f "mosh-client.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1 ||
+        printf '%s\n' "$attached" | grep -Fxq "${base}_${n}"
+  do
     n=$((n+1))
   done
   if [ "$n" -gt 1 ]; then
@@ -469,6 +473,13 @@ HOST_DIR_Q="$(sh_quote "$HOST_DIR")"
 AQUA_SOCK_Q="$(sh_quote "$AQUA_SOCK")"
 REMOTE_PROJ_Q="$(sh_quote "$REMOTE_PROJ")"
 
+_remote_attached_sessions() {
+  [ -n "$REMOTE_HOST" ] || return 0
+  { ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
+      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true" 2>/dev/null || true; } \
+    | awk '($2!="0"){print $1}'
+}
+
 # Ask this before the machine/target prompt so users choose the agent first.
 choose_engine
 
@@ -479,8 +490,9 @@ elif [ -z "$REMOTE_HOST" ] || [ "$LOCAL_HOST" = "$REMOTE_HOST" ]; then
 elif [ "$RP_YES" = 1 ]; then
   TARGET=remote
 else
-  # Compute prospective session annotations (best-effort, no extra ssh round-trips)
-  _rn_out="$(_remote_next_n "$REMOTE_PROJ")"
+  # Compute prospective session annotations from local mosh plus a best-effort host tmux probe.
+  _rn_att="$(_remote_attached_sessions)"
+  _rn_out="$(_remote_next_n "$REMOTE_PROJ" "$_rn_att")"
   _rn="${_rn_out%% *}"; _rs="${_rn_out#* }"
   _ln_out="$(_local_next_n "$LOCAL_PROJ")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
@@ -546,30 +558,32 @@ case "$DIR_CHECK" in
     launch_local ;;
 esac
 
-# ── zombie tab cleanup ──
+# ── zombie tab cleanup + host attached-client facts ──
 # It's possible for a mosh-client to be alive (tab open) while the remote server is dead
 # (host rebooted, etc.) — prevent frozen tabs from holding _N numbers indefinitely.
 # Query the host's attach list and kill local clients with no matching server → tab closes + number freed.
-# On ssh failure, conservatively treat all as alive (use next number — better than killing wrongly).
+# On ssh failure, keep local clients intact and let host-side setup recheck before attach.
+ATT=""
 if ATT_RAW="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" \
      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true")"; then
-  ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){printf "%s ", $1}')"
+  ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){print $1}')"
   { pgrep -fl mosh-client 2>/dev/null | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
     pid="${line%% *}"
     s="$(printf '%s' "$line" | grep -oE "${REMOTE_PROJ}_[0-9]+" | head -1)"
-    case " $ATT " in
-      (*" $s "*) : ;;                              # server exists → live tab
-      (*) printf 'zombie tab cleanup: %s (no matching server) — killing mosh-client %s\n' "$s" "$pid"
-          kill "$pid" 2>/dev/null || true ;;
-    esac
+    if printf '%s\n' "$ATT" | grep -Fxq "$s"; then
+      :                                            # attached server exists → live tab
+    else
+      printf 'zombie tab cleanup: %s (no matching server) — killing mosh-client %s\n' "$s" "$pid"
+      kill "$pid" 2>/dev/null || true
+    fi
   done
   sleep 0.3   # let kill take effect before RN calculation below
 fi
 
-# Session number is decided solely from facts on this machine: the lowest _N with no live
-# mosh-client (= open tab). No need to check host attach state — attach -d will drop any stale
-# client (and kill its mosh-server) and reclaim the session.
-_rn_final="$(_remote_next_n "$REMOTE_PROJ")"
+# Session number is decided from both local mosh-client facts and live host tmux attached-client
+# facts. Host-side setup rechecks before create/attach so a stale client-side choice cannot
+# take over another active client.
+_rn_final="$(_remote_next_n "$REMOTE_PROJ" "$ATT")"
 RN="${_rn_final%% *}"
 RCONT=1
 [ "$RN" -gt 1 ] && RCONT=0   # _2+ → fresh
@@ -618,11 +632,18 @@ fi
 if ! tm has-session 2>/dev/null; then
   printf '⚠ ${APP_NAME} host (${AQUA_SOCK}) not running — check ~/Applications/${APP_NAME}.app\n' >&2; exit 13
 fi
-# Session number (_N) is determined on the client from local tab facts and injected here.
-# If session exists → attach -d take-over; stale client is dropped and its mosh-server exits,
-# so no remote reconciliation needed. If missing → create at current window size. _2+ → fresh.
-SESSION="\${SESSION}_${RN}"
-CONT=${RCONT}; NEED_CREATE=1
+# Session number (_N) is preselected from client+host facts and then rechecked here to avoid
+# taking over a session another client attached between the client-side probe and this setup.
+# Start at injected _${RN}; the host-side loop advances only while that exact session is live-attached.
+BASE_SESSION="\$SESSION"
+N=${RN}
+CONT=${RCONT}
+while tm list-clients -t "=\${BASE_SESSION}_\${N}" -F x 2>/dev/null | grep -q x; do
+  N=\$((N+1))
+  CONT=0
+done
+SESSION="\${BASE_SESSION}_\${N}"
+NEED_CREATE=1
 if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
 if [ "\$NEED_CREATE" = 1 ]; then
   T=\$(mktemp -t claude-respawn.XXXXXX)
