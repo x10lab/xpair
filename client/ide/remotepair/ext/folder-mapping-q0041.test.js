@@ -47,8 +47,8 @@ test("client paths map to host paths before Browser roots and launches (Q0041)",
   );
   assert.match(
     extension,
-    /title: "Xpair . Add Root \(mount a host folder\)"[\s\S]*prompt: "Enter the HOST folder path[\s\S]*runXpairCli\(\["mount", host\][\s\S]*runXpairCli\(\["map", "add", mountpoint, host\]/,
-    "Add Root must ask for a host path, mount it, then register mountpoint::host mapping",
+    /title: "Xpair . Add Mapping"[\s\S]*prompt: "Enter the host folder path[\s\S]*runXpairCli\(\["mount", "mount", host\][\s\S]*runXpairCli\(\["map", "add", mountpoint, host\]/,
+    "Add Mapping must ask for a host path, mount it, then register mountpoint::host mapping",
   );
   assert.match(
     patch,

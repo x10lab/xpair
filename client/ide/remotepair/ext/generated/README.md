@@ -3,7 +3,7 @@
 This directory is **generated** from the monorepo `shared/` SoT.
 
 - Generator: `../generate-contracts.mjs` (run with `node` from the monorepo; reads `../../shared`)
-- `contracts.json` = snapshot of the screen-protocol + identity contracts (port, input channels, brand, version)
+- `contracts.json` = snapshot of the screen-protocol + identity contracts (ports, view-only input policy, brand, version)
 
 `remotepair-ext` consumes **only these committed generated artifacts**, so a standalone `remotepair-ide` build
 works without `../../shared` (**self-contained** — safe to subtree pull).

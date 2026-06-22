@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 // Host permissions: Accessibility (required — approve auto-click via cliclick/System Events),
 // Screen Recording (required — screen-share + approve OCR), Full Disk Access (recommended).
 export type PermKey = "ax" | "sr" | "fda";
-export type PermState = Record<PermKey, "pending" | "opening" | "granted">;
+export type PermStatus = "pending" | "opening" | "retry" | "failed" | "granted";
+export type PermState = Record<PermKey, PermStatus>;
 
 const ROWS: Array<{
   key: PermKey;
@@ -46,10 +47,17 @@ export function StepPermissions({ state, setState }: Props) {
 
   // Poll the host's status.json for real grant detection. When the host
   // reports a permission as granted we flip that row to "granted"; rows the
-  // host has not yet granted are left in their current ("pending"/"opening")
-  // local state so the in-flight "Open Settings" affordance is preserved.
+  // host has not yet granted are kept retryable instead of getting stuck in
+  // the in-flight "opening" affordance forever.
   useEffect(() => {
     let cancelled = false;
+
+    const nextStatus = (granted: boolean, current: PermStatus): PermStatus => {
+      if (granted) return "granted";
+      if (current === "opening") return "retry";
+      if (current === "granted") return "pending";
+      return current;
+    };
 
     const poll = async () => {
       try {
@@ -57,9 +65,9 @@ export function StepPermissions({ state, setState }: Props) {
         if (cancelled) return;
         const cur = stateRef.current;
         const next: PermState = {
-          ax: s.ax ? "granted" : cur.ax,
-          sr: s.sr ? "granted" : cur.sr,
-          fda: s.fda ? "granted" : cur.fda,
+          ax: nextStatus(s.ax, cur.ax),
+          sr: nextStatus(s.sr, cur.sr),
+          fda: nextStatus(s.fda, cur.fda),
         };
         if (next.ax !== cur.ax || next.sr !== cur.sr || next.fda !== cur.fda) {
           setState(next);
@@ -97,9 +105,15 @@ export function StepPermissions({ state, setState }: Props) {
               onOpen={() => {
                 // Register the host in the TCC list (CGRequestScreenCaptureAccess)
                 // AND open the relevant Settings pane.
-                window.xpair.requestPermission(r.key);
-                window.xpair.openPermissionPane(r.key);
-                setState({ ...state, [r.key]: "opening" });
+                void (async () => {
+                  try {
+                    await window.xpair.requestPermission(r.key);
+                    await window.xpair.openPermissionPane(r.key);
+                    setState({ ...stateRef.current, [r.key]: "opening" });
+                  } catch {
+                    setState({ ...stateRef.current, [r.key]: "failed" });
+                  }
+                })();
               }}
             />
           ))}
@@ -120,6 +134,15 @@ function PermRow({
 }) {
   const Icon = row.icon;
   const granted = status === "granted";
+  const actionLabel =
+    status === "pending" ? "Open Settings" : status === "failed" ? "Try Again" : "Open Again";
+  const helper =
+    status === "failed"
+      ? "Could not open the pane. Open Privacy & Security manually, then try again."
+      : status === "retry"
+        ? "Still not granted. Return after changing macOS Settings, or open the pane again."
+        : null;
+
   return (
     <div
       className={
@@ -141,6 +164,7 @@ function PermRow({
           <StatusPill status={status} />
         </div>
         <p className="text-xs text-muted-foreground">{row.desc}</p>
+        {helper && <p className="mt-1 text-xs text-muted-foreground">{helper}</p>}
       </div>
       {!granted && (
         <Button
@@ -148,16 +172,13 @@ function PermRow({
           variant="outline"
           className="shrink-0"
           onClick={onOpen}
-          disabled={status === "opening"}
         >
           {status === "opening" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
           ) : (
-            <>
-              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-              Open Settings
-            </>
+            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
           )}
+          {actionLabel}
         </Button>
       )}
       {granted && (
@@ -181,6 +202,18 @@ function StatusPill({ status }: { status: PermState[PermKey] }) {
     return (
       <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
         Waiting…
+      </span>
+    );
+  if (status === "retry")
+    return (
+      <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+        Needs retry
+      </span>
+    );
+  if (status === "failed")
+    return (
+      <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+        Failed
       </span>
     );
   return (

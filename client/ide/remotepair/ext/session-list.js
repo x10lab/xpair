@@ -22,6 +22,14 @@ function unavailableSessionList() {
   return { sessions: [], unavailable: true };
 }
 
+function sessionUnavailableCause(name) {
+  return `Session "${name}" is no longer available. The list was refreshed; choose another session or start a new one.`;
+}
+
+function sessionListUnavailableCause() {
+  return "Session list unavailable. Check the host connection, then retry.";
+}
+
 async function listSessionsFromCli(runXpairCli, opts = {}) {
   const timeoutMs = opts.timeoutMs || 5000;
   const log = typeof opts.log === "function" ? opts.log : () => {};
@@ -46,4 +54,28 @@ async function listSessionsFromCli(runXpairCli, opts = {}) {
   }
 }
 
-module.exports = { normalizeSessionList, listSessionsFromCli };
+async function checkSessionAvailableFromCli(runXpairCli, name, opts = {}) {
+  const sessionName = typeof name === "string" ? name.trim() : "";
+  if (!SESSION_NAME_RE.test(sessionName)) {
+    return {
+      ok: false,
+      stale: true,
+      sessions: [],
+      cause: "Session name is invalid. The list was refreshed; choose another session or start a new one.",
+    };
+  }
+
+  const list = await listSessionsFromCli(runXpairCli, opts);
+  if (list.unavailable) {
+    return { ...list, ok: false, cause: sessionListUnavailableCause() };
+  }
+
+  const session = list.sessions.find((entry) => entry.name === sessionName);
+  if (!session) {
+    return { ...list, ok: false, stale: true, cause: sessionUnavailableCause(sessionName) };
+  }
+
+  return { ...list, ok: true, session };
+}
+
+module.exports = { normalizeSessionList, listSessionsFromCli, checkSessionAvailableFromCli };

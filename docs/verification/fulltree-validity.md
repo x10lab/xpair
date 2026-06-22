@@ -164,7 +164,7 @@ Entry flow: Xpair Remote Desktop editor-tab flow. `remotepair.openRemoteDesktop`
 Code read: `client/ide/remotepair/ext/package.json`, `client/ide/remotepair/ext/extension.js`, `client/ide/remotepair/ext/media/remote-desktop.js`, `client/ide/remotepair/ext/media/remote-desktop.css`, `client/ide/remotepair/ext/generated/contracts.json`, `host/app/AppDelegate.swift`, `host/app/HostManager.swift`, `host/app/ScreenServer.swift`, `host/app/CaptureEngine.swift`, `host/rd/screen/src/main.rs`, `host/rd/screen/src/serve_webrtc.rs`, `client/ide/remotepair/ext/remote-desktop-default-surface.test.js`, `client/ide/remotepair/ext/remote-desktop-client-surface-q0474.test.js`, `client/ide/remotepair/ext/remote-desktop-tunnel.test.js`.
 
 ### STALE
-- `132611`: current RD client never wires or receives input DataChannels; click input is simply ignored by the permanent view-only webview, so a "DataChannel exists during click" subpath is not real.
+- `132611`: current RD client closes/ignores host-created input DataChannels and never sends click input from the permanent view-only webview, so a "DataChannel exists during click" subpath is not a controllable path.
 - `132632`: the badge is initialized and kept as `view-only`/`.off`; no current code path hides it or switches it to an on/controllable state.
 - `1327120`: when `tabGroups` inspection throws, `reveal()` immediately falls through to webview creation; there is no user-visible "before fallback handling" close step.
 - `1327122`: if `tabGroups` fails while another extension host already has an RD tab, current code cannot detect that existing tab and falls back to creating its own panel, so the "keep existing RD with no new panel" transition is not real.
@@ -396,4 +396,3 @@ Main paths match current code: menu-bar Clients shows `(none connected)` when `C
 STALE_PREFIXES 0
 
 ---
-

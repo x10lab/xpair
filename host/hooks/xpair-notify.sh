@@ -11,6 +11,7 @@
 #   Stop            — Claude Code session ended
 #   Notification    — notification the model sends to the user
 #   SubagentStop    — subagent ended
+#   PermissionRequest — manual approval wait (type=approve-wait)
 #   PermissionDenied / PostToolUseFailure — approve-family events (type=approve)
 #
 # Queue rotation: when it exceeds 500 lines, the front is trimmed (keeps the
@@ -35,6 +36,9 @@ case "$EVENT" in
   SubagentStop)
     NOTIFY_TYPE="SubagentStop"
     ;;
+  PermissionRequest)
+    NOTIFY_TYPE="approve-wait"
+    ;;
   PermissionDenied|PostToolUseFailure)
     NOTIFY_TYPE="approve"
     ;;
@@ -44,8 +48,8 @@ case "$EVENT" in
 esac
 
 # ── type filter from notify.conf ────────────────────────────────────────────
-# ENABLED_TYPES=Stop,Notification,SubagentStop,approve
-ENABLED_TYPES="Stop,Notification,SubagentStop,approve"
+# ENABLED_TYPES=Stop,Notification,SubagentStop,approve-wait,approve
+ENABLED_TYPES="Stop,Notification,SubagentStop,approve-wait,approve"
 if [[ -f "$CONF_FILE" ]]; then
   while IFS='=' read -r key val; do
     [[ "$key" =~ ^[[:space:]]*# ]] && continue
@@ -56,11 +60,6 @@ if [[ -f "$CONF_FILE" ]]; then
       ENABLED_TYPES="$val"
     fi
   done < "$CONF_FILE"
-fi
-
-# Check whether the type is enabled (exact word match in the comma-separated list)
-if ! printf '%s' ",$ENABLED_TYPES," | grep -qF ",$NOTIFY_TYPE,"; then
-  exit 0
 fi
 
 # ── read stdin ──────────────────────────────────────────────────────────────
@@ -82,6 +81,7 @@ export _RP_SESSION="$SESSION_NAME"
 export _RP_QUEUE="$QUEUE_FILE"
 export _RP_QUEUE_MAX="$QUEUE_MAX"
 export _RP_INPUT="$INPUT"
+export _RP_ENABLED_TYPES="$ENABLED_TYPES"
 
 python3 /dev/stdin <<'PYEOF'
 import json, os, sys, time, fcntl
@@ -92,6 +92,7 @@ session     = os.environ.get("_RP_SESSION", "")
 queue_file  = os.environ.get("_RP_QUEUE", "")
 queue_max   = int(os.environ.get("_RP_QUEUE_MAX", "500"))
 raw         = os.environ.get("_RP_INPUT", "")
+enabled_raw = os.environ.get("_RP_ENABLED_TYPES", "")
 
 try:
     data = json.loads(raw) if raw.strip() else {}
@@ -105,6 +106,27 @@ def first(*keys):
             return str(v).strip()
     return ""
 
+notification_type = first("notification_type", "notificationType")
+if event == "PermissionRequest" or (event == "Notification" and notification_type == "permission_prompt"):
+    notify_type = "approve-wait"
+
+enabled_types = [t for t in enabled_raw.replace(" ", "").split(",") if t]
+if notify_type not in enabled_types:
+    sys.exit(0)
+
+def tool_summary():
+    tool_name = first("tool_name", "toolName") or "unknown-tool"
+    tool_input = data.get("tool_input") or data.get("toolInput") or {}
+    if isinstance(tool_input, dict):
+        cmd = (tool_input.get("command") or
+               tool_input.get("url") or
+               tool_input.get("description") or
+               (next(iter(tool_input.values()), "") if tool_input else ""))
+        cmd = str(cmd)[:80]
+    else:
+        cmd = str(tool_input)[:80]
+    return tool_name, cmd
+
 # ── extract title / message ───────────────────────────────────────────────────
 if notify_type in ("Stop", "SubagentStop"):
     label   = "session" if notify_type == "Stop" else "subagent"
@@ -115,22 +137,19 @@ elif notify_type == "Notification":
     title   = first("title") or "Claude notification"
     message = first("message", "content") or "(no content)"
 
+elif notify_type == "approve-wait":
+    tool_name, cmd = tool_summary()
+    title   = first("title") or f"Approval waiting: {tool_name}"
+    message = first("message", "content") or cmd or "Claude is waiting for manual approval."
+
 else:  # approve
-    tool_name  = first("tool_name", "toolName") or "unknown-tool"
-    tool_input = data.get("tool_input") or data.get("toolInput") or {}
-    if isinstance(tool_input, dict):
-        cmd = (tool_input.get("command") or
-               tool_input.get("url") or
-               (next(iter(tool_input.values()), "") if tool_input else ""))
-        cmd = str(cmd)[:80]
-    else:
-        cmd = str(tool_input)[:80]
+    tool_name, cmd = tool_summary()
     title   = f"Approval required: {tool_name}"
     message = cmd or f"Tool {tool_name} requires approval."
 
 approval_type = ""
-if notify_type == "approve":
-    approval_type = first("approvalType", "approval_type") or event
+if notify_type in ("approve", "approve-wait"):
+    approval_type = first("approvalType", "approval_type") or ("approve-wait" if notify_type == "approve-wait" else event)
 
 # ── ensure the queue directory exists ─────────────────────────────────────────
 queue_dir = os.path.dirname(queue_file)

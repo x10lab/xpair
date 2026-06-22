@@ -16,7 +16,7 @@ function test(name, fn) {
   try {
     fn();
     passed++;
-    console.log(`PASS ${name} - Browser maps host folders through Xpair Add Root`);
+    console.log(`PASS ${name} - Browser maps host folders through Xpair Add Mapping`);
   } catch (error) {
     failed++;
     console.error(`FAIL ${name} - ${error.message.split("\n")[0]}`);
@@ -36,16 +36,16 @@ function extractFunction(source, name) {
   throw new Error(`${name} body could not be parsed`);
 }
 
-test("Q0414 Client Browser uses Add Mapping/Add Root, not generic Open Folder", () => {
+test("Q0414 Client Browser uses Add Mapping, not generic Open Folder", () => {
   assert.match(
     idePatch,
-    /only the RemotePair Add Root welcome shows/,
+    /only the Xpair Add Mapping welcome shows/,
     "Native empty Browser Open Folder welcome must be suppressed",
   );
   assert.match(
     idePatch,
     /command:remotepair\.browser\.addRoot/,
-    "Empty Browser state must route users to the Xpair Add Root command",
+    "Empty Browser state must route users to the Xpair Add Mapping command",
   );
   assert.match(
     idePatch,
@@ -55,35 +55,35 @@ test("Q0414 Client Browser uses Add Mapping/Add Root, not generic Open Folder", 
   assert.match(
     idePatch,
     /executeCommand\('remotepair\.browser\.addRoot'\)/,
-    "The Browser Add Root affordance must execute the Xpair mapping command",
+    "The Browser Add Mapping affordance must execute the Xpair mapping command",
   );
 
   assert.match(
     extension,
     /registerCommand\("remotepair\.browser\.addRoot"/,
-    "The extension must register the command used by the Browser Add Root affordance",
+    "The extension must register the command used by the Browser Add Mapping affordance",
   );
   const addRoot = extractFunction(extension, "addRoot");
-  assert.match(addRoot, /showInputBox\(\{[\s\S]*HOST folder path/, "Add Root must ask for a host path");
+  assert.match(addRoot, /showInputBox\(\{[\s\S]*host folder path/, "Add Mapping must ask for a host path");
   assert.match(
     addRoot,
-    /runXpairCli\(\["mount", host\]/,
-    "Add Root must mount the host folder first",
+    /runXpairCli\(\["mount", "mount", host\]/,
+    "Add Mapping must mount the host folder first",
   );
   assert.match(
     addRoot,
     /runXpairCli\(\["map", "add", mountpoint, host\]/,
-    "Add Root must register the mountpoint as a folder mapping",
+    "Add Mapping must register the mountpoint as a folder mapping",
   );
   assert.match(
     addRoot,
     /reconcileBrowserRoots\(\)/,
-    "Add Root must add the mapped mountpoint to Browser roots",
+    "Add Mapping must add the mapped mountpoint to Browser roots",
   );
   assert.doesNotMatch(
     addRoot,
     /vscode\.openFolder|workbench\.action\.addRootFolder/,
-    "Add Root must not fall back to arbitrary local Open Folder",
+    "Add Mapping must not fall back to arbitrary local Open Folder",
   );
 });
 

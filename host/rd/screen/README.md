@@ -7,15 +7,15 @@ high-performance path that replaces the v0 `ssh` + InputServer screenshot pollin
 > `serve-webrtc` captures the primary display via `rp-screencap` (ScreenCaptureKit
 > + VideoToolbox **hardware** H.264, one process, IOSurface zero-copy, GPU-scaled,
 > on-change), streams it over **webrtc-rs** (DTLS/SRTP, UDP/ICE host candidates —
-> loopback/LAN/VPN) into the IDE's `<video>`, and forwards keyboard/mouse over two
-> DataChannels (`rp-ctl` reliable / `rp-move` lossy) into `rp-input-inject` (AX text
-> insert, IME-aware so Korean composes exactly). Verified end-to-end from the real
-> IDE (RD panel → peer "connected" → 30fps H.264 → input channels open).
+> loopback/LAN/VPN) into the IDE's `<video>`. Remote Desktop is view-only and
+> does not open `rp-ctl` or `rp-move`; the IDE closes/ignores any host-created
+> DataChannel and never forwards pointer, wheel, text, or keyboard input.
+> Verified end-to-end from the real IDE (RD panel → peer "connected" → 30fps H.264).
 >
 > `serve` (v1a: WS + JPEG continuous capture) remains as a license-clean fallback
 > and capture-foundation proof, but the shipping Remote Desktop is **v2**.
 > Still future (see roadmap): TWCC/GCC bitrate adaptation, HEVC/AV1, ICE-restart
-> reconnection, and finishing shortcut/mouse input parity.
+> reconnection.
 
 ---
 
@@ -27,7 +27,7 @@ high-performance path that replaces the v0 `ssh` + InputServer screenshot pollin
 | Lives in | the IDE extension | this Rust sidecar (`screen serve`) | this sidecar (`screen serve-webrtc`, `webrtc` feature) |
 | Encode | per-frame PNG | per-frame JPEG (software, quality knob) | **VideoToolbox H.264 (hardware), `rp-screencap`** |
 | Transport | poll over `ssh` | WS binary frames over `ssh -L` tunnel | **WebRTC (SRTP/DTLS, UDP/ICE); signaling WS over `ssh -L`** |
-| Input | InputServer | — | **`rp-ctl`/`rp-move` DataChannels → `rp-input-inject` (AX)** |
+| Input | InputServer (legacy only) | — | **None — view-only; no remote input DataChannels** |
 | Latency | high (poll + PNG per frame) | medium (~10fps continuous stream) | **low (HW codec, continuous, ~30fps)** |
 | Client renders | polled PNGs | JPEG frames into a `<canvas>`/`<img>` | **a live `<video>` element (native H.264 decode)** |
 | Status | superseded | **done** (fallback) | **done — shipping in 0.5.0** |
@@ -201,17 +201,15 @@ loopback + `ssh -L` deployment shape.
       feature flag in `Cargo.toml`. Signaling WS, ICE (host candidates), DTLS/SRTP.
 - [x] Client `<video>` rendering in the IDE extension (`media/remote-desktop.js`).
 - [x] On-change capture / GPU scale in `rp-screencap` to cut bandwidth.
-- [x] Input forwarding: `rp-ctl`/`rp-move` DataChannels → `rp-input-inject` (AX
-      text insert, IME-aware). Text landing verified; keyboard-shortcut + mouse
-      parity is the remaining polish (see `../rpmedia/INPUT-FINDINGS.md`).
-- [x] Per-binary Screen Recording / Accessibility TCC grants on the signed bundle
-      helpers (`rp-screencap`, `rp-input-inject`), preserved across cask updates.
+- [x] View-only policy enforced in the IDE: no client pointer, wheel, text, or
+      keyboard capture; legacy host-created input DataChannels are closed/ignored.
+- [x] Per-binary Screen Recording TCC grant on the signed capture helper
+      (`rp-screencap`), preserved across cask updates.
 
 ### v2.x — robustness / quality (future)
 
 - [ ] TWCC/GCC bitrate adaptation; HEVC/AV1 codecs.
 - [ ] ICE-restart + full-reconnect on network change.
-- [ ] Finish keyboard-shortcut (System Events) + mouse (CGEvent) input parity.
 
 ---
 
