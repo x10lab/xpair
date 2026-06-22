@@ -1067,16 +1067,6 @@ index 00000000..d5f156ec
 +	border-radius: 4px;
 +}
 +
-+/* Read-only history cards (persisted titles that are not reattachable): no pointer affordance. */
-+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly {
-+	cursor: default;
-+	opacity: 0.6;
-+}
-+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly:hover {
-+	background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
-+	border-color: var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
-+}
-+
 +.monaco-workbench .remotepair-session-empty {
 +	flex: 0 0 auto;
 +	font-size: 13px;
@@ -2667,6 +2657,10 @@ index 0000000..6e5d586
 +	return liveSessionCache.filter(s => s.attached > 0).map(s => s.name);
 +}
 +
++function cachedSessionNames(): readonly string[] {
++	return liveSessionCache.map(s => s.name);
++}
++
 +function sameSessionCache(a: readonly SessionListEntry[], b: readonly SessionListEntry[]): boolean {
 +	return a.length === b.length && a.every((entry, index) => entry.name === b[index]?.name && entry.attached === b[index]?.attached);
 +}
@@ -2735,7 +2729,7 @@ index 0000000..6e5d586
 +
 +// --- view -------------------------------------------------------------------
 +
-+const HISTORY_STORAGE_KEY = 'remotepair.sessionManager.history';
++const HISTORY_STORAGE_KEY = 'remotepair.sessionManager.history.v2';
 +
 +/**
 + * Shared Panel ViewPane rendering ONE session category (attached / detached / history) as a
@@ -2782,6 +2776,9 @@ index 0000000..6e5d586
 +			this._register(onDidChangeAttachedSessions(() => this.refresh()));
 +			// Fallback: also react to ITerminalService.instances for any other terminal sources.
 +			this._register(this.terminalService.onDidChangeInstances(() => this.refresh()));
++			this._register(onDidChangeSessionData(() => this.refresh()));
++			this._register(onDidChangeAttachedSessions(() => refreshSessionData(this.commandService)));
++			refreshSessionData(this.commandService);
 +		} else {
 +			this._register(onDidChangeSessionData(() => this.refresh()));
 +			this._register(onDidChangeAttachedSessions(() => refreshSessionData(this.commandService)));
@@ -2844,25 +2841,6 @@ index 0000000..6e5d586
 +		}
 +	}
 +
-+	/** Append a non-actionable (display-only) tab — used for History entries that are not
-+	 *  reattachable (persisted titles, not real session names). The X removes the entry from the
-+	 *  persisted history when `onClose` is supplied. */
-+	private addDisplayCard(text: string, onClose?: () => void): void {
-+		const card = append(this.row!, $('.remotepair-session-card.remotepair-session-card-readonly'));
-+		card.title = text;
-+		const label = append(card, $('.remotepair-session-card-label'));
-+		label.textContent = text;
-+		if (onClose) {
-+			const close = append(card, $('.remotepair-session-card-close.codicon.codicon-close'));
-+			close.title = localize('remotepairRemoveHistory', "Remove from History");
-+			close.setAttribute('role', 'button');
-+			this.cardDisposables.add(addDisposableListener(close, EventType.CLICK, (e) => {
-+				e.stopPropagation();
-+				onClose();
-+			}));
-+		}
-+	}
-+
 +	/** Render an empty-state message in the row. */
 +	private addEmpty(text: string): void {
 +		const empty = append(this.row!, $('.remotepair-session-empty'));
@@ -2882,7 +2860,7 @@ index 0000000..6e5d586
 +			// those instances never appear in ITerminalService.instances).
 +			const provider = attachedProvider;
 +			const sessions = provider.getAttached();
-+			this.recordHistory(sessions.map(s => s.title));
++			this.recordHistory(this.reattachableHistoryNames());
 +			if (sessions.length === 0) {
 +				this.addEmpty(localize('remotepairNoAttached', "No attached sessions"));
 +				return;
@@ -2897,7 +2875,7 @@ index 0000000..6e5d586
 +		} else {
 +			// Fallback: read from ITerminalService for any other terminal sources.
 +			const instances = this.terminalService.instances;
-+			this.recordHistory(instances.map(i => i.title));
++			this.recordHistory(this.reattachableHistoryNames());
 +			if (instances.length === 0) {
 +				this.addEmpty(localize('remotepairNoAttached', "No attached sessions"));
 +				return;
@@ -2924,6 +2902,7 @@ index 0000000..6e5d586
 +			return;
 +		}
 +		const names = dataProvider?.getDetached() ?? cachedDetachedSessions();
++		this.recordHistory(names);
 +		if (names.length === 0) {
 +			this.addEmpty(localize('remotepairNoDetached', "No detached sessions"));
 +			return;
@@ -2946,22 +2925,20 @@ index 0000000..6e5d586
 +		}
 +		// Live provider names are real, reattachable session names → clickable.
 +		const providerNames = dataProvider?.getHistory() ?? cachedHistorySessions();
++		this.recordHistory(providerNames);
 +		if (providerNames && providerNames.length > 0) {
 +			for (const name of providerNames) {
 +				this.addCard(name, () => reattach(name));
 +			}
 +			return;
 +		}
-+		// Fallback: the persisted last-seen set holds display TITLES (e.g. "zsh"), which are not
-+		// valid `xpair attach` names — render them display-only rather than wiring a reattach
-+		// that would silently fail.
 +		const persisted = this.readHistory();
 +		if (persisted.length === 0) {
 +			this.addEmpty(localize('remotepairNoHistory', "No history"));
 +			return;
 +		}
 +		for (const name of persisted) {
-+			this.addDisplayCard(name, () => this.removeHistory(name));
++			this.addCard(name, () => reattach(name));
 +		}
 +	}
 +
@@ -2978,6 +2955,10 @@ index 0000000..6e5d586
 +
 +	// --- history persistence (workspace scope) -----------------------------
 +
++	private reattachableHistoryNames(): readonly string[] {
++		return dataProvider ? [...dataProvider.getDetached(), ...dataProvider.getHistory()] : cachedSessionNames();
++	}
++
 +	private readHistory(): string[] {
 +		const raw = this.storageService.get(HISTORY_STORAGE_KEY, StorageScope.WORKSPACE);
 +		if (!raw) {
@@ -2985,17 +2966,16 @@ index 0000000..6e5d586
 +		}
 +		try {
 +			const parsed = JSON.parse(raw);
-+			return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string') : [];
++			return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string' && SESSION_NAME_RE.test(n)) : [];
 +		} catch (e) {
 +			rpLog('warn', `history storage parse failed; resetting to empty: ${e instanceof Error ? e.message : String(e)}`);
 +			return [];
 +		}
 +	}
 +
-+	/** Merge newly-seen names into the persisted last-seen set, then refresh the History tab.
-+	 *  Skips empty/generic titles (e.g. the "Session" fallback) which carry no useful history. */
++	/** Merge newly-seen real tmux session names into the persisted last-seen set. */
 +	private recordHistory(names: readonly string[]): void {
-+		const meaningful = names.filter(n => !!n && n.trim() !== '' && n !== 'Session');
++		const meaningful = names.filter(n => SESSION_NAME_RE.test(n));
 +		if (meaningful.length === 0) {
 +			return;
 +		}
@@ -3011,18 +2991,6 @@ index 0000000..6e5d586
 +		}
 +	}
 +
-+	/** Drop a single name from the persisted last-seen set (the History tab's X), then re-render. */
-+	private removeHistory(name: string): void {
-+		const existing = this.readHistory();
-+		const next = existing.filter(n => n !== name);
-+		if (next.length === existing.length) {
-+			return; // not present
-+		}
-+		this.storageService.store(HISTORY_STORAGE_KEY, JSON.stringify(next), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-+		if (this.category === 'history') {
-+			this.renderHistory();
-+		}
-+	}
 +}
 +
 +/** Attached tab view. */
