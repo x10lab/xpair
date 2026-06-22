@@ -8,7 +8,7 @@
 #   • Session name: deterministic, based on host path with host-prefix (<HOST>_…) —
 #                   just glance at the status bar to know which machine you're on
 #   • _N numbering: if _1 already has a client (tab) attached → _2 is opened fresh;
-#                   detached sessions are taken over with attach -d
+#                   detached sessions are taken over with attach -d unless --fresh asks for a clean _N
 #   • computer-use: session is added to the patched tmux-aqua server socket started by
 #                   XpairHost → claude inherits its permissions
 #   • non-interactive: RP_YES=1 (or --yes) skips all prompts (auto dir creation, etc.)
@@ -269,11 +269,11 @@ RESPAWN
 }
 
 respawn_body_codex() {
-  # CL_CONTINUE=1 → resume the most recent session (codex resume --last); otherwise fresh.
-  # codex has no --remote-control / RC concept (that is claude-only) and no recorded-id resume —
-  # it uses its own --last picker, so the claude RC/RESUME_SID/~/.claude/last-session logic is
-  # intentionally absent here. --dangerously-bypass-approvals-and-sandbox is codex's auto-approve
-  # (claude --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
+  # Codex has only provider-global resume (`codex resume --last`), not an Xpair path/session-keyed
+  # resume. Existing sessions keep context through tmux reattach; newly spawned codex shells must be
+  # clean so a fresh/new-folder launch cannot inherit a stale global conversation.
+  # --dangerously-bypass-approvals-and-sandbox is codex's auto-approve (claude
+  # --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
   cat <<'RESPAWN'
 # Reap codex children when tmux/bash exits — bash has huponexit OFF by default, so without this
 # the EXIT trap (process-group kill) the agent CLI could survive as an orphan reparented to init.
@@ -285,11 +285,7 @@ command -v codex >/dev/null 2>&1 || {
   exit 11
 }
 while :; do
-  if [ "${CL_CONTINUE:-0}" = 1 ]; then
-    codex --dangerously-bypass-approvals-and-sandbox resume --last || codex --dangerously-bypass-approvals-and-sandbox
-  else
-    codex --dangerously-bypass-approvals-and-sandbox
-  fi
+  codex --dangerously-bypass-approvals-and-sandbox
   [ $? -eq 0 ] && break
   printf '\n[codex crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
@@ -298,7 +294,9 @@ RESPAWN
 }
 
 respawn_body_opencode() {
-  # CL_CONTINUE=1 → continue the last session (opencode --continue); otherwise fresh.
+  # OpenCode's `--continue` is provider-global, not Xpair path/session-keyed. Existing sessions keep
+  # context through tmux reattach; newly spawned opencode shells must be clean so a fresh/new-folder
+  # launch cannot inherit a stale global conversation.
   # opencode's interactive TUI has NO auto-approve flag (--dangerously-skip-permissions exists ONLY on
   # the non-interactive `run` subcommand). Auto-approve for the TUI is config-based: the `permission`
   # block. We inject it non-destructively via OPENCODE_CONFIG_CONTENT (an inline-JSON env override that
@@ -318,11 +316,7 @@ command -v opencode >/dev/null 2>&1 || {
 # Auto-approve via inline config merge (TUI has no skip-permissions flag). Merges with existing config.
 export OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"allow","bash":"allow","webfetch":"allow"}}'
 while :; do
-  if [ "${CL_CONTINUE:-0}" = 1 ]; then
-    opencode --continue || opencode
-  else
-    opencode
-  fi
+  opencode
   [ $? -eq 0 ] && break
   printf '\n[opencode crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
@@ -346,8 +340,16 @@ tm_local() { "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" "$@"; }
 # _local_next_n PROJ_BASE — echo "N state" (best-effort; no die on absence)
 # state: "new" | "reattach" | "fresh"
 _local_next_n() {
-  local base="$1" n=1 aqua="$LOCAL_BIN/tmux-aqua"
+  local base="$1" fresh="${2:-0}" n=1 aqua="$LOCAL_BIN/tmux-aqua"
   if [ ! -x "$aqua" ]; then printf '1 new'; return; fi
+  if [ "$fresh" = 1 ]; then
+    while "$aqua" -S "$AQUA_SOCK" list-clients -t "=${base}_${n}" -F x 2>/dev/null | grep -q x \
+      || "$aqua" -S "$AQUA_SOCK" has-session -t "=${base}_${n}" 2>/dev/null; do
+      n=$((n+1))
+    done
+    printf '%s fresh' "$n"
+    return
+  fi
   # Skip any _N that already has a live client
   while "$aqua" -S "$AQUA_SOCK" list-clients -t "=${base}_${n}" -F x 2>/dev/null | grep -q x; do
     n=$((n+1))
@@ -416,12 +418,19 @@ launch_local() {
   # use it; otherwise fall back to plain tmux.
   if ensure_local_host; then
     # Skip any _N that already has a client (tab) attached — opens _2 if _1 is visible on screen
-    local _ln_out; _ln_out="$(_local_next_n "$LOCAL_PROJ")"
+    local _ln_out; _ln_out="$(_local_next_n "$LOCAL_PROJ" "$FRESH")"
     local N="${_ln_out%% *}"
     local SESS="${LOCAL_PROJ}_${N}" CONT=1 NEED_CREATE=1
     [ "$N" -gt 1 ] && CONT=0                                                   # _2+ → fresh
     [ "$FRESH" = 1 ] && CONT=0                                                 # --fresh → fresh
-    tm_local has-session -t "=$SESS" 2>/dev/null && NEED_CREATE=0             # detached → take-over re-attach
+    if [ "$FRESH" = 1 ]; then
+      while tm_local has-session -t "=$SESS" 2>/dev/null; do
+        N=$((N+1))
+        SESS="${LOCAL_PROJ}_${N}"
+      done
+    else
+      tm_local has-session -t "=$SESS" 2>/dev/null && NEED_CREATE=0             # detached → take-over re-attach
+    fi
     if [ "$NEED_CREATE" = 1 ]; then
       [ -d "$PROJECT_DIR" ] || die "project directory missing: $PROJECT_DIR" 1
       { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
@@ -443,12 +452,15 @@ launch_local() {
   command -v tmux >/dev/null 2>&1 || die "tmux not found on $LOCAL_HOST. Install it: brew install tmux" 10
   # Skip any _N that already has a client (tab) attached
   local TN=1
-  while tmux list-clients -t "=${LOCAL_PROJ}_${TN}" -F x 2>/dev/null | grep -q x; do TN=$((TN+1)); done
+  while tmux list-clients -t "=${LOCAL_PROJ}_${TN}" -F x 2>/dev/null | grep -q x \
+    || { [ "$FRESH" = 1 ] && tmux has-session -t "=${LOCAL_PROJ}_${TN}" 2>/dev/null; }; do
+    TN=$((TN+1))
+  done
   local TSESS="${LOCAL_PROJ}_${TN}" TCONT=1
   [ "$TN" -gt 1 ] && TCONT=0                         # _2+ → fresh
   [ "$FRESH" = 1 ] && TCONT=0
   printf '\033]2;%s\007' "$TSESS"   # Xpair (E): surface tmux session name as terminal title (OSC-2)
-  if tmux has-session -t "=$TSESS" 2>/dev/null; then
+  if [ "$FRESH" != 1 ] && tmux has-session -t "=$TSESS" 2>/dev/null; then
     exec tmux attach -d -t "=$TSESS"                 # detached → take-over re-attach (-d: drop stale clients)
   else
     { printf "export CLAUDE_WARP_RC=%q\n" "$TSESS"; printf "export CL_CONTINUE=%s\n" "$TCONT"; respawn_body; } > "$T"
@@ -482,7 +494,7 @@ else
   # Compute prospective session annotations (best-effort, no extra ssh round-trips)
   _rn_out="$(_remote_next_n "$REMOTE_PROJ")"
   _rn="${_rn_out%% *}"; _rs="${_rn_out#* }"
-  _ln_out="$(_local_next_n "$LOCAL_PROJ")"
+  _ln_out="$(_local_next_n "$LOCAL_PROJ" "$FRESH")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
   printf 'Launch %s for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
     "$(engine_label "$RP_ENGINE")" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
@@ -618,16 +630,32 @@ fi
 if ! tm has-session 2>/dev/null; then
   printf '⚠ ${APP_NAME} host (${AQUA_SOCK}) not running — check ~/Applications/${APP_NAME}.app\n' >&2; exit 13
 fi
-# Session number (_N) is determined on the client from local tab facts and injected here.
-# If session exists → attach -d take-over; stale client is dropped and its mosh-server exits,
-# so no remote reconciliation needed. If missing → create at current window size. _2+ → fresh.
-SESSION="\${SESSION}_${RN}"
+# Session number (_N) starts from client-side tab facts. Fresh launches then re-check host tmux
+# state and skip detached sessions too; normal launches still take over an existing detached session.
+SESSION_BASE="\$SESSION"
+N=${RN}
+SESSION="\${SESSION_BASE}_\$N"
 CONT=${RCONT}; NEED_CREATE=1
-if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
+if [ "${FRESH}" = 1 ]; then
+  CONT=0
+  while tm has-session -t "=\$SESSION" 2>/dev/null; do
+    N=\$((N+1))
+    SESSION="\${SESSION_BASE}_\$N"
+  done
+else
+  if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
+fi
 if [ "\$NEED_CREATE" = 1 ]; then
-  T=\$(mktemp -t claude-respawn.XXXXXX)
-  { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
-  tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T"
+  while :; do
+    T=\$(mktemp -t claude-respawn.XXXXXX)
+    { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
+    if tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T"; then
+      break
+    fi
+    [ "${FRESH}" = 1 ] && tm has-session -t "=\$SESSION" 2>/dev/null || exit 15
+    N=\$((N+1))
+    SESSION="\${SESSION_BASE}_\$N"
+  done
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached).
 # Use shared logger (shared lock \$LOG_DIR/.xpair.log.lock, coordinated with Swift) if installed;
