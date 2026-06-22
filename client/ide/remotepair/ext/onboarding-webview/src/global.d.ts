@@ -18,7 +18,7 @@ export interface Peer {
 }
 
 // Agent engine the host runs under `xpair launch` (config set engine → client.env ENGINE).
-export type EngineId = "claude" | "codex" | "opencode"
+export type EngineId = "claude" | "shell" | "codex" | "opencode"
 
 declare global {
   interface Window {

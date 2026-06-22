@@ -229,15 +229,16 @@ function runSecretStdin(cmd, args, secret) {
   });
 }
 
-// --- Engine constants (claude | codex | opencode) ---------------------------------------------
-// The agent engine runs ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
-const ENGINES = new Set(["claude", "codex", "opencode"]);
+// --- Engine constants (claude | shell | codex | opencode) -------------------------------------
+// The session engine runs ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
+const ENGINES = new Set(["claude", "shell", "codex", "opencode"]);
 
 // Per-engine host probe: a single shell line (run over key-auth SSH) that prints a RP_* block:
 //   RP_ENGINE_INSTALLED=1|0, RP_ENGINE_VERSION=<v>, RP_ENGINE_AUTHED=1 (only when authed).
 // PATH is enriched first so a Homebrew/npm-global engine resolves under a non-login ssh command.
 // Auth detection is engine-specific:
 //   claude    — ANTHROPIC_API_KEY exported in the login shell, OR ~/.claude/.credentials.json (OAuth).
+//   shell     — no auth; uses the host account's default login shell.
 //   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
 //   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
 const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
@@ -248,6 +249,11 @@ const ENGINE_PROBE = {
     'echo "RP_ENGINE_VERSION=$(claude --version 2>/dev/null | head -1)"; ' +
     'KEY="$(bash -lc \'printf %s "$ANTHROPIC_API_KEY"\' 2>/dev/null)"; ' +
     'if [ -n "$KEY" ] || [ -f "$HOME/.claude/.credentials.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
+    'else echo RP_ENGINE_INSTALLED=0; fi',
+  shell:
+    'SHELL_BIN="${SHELL:-/bin/zsh}"; ' +
+    'if [ -x "$SHELL_BIN" ]; then echo RP_ENGINE_INSTALLED=1; echo "RP_ENGINE_VERSION=$SHELL_BIN"; echo RP_ENGINE_AUTHED=1; ' +
+    'elif [ -x /bin/bash ]; then echo RP_ENGINE_INSTALLED=1; echo "RP_ENGINE_VERSION=/bin/bash"; echo RP_ENGINE_AUTHED=1; ' +
     'else echo RP_ENGINE_INSTALLED=0; fi',
   codex:
     PATH_PREFIX +
@@ -267,6 +273,7 @@ const ENGINE_PROBE = {
 // Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
 const ENGINE_INSTALL = {
   claude: 'brew install --quiet claude || npm install -g @anthropic-ai/claude-code',
+  shell: 'true',
   codex: 'brew install --quiet codex',
   opencode: 'brew install --quiet opencode',
 };
@@ -477,7 +484,7 @@ const bridge = {
     return cli(["config", "set", "host", host]);
   },
 
-  // Engine — persist the chosen agent engine via the CLI (`config set engine <claude|codex|opencode>`,
+  // Engine — persist the chosen session engine via the CLI (`config set engine <claude|shell|codex|opencode>`,
   // → client.env ENGINE, consumed by `xpair launch`). Validates the engine here too so a bad value
   // never reaches the CLI. Returns {code, out, err}.
   async setEngine(engine) {
@@ -489,8 +496,8 @@ const bridge = {
 
   // --- Engine host-readiness hard guard (component — same philosophy as the CLI/host-app guards) ---
   //
-  // The chosen agent engine runs ON THE HOST (xpair launch SSHes in and execs `claude`/`codex`/
-  // `opencode` there). So before pairing we must confirm THAT engine is installed AND authenticated
+  // The chosen session engine runs ON THE HOST (xpair launch SSHes in and execs `claude`/`codex`/
+  // `opencode`, or a plain shell, there). So before pairing we must confirm THAT engine is available
   // on the host, or `xpair launch` dead-ends with "<engine> not found on host" / an auth prompt the
   // GUI can never answer. These three methods mirror installHost's pattern: probe → install → set
   // auth, all over key-auth SSH (BatchMode, never prompts).
