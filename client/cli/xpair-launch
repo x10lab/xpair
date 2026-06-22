@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# xpair-launch — open an agent session (claude or codex; remote host or local) for a single folder and attach.
-# Engine is chosen via RP_ENGINE (set by 'xpair launch --engine <claude|codex>') or client.env ENGINE (default claude).
+# xpair-launch — open an agent session (Claude Code, Codex, or OpenCode; remote host or local) for a single folder and attach.
+# Engine is chosen interactively, via RP_ENGINE (set by 'xpair launch --engine <claude|codex|opencode>'), or client.env ENGINE.
 #
 # Key behavior (1:1 connection only — no session sharing / multi-attach):
 #   • Path mapping: client folder → host folder (FOLDER_MAPS; content is identical via external sync
@@ -13,7 +13,7 @@
 #                   XpairHost → claude inherits its permissions
 #   • non-interactive: RP_YES=1 (or --yes) skips all prompts (auto dir creation, etc.)
 #
-# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [<dir>]
+# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>] [<dir>]
 #         (typically called via 'xpair launch <dir>' or a Finder Service)
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -36,7 +36,28 @@ HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
 # Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
 # otherwise client.env ENGINE; default claude. Validated below — unknown values fall back to claude.
 RP_ENGINE="${RP_ENGINE:-${ENGINE:-claude}}"
-case "$RP_ENGINE" in claude|codex|opencode) : ;; *) RP_ENGINE=claude ;; esac
+RP_ENGINE_EXPLICIT="${RP_ENGINE_EXPLICIT:-0}"
+canonical_engine() {
+  case "${1:-}" in
+    claude|claudecode|claude-code) printf 'claude' ;;
+    codex|opencode) printf '%s' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+valid_host() {
+  case "${1:-}" in
+    ''|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if [ -n "$REMOTE_HOST" ] && ! valid_host "$REMOTE_HOST"; then
+  printf 'invalid REMOTE_HOST ignored: %s\n' "$REMOTE_HOST" >&2
+  REMOTE_HOST=""
+fi
 
 # Source the shared logger; no-op fallback for partially-updated clients.
 # shellcheck disable=SC1090
@@ -50,8 +71,16 @@ while [ $# -gt 0 ]; do case "$1" in
   --remote) TARGET_PREF=remote; shift ;;
   --fresh)  FRESH=1; shift ;;
   --yes|-y) RP_YES=1; shift ;;
+  --engine) RP_ENGINE="${2:-}"; RP_ENGINE_EXPLICIT=1; shift 2 ;;
   *)        DIR_ARG="$1"; shift ;;
 esac; done
+
+if _canon="$(canonical_engine "$RP_ENGINE")"; then
+  RP_ENGINE="$_canon"
+else
+  printf 'unknown engine: %s (use claude|claudecode|codex|opencode)\n' "$RP_ENGINE" >&2
+  exit 2
+fi
 
 # ── error logging + pause on failure ──
 # Tee all stderr to a log file — prevents errors from disappearing when the window closes.
@@ -76,6 +105,42 @@ die() { printf '%s\n' "$1" >&2; [ "$RP_YES" = 1 ] || read -n1 -s -r -p "press an
 ask() { # $1=prompt → echo answer ('' if non-interactive/no tty)
   [ "$RP_YES" = 1 ] && { echo ""; return; }
   local a=""; { printf '%s' "$1" > /dev/tty; read -r a < /dev/tty; } 2>/dev/null || true; printf '%s' "$a"
+}
+have_tty() { [ -t 0 ]; }
+engine_label() {
+  case "$1" in
+    claude) printf 'Claude Code' ;;
+    codex) printf 'Codex' ;;
+    opencode) printf 'OpenCode' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+choose_engine() {
+  [ "${RP_ENGINE_EXPLICIT:-0}" = 1 ] && return 0
+  [ "$RP_YES" = 1 ] && return 0
+  have_tty || return 0
+
+  local def ans choice
+  case "$RP_ENGINE" in
+    codex) def=2 ;;
+    opencode) def=3 ;;
+    *) def=1 ;;
+  esac
+
+  local d1="" d2="" d3=""
+  [ "$def" = 1 ] && d1=" (default)"
+  [ "$def" = 2 ] && d2=" (default)"
+  [ "$def" = 3 ] && d3=" (default)"
+  printf 'Agent engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] OpenCode%s\n' \
+    "$d1" "$d2" "$d3"
+  ans="$(ask "select engine [1/2/3] (default $def): ")"
+  choice="${ans:-$def}"
+  case "$choice" in
+    1|claude|claudecode|claude-code) RP_ENGINE=claude ;;
+    2|codex) RP_ENGINE=codex ;;
+    3|opencode) RP_ENGINE=opencode ;;
+    *) printf 'unknown engine selection: %s — keeping %s\n' "$choice" "$(engine_label "$RP_ENGINE")" >&2 ;;
+  esac
 }
 
 PROJECT_DIR="$(cd "${DIR_ARG:-$PWD}" 2>/dev/null && pwd)" || die "directory not found: ${DIR_ARG:-$PWD}"
@@ -109,13 +174,21 @@ _readable() {
     *[!A-Za-z0-9._-]*) : ;;                 # non-ASCII → translate
     *) printf '%s' "$s"; return ;;          # already ASCII → use as-is (fast path)
   esac
-  local key cf eng=""
+  local key cf raw="" raw_lc="" eng=""
   key="$(printf '%s' "$s" | shasum -a 256 | cut -c1-12)"; cf="$_TRCACHE/$key"
   [ -s "$cf" ] && { cat "$cf"; return; }    # cache hit → always same result (stable re-attach)
   if command -v claude >/dev/null 2>&1; then
     printf '  translating session name (first time only): %s ...\n' "$s" >&2
-    eng="$(claude -p --model haiku "Convert this folder name to a short English tmux session slug: lowercase, ascii, max 15 chars, 1-3 words (hyphen between words), no spaces/quotes/explanation. Output ONLY the slug. Folder: $s" 2>/dev/null | head -1)"
-    eng="$(printf '%s' "$eng" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-24)"
+    if raw="$(claude -p --model haiku "Convert this folder name to a short English tmux session slug: lowercase, ascii, max 15 chars, 1-3 words (hyphen between words), no spaces/quotes/explanation. Output ONLY the slug. Folder: $s" 2>/dev/null)"; then
+      raw="$(printf '%s\n' "$raw" | head -1)"
+      raw_lc="$(printf '%s' "$raw" | LC_ALL=C tr 'A-Z' 'a-z')"
+      case "$raw_lc" in
+        *"failed to authenticate"*|*"invalid authentication"*|*"not logged in"*|*"please run /login"*|*"api error:"*) raw="" ;;
+      esac
+    else
+      raw=""
+    fi
+    eng="$(printf '%s' "$raw" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-24)"
   fi
   [ -z "$eng" ] && [ -x "$HROMANIZE" ] && eng="$("$HROMANIZE" "$s")"   # fallback: romanize
   [ -z "$eng" ] && eng="$s"                                            # last resort: original
@@ -127,7 +200,8 @@ _readable() {
 # at different paths. Same path always produces the same name (deterministic).
 _proj_base() {
   local dir="$1" name
-  name="$(_readable "$(basename "$dir")" | cut -c1-15 | LC_ALL=C sed 's/-$//')"   # cap readable name at 15 chars
+  name="$(_readable "$(basename "$dir")" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9_.-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-15)"   # cap readable name at 15 safe chars
+  [ -n "$name" ] || name=session
   printf '%s_%s' "$name" "$(printf '%s' "$dir" | shasum -a 256 | cut -c1-5)"       # name_hash (underscore separator)
 }
 # Session name = "<host>_<proj_base>" — glance at the bottom-left status-left [...] to know which machine.
@@ -391,6 +465,12 @@ launch_local() {
 HOST_DIR="$(map_to_host "$PROJECT_DIR")"
 REMOTE_PROJ="${REMOTE_HOST}_$(_proj_base "$HOST_DIR")"
 REMOTE_PROJ="${REMOTE_PROJ//[.:]/_}"
+HOST_DIR_Q="$(sh_quote "$HOST_DIR")"
+AQUA_SOCK_Q="$(sh_quote "$AQUA_SOCK")"
+REMOTE_PROJ_Q="$(sh_quote "$REMOTE_PROJ")"
+
+# Ask this before the machine/target prompt so users choose the agent first.
+choose_engine
 
 if [ -n "$TARGET_PREF" ]; then
   TARGET="$TARGET_PREF"
@@ -405,10 +485,11 @@ else
   _ln_out="$(_local_next_n "$LOCAL_PROJ")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
   printf 'Launch %s for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
-    "$RP_ENGINE" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
+    "$(engine_label "$RP_ENGINE")" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
   ans="$(ask 'select [1/2]: ')"; [ "${ans:-1}" = 2 ] && TARGET=local || TARGET=remote
 fi
 [ "$TARGET" = local ] && launch_local
+[ -n "$REMOTE_HOST" ] || die "no valid REMOTE_HOST configured — run 'xpair config set host <ssh-host>' or use --local" 1
 
 # Expose ssh errors verbatim — timeout/key-rejection/host-key errors must appear on screen + in log.
 reach() { ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" true; }
@@ -446,7 +527,7 @@ fi
 # Do not suppress stderr — ssh failure reason must appear raw on screen + in launch log for debugging.
 DIR_CHECK=""
 for i in 1 2 3; do
-  DIR_CHECK="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "[ -d '${HOST_DIR}' ] && echo __YES__ || echo __NO__")" || DIR_CHECK=""
+  DIR_CHECK="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "[ -d ${HOST_DIR_Q} ] && echo __YES__ || echo __NO__")" || DIR_CHECK=""
   case "$DIR_CHECK" in *__YES__*|*__NO__*) break ;; esac
   printf '  (dir-check ssh attempt %s/3 failed — see error above, retrying in 1s)\n' "$i" >&2
   sleep 1
@@ -457,7 +538,7 @@ case "$DIR_CHECK" in
     printf '%s does not exist on %s (mapped host path).\n' "$HOST_DIR" "$REMOTE_HOST" >&2
     mk="$(ask 'create the directory on host? [y/N]: ')"; [ "$RP_YES" = 1 ] && mk=y
     case "${mk:-n}" in
-      [yY]*) ssh "$REMOTE_HOST" "mkdir -p '${HOST_DIR}'" || die "mkdir failed ($REMOTE_HOST)" 4 ;;
+      [yY]*) ssh "$REMOTE_HOST" "mkdir -p ${HOST_DIR_Q}" || die "mkdir failed ($REMOTE_HOST)" 4 ;;
       *)     die "cancelled: directory missing on host ($HOST_DIR)" 5 ;;
     esac ;;
   *)
@@ -471,7 +552,7 @@ esac
 # Query the host's attach list and kill local clients with no matching server → tab closes + number freed.
 # On ssh failure, conservatively treat all as alive (use next number — better than killing wrongly).
 if ATT_RAW="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" \
-     "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK} list-sessions -F '#S #{session_attached}' 2>/dev/null || true")"; then
+     "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true")"; then
   ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){printf "%s ", $1}')"
   { pgrep -fl mosh-client 2>/dev/null | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
     pid="${line%% *}"
@@ -515,11 +596,11 @@ if [ -d "\$HOME/.claude/.git" ]; then
   ( cd "\$HOME/.claude" && git fetch -q origin main 2>/dev/null && git merge --no-edit -X ours origin/main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1 || true ) || true
 fi
 RESPAWN_B64='${RESPAWN_B64}'
-[ -d '${HOST_DIR}' ] || { echo "host dir missing: ${HOST_DIR}"; exit 14; }
-cd '${HOST_DIR}'
+[ -d ${HOST_DIR_Q} ] || { printf 'host dir missing: %s\n' ${HOST_DIR_Q}; exit 14; }
+cd ${HOST_DIR_Q}
 # Session name is fully resolved (including romanization) on the client side before injection —
 # safe even if the remote has no hangul-romanize.
-SESSION='${REMOTE_PROJ}'
+SESSION=${REMOTE_PROJ_Q}
 # [computer-use key] For claude to use computer-use, the tmux server must be in the process
 # subtree of the granted .app (${APP_NAME}) (AX synthetic input = host activation policy +
 # Aqua graphic-session; SR = responsible-pid chain; both inherited from host=${APP_NAME}).
@@ -546,7 +627,7 @@ if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
 if [ "\$NEED_CREATE" = 1 ]; then
   T=\$(mktemp -t claude-respawn.XXXXXX)
   { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
-  tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c '${HOST_DIR}' "bash \$T"
+  tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T"
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached).
 # Use shared logger (shared lock \$LOG_DIR/.xpair.log.lock, coordinated with Swift) if installed;
@@ -601,7 +682,7 @@ if command -v mosh >/dev/null 2>&1; then
   # the next attach -d recovers it (dual safety net).
   on_tab_close() {
     ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
-        "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK} detach-client -s '=$ACTUAL_SESSION'" \
+        "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} detach-client -s $(sh_quote "=$ACTUAL_SESSION")" \
         >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
     exit 129
   }
@@ -610,5 +691,5 @@ if command -v mosh >/dev/null 2>&1; then
   exit $?
 else
   printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$ACTUAL_SESSION"
-  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S '$AQUA_SOCK' attach -d -t '=$ACTUAL_SESSION'"
+  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
 fi
