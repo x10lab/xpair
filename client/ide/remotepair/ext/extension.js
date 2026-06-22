@@ -1107,17 +1107,17 @@ function runXpairCli(args, opts = {}) {
 }
 
 /**
- * C1.D3 — Mount-first add-root flow for the Browser's "Add Root" affordance.
+ * C1.D3 — Mount-first add-mapping flow for the Browser's "Add Mapping" affordance.
  *   1. Prompt for a HOST folder path (v1 = host-path input box).
- *   2. `xpair mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
+ *   2. `xpair mount mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
  *   3. Parse the printed "Mountpoint: <path>" and register a FOLDER_MAP via
  *      `xpair map add <mountpoint> <hostPath>` (writes <mountpoint>::<hostPath>).
  *   4. Reconcile roots so the mountpoint appears as a Browser root without restart.
  */
 async function addRoot() {
   const hostPath = await vscode.window.showInputBox({
-    title: "Xpair — Add Root (mount a host folder)",
-    prompt: "Enter the HOST folder path to mount (SMB by default; appears as a Browser root and in Finder).",
+    title: "Xpair — Add Mapping",
+    prompt: "Enter the host folder path to map (mounts with SMB by default, then appears as a Browser root and in Finder).",
     placeHolder: "/Users/you/Projects/myrepo",
     ignoreFocusOut: true,
     validateInput: (v) => {
@@ -1134,11 +1134,11 @@ async function addRoot() {
     { location: vscode.ProgressLocation.Notification, title: `Xpair: mounting ${host}…`, cancellable: false },
     async () => {
       // Step 2: mount.
-      const mres = await runXpairCli(["mount", host], { timeoutMs: 180000 });
+      const mres = await runXpairCli(["mount", "mount", host], { timeoutMs: 180000 });
       if (mres.code !== 0) {
         log(`addRoot: mount failed (code ${mres.code}): ${mres.stderr || mres.stdout}`);
         const detail = (mres.stderr || mres.stdout || "").trim().split(/\r?\n/).slice(-3).join(" ");
-        vscode.window.showErrorMessage(`Xpair: 'xpair mount ${host}' failed. ${detail}`);
+        vscode.window.showErrorMessage(`Xpair: 'xpair mount mount ${host}' failed. ${detail}`);
         return;
       }
 
@@ -1169,7 +1169,7 @@ async function addRoot() {
       try {
         await vscode.commands.executeCommand("workbench.view.explorer");
       } catch (_e) {}
-      vscode.window.showInformationMessage(`Xpair: added Browser root ${mountpoint} (mounted ${host}).`);
+      vscode.window.showInformationMessage(`Xpair: added mapping ${mountpoint} -> ${host}.`);
     }
   );
 }
@@ -1479,7 +1479,7 @@ function activate(context) {
       // launch-arg / workspace folder and adds the mapped dirs in declared order.
       const clientDirs = reconcileBrowserRoots();
       if (clientDirs.length === 0) {
-        // No mapped roots → reveal the Browser so its empty-state "Add Root" button shows.
+        // No mapped roots → reveal the Browser so its empty-state "Add Mapping" button shows.
         log("openFileBrowser: no FOLDER_MAPS client dirs, revealing empty-state");
       } else {
         log(`openFileBrowser: using FOLDER_MAPS clientDirs=${clientDirs.join(", ")}`);
@@ -1492,7 +1492,7 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.browser.addRoot", () =>
       addRoot().catch((e) => {
         log(`addRoot: ${e && e.message ? e.message : e}`);
-        vscode.window.showErrorMessage(`Xpair: Add Root failed. ${e && e.message ? e.message : e}`);
+        vscode.window.showErrorMessage(`Xpair: Add Mapping failed. ${e && e.message ? e.message : e}`);
       })
     ),
     vscode.commands.registerCommand("remotepair.openSettings", () => {

@@ -632,10 +632,10 @@ index ecc6af48..285e075b 100644
  	content: localize({ key: 'noFolderButEditorsHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
  		"You have not yet opened a folder.\n{0}\nOpening a folder will close all currently open editors. To keep them open, {1} instead.", openFolderButton, addAFolderButton),
  	when: ContextKeyExpr.and(
-+		// RemotePair: this is not a local IDE — the empty Browser offers "Add Root" (mount a host
++		// Xpair: this is not a local IDE — the empty Browser offers "Add Mapping" (mount a host
 +		// folder), not the native "Open Folder". Gate the native local no-folder welcomes off the
 +		// 'empty' workbench state (the only state EmptyView appears in for a RemotePair client) so
-+		// only the RemotePair Add Root welcome shows.
++		// only the Xpair Add Mapping welcome shows.
 +		WorkbenchStateContext.notEqualsTo('empty'),
  		// editors are opened
  		ContextKeyExpr.has('editorIsOpen'),
@@ -644,8 +644,8 @@ index ecc6af48..285e075b 100644
  	content: localize({ key: 'noFolderHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
  		"You have not yet opened a folder.\n{0}", openFolderButton),
  	when: ContextKeyExpr.and(
-+		// RemotePair: see noFolderButEditorsHelp above — suppress the native "Open Folder" welcome in
-+		// the 'empty' state so only the RemotePair Add Root welcome shows.
++		// Xpair: see noFolderButEditorsHelp above — suppress the native "Open Folder" welcome in
++		// the 'empty' state so only the Xpair Add Mapping welcome shows.
 +		WorkbenchStateContext.notEqualsTo('empty'),
  		// no editor is open
  		ContextKeyExpr.has('editorIsOpen')?.negate(),
@@ -675,9 +675,9 @@ index 0f75b632..a70c75f9 100644
 -}
 \ No newline at end of file
 +}
-+/* --- RemotePair (C1): below-list "Add Root" footer --- */
++/* --- Xpair (C1): below-list "Add Mapping" footer --- */
 +/* The explorer pane body becomes a flex column so the folder list (flex:1) and the
-+   Add Root footer (fixed) stack; the tree height is reserved in layoutBody so the
++   Add Mapping footer (fixed) stack; the tree height is reserved in layoutBody so the
 +   footer is always visible ~20px below the list. */
 +.rp-explorer-body {
 +    display: flex;
@@ -810,7 +810,7 @@ index d276b5c9..2ed4089c 100644
  import { EditorResourceAccessor, SideBySideEditor } from '../../../../common/editor.js';
  import { IExplorerService, IExplorerView } from '../files.js';
  import { Codicon } from '../../../../../base/common/codicons.js';
-+import { ThemeIcon } from '../../../../../base/common/themables.js'; // RemotePair (C1): below-list Add Root footer icon
++import { ThemeIcon } from '../../../../../base/common/themables.js'; // Xpair (C1): below-list Add Mapping footer icon
  import { ICommandService } from '../../../../../platform/commands/common/commands.js';
  import { IEditorResolverService } from '../../../../services/editor/common/editorResolverService.js';
  import { EditorOpenSource } from '../../../../../platform/editor/common/editor.js';
@@ -818,7 +818,7 @@ index d276b5c9..2ed4089c 100644
  
  	private treeContainer!: HTMLElement;
  	private container!: HTMLElement;
-+	private rpAddRootFooter: HTMLElement | undefined; // RemotePair (C1): below-list Add Root footer
++	private rpAddRootFooter: HTMLElement | undefined; // Xpair (C1): below-list Add Mapping footer
  	private compressedFocusContext: IContextKey<boolean>;
  	private compressedFocusFirstContext: IContextKey<boolean>;
  	private compressedFocusLastContext: IContextKey<boolean>;
@@ -827,7 +827,7 @@ index d276b5c9..2ed4089c 100644
  	protected override layoutBody(height: number, width: number): void {
  		super.layoutBody(height, width);
 -		this.tree.layout(height, width);
-+		// RemotePair (C1): reserve space for the below-list "Add Root" footer so it is always
++		// Xpair (C1): reserve space for the below-list "Add Mapping" footer so it is always
 +		// visible under the folder list (the tree otherwise fills 100% of the body height).
 +		const rpFooterHeight = this.rpAddRootFooter ? this.rpAddRootFooter.clientHeight || 44 : 0;
 +		this.tree.layout(Math.max(0, height - rpFooterHeight), width);
@@ -838,7 +838,7 @@ index d276b5c9..2ed4089c 100644
  
  		this.createTree(this.treeContainer);
  
-+		// RemotePair (C1): below-list "Add Root" footer. Appended into the renderBody container
++		// Xpair (C1): below-list "Add Mapping" footer. Appended into the renderBody container
 +		// AFTER the tree (later sibling) so it sits ~20px below the folder list (see
 +		// .rp-add-root-footer in explorerviewlet.css). Runs the mount-first
 +		// `remotepair.browser.addRoot` command (registered in the RemotePair extension). The
@@ -853,7 +853,7 @@ index d276b5c9..2ed4089c 100644
 +		rpButton.title = nls.localize('remotepairAddRootTooltip', "Mount a host folder and add it as a Browser root");
 +		const rpIcon = DOM.append(rpButton, DOM.$('span.rp-add-root-icon'));
 +		rpIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.rootFolderOpened));
-+		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Root");
++		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Mapping");
 +		const rpRun = () => this.commandService.executeCommand('remotepair.browser.addRoot');
 +		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.CLICK, rpRun));
 +		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
@@ -1291,9 +1291,9 @@ index 00000000..6887d7cb
 + *  action contributions so they stay out of core explorer files:
 + *    - Browser title bar: Search / Extensions (MenuId.ViewContainerTitle). The row-1
 + *      "Add Mapping" action was removed (C1): the sole add entry point is now the
-+ *      below-list / empty-state "Add Root" affordance which runs the mount-first
++ *      below-list / empty-state "Add Mapping" affordance which runs the mount-first
 + *      `remotepair.browser.addRoot` command (registered in the RemotePair extension).
-+ *    - Empty-state "Add Root" button: a viewsWelcome entry on the explorer EmptyView.
++ *    - Empty-state "Add Mapping" button: a viewsWelcome entry on the explorer EmptyView.
 + *    - Per-folder inline "+": creates a Sessions terminal rooted at that folder.
 + *    - Per-folder inline star (C3): toggles the folder in the C2 Favorites store.
 + *    - Per-folder-row hover controls (C3): a star + '+' rendered on EVERY folder row (roots and
@@ -1531,7 +1531,7 @@ index 00000000..6887d7cb
 +});
 +
 +/**
-+ * C1 empty-state "Add Root" button. When there are no FOLDER_MAPS roots the Browser removes all
++ * C1 empty-state "Add Mapping" button. When there are no FOLDER_MAPS roots the Browser removes all
 + * workspace roots (extension reconcileBrowserRoots), leaving zero folders → the workbench enters
 + * the 'empty' state and the explorer EmptyView shows. This viewsWelcome entry renders a single
 + * button that runs the mount-first `remotepair.browser.addRoot` command (registered in the
@@ -1555,7 +1555,7 @@ index 00000000..6887d7cb
 +Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeContent(EmptyView.ID, {
 +	content: localize(
 +		{ key: 'remotepairAddRootWelcome', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
-+		"No mapped folders yet.\n[$(rocket) Add Root](command:remotepair.browser.addRoot)\nMounts a host folder and adds it as a Browser root."
++		"No mapped folders yet.\n[$(rocket) Add Mapping](command:remotepair.browser.addRoot)\nMounts a host folder and registers it as a Browser mapping."
 +	),
 +	when: WorkbenchStateContext.isEqualTo('empty'),
 +	group: ViewContentGroups.Open,
@@ -3826,7 +3826,7 @@ index 00000000..820a8de4
 +	constructor() {
 +		super({
 +			id: 'remotepair.browser.addMapping',
-+			title: localize2('remotepairAddMapping', "RemotePair: Add Folder Mapping"),
++			title: localize2('remotepairAddMapping', "Xpair: Add Mapping"),
 +			icon: Codicon.add,
 +			f1: true
 +		});
@@ -3869,7 +3869,7 @@ index 795ac6e0..54a64cbd 100644
  	},
  	order: 2,
 -	when: OpenFolderWorkspaceSupportContext
-+	// RemotePair: not a local IDE — hide the stock "Open Folder" from the File menu (Add Root mounts host folders).
++	// Xpair: not a local IDE — hide the stock "Open Folder" from the File menu (Add Mapping mounts host folders).
 +	when: ContextKeyExpr.false()
  });
  
