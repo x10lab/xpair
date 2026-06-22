@@ -18,6 +18,32 @@
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# ── platform portability (single codebase; the mac branch is byte-identical to prior behavior) ──
+# Branch execution only where the platform forces it (stat flavor, process listing); everything
+# else stays the same on every OS. Realistic Windows client is WSL2 (full Linux: pgrep/ssh/bash,
+# GNU stat) — so only `stat` truly differs there; bare Git-Bash also lacks pgrep (ps fallback).
+# _xpair_os → mac|windows|linux. $RP_OS overrides (tests / unusual shells).
+_xpair_os() {
+  case "${RP_OS:-$(uname -s 2>/dev/null)}" in
+    mac|Darwin)                    echo mac ;;
+    windows|MINGW*|MSYS*|CYGWIN*)  echo windows ;;
+    *)                             echo linux ;;
+  esac
+}
+XPAIR_OS="$(_xpair_os)"
+# stat: BSD (mac) uses -f, GNU (linux/WSL/Git-Bash coreutils) uses -c. Keep callers OS-agnostic.
+_stat_size()  { if [ "$XPAIR_OS" = mac ]; then stat -f %z  "$1" 2>/dev/null; else stat -c %s "$1" 2>/dev/null; fi; }
+_stat_mtime() { if [ "$XPAIR_OS" = mac ]; then stat -f %m  "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi; }
+# process listing by cmdline pattern → echo "PID CMDLINE" lines. pgrep where present (mac/WSL/Linux)
+# — identical match semantics to the prior bare pgrep; ps fallback for pgrep-less shells (Git-Bash).
+_proc_listing() {
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -fl "$1" 2>/dev/null
+  else
+    { ps -W 2>/dev/null || ps -ef 2>/dev/null; } | awk -v p="$1" 'NR>1 && $0 ~ p { pid=$1; $1=""; sub(/^ +/,""); print pid" "$0 }'
+  fi
+}
+
 # ── config (single source of truth: ~/.xpair/host) ──
 RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 for _f in common host client; do
@@ -44,10 +70,10 @@ elif command -v mosh >/dev/null 2>&1; then
 else
   TRANSPORT=ssh
 fi
-# Local process that carries the interactive `attach -d -t =SESS` argv (for pgrep tab counting).
-# mosh → the mosh-client; ssh → the ssh client itself. Where pgrep is unavailable (e.g. a bare
-# Git-Bash Windows client) the counting loops below simply find nothing and fall back to _1 —
-# acceptable feature degradation, same code path.
+# Local process that carries the interactive `attach -d -t =SESS` argv (for tab counting via
+# _proc_listing). mosh → the mosh-client; ssh → the ssh client itself. _proc_listing uses pgrep
+# where present (mac/WSL/Linux) and a ps fallback otherwise; if neither can match (rare bare shell)
+# the counting loops find nothing and fall back to _1 — acceptable feature degradation, same path.
 [ "$TRANSPORT" = mosh ] && _CLIENT_PAT="mosh-client" || _CLIENT_PAT="ssh"
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
@@ -106,7 +132,7 @@ fi
 LAUNCH_LOG="$RP_DIR/logs/claude-launch.err.log"
 mkdir -p "$RP_DIR/logs"
 # size-cap rotation (5MB → .1) — unbounded otherwise on a long-lived client
-_rotate_log() { local f="$1" max="${2:-5000000}" sz; sz="$(stat -f %z "$f" 2>/dev/null || echo 0)"; [ "$sz" -gt "$max" ] && mv -f "$f" "$f.1" 2>/dev/null || true; }
+_rotate_log() { local f="$1" max="${2:-5000000}" sz; sz="$(_stat_size "$f" || echo 0)"; [ "$sz" -gt "$max" ] && mv -f "$f" "$f.1" 2>/dev/null || true; }
 _rotate_log "$LAUNCH_LOG"
 printf '\n===== %s launch %s (%s) =====\n' "$(date '+%F %T')" "${DIR_ARG:-$PWD}" "$(hostname -s)" >> "$LAUNCH_LOG"
 exec 2> >(while IFS= read -r l; do printf '%s %s\n' "$(date '+%T')" "$l" >> "$LAUNCH_LOG"; printf '%s\n' "$l" >&2; done)
@@ -383,7 +409,7 @@ _local_next_n() {
 # state: "new/reattach" (N==1, can't cheaply know remote detached state) | "fresh" (N>1)
 _remote_next_n() {
   local base="$1" n=1
-  while pgrep -f "${_CLIENT_PAT}.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1; do
+  while [ -n "$(_proc_listing "${_CLIENT_PAT}.*attach -d -t =${base}_${n}( |\$)")" ]; do
     n=$((n+1))
   done
   if [ "$n" -gt 1 ]; then
@@ -573,7 +599,7 @@ esac
 if ATT_RAW="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" \
      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true")"; then
   ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){printf "%s ", $1}')"
-  { pgrep -fl "$_CLIENT_PAT" 2>/dev/null | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
+  { _proc_listing "$_CLIENT_PAT" | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
     pid="${line%% *}"
     s="$(printf '%s' "$line" | grep -oE "${REMOTE_PROJ}_[0-9]+" | head -1)"
     case " $ATT " in

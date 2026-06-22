@@ -32,6 +32,21 @@
 # config: ~/.xpair/host/{common,host,client}.env (finalized by install.sh — outside .claude, self-contained).
 set -euo pipefail
 
+# ── platform portability (single codebase; the mac branch is byte-identical to prior behavior) ──
+# Branch only where the platform forces it (stat flavor); everything else is identical on every OS.
+# _xpair_os → mac|windows|linux. $RP_OS overrides (tests / unusual shells).
+_xpair_os() {
+  case "${RP_OS:-$(uname -s 2>/dev/null)}" in
+    mac|Darwin)                    echo mac ;;
+    windows|MINGW*|MSYS*|CYGWIN*)  echo windows ;;
+    *)                             echo linux ;;
+  esac
+}
+XPAIR_OS="$(_xpair_os)"
+# stat: BSD (mac) uses -f, GNU (linux/WSL/Git-Bash coreutils) uses -c. Keep callers OS-agnostic.
+_stat_mtime() { if [ "$XPAIR_OS" = mac ]; then stat -f %m  "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi; }
+_stat_mode()  { if [ "$XPAIR_OS" = mac ]; then stat -f %Lp "$1" 2>/dev/null; else stat -c %a "$1" 2>/dev/null; fi; }
+
 RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 CLIENT_ENV="$RP_DIR/client.env"
 for _f in common host client; do
@@ -723,7 +738,7 @@ cmd_status() {
     printf '%-14s %s\n' "permissions" "unknown (no status.json yet — update host app)"
   fi
   if [ -f "$HEARTBEAT_FILE" ]; then
-    local age=$(( $(date +%s) - $(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0) ))
+    local age=$(( $(date +%s) - $(_stat_mtime "$HEARTBEAT_FILE" || echo 0) ))
     printf '%-14s %s\n' "heartbeat" "${age}s ago $([ "$age" -le 90 ] && echo "(fresh)" || echo "(STALE)")"
   else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
   in_host_session && printf '%-14s %s\n' "this session" "INSIDE Xpair host → computer-use available here"
@@ -1010,7 +1025,7 @@ rp_ssh_config_write() {
   } >> "$tmp"
 
   # Preserve mode, atomic replace.
-  local mode; mode="$(stat -f '%Lp' "$cfg" 2>/dev/null || echo 600)"
+  local mode; mode="$(_stat_mode "$cfg" || echo 600)"
   mv "$tmp" "$cfg" && chmod "$mode" "$cfg" 2>/dev/null || { err "ssh-config write failed"; return 1; }
   return 0
 }
