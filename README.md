@@ -9,11 +9,11 @@
 Run the agent you already subscribe to — **Claude**, **Codex**, or **OpenCode** — on an always-on Mac, with full macOS **computer-use** (screenshot, click, type) intact, and attach to it from your laptop or phone over mosh/SSH. Your work keeps running while you're away; you bring your own subscription, so there are no extra AI credits.
 
 <p align="center">
-  <img src="assets/ide-hero.png" alt="The Xpair IDE — Sessions sidebar, Remote Desktop tab, and Attached/Detached host sessions" width="860">
+  <img src="assets/ide-hero.png" alt="Xpair — Sessions sidebar, Remote Desktop tab, and Attached/Detached host sessions" width="860">
 </p>
 
 - **Host Mac** — runs your agent inside persistent tmux sessions, 24/7, with computer-use working.
-- **Client** — the Xpair IDE (a VSCodium fork) or the `xpair` CLI; attach with a Finder right-click.
+- **Client** — **Xpair**, the desktop app (a VSCodium-based fork), or the `xpair` CLI; attach with a Finder right-click.
 - **Mobile** — reach the same sessions from any SSH/mosh client, including Claude Code on your phone.
 
 ---
@@ -47,10 +47,10 @@ Bring whichever subscription you have: `claude` (with its unique `--remote-contr
 First run opens a guided setup where each step is a **hard gate that fixes itself** instead of dead-ending: it installs the CLI, `brew install`s the engine, sets the API key, and verifies SSH key-auth. Secrets go over stdin, never argv or disk.
 
 ### Attach from your laptop or your phone
-Attach from a client Mac (Finder → right-click → *Launch Remote Pair*), the Xpair IDE's Sessions sidebar, or any SSH/mosh client including Claude Code on mobile. Same sessions, same state, wherever you are.
+Attach from a client Mac (Finder → right-click → *Launch Remote Pair*), Xpair's Sessions sidebar, or any SSH/mosh client including Claude Code on mobile. Same sessions, same state, wherever you are.
 
-### Remote Desktop, in the IDE
-View and drive the host screen from the Xpair IDE's Remote Desktop tab over a native H.264/WebRTC stream (view-only). `xpair desktop` falls back to macOS Screen Sharing.
+### Remote Desktop, built in
+View and drive the host screen from Xpair's Remote Desktop tab over a native H.264/WebRTC stream (view-only). `xpair desktop` falls back to macOS Screen Sharing.
 
 ### Permission dialogs answered for you
 A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host stalls the whole session. An on-demand approve router (OCR + click, with a Claude fallback classifier) detects and clicks the right button, so unattended sessions don't hang.
@@ -69,15 +69,15 @@ A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host sta
 
 ## Installation
 
-Setup runs from the **client IDE**: install it, launch it, and its first-run onboarding does the rest — installs the CLI, wires SSH, installs and authenticates your engine on the host, and pushes the signed host app onto the host. Every step is a hard gate that fixes itself instead of dead-ending. The only thing it can't automate is the permission grant on the host's physical screen.
+Setup runs from **Xpair**, the client app: install it, launch it, and its first-run onboarding does the rest — installs the CLI, wires SSH, installs and authenticates your engine on the host, and pushes the signed host app onto the host. Every step is a hard gate that fixes itself instead of dead-ending. The only thing it can't automate is the permission grant on the host's physical screen.
 
-### 1. Install the IDE and launch it
+### 1. Install Xpair and launch it
 
 ```bash
 brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
 ```
 
-Open Xpair. First run opens onboarding (in-IDE, not a separate window) and walks:
+Open Xpair. First run opens onboarding (in-app, not a separate window) and walks:
 
 - **CLI** — auto-installs the bundled `xpair` CLI if it's missing.
 - **Connection** — generates an SSH key, discovers hosts (LAN Bonjour + Tailscale), and verifies passwordless reachability. You enable **Remote Login** on the host once (System Settings → General → Sharing); outside your LAN, a mesh VPN like [Tailscale](https://tailscale.com) gives the host a stable name.
@@ -101,43 +101,37 @@ Then pick up the grants: `launchctl kickstart -k gui/$(id -u)/com.x10lab.xpair-h
 
 > Prefer not to grant Full Disk Access? Keep project folders under a non-protected root (e.g. `~/Spaces`, not `~/Desktop`/`~/Documents`/`~/Downloads`) — then sessions never hit a protected folder and never prompt.
 
-### Doing it by hand (no IDE)
+### Doing it by hand (CLI only)
 
-Prefer the CLI, or setting a host up from its own screen? The bootstrap script and `xpair install-host` cover the same ground:
+Prefer the CLI to the app? The bootstrap script and `xpair install-host` do the same work:
 
 ```bash
-# Client: CLI + Finder Quick Action only (auto-runs `xpair onboard`):
+# Client: CLI + Finder Quick Action (auto-runs `xpair onboard`):
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=client bash
 
-# Host: set it up from its own screen (CLI + approve glue + XpairHost.app via brew cask):
+# Host: install the CLI + approve glue on the host itself:
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=host bash
 
-# Or push the host app from an already-configured client:
+# Deliver the signed XpairHost.app onto the host from a configured client:
 xpair install-host --host <user@host>
 ```
 
-App only, no CLI: `brew install --cask xpair-host` (after the tap above).
+The host app isn't a separate download — the client carries the signed `XpairHost.app` and `xpair install-host` copies it over (the same step onboarding runs for you).
 
-Uninstall: `~/.local/share/xpair/shared/uninstall.sh [--purge]`, or `brew uninstall --cask xpair-host` for the app.
+Uninstall: `~/.local/share/xpair/shared/uninstall.sh [--purge]`.
 
 ---
 
-## Folder mapping
+## Host files
 
-Xpair runs your agent on the **host**, against files **on the host** — it attaches to a host path, it doesn't copy files. So the project must already exist on the host. Keep both sides in sync with Google Drive / Syncthing / iCloud (or mount the host folder with `xpair mount`, see [docs/m-mount.md](docs/m-mount.md)). A **mapping** tells Xpair which host path a client path corresponds to — the parent may differ per machine, but everything below it must be identical.
+Xpair runs your agent on the **host**, against files **on the host** — it attaches to a host path, it never copies your project around. The project lives on the host; the client just reaches it.
 
-<p align="center">
-  <img src="assets/folder-mapping.png" alt="Folder mapping: host and client sync roots differ in parent path but share identical subfolders" width="640">
-</p>
+To browse and edit those files from the client, **mount the host folder**. In Xpair's Browser, *Add Root* mounts a host folder and adds it as a workspace root (`xpair mount` does the same from the CLI — see [docs/m-mount.md](docs/m-mount.md)). No syncing, no two copies to keep in step: there's one copy, on the host.
 
 ```bash
-xpair map add ~/Drive/proj /Users/me/proj   # register once (skip if the path is identical on both)
-xpair launch ~/Drive/proj                   # → attaches to /Users/me/proj on the host
+xpair launch <host-folder>   # start / attach a session for a folder on the host
+xpair mount                  # mount a host folder locally (smb/sshfs) to browse + edit it
 ```
-
-The Finder Quick Action needs the mapping up front (a GUI can't prompt for it); `xpair launch` will offer to register an unmapped folder interactively.
-
-> Sync the working tree only, not `.git` — syncing a live `.git` across machines corrupts the repo.
 
 ---
 
@@ -153,7 +147,7 @@ xpair discover         # find Xpair/SSH hosts (LAN Bonjour + Tailscale)
 xpair status           # app PID, host server, heartbeat age
 xpair doctor           # check SSH auth, host app, tmux-aqua on host
 xpair desktop open     # open the host screen via macOS Screen Sharing (vnc://)
-xpair editor start     # launch the in-IDE code-server editor (loopback)
+xpair editor start     # launch the in-app code-server editor (loopback)
 xpair mount            # mount a host folder directly (smb/sshfs)
 xpair notify           # pull recent host notifications (Stop / approve / …)
 xpair logs [--host -f] # tail launcher/app logs (or host logs over ssh)
@@ -171,15 +165,15 @@ Host-side / install helpers: `xpair install-host` (idempotent, integrity-verifie
 
 ---
 
-## The Xpair IDE (the client)
+## Xpair, the client app
 
-The client ships as a **VSCodium fork** (`xpair` cask) reshaped around remote pairing, on top of stock VSCodium:
+Xpair is a **VSCodium-based desktop app** (`xpair` cask) reshaped around remote pairing, on top of stock VSCodium:
 
-- **Sessions sidebar** — lists your host sessions (Attached / Detached) with a session picker; the home base of the IDE.
+- **Sessions sidebar** — lists your host sessions (Attached / Detached) with a session picker; the home base of the app.
 - **Browser container** — folder / Search / Extensions with per-folder favorites.
-- **Remote Desktop** — view and drive the host screen in-IDE over the native H.264/WebRTC pipeline (`host/rd`); view-only by design, with `xpair desktop` as a macOS Screen Sharing fallback.
-- **First-run onboarding** — a guided, hard-gated webview that resolves each prerequisite (CLI install, engine, API key, SSH) before handing you the IDE.
-- **Editor (code-server)** *(scaffold)* — an in-IDE editor over `xpair editor`, still being wired in.
+- **Remote Desktop** — view and drive the host screen in-app over the native H.264/WebRTC pipeline (`host/rd`); view-only by design, with `xpair desktop` as a macOS Screen Sharing fallback.
+- **First-run onboarding** — a guided, hard-gated flow that resolves each prerequisite (CLI install, engine, API key, SSH) before handing you the app.
+- **Editor (code-server)** *(scaffold)* — an in-app editor over `xpair editor`, still being wired in.
 
 Stock VSCodium stays inviolable — Xpair changes live only in `client/ide/remotepair/`, so upstream pulls stay conflict-free. See [`client/ide/remotepair/REMOTEPAIR.md`](client/ide/remotepair/REMOTEPAIR.md).
 
@@ -208,11 +202,11 @@ Still stuck? [Open an issue](https://github.com/x10lab/xpair/issues) with your v
 
 ## For maintainers
 
-Single monorepo (`host/` + `client/` + `shared/`), built in lockstep. Versions are declared once in `shared/identity/versions.json` (host **0.5.0**, IDE **0.1.0**, screen-engine **0.1.0**) and verified across consumers; release assets must be signed with the same stable cert as the running install (the in-app Updater verifies the leaf CN). Host app + IDE are released together via `.github/workflows/release.yml`.
+Single monorepo (`host/` + `client/` + `shared/`), built in lockstep. Versions are declared once in `shared/identity/versions.json` (host **0.5.0**, client **0.1.0**, screen-engine **0.1.0**) and verified across consumers; everything is signed with one stable cert (the in-app Updater verifies the leaf CN). The host app is built first and **bundled into the client**, which delivers it to the host via `xpair install-host`; `.github/workflows/release.yml` ships the client cask.
 
 ```bash
 ./host/build-host.sh                   # → build/XpairHost.app (signed + verified)
-./client/ide/build.sh                  # → the Xpair IDE (VSCodium fork)
+./client/ide/build.sh                  # → the Xpair client app (VSCodium fork)
 shared/identity/check-identity.sh      # brand/version consistency
 ```
 
