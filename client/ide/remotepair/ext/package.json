@@ -2,7 +2,7 @@
   "publisher": "x10lab",
   "name": "remotepair",
   "displayName": "Xpair",
-  "description": "Turns the Xpair IDE into a xpair client: live Remote Desktop of the host, input forwarding, one-click SSH connect, and host-side notifications.",
+  "description": "Turns the Xpair IDE into a xpair client: view-only Remote Desktop of the host, one-click SSH connect, and host-side notifications.",
   "version": "0.1.0",
   "license": "AGPL-3.0-or-later",
   "repository": {
@@ -18,7 +18,8 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:remotepair.sessions.listJson"
   ],
   "contributes": {
     "commands": [
@@ -119,7 +120,7 @@
           {
             "id": "remotepair.setup.permissions",
             "title": "Permissions are host-side",
-            "description": "Screen recording, accessibility (clicks/keys) and folder access are granted on the HOST machine (XpairHost.app), not on this client. If the Remote Desktop is blank, check the host's System Settings > Privacy & Security.",
+            "description": "Screen recording and folder access are granted on the HOST machine (XpairHost.app), not on this client. Accessibility is for host-side computer-use sessions; the IDE Remote Desktop is view-only. If RD is blank, check the host's System Settings > Privacy & Security.",
             "media": {
               "markdown": "media/walkthrough-permissions.md"
             }

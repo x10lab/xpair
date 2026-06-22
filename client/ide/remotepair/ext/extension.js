@@ -24,6 +24,7 @@ const telemetry = require("./telemetry.js");
 // the host over SSH so the host can show this client as connected. Self-contained, stdlib-only,
 // fire-and-forget (never crashes/blocks the IDE).
 const heartbeat = require("./heartbeat.js");
+const { listSessionsFromCli } = require("./session-list.js");
 
 // --- constants -------------------------------------------------------------
 
@@ -387,6 +388,8 @@ class RemoteDesktopPanel {
     this._tunnelChild = null;   // ssh -N child process (foreground; killable)
     this._tunnelPort = null;    // local signaling port in use
     this._v2Active = false;     // true while the v2 signaling tunnel is up
+    this._v2Generation = 0;
+    this._v2SettleTimer = null;
   }
 
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
@@ -395,6 +398,8 @@ class RemoteDesktopPanel {
       try {
         this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
       } catch (_e) {}
+      this.visible = true;
+      this._startStream();
       return;
     }
     // Cross-extension-host dedup: this window runs TWO local extension hosts (a pre-existing
@@ -476,6 +481,9 @@ class RemoteDesktopPanel {
       };
     } catch (_e) {}
     this._adopt(panel);
+    if (this.panel === panel && this.visible) {
+      this._startStream();
+    }
   }
 
   /** Entry point: start the v2 WebRTC stream. */
@@ -500,30 +508,73 @@ class RemoteDesktopPanel {
 
   async _startV2(host) {
     this._stopV2();
+    const generation = ++this._v2Generation;
+    this._v2Active = true;
     let localPort;
     try {
       localPort = await getFreePort();
     } catch (e) {
       log(`v2: getFreePort error: ${e.message}`);
+      if (this._v2Generation === generation) this._v2Active = false;
       this.post({ type: "status", state: "error", detail: String(e.message) });
       return;
     }
+    if (!this._v2Active || this._v2Generation !== generation) return;
     this._tunnelPort = localPort;
     // Tunnel forwards the SIGNALING port only (TCP). Media flows over UDP/ICE.
-    this._tunnelChild = spawnTunnel(host, localPort, SIGNAL_REMOTE_PORT);
-    this._v2Active = true;
+    const child = spawnTunnel(host, localPort, SIGNAL_REMOTE_PORT);
+    this._tunnelChild = child;
+
+    let tunnelStderr = "";
+    if (child && child.stderr && typeof child.stderr.on === "function") {
+      child.stderr.on("data", (d) => {
+        tunnelStderr = (tunnelStderr + String(d || "")).slice(-1200);
+      });
+    }
+
+    const postTunnelFailure = (detail) => {
+      if (!this._v2Active || this._tunnelChild !== child || this._v2Generation !== generation) return;
+      this._v2Active = false;
+      this._tunnelChild = null;
+      this._tunnelPort = null;
+      this.post({ type: "status", state: "error", detail });
+    };
+
+    if (child && typeof child.on === "function") {
+      child.on("error", (e) => {
+        const msg = e && e.message ? e.message : String(e || "unknown");
+        postTunnelFailure(`SSH tunnel failed: ${msg}`);
+      });
+      child.on("close", (code, signal) => {
+        const reason = signal ? `signal=${signal}` : `code=${code}`;
+        const stderr = tunnelStderr.trim();
+        const detail = stderr
+          ? `SSH tunnel exited ${reason}: ${stderr}`
+          : `SSH tunnel exited ${reason}`;
+        postTunnelFailure(detail);
+      });
+    }
 
     const self = this;
-    setTimeout(() => {
-      if (!self._v2Active || !self.panel) return;
+    const settleTimer = setTimeout(() => {
+      if (self._v2SettleTimer === settleTimer) {
+        self._v2SettleTimer = null;
+      }
+      if (!self._v2Active || self._v2Generation !== generation || self._tunnelChild !== child || self._tunnelPort !== localPort || !self.panel) return;
       const signalUrl = `ws://127.0.0.1:${localPort}`;
       log(`v2: telling webview to connect signaling ${signalUrl}`);
       self.post({ type: "v2Connect", signalUrl });
     }, TUNNEL_SETTLE_MS);
+    this._v2SettleTimer = settleTimer;
   }
 
   _stopV2() {
+    this._v2Generation += 1;
     this._v2Active = false;
+    if (this._v2SettleTimer) {
+      try { clearTimeout(this._v2SettleTimer); } catch (_e) {}
+      this._v2SettleTimer = null;
+    }
     if (this._tunnelChild) {
       try { this._tunnelChild.kill("SIGTERM"); } catch (_e) {}
       this._tunnelChild = null;
@@ -551,6 +602,7 @@ class RemoteDesktopPanel {
     }
     if (msg.type === "v2Error") {
       log(`v2: webview reported error: ${msg.detail || "unknown"}`);
+      this._stopAll();
       this.post({ type: "status", state: "error", detail: String(msg.detail || "webrtc error") });
       return;
     }
@@ -1416,6 +1468,9 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
+    vscode.commands.registerCommand("remotepair.sessions.listJson", () =>
+      listSessionsFromCli(runXpairCli, { log })
+    ),
     vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
     vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),
     vscode.commands.registerCommand("remotepair.setupLayout", () => setupLayout(context, true)),
@@ -1497,4 +1552,4 @@ function deactivate() {
   try { heartbeat.stopHeartbeat(); } catch { /* never let teardown throw */ }
 }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, RemoteDesktopPanel };

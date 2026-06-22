@@ -2507,7 +2507,7 @@ new file mode 100644
 index 0000000..6e5d586
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionManager.ts
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,444 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: bottom-panel session tabs. Three Panel view containers — Attached / Detached /
 + *  History — each surfaced as a horizontal TAB in the bottom-panel composite bar (exactly like
@@ -2531,6 +2531,7 @@ index 0000000..6e5d586
 +import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 +import { KeyCode } from '../../../../base/common/keyCodes.js';
 +import { Emitter, Event } from '../../../../base/common/event.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
 +import { DisposableStore } from '../../../../base/common/lifecycle.js';
 +import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 +import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -2599,8 +2600,8 @@ index 0000000..6e5d586
 +
 +/**
 + * Provides the Detached/History session-name lists for the manager. The core renderer
-+ * cannot child_process (`xpair ls`), so the host/extension layer registers a
-+ * provider best-effort. Defaults to empty (dev: no host) → tabs render an empty state.
++ * cannot child_process (`xpair ls`), so the extension-host command path owns CLI access.
++ * Defaults to empty (dev: no host) → tabs render an empty state.
 + */
 +export interface SessionDataProvider {
 +	/** Host/local sessions that exist but are NOT currently attached. */
@@ -2610,7 +2611,105 @@ index 0000000..6e5d586
 +}
 +
 +let dataProvider: SessionDataProvider | undefined;
-+export function setSessionDataProvider(provider: SessionDataProvider): void { dataProvider = provider; }
++const sessionDataChangeEmitter = new Emitter<void>();
++export const onDidChangeSessionData: Event<void> = sessionDataChangeEmitter.event;
++export function setSessionDataProvider(provider: SessionDataProvider): void { dataProvider = provider; sessionDataChangeEmitter.fire(); }
++
++interface SessionListEntry {
++	readonly name: string;
++	readonly attached: number;
++}
++
++let liveSessionCache: readonly SessionListEntry[] = [];
++let sessionRefreshInFlight = false;
++let sessionRefreshTimer: ReturnType<typeof setTimeout> | undefined;
++let sessionListUnavailable = false;
++const SESSION_REFRESH_RETRY_MS = 1000;
++const SESSION_REFRESH_INTERVAL_MS = 10000;
++const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++	return typeof value === 'object' && value !== null;
++}
++
++function normalizedAttached(value: unknown): number {
++	const n = typeof value === 'number' ? value : Number(value);
++	return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
++}
++
++function normalizeSessionCommandResult(value: unknown): readonly SessionListEntry[] {
++	if (!isRecord(value) || !Array.isArray(value.sessions)) {
++		return [];
++	}
++	const sessions: SessionListEntry[] = [];
++	for (const raw of value.sessions) {
++		if (!isRecord(raw) || typeof raw.name !== 'string') {
++			continue;
++		}
++		const name = raw.name.trim();
++		if (!SESSION_NAME_RE.test(name)) {
++			continue;
++		}
++		sessions.push({ name, attached: normalizedAttached(raw.attached) });
++	}
++	return sessions;
++}
++
++function commandResultUnavailable(value: unknown): boolean {
++	return isRecord(value) && value.unavailable === true;
++}
++
++function cachedDetachedSessions(): readonly string[] {
++	return liveSessionCache.filter(s => s.attached === 0).map(s => s.name);
++}
++
++function cachedHistorySessions(): readonly string[] {
++	return liveSessionCache.filter(s => s.attached > 0).map(s => s.name);
++}
++
++function sameSessionCache(a: readonly SessionListEntry[], b: readonly SessionListEntry[]): boolean {
++	return a.length === b.length && a.every((entry, index) => entry.name === b[index]?.name && entry.attached === b[index]?.attached);
++}
++
++function scheduleSessionRefresh(commandService: ICommandService, delayMs: number): void {
++	if (sessionRefreshTimer !== undefined) {
++		return;
++	}
++	sessionRefreshTimer = setTimeout(() => {
++		sessionRefreshTimer = undefined;
++		refreshSessionData(commandService);
++	}, delayMs);
++}
++
++function refreshSessionData(commandService: ICommandService): void {
++	if (sessionRefreshInFlight) {
++		return;
++	}
++	if (sessionRefreshTimer !== undefined) {
++		clearTimeout(sessionRefreshTimer);
++		sessionRefreshTimer = undefined;
++	}
++	sessionRefreshInFlight = true;
++	commandService.executeCommand('remotepair.sessions.listJson').then((value) => {
++		sessionRefreshInFlight = false;
++		const nextUnavailable = commandResultUnavailable(value);
++		const unavailableChanged = sessionListUnavailable !== nextUnavailable;
++		sessionListUnavailable = nextUnavailable;
++		const next = normalizeSessionCommandResult(value);
++		if (unavailableChanged || !sameSessionCache(liveSessionCache, next)) {
++			liveSessionCache = next;
++			sessionDataChangeEmitter.fire();
++		}
++		scheduleSessionRefresh(commandService, SESSION_REFRESH_INTERVAL_MS);
++	}, (error) => {
++		sessionRefreshInFlight = false;
++		sessionListUnavailable = true;
++		liveSessionCache = [];
++		rpLog('warn', `session list refresh failed: ${error instanceof Error ? error.message : String(error)}`);
++		sessionDataChangeEmitter.fire();
++		scheduleSessionRefresh(commandService, SESSION_REFRESH_RETRY_MS);
++	});
++}
 +
 +/** Reattach a session by name into the Sessions sidebar (wired by the sidebar view). */
 +export type SessionReattacher = (name: string) => void;
@@ -2619,11 +2718,19 @@ index 0000000..6e5d586
 +export function setSessionReattacher(fn: SessionReattacher): void { reattacher = fn; }
 +
 +function reattach(name: string): void {
++	if (!SESSION_NAME_RE.test(name)) {
++		rpLog('warn', `reattach rejected invalid session name: ${name}`);
++		return;
++	}
 +	if (!reattacher) {
 +		rpLog('warn', `reattach requested but no reattacher wired (host layer not registered); ignoring: ${name}`);
 +		return;
 +	}
 +	reattacher(name);
++}
++
++function shellSingleQuote(value: string): string {
++	return `'${value.replace(/'/g, `'\\''`)}'`;
 +}
 +
 +// --- view -------------------------------------------------------------------
@@ -2658,7 +2765,8 @@ index 0000000..6e5d586
 +		@IThemeService themeService: IThemeService,
 +		@IHoverService hoverService: IHoverService,
 +		@ITerminalService private readonly terminalService: ITerminalService,
-+		@IStorageService private readonly storageService: IStorageService
++		@IStorageService private readonly storageService: IStorageService,
++		@ICommandService private readonly commandService: ICommandService
 +	) {
 +		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 +	}
@@ -2674,6 +2782,10 @@ index 0000000..6e5d586
 +			this._register(onDidChangeAttachedSessions(() => this.refresh()));
 +			// Fallback: also react to ITerminalService.instances for any other terminal sources.
 +			this._register(this.terminalService.onDidChangeInstances(() => this.refresh()));
++		} else {
++			this._register(onDidChangeSessionData(() => this.refresh()));
++			this._register(onDidChangeAttachedSessions(() => refreshSessionData(this.commandService)));
++			refreshSessionData(this.commandService);
 +		}
 +
 +		this.refresh();
@@ -2711,10 +2823,23 @@ index 0000000..6e5d586
 +			const close = append(card, $('.remotepair-session-card-close.codicon.codicon-close'));
 +			close.title = localize('remotepairCloseSession', "Close Session");
 +			close.setAttribute('role', 'button');
-+			// stopPropagation so closing does not also fire the card's reveal/reattach click.
++			close.tabIndex = 0;
++			this.cardDisposables.add(addDisposableListener(close, EventType.MOUSE_DOWN, (e) => {
++				e.preventDefault();
++				e.stopPropagation();
++			}));
 +			this.cardDisposables.add(addDisposableListener(close, EventType.CLICK, (e) => {
++				e.preventDefault();
 +				e.stopPropagation();
 +				onClose();
++			}));
++			this.cardDisposables.add(addDisposableListener(close, EventType.KEY_DOWN, (e) => {
++				const k = new StandardKeyboardEvent(e as KeyboardEvent);
++				if (k.equals(KeyCode.Enter) || k.equals(KeyCode.Space)) {
++					k.preventDefault();
++					e.stopPropagation();
++					onClose();
++				}
 +			}));
 +		}
 +	}
@@ -2794,7 +2919,11 @@ index 0000000..6e5d586
 +		}
 +		clearNode(row);
 +		this.cardDisposables.clear();
-+		const names = dataProvider?.getDetached() ?? [];
++		if (sessionListUnavailable) {
++			this.addEmpty(localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
++			return;
++		}
++		const names = dataProvider?.getDetached() ?? cachedDetachedSessions();
 +		if (names.length === 0) {
 +			this.addEmpty(localize('remotepairNoDetached', "No detached sessions"));
 +			return;
@@ -2811,8 +2940,12 @@ index 0000000..6e5d586
 +		}
 +		clearNode(row);
 +		this.cardDisposables.clear();
++		if (sessionListUnavailable) {
++			this.addEmpty(localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
++			return;
++		}
 +		// Live provider names are real, reattachable session names → clickable.
-+		const providerNames = dataProvider?.getHistory();
++		const providerNames = dataProvider?.getHistory() ?? cachedHistorySessions();
 +		if (providerNames && providerNames.length > 0) {
 +			for (const name of providerNames) {
 +				this.addCard(name, () => reattach(name));
@@ -3084,7 +3217,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,585 @@
+@@ -0,0 +1,622 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3099,7 +3232,7 @@ index 00000000..820a8de4
 +import { localize, localize2 } from '../../../../nls.js';
 +import { URI } from '../../../../base/common/uri.js';
 +import { mainWindow } from '../../../../base/browser/window.js';
-+import { getWindow, scheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
++import { getWindow, scheduleAtNextAnimationFrame, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
 +import { DisposableStore, MutableDisposable, IDisposable } from '../../../../base/common/lifecycle.js';
 +import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 +import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -3111,6 +3244,7 @@ index 00000000..820a8de4
 +import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 +import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 +import { IHoverService } from '../../../../platform/hover/browser/hover.js';
++import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
 +import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, IViewContainersRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation } from '../../../common/views.js';
@@ -3209,6 +3343,7 @@ index 00000000..820a8de4
 +		@IOpenerService openerService: IOpenerService,
 +		@IThemeService themeService: IThemeService,
 +		@IHoverService hoverService: IHoverService,
++		@IClipboardService private readonly clipboardService: IClipboardService,
 +		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 +		@ITerminalInstanceService private readonly terminalInstanceService: ITerminalInstanceService
 +	) {
@@ -3252,7 +3387,7 @@ index 00000000..820a8de4
 +
 +	/**
 +	 * G004: reattach a session by name into the embedded EditorPart group. Reuses the same
-+	 * terminal-open path as launchSession and sends `xpair attach <name>` via the
++	 * terminal-open path as launchSession and sends a quoted `xpair attach <name>` via the
 +	 * terminal's public sendText API. Hosting-layer only — core terminal behavior untouched.
 +	 */
 +	private launchReattach(name: string): void {
@@ -3271,7 +3406,7 @@ index 00000000..820a8de4
 +			try {
 +				const { instance, opened } = this.openTerminalInGroup(group);
 +				opened.then(() => {
-+					instance.sendText('xpair attach ' + name, true);
++					instance.sendText('xpair attach ' + shellSingleQuote(name), true);
 +				}, (e) => { rpLog('warn', `launchReattach(${name}): terminal open rejected: ${e}`); /* best-effort */ });
 +			} catch (e) {
 +				rpLog('error', `launchReattach(${name}): openTerminalInGroup threw: ${e}`); // best-effort
@@ -3438,6 +3573,7 @@ index 00000000..820a8de4
 +		super.renderBody(container);
 +
 +		container.classList.add('remotepair-terminal-sidebar');
++		this.partDisposables.add(addDisposableListener(container, EventType.KEY_DOWN, (e) => this.handleTerminalShortcut(e as KeyboardEvent)));
 +
 +		// G002: New Session "+" lives ONLY in the view title (row 1) via the MenuId.ViewTitle
 +		// action `remotepair.terminalSidebar.newSession`, which DOES render in this container's
@@ -3535,6 +3671,40 @@ index 00000000..820a8de4
 +	private activeTerminalInstance(): ITerminalInstance | undefined {
 +		const input = this.editorPart?.activeGroup?.activeEditor;
 +		return input instanceof TerminalEditorInput ? input.terminalInstance : undefined;
++	}
++
++	private handleTerminalShortcut(e: KeyboardEvent): void {
++		if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) {
++			return;
++		}
++
++		const instance = this.activeTerminalInstance();
++		if (!instance) {
++			return;
++		}
++
++		const key = e.key.toLowerCase();
++		if (key === 'c') {
++			if (!instance.hasSelection()) {
++				return;
++			}
++			e.preventDefault();
++			e.stopPropagation();
++			instance.copySelection();
++			return;
++		}
++
++		if (key === 'v') {
++			e.preventDefault();
++			e.stopPropagation();
++			this.clipboardService.readText().then(text => {
++				if (this.activeTerminalInstance() === instance) {
++					instance.sendText(text, false, true);
++				}
++			}, e => {
++				rpLog('warn', `paste: clipboard read failed: ${e}`);
++			});
++		}
 +	}
 +
 +	/**
