@@ -44,6 +44,13 @@ const AI_EXTENSIONS = [
 
 const NOTIFY_INTERVAL_MS = 5000;
 const SSH_CONNECT_TIMEOUT = 6; // seconds
+const XPAIR_SETTINGS_QUERY = "@ext:x10lab.remotepair";
+const NOTIFY_TYPE_SETTINGS = [
+  ["Stop", "stop"],
+  ["Notification", "askQuestion"],
+  ["SubagentStop", "subagentStop"],
+  ["approve", "approval"],
+];
 
 // v2 WebRTC signaling (shared/screen-protocol → generated contracts)
 const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // host `screen serve-webrtc` signaling port
@@ -208,37 +215,35 @@ function getValidHost() {
   return h;
 }
 
-/** Read ENABLED_TYPES from ~/.xpair/host/notify.conf, or null if absent. */
+/** Read enabled host notification kinds from Xpair Settings. */
 function readEnabledNotifyTypes() {
-  const confPath = path.join(os.homedir(), ".xpair/host", "notify.conf");
-  let raw;
-  try {
-    raw = fs.readFileSync(confPath, "utf8");
-  } catch (_e) {
-    return null; // no filter -> allow all
+  const cfg = vscode.workspace.getConfiguration("xpair.notifications");
+  const enabled = new Set();
+  for (const [type, key] of NOTIFY_TYPE_SETTINGS) {
+    if (cfg.get(key, true)) enabled.add(type);
   }
-  for (const line of raw.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const eq = t.indexOf("=");
-    if (eq < 0) continue;
-    if (t.slice(0, eq).trim() !== "ENABLED_TYPES") continue;
-    let val = t.slice(eq + 1).trim();
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
-    const set = new Set(
-      val
-        .split(/[,\s]+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-    );
-    return set.size ? set : null;
-  }
-  return null;
+  return enabled;
+}
+
+function hasConfiguredValue(section, key) {
+  const inspected = section.inspect(key);
+  return !!(
+    inspected &&
+    (
+      inspected.globalValue !== undefined ||
+      inspected.workspaceValue !== undefined ||
+      inspected.workspaceFolderValue !== undefined
+    )
+  );
+}
+
+function syncTelemetryConsentFromSettings() {
+  const cfg = vscode.workspace.getConfiguration("xpair.telemetry");
+  if (!hasConfiguredValue(cfg, "enabled")) return;
+  const enabled = !!cfg.get("enabled", false);
+  const current = telemetry.getConsent();
+  if (current.telemetry === enabled && current.crashReport === enabled) return;
+  telemetry.setConsent(enabled, enabled);
 }
 
 /**
@@ -886,7 +891,7 @@ class NotificationPoller {
       const firstRun = this.seen.size === 0;
       this.seen.add(key);
       if (firstRun) continue;
-      if (enabled && obj.type && !enabled.has(obj.type)) continue;
+      if (!obj.type || !enabled.has(obj.type)) continue;
 
       const title = obj.title ? String(obj.title) : "Xpair";
       const message = obj.message ? String(obj.message) : "";
@@ -1300,6 +1305,15 @@ function installSentryHooks() {
 function activate(context) {
   log("Xpair activating…");
 
+  syncTelemetryConsentFromSettings();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("xpair.telemetry.enabled")) {
+        syncTelemetryConsentFromSettings();
+      }
+    })
+  );
+
   // Start the CLIENT→HOST liveness heartbeat (writes now + every 30s; idempotent across
   // activations). Fire-and-forget — must never block or crash activation.
   try { heartbeat.startHeartbeat(); } catch (e) { log(`heartbeat start: ${e && e.message ? e.message : e}`, "warn"); }
@@ -1496,7 +1510,7 @@ function activate(context) {
       })
     ),
     vscode.commands.registerCommand("remotepair.openSettings", () => {
-      vscode.commands.executeCommand("workbench.action.openSettings");
+      vscode.commands.executeCommand("workbench.action.openSettings", XPAIR_SETTINGS_QUERY);
     }),
     vscode.commands.registerCommand("remotepair.showLogs", () =>
       showLogs().catch((e) => {
