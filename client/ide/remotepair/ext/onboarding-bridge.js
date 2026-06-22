@@ -19,6 +19,15 @@ const HOME = os.homedir();
 const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
+const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
+
+function validHost(host) {
+  return HOST_RE.test(String(host || "").trim());
+}
+
+function invalidHost(host) {
+  return `invalid host: ${String(host || "").trim()}`;
+}
 
 /** Resolve the xpair binary (installed to ~/.local/bin, else on PATH). */
 function rpBin() {
@@ -456,8 +465,10 @@ const bridge = {
 
   // Connection — real reachability check (hard-gate for the Connect step).
   async sshReachable(host) {
-    if (!host) return { reachable: false, err: "no host" };
-    const r = await run("ssh", [...sshProbeOpts(5), host, "true"]);
+    const h = String(host || "").trim();
+    if (!h) return { reachable: false, err: "no host" };
+    if (!validHost(h)) return { reachable: false, err: invalidHost(h) };
+    const r = await run("ssh", [...sshProbeOpts(5), h, "true"]);
     return { reachable: r.code === 0, err: r.err };
   },
 
@@ -490,8 +501,9 @@ const bridge = {
   // {installed, authed, version, err}.
   async hostEngineStatus(engine) {
     const e = String(engine || "");
-    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { installed: false, authed: false, version: "", err: "REMOTE_HOST not set" };
+    if (!validHost(host)) return { installed: false, authed: false, version: "", err: invalidHost(host) };
     const probe = ENGINE_PROBE[e];
     if (!probe) return { installed: false, authed: false, version: "", err: `unknown engine: ${e}` };
     const r = await run("ssh", [...sshProbeOpts(6), host, probe]);
@@ -520,8 +532,9 @@ const bridge = {
   // {ok, err}. Re-probe with hostEngineStatus afterwards — never trust the exit code alone.
   async installHostEngine(engine) {
     const e = String(engine || "");
-    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { ok: false, err: "REMOTE_HOST not set" };
+    if (!validHost(host)) return { ok: false, err: invalidHost(host) };
     if (!ENGINE_INSTALL[e]) return { ok: false, err: `unknown engine: ${e}` };
     // Login shell so the host's brew (e.g. /opt/homebrew/bin) is on PATH; NONINTERACTIVE=1 keeps brew
     // from prompting. The formula name differs per engine (ENGINE_INSTALL).
@@ -541,8 +554,9 @@ const bridge = {
   // key is dropped here right after. Returns {ok, err}.
   async setHostEngineAuth(engine, apiKey) {
     const e = String(engine || "");
-    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { ok: false, err: "REMOTE_HOST not set" };
+    if (!validHost(host)) return { ok: false, err: invalidHost(host) };
     if (!apiKey) return { ok: false, err: "no API key" };
     const writer = ENGINE_AUTH_WRITE[e];
     if (!writer) return { ok: false, err: `unknown engine: ${e}` };
@@ -567,8 +581,9 @@ const bridge = {
   // Uses `test -e` which returns 0 if the path exists (file, dir, or symlink).
   async hostPathExists(p) {
     if (!p) return { exists: false, err: "no path" };
-    const host = parseEnv(CLIENT_ENV).REMOTE_HOST;
+    const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { exists: false, err: "REMOTE_HOST not set" };
+    if (!validHost(host)) return { exists: false, err: invalidHost(host) };
     const r = await run("ssh", [...sshProbeOpts(5), host, "test", "-e", p]);
     return { exists: r.code === 0, err: r.err };
   },
@@ -712,6 +727,7 @@ const bridge = {
   async hostAppStatus(host) {
     const h = String(host || "").trim();
     if (!h) return { installed: false, version: "", compatible: false, err: "no host" };
+    if (!validHost(h)) return { installed: false, version: "", compatible: false, err: invalidHost(h) };
     const sshArgs = sshProbeOpts(6);
     // One round-trip: print whether the .app dir exists, then the status.json contents.
     const probe =
