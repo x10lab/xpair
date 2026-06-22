@@ -269,10 +269,10 @@ RESPAWN
 }
 
 respawn_body_codex() {
-  # CL_CONTINUE=1 → resume the most recent session (codex resume --last); otherwise fresh.
-  # codex has no --remote-control / RC concept (that is claude-only) and no recorded-id resume —
-  # it uses its own --last picker, so the claude RC/RESUME_SID/~/.claude/last-session logic is
-  # intentionally absent here. --dangerously-bypass-approvals-and-sandbox is codex's auto-approve
+  # Codex has no path-keyed recorded-id resume here. New tmux sessions must start fresh
+  # rather than using provider-global "last" state from another folder/path. Detached
+  # sessions are still continued by reattaching the existing tmux session.
+  # --dangerously-bypass-approvals-and-sandbox is codex's auto-approve
   # (claude --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
   cat <<'RESPAWN'
 # Reap codex children when tmux/bash exits — bash has huponexit OFF by default, so without this
@@ -285,11 +285,7 @@ command -v codex >/dev/null 2>&1 || {
   exit 11
 }
 while :; do
-  if [ "${CL_CONTINUE:-0}" = 1 ]; then
-    codex --dangerously-bypass-approvals-and-sandbox resume --last || codex --dangerously-bypass-approvals-and-sandbox
-  else
-    codex --dangerously-bypass-approvals-and-sandbox
-  fi
+  codex --dangerously-bypass-approvals-and-sandbox
   [ $? -eq 0 ] && break
   printf '\n[codex crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
@@ -298,7 +294,9 @@ RESPAWN
 }
 
 respawn_body_opencode() {
-  # CL_CONTINUE=1 → continue the last session (opencode --continue); otherwise fresh.
+  # OpenCode has no path-keyed recorded-id resume here. New tmux sessions must start fresh
+  # rather than using provider-global continue state from another folder/path. Detached
+  # sessions are still continued by reattaching the existing tmux session.
   # opencode's interactive TUI has NO auto-approve flag (--dangerously-skip-permissions exists ONLY on
   # the non-interactive `run` subcommand). Auto-approve for the TUI is config-based: the `permission`
   # block. We inject it non-destructively via OPENCODE_CONFIG_CONTENT (an inline-JSON env override that
@@ -318,11 +316,7 @@ command -v opencode >/dev/null 2>&1 || {
 # Auto-approve via inline config merge (TUI has no skip-permissions flag). Merges with existing config.
 export OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"allow","bash":"allow","webfetch":"allow"}}'
 while :; do
-  if [ "${CL_CONTINUE:-0}" = 1 ]; then
-    opencode --continue || opencode
-  else
-    opencode
-  fi
+  opencode
   [ $? -eq 0 ] && break
   printf '\n[opencode crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
