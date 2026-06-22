@@ -62,7 +62,7 @@ A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host sta
 - Apple Silicon Mac (host and client)
 - macOS Sequoia or later recommended
 - **Remote Login** enabled on the host (onboarding generates the SSH key and wires the rest)
-- `mosh` on both machines (plain SSH works, but a disconnect kills the live attach)
+- `mosh` on both machines — onboarding installs it via Homebrew; without it, attach falls back to plain SSH (which dies on disconnect)
 - **Host:** Homebrew + git. The engine CLI (`claude` / `codex` / `opencode`) and the host app are installed for you by onboarding — no build needed.
 
 ---

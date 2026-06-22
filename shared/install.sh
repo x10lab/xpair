@@ -90,6 +90,22 @@ install_file "$CLIENT_DIR/xpair" "$LOCAL_BIN/xpair" 755
 case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN is not in PATH — add it to your shell rc" ;; esac
 mk_dir "$LOG_DIR"
 
+# ── Common: ensure mosh (resilient UDP attach on both host + client; ssh fallback if absent) ──
+# The mosh package provides both mosh-client (client) and mosh-server (host), so this one step
+# covers either role. Untracked by the manifest (like cliclick) — uninstall.sh leaves mosh in place.
+if command -v mosh >/dev/null 2>&1; then
+  say "mosh present ($(command -v mosh))"
+else
+  BREW="$(command -v brew 2>/dev/null || true)"
+  for _b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -n "$BREW" ] && break; [ -x "$_b" ] && BREW="$_b"; done
+  if [ -n "$BREW" ]; then
+    say "mosh not found — installing via Homebrew"
+    "$BREW" install mosh || warn "mosh install failed — manual: brew install mosh (attach falls back to ssh)"
+  else
+    warn "mosh not found and Homebrew unavailable — attach falls back to ssh. Install Homebrew, then: brew install mosh"
+  fi
+fi
+
 # ── HOST: app + approve (skill/rules) + watchdog + LaunchAgent ──
 if is_host; then
   say "[host] approve rules → $RULES_FILE"
