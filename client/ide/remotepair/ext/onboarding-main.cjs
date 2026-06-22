@@ -118,6 +118,7 @@ let _completed = false
  */
 function openOnboardingWindow({ electron, onComplete }) {
   const { app, BrowserWindow, ipcMain, shell } = electron
+  _completed = false
   // Onboarding is actually opening now, so consume the one-shot force sentinel (if any). This
   // guarantees exactly one forced run — a later normal launch won't re-trigger onboarding.
   clearForceOnboardingSentinel()
@@ -158,11 +159,16 @@ function openOnboardingWindow({ electron, onComplete }) {
     try { shell.openExternal(url) } catch { /* */ }
     return { action: 'deny' }
   })
-  // If the user closes the onboarding window WITHOUT completing (traffic-light), don't leave the app
-  // running window-less: fall through to opening the workbench so they still land in the IDE.
+  // The workbench may open only from the explicit completion IPC. A premature traffic-light close
+  // keeps onboarding in front instead of treating cancellation as setup completion.
+  _win.on('close', (event) => {
+    if (_completed) return
+    event.preventDefault()
+    try { _win.show() } catch { /* ignore */ }
+    try { _win.focus() } catch { /* ignore */ }
+  })
   _win.on('closed', () => {
     _win = null
-    if (!_completed) { try { if (typeof onComplete === 'function') onComplete() } catch { /* */ } }
   })
   return _win
 }
