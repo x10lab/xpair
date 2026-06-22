@@ -61,27 +61,35 @@ A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host sta
 
 - Apple Silicon Mac (host and client)
 - macOS Sequoia or later recommended
-- SSH key authentication between client and host
+- **Remote Login** enabled on the host (onboarding generates the SSH key and wires the rest)
 - `mosh` on both machines (plain SSH works, but a disconnect kills the live attach)
-- **Host:** Homebrew (for the app cask) + git, plus your chosen engine CLI (`claude` / `codex` / `opencode`) installed. No build needed.
+- **Host:** Homebrew + git. The engine CLI (`claude` / `codex` / `opencode`) and the host app are installed for you by onboarding — no build needed.
 
 ---
 
 ## Installation
 
-### Host — the always-on Mac
+Setup runs from the **client IDE**: install it, launch it, and its first-run onboarding does the rest — installs the CLI, wires SSH, installs and authenticates your engine on the host, and pushes the signed host app onto the host. Every step is a hard gate that fixes itself instead of dead-ending. The only thing it can't automate is the permission grant on the host's physical screen.
+
+### 1. Install the IDE and launch it
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=host bash
+brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
 ```
 
-This installs the `xpair` CLI + approve glue, then the app (`XpairHost.app`) via Homebrew Cask. On first launch the app self-installs its daemon (LaunchAgent, `~/.xpair/host`, tmux-aqua, watchdog) and opens host onboarding. The app is self-signed but Homebrew strips the quarantine flag, so it launches normally and its grants stick to the stable signing identity. (App only, no CLI: `brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair-host`.)
+Open Xpair. First run opens onboarding (in-IDE, not a separate window) and walks:
 
-> Coming from an old *RemotePair* build? Uninstall it first — the bundle id changed, so its macOS permission grants don't carry over.
+- **CLI** — auto-installs the bundled `xpair` CLI if it's missing.
+- **Connection** — generates an SSH key, discovers hosts (LAN Bonjour + Tailscale), and verifies passwordless reachability. You enable **Remote Login** on the host once (System Settings → General → Sharing); outside your LAN, a mesh VPN like [Tailscale](https://tailscale.com) gives the host a stable name.
+- **Engine** — probes the host for `claude` / `codex` / `opencode`, installs it if missing, and sets the API key. The key travels over SSH stdin — never argv, log, or disk.
+- **Host app** — runs `xpair install-host`, copying the signed `XpairHost.app` to the host and installing its daemon (LaunchAgent, `~/.xpair/host`, tmux-aqua, watchdog). The app is self-signed but its grants stick to a stable signing identity.
+- **Permissions** — polls the host's grant status and stops at the one manual step below.
 
-#### One-time permission grant — needs a physical screen or VNC
+> Coming from an old *RemotePair* build on the host? Uninstall it first — the bundle id changed, so its macOS permission grants don't carry over.
 
-This is the one manual step; it can't be done over SSH (TCC on SIP-enabled, non-MDM Macs). In **System Settings → Privacy & Security**, turn `XpairHost` ON for:
+### 2. One-time permission grant — needs a physical screen or VNC
+
+This is the one step onboarding can't do for you; it can't be done over SSH (TCC on SIP-enabled, non-MDM Macs). On the host, in **System Settings → Privacy & Security**, turn `XpairHost` ON for:
 
 | Grant | Why | Needed? |
 |---|---|---|
@@ -93,21 +101,22 @@ Then pick up the grants: `launchctl kickstart -k gui/$(id -u)/com.x10lab.xpair-h
 
 > Prefer not to grant Full Disk Access? Keep project folders under a non-protected root (e.g. `~/Spaces`, not `~/Desktop`/`~/Documents`/`~/Downloads`) — then sessions never hit a protected folder and never prompt.
 
-### Client — the laptop you sit at
+### Doing it by hand (no IDE)
 
-The client runs as the **Xpair IDE** (a VSCodium app with a Sessions sidebar) or as the **CLI + Finder Quick Action**. Both share the same `xpair` config.
-
-First, key-based SSH login to the host must work (`ssh <host>` with no password prompt). If not: enable **Remote Login** on the host (System Settings → General → Sharing), then `ssh-copy-id user@host` from the client and give the host a short `~/.ssh/config` alias. Outside your LAN, a mesh VPN like [Tailscale](https://tailscale.com) gives the host a stable name. (The onboarding flow can help wire this up for you.)
+Prefer the CLI, or setting a host up from its own screen? The bootstrap script and `xpair install-host` cover the same ground:
 
 ```bash
-# Xpair IDE (cask):
-brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
-
-# CLI + Finder Quick Action only:
+# Client: CLI + Finder Quick Action only (auto-runs `xpair onboard`):
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=client bash
+
+# Host: set it up from its own screen (CLI + approve glue + XpairHost.app via brew cask):
+curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | ROLE=host bash
+
+# Or push the host app from an already-configured client:
+xpair install-host --host <user@host>
 ```
 
-The CLI install auto-runs `xpair onboard` (host address, terminal app, folder mappings).
+App only, no CLI: `brew install --cask xpair-host` (after the tap above).
 
 Uninstall: `~/.local/share/xpair/shared/uninstall.sh [--purge]`, or `brew uninstall --cask xpair-host` for the app.
 
