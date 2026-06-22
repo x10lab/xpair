@@ -9,13 +9,14 @@
 #   Stop          — when a Claude Code session terminates normally
 #   Notification  — notification messages the model sends to the user
 #   SubagentStop  — when a subagent terminates
-#   approve       — PermissionDenied / PostToolUseFailure (awaiting GUI approval)
+#   approve-wait  — PermissionRequest / permission_prompt (waiting for manual approval)
+#   approve       — PermissionDenied / PostToolUseFailure (approval changed/finalized)
 #
 # Default (all enabled if this line is commented out or the file is missing):
-ENABLED_TYPES=Stop,Notification,SubagentStop,approve
+ENABLED_TYPES=Stop,Notification,SubagentStop,approve-wait,approve
 
-# e.g. when you only want notifications for Stop and approve:
-# ENABLED_TYPES=Stop,approve
+# e.g. when you only want notifications for Stop and approval waits/changes:
+# ENABLED_TYPES=Stop,approve-wait,approve
 
 # e.g. turn off all notifications (empty value):
 # ENABLED_TYPES=

@@ -1495,7 +1495,7 @@ cmd_notify() {
   [ -n "$REMOTE_HOST" ] || { warn "no REMOTE_HOST configured — notify pulls from the host ('xpair config set host <ssh-host>')"; return 0; }
 
   # Local ENABLED_TYPES filter (mirror xpair-notify.sh parsing). Default: all on.
-  local enabled="Stop,Notification,SubagentStop,approve"
+  local enabled="Stop,Notification,SubagentStop,approve-wait,approve"
   local conf="$RP_DIR/notify.conf"
   if [ -f "$conf" ]; then
     local v; v="$(sed -n 's/^[[:space:]]*ENABLED_TYPES[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' "$conf" | tail -1)"

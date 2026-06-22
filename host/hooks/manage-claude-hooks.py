@@ -18,7 +18,8 @@
 # Hook layout (data-driven):
 #   approve-reminder.sh  → PermissionDenied, PostToolUseFailure  (matcher: GUI tools)
 #   xpair-notify.sh→ Stop, Notification, SubagentStop       (matcher: None = all tools)
-#                        → PermissionDenied, PostToolUseFailure  (matcher: GUI tools, approve events)
+#                        → PermissionRequest, PermissionDenied, PostToolUseFailure
+#                          (matcher: GUI tools, approve events)
 import json, os, sys
 
 # ── approve-reminder-specific config ──────────────────────────────────────────
@@ -30,7 +31,7 @@ APPROVE_MATCHER = r"mcp__claude-in-chrome__.*|mcp__computer-use__.*|Bash"
 # Stop/Notification/SubagentStop have no matcher (session-level events fired by all tools).
 NOTIFY_EVENTS_NO_MATCHER = ["Stop", "Notification", "SubagentStop"]
 # For the approve family, attach notify with the same matcher as approve-reminder.
-NOTIFY_EVENTS_WITH_MATCHER = ["PermissionDenied", "PostToolUseFailure"]
+NOTIFY_EVENTS_WITH_MATCHER = ["PermissionRequest", "PermissionDenied", "PostToolUseFailure"]
 
 
 def load(path):
