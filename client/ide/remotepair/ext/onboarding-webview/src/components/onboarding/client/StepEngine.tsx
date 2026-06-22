@@ -13,18 +13,29 @@ type Props = {
 };
 
 type EngineStatus =
-  | { installed: boolean; authed: boolean; version: string; err: string }
-  | null;
+  { installed: boolean; authed: boolean; version: string; err: string };
+
+type EngineStatuses = Record<EngineId, EngineStatus>;
 
 const ENGINES: { id: EngineId; label: string; blurb: string }[] = [
   { id: "claude", label: "Claude Code", blurb: "Anthropic — the default." },
+  { id: "shell", label: "Shell", blurb: "Plain host login shell." },
   { id: "codex", label: "Codex", blurb: "OpenAI — GPT models." },
   { id: "opencode", label: "opencode", blurb: "Open-source, multi-provider." },
 ];
 
+const isReady = (s: EngineStatus | null | undefined) => !!s && s.installed && s.authed;
+
+const missingText = (s: EngineStatus | null | undefined) => {
+  if (!s) return "Not checked";
+  if (!s.installed) return "Not installed";
+  if (!s.authed) return "Installed, sign-in needed";
+  return s.version ? `Ready (${s.version})` : "Ready";
+};
+
 /**
- * Engine step: the user picks the agent engine (claude | codex | opencode) and we HARD-GATE on that
- * engine being installed AND authenticated ON THE HOST (it runs there under `xpair launch`). Same
+ * Engine step: the user picks the session engine (claude | shell | codex | opencode) and we HARD-GATE on that
+ * engine being available ON THE HOST (it runs there under `xpair launch`). Same
  * philosophy as the CLI / host-app guards: block → resolve action (install / set API key) → re-probe
  * → only pass when the host is actually ready.
  *   !installed         → "Install on host" (brew, non-interactive) → re-probe.
@@ -33,49 +44,91 @@ const ENGINES: { id: EngineId; label: string; blurb: string }[] = [
  * those the user signs in on the host's own screen; we only automate the API-key path.
  */
 export function StepEngine({ engine, setEngine, onReady }: Props) {
-  const [status, setStatus] = useState<EngineStatus>(null);
+  const [statuses, setStatuses] = useState<EngineStatuses | null>(null);
   const [probing, setProbing] = useState(false);
-  const [installing, setInstalling] = useState(false);
+  const [installing, setInstalling] = useState<EngineId | null>(null);
   const [authing, setAuthing] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [actionErr, setActionErr] = useState("");
+  const [showOther, setShowOther] = useState(false);
 
-  const probe = useCallback(async (e: EngineId) => {
-    setProbing(true);
-    setActionErr("");
+  const probeOne = useCallback(async (e: EngineId): Promise<EngineStatus> => {
     try {
       const r = await window.remotepair.hostEngineStatus(e);
-      setStatus(r);
-      onReady(r.installed && r.authed);
+      return r;
     } catch (err) {
-      setStatus({ installed: false, authed: false, version: "", err: String(err) });
       onReady(false);
-    } finally {
-      setProbing(false);
+      return { installed: false, authed: false, version: "", err: String(err) };
     }
   }, [onReady]);
 
-  // On (re)selecting an engine: persist it, clear the key field, and re-probe the host.
-  useEffect(() => {
-    let alive = true;
+  const persistEngine = useCallback(async (e: EngineId) => {
+    try {
+      await window.remotepair.setEngine(e);
+    } catch {
+      /* persist failure shouldn't block the host probe */
+    }
+  }, []);
+
+  const probe = useCallback(async (preferred: EngineId = engine, allowReadyFallback = false) => {
+    setProbing(true);
+    setActionErr("");
     onReady(false);
-    setStatus(null);
+    try {
+      const entries = await Promise.all(
+        ENGINES.map(async ({ id: e }) => [e, await probeOne(e)] as const),
+      );
+      const nextStatuses = Object.fromEntries(entries) as EngineStatuses;
+      setStatuses(nextStatuses);
+
+      const preferredReady = isReady(nextStatuses[preferred]);
+      const currentReady = isReady(nextStatuses[engine]);
+      const firstReady = ENGINES.find(({ id }) => isReady(nextStatuses[id]))?.id;
+      const nextEngine = preferredReady
+        ? preferred
+        : allowReadyFallback && currentReady
+        ? engine
+        : allowReadyFallback && firstReady
+        ? firstReady
+        : preferred;
+      const r = nextStatuses[nextEngine];
+
+      if (nextEngine !== engine) setEngine(nextEngine);
+      setApiKey("");
+      setShowOther(!isReady(r));
+      await persistEngine(nextEngine);
+      onReady(r.installed && r.authed);
+    } finally {
+      setProbing(false);
+    }
+  }, [engine, onReady, persistEngine, probeOne, setEngine]);
+
+  // Probe every supported engine on the selected host before rendering primary choices.
+  useEffect(() => {
+    void probe(engine, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const chooseReadyEngine = useCallback(async (e: EngineId) => {
+    setEngine(e);
     setApiKey("");
-    (async () => {
-      try {
-        await window.remotepair.setEngine(engine);
-      } catch {
-        /* persist failure shouldn't block the host probe */
-      }
-      if (alive) await probe(engine);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [engine, probe, onReady]);
+    setActionErr("");
+    await persistEngine(e);
+    const r = statuses?.[e];
+    onReady(!!r && r.installed && r.authed);
+  }, [onReady, persistEngine, setEngine, statuses]);
+
+  const chooseOtherEngine = useCallback(async (e: EngineId) => {
+    setEngine(e);
+    setApiKey("");
+    setActionErr("");
+    setShowOther(true);
+    await persistEngine(e);
+    onReady(false);
+  }, [onReady, persistEngine, setEngine]);
 
   const onInstall = useCallback(async () => {
-    setInstalling(true);
+    setInstalling(engine);
     setActionErr("");
     try {
       const r = await window.remotepair.installHostEngine(engine);
@@ -87,7 +140,7 @@ export function StepEngine({ engine, setEngine, onReady }: Props) {
     } catch (err) {
       setActionErr(String(err));
     } finally {
-      setInstalling(false);
+      setInstalling(null);
     }
   }, [engine, probe]);
 
@@ -110,54 +163,120 @@ export function StepEngine({ engine, setEngine, onReady }: Props) {
     }
   }, [engine, apiKey, probe]);
 
-  const ready = !!status && status.installed && status.authed;
-  const busy = probing || installing || authing;
+  const status = statuses?.[engine] || null;
+  const ready = isReady(status);
+  const readyEngines = statuses ? ENGINES.filter((e) => isReady(statuses[e.id])) : [];
+  const missingEngines = statuses ? ENGINES.filter((e) => !isReady(statuses[e.id])) : [];
+  const busy = probing || !!installing || authing;
+  const catalogReady = statuses !== null;
 
   return (
     <div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">Choose your engine</h2>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        The agent that runs on the host. It must be installed and signed in there before you can
-        pair — we'll check and set it up.
+        The agent that runs on the host. We check the selected host first and only show engines
+        already installed and signed in there.
       </p>
 
-      <div className="mt-5 grid grid-cols-3 gap-2">
-        {ENGINES.map((e) => {
-          const selected = engine === e.id;
-          return (
-            <button
-              key={e.id}
+      {!catalogReady ? (
+        <div className="mt-5 flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Checking the selected host for supported engines...
+        </div>
+      ) : (
+        <>
+          {readyEngines.length > 0 ? (
+            <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {readyEngines.map((e) => {
+                const selected = engine === e.id;
+                const s = statuses[e.id];
+                return (
+                  <button
+                    key={e.id}
+                    type="button"
+                    onClick={() => void chooseReadyEngine(e.id)}
+                    className={
+                      "flex flex-col rounded-lg border px-3 py-2.5 text-left transition-colors " +
+                      (selected
+                        ? "border-primary bg-primary/10"
+                        : "border-border bg-muted/30 hover:bg-muted/50")
+                    }
+                  >
+                    <span className="text-sm font-semibold text-foreground">{e.label}</span>
+                    <span className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
+                      {s.version || e.blurb}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-5 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground">
+              No installed and signed-in engine was found on the selected host.
+            </div>
+          )}
+
+          <div className="mt-3">
+            <Button
               type="button"
-              onClick={() => setEngine(e.id)}
-              className={
-                "flex flex-col rounded-lg border px-3 py-2.5 text-left transition-colors " +
-                (selected
-                  ? "border-primary bg-primary/10"
-                  : "border-border bg-muted/30 hover:bg-muted/50")
-              }
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5"
+              onClick={() => setShowOther((v) => !v)}
             >
-              <span className="text-sm font-semibold text-foreground">{e.label}</span>
-              <span className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
-                {e.blurb}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+              <Download className="h-3.5 w-3.5" />
+              Other / install
+            </Button>
+          </div>
+
+          {(showOther || readyEngines.length === 0) && (
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {missingEngines.map((e) => {
+                const selected = engine === e.id;
+                const s = statuses[e.id];
+                return (
+                  <button
+                    key={e.id}
+                    type="button"
+                    onClick={() => void chooseOtherEngine(e.id)}
+                    className={
+                      "flex flex-col rounded-lg border px-3 py-2.5 text-left transition-colors " +
+                      (selected
+                        ? "border-primary bg-primary/10"
+                        : "border-border bg-muted/20 hover:bg-muted/40")
+                    }
+                  >
+                    <span className="text-sm font-semibold text-foreground">{e.label}</span>
+                    <span className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
+                      {missingText(s)}
+                    </span>
+                  </button>
+                );
+              })}
+              {missingEngines.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  All supported engines are already available on this host.
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
 
       <div className="mt-5 min-h-6 text-xs">
-        {probing && (
+        {probing && catalogReady && (
           <span className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Checking the host for {engine}…
+            Checking the selected host for supported engines...
           </span>
         )}
 
         {!probing && status && ready && (
           <span className="flex items-center gap-2 text-primary">
             <Check className="h-3.5 w-3.5" />
-            {engine} is installed{status.version ? ` (${status.version})` : ""} and signed in on the
-            host. Continue.
+            {engine === "shell"
+              ? `Shell is ready on the host${status.version ? ` (${status.version})` : ""}. Continue.`
+              : `${engine} is installed${status.version ? ` (${status.version})` : ""} and signed in on the host. Continue.`}
           </span>
         )}
 

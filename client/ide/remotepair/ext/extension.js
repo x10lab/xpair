@@ -24,7 +24,7 @@ const telemetry = require("./telemetry.js");
 // the host over SSH so the host can show this client as connected. Self-contained, stdlib-only,
 // fire-and-forget (never crashes/blocks the IDE).
 const heartbeat = require("./heartbeat.js");
-const { listSessionsFromCli } = require("./session-list.js");
+const { listSessionsFromCli, checkSessionAvailableFromCli } = require("./session-list.js");
 
 // --- constants -------------------------------------------------------------
 
@@ -44,6 +44,13 @@ const AI_EXTENSIONS = [
 
 const NOTIFY_INTERVAL_MS = 5000;
 const SSH_CONNECT_TIMEOUT = 6; // seconds
+const XPAIR_SETTINGS_QUERY = "@ext:x10lab.remotepair";
+const NOTIFY_TYPE_SETTINGS = [
+  ["Stop", "stop"],
+  ["Notification", "askQuestion"],
+  ["SubagentStop", "subagentStop"],
+  ["approve", "approval"],
+];
 
 // v2 WebRTC signaling (shared/screen-protocol → generated contracts)
 const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // host `screen serve-webrtc` signaling port
@@ -61,6 +68,7 @@ const HOST_RE = /^[A-Za-z0-9._-]+$/;
 
 const LOG_DIR = path.join(os.homedir(), ".xpair/host", "logs");
 const LOG_FILE = path.join(LOG_DIR, "ide.log");
+const CLIENT_ENV_FILE = path.join(os.homedir(), ".xpair/host", "client.env");
 const LOG_COMP = "ide";
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // rotate-on-open threshold
 const LOG_LEVELS = { trace: 0, debug: 1, info: 2, warn: 3, error: 4 };
@@ -164,16 +172,21 @@ function log(msg, level) {
   }
 }
 
-/** Read REMOTE_HOST from ~/.xpair/host/client.env (KEY=VALUE lines). */
-function readRemoteHost() {
-  // env override wins (useful for testing), then the client.env file.
-  const fromEnv = process.env.REMOTE_HOST;
-  if (fromEnv && HOST_RE.test(fromEnv.trim())) return fromEnv.trim();
+function stripEnvQuotes(val) {
+  let out = String(val || "").trim();
+  if (
+    (out.startsWith('"') && out.endsWith('"')) ||
+    (out.startsWith("'") && out.endsWith("'"))
+  ) {
+    out = out.slice(1, -1);
+  }
+  return out.trim();
+}
 
-  const envPath = path.join(os.homedir(), ".xpair/host", "client.env");
+function readClientEnvValue(keyName) {
   let raw;
   try {
-    raw = fs.readFileSync(envPath, "utf8");
+    raw = fs.readFileSync(CLIENT_ENV_FILE, "utf8");
   } catch (_e) {
     return null;
   }
@@ -183,18 +196,56 @@ function readRemoteHost() {
     const eq = t.indexOf("=");
     if (eq < 0) continue;
     const key = t.slice(0, eq).trim();
-    if (key !== "REMOTE_HOST") continue;
-    let val = t.slice(eq + 1).trim();
-    // strip surrounding quotes if present
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
-    return val.trim();
+    if (key !== keyName) continue;
+    return stripEnvQuotes(t.slice(eq + 1));
   }
   return null;
+}
+
+function setClientEnvValue(keyName, value) {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(CLIENT_ENV_FILE, "utf8");
+  } catch (_e) {
+    raw = "";
+  }
+  const lines = raw ? raw.split(/\r?\n/) : [];
+  const next = [];
+  let found = false;
+  for (const line of lines) {
+    if (line === "" && next.length === lines.length - 1) continue;
+    const t = line.trim();
+    const eq = t.indexOf("=");
+    if (eq >= 0 && t.slice(0, eq).trim() === keyName) {
+      if (!found) next.push(`${keyName}=${value}`);
+      found = true;
+    } else {
+      next.push(line);
+    }
+  }
+  if (!found) next.push(`${keyName}=${value}`);
+  fs.mkdirSync(path.dirname(CLIENT_ENV_FILE), { recursive: true });
+  fs.writeFileSync(CLIENT_ENV_FILE, `${next.join("\n")}\n`);
+}
+
+/** Read REMOTE_HOST from ~/.xpair/host/client.env (KEY=VALUE lines). */
+function readRemoteHost() {
+  // env override wins (useful for testing), then the client.env file.
+  const fromEnv = process.env.REMOTE_HOST;
+  if (fromEnv && HOST_RE.test(fromEnv.trim())) return fromEnv.trim();
+  return readClientEnvValue("REMOTE_HOST");
+}
+
+function localModeActive() {
+  const fromFile = readClientEnvValue("LOCAL_MODE");
+  const raw = fromFile !== null ? fromFile : process.env.LOCAL_MODE;
+  return /^(1|true|yes|on|local)$/i.test(String(raw || "").trim());
+}
+
+function clearLocalModeFlag() {
+  if (!localModeActive()) return false;
+  setClientEnvValue("LOCAL_MODE", "0");
+  return true;
 }
 
 /** Validated REMOTE_HOST or null. */
@@ -208,37 +259,35 @@ function getValidHost() {
   return h;
 }
 
-/** Read ENABLED_TYPES from ~/.xpair/host/notify.conf, or null if absent. */
+/** Read enabled host notification kinds from Xpair Settings. */
 function readEnabledNotifyTypes() {
-  const confPath = path.join(os.homedir(), ".xpair/host", "notify.conf");
-  let raw;
-  try {
-    raw = fs.readFileSync(confPath, "utf8");
-  } catch (_e) {
-    return null; // no filter -> allow all
+  const cfg = vscode.workspace.getConfiguration("xpair.notifications");
+  const enabled = new Set();
+  for (const [type, key] of NOTIFY_TYPE_SETTINGS) {
+    if (cfg.get(key, true)) enabled.add(type);
   }
-  for (const line of raw.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const eq = t.indexOf("=");
-    if (eq < 0) continue;
-    if (t.slice(0, eq).trim() !== "ENABLED_TYPES") continue;
-    let val = t.slice(eq + 1).trim();
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
-    const set = new Set(
-      val
-        .split(/[,\s]+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-    );
-    return set.size ? set : null;
-  }
-  return null;
+  return enabled;
+}
+
+function hasConfiguredValue(section, key) {
+  const inspected = section.inspect(key);
+  return !!(
+    inspected &&
+    (
+      inspected.globalValue !== undefined ||
+      inspected.workspaceValue !== undefined ||
+      inspected.workspaceFolderValue !== undefined
+    )
+  );
+}
+
+function syncTelemetryConsentFromSettings() {
+  const cfg = vscode.workspace.getConfiguration("xpair.telemetry");
+  if (!hasConfiguredValue(cfg, "enabled")) return;
+  const enabled = !!cfg.get("enabled", false);
+  const current = telemetry.getConsent();
+  if (current.telemetry === enabled && current.crashReport === enabled) return;
+  telemetry.setConsent(enabled, enabled);
 }
 
 /**
@@ -395,29 +444,20 @@ class RemoteDesktopPanel {
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
   async reveal() {
     if (this.panel) {
-      try {
-        this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
-      } catch (_e) {}
-      this.visible = true;
-      this._startStream();
+      this._revealOwnedPanelAndRestart();
       return;
     }
     // Cross-extension-host dedup: this window runs TWO local extension hosts (a pre-existing
     // workbench quirk), so activate() — and this reveal() — runs twice and would open a SECOND "RD"
     // tab. Editor tabs are renderer-level (visible to every exthost via tabGroups), so if an RD
-    // webview tab already exists we skip creating another. This is the robust fix for the
-    // "RD opens twice" bug (the per-instance singleton + serializer dedup cannot span exthosts).
-    try {
-      for (const g of vscode.window.tabGroups.all) {
-        for (const t of g.tabs) {
-          const vt = t.input && t.input.viewType;
-          if (typeof vt === "string" && vt.indexOf("remotepair.remoteDesktop") !== -1) {
-            log("RD: an RD tab already exists (opened by another extension host) — skipping duplicate creation");
-            return;
-          }
-        }
-      }
-    } catch (_e) {}
+    // webview tab already exists, reveal/adopt it and restart its stream instead of creating a
+    // second tab or leaving a restored RD tab inert.
+    const existingTab = this._findExistingRdTab();
+    if (existingTab) {
+      log("RD: an RD tab already exists (opened by another extension host) — adopting/revealing singleton");
+      const handled = await this._adoptExistingRdTab(existingTab);
+      if (handled) return;
+    }
     const panel = vscode.window.createWebviewPanel(
       "remotepair.remoteDesktop",
       "RD",
@@ -438,6 +478,86 @@ class RemoteDesktopPanel {
     if (this.visible) this._startStream();
   }
 
+  _findExistingRdTab() {
+    try {
+      for (const g of vscode.window.tabGroups.all) {
+        const tabs = g.tabs || [];
+        for (let i = 0; i < tabs.length; i += 1) {
+          const t = tabs[i];
+          const vt = t.input && t.input.viewType;
+          if (typeof vt === "string" && vt.indexOf("remotepair.remoteDesktop") !== -1) {
+            return { group: g, tab: t, index: i };
+          }
+        }
+      }
+    } catch (_e) {}
+    return null;
+  }
+
+  async _adoptExistingRdTab(existing) {
+    await this._revealExistingRdTab(existing);
+    try {
+      await vscode.commands.executeCommand("remotepair.remoteDesktop.refresh");
+    } catch (_e) {}
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (this.panel) {
+      this._revealOwnedPanelAndRestart();
+      return true;
+    }
+    try {
+      const closed = await vscode.window.tabGroups.close(existing.tab, true);
+      if (closed) {
+        log("RD: closed an orphaned existing RD tab so the singleton can be recreated");
+        return false;
+      }
+    } catch (e) {
+      log(`RD: existing RD tab cleanup failed; keeping singleton tab: ${e && e.message ? e.message : e}`);
+    }
+    return true;
+  }
+
+  async _revealExistingRdTab(existing) {
+    const group = existing && existing.group;
+    const oneBasedIndex = (existing && existing.index !== undefined ? existing.index : 0) + 1;
+    try {
+      if (group && !group.isActive) {
+        const names = {
+          1: "First",
+          2: "Second",
+          3: "Third",
+          4: "Fourth",
+          5: "Fifth",
+          6: "Sixth",
+          7: "Seventh",
+          8: "Eighth",
+        };
+        const name = names[group.viewColumn];
+        if (name) {
+          await vscode.commands.executeCommand(`workbench.action.focus${name}EditorGroup`);
+        }
+      }
+    } catch (_e) {}
+    try {
+      await vscode.commands.executeCommand("workbench.action.openEditorAtIndex", [oneBasedIndex]);
+      return;
+    } catch (_e) {}
+    if (oneBasedIndex >= 1 && oneBasedIndex <= 9) {
+      try {
+        await vscode.commands.executeCommand(`workbench.action.openEditorAtIndex${oneBasedIndex}`);
+      } catch (_e) {}
+    }
+  }
+
+  _revealOwnedPanelAndRestart() {
+    if (!this.panel) return;
+    try {
+      this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
+    } catch (_e) {}
+    this.visible = true;
+    this._stopAll();
+    this._startStream();
+  }
+
   /** Adopt a webview panel (freshly created OR restored by VSCode across a reload) as THE single
    *  RD panel. If a singleton already exists, the incoming one is a restore-duplicate → dispose it
    *  so there is never a second "RD" tab. This is the fix for the pre-existing "RD opens twice"
@@ -445,8 +565,17 @@ class RemoteDesktopPanel {
    *  creates a new one. The serializer (registered in activate) routes restores through here. */
   _adopt(panel) {
     if (this.panel && this.panel !== panel) {
-      try { panel.dispose(); } catch (_e) {}
-      return;
+      try {
+        panel.dispose();
+        this._revealOwnedPanelAndRestart();
+        return;
+      } catch (e) {
+        log(`RD: duplicate RD cleanup failed; adopting incoming panel: ${e && e.message ? e.message : e}`);
+        const previous = this.panel;
+        this.panel = null;
+        this._stopAll();
+        try { previous.dispose(); } catch (_e) {}
+      }
     }
     this.panel = panel;
     try {
@@ -455,7 +584,7 @@ class RemoteDesktopPanel {
     panel.webview.html = this.getHtml(panel.webview);
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
     panel.onDidChangeViewState(() => {
-      if (!this.panel) return;
+      if (this.panel !== panel) return;
       if (panel.visible) {
         this.visible = true;
         this._startStream();
@@ -465,6 +594,7 @@ class RemoteDesktopPanel {
       }
     });
     panel.onDidDispose(() => {
+      if (this.panel !== panel) return;
       this.visible = false;
       this._stopAll();
       this.panel = null;
@@ -571,6 +701,7 @@ class RemoteDesktopPanel {
   _stopV2() {
     this._v2Generation += 1;
     this._v2Active = false;
+    this.post({ type: "v2Cancel" });
     if (this._v2SettleTimer) {
       try { clearTimeout(this._v2SettleTimer); } catch (_e) {}
       this._v2SettleTimer = null;
@@ -704,42 +835,97 @@ async function ensureExtensions(interactive) {
 // --- connect to host --------------------------------------------------------
 
 /**
- * Core connection logic: opens the host filesystem over SSH (open-remote-ssh).
+ * Core connection logic: keep host selection inside the Xpair Client flow.
  * @param {string} host validated host alias
+ * @param {RemoteDesktopPanel} [panel]
  */
-async function _doConnectHost(host) {
-  // Preferred: open the host filesystem directly via open-remote-ssh's authority,
-  // no prompt. Authority format is "ssh-remote+<host>" (from the extension).
-  const home = `/Users/${process.env.USER || os.userInfo().username || ""}`.replace(/\/$/, "");
-  const remotePath = home && home !== "/Users/" ? home : "/";
-  try {
-    const uri = vscode.Uri.from({
-      scheme: "vscode-remote",
-      authority: `ssh-remote+${host}`,
-      path: remotePath,
-    });
-    await vscode.commands.executeCommand("vscode.openFolder", uri, { forceNewWindow: true });
-    log(`connectHost: opened ${uri.toString()}`);
-    // WOW moment: remote host filesystem opened = first session live. time_to_wow_ms is measured
-    // from install_id creation time (0 base => omit so we never report a bogus duration).
-    const wowBase = telemetry.installTs();
-    telemetry.capture(telemetry.EVENTS.FIRST_SESSION_STARTED, {
-      ...(wowBase ? { time_to_wow_ms: Date.now() - wowBase } : {}),
-    });
+async function _doConnectHost(host, panel) {
+  log(`connectHost: routing ${host} through Xpair surfaces`);
+
+  const reach = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Xpair: checking ${host}`, cancellable: false },
+    async () => {
+      const res = await sshRun(host, "true", { timeoutMs: 6000 });
+      return {
+        ok: res.code === 0,
+        detail: (res.stderr || res.stdout || "").trim().split(/\r?\n/).slice(-2).join(" "),
+      };
+    }
+  );
+
+  if (!reach.ok) {
+    log(`connectHost: host check failed for ${host}: ${reach.detail || "unreachable"}`, "warn");
+    const retry = "Retry";
+    const setup = "Set up again";
+    const picked = await vscode.window.showWarningMessage(
+      `Xpair: ${host} is not reachable. Stay in the Xpair setup flow to recover the host connection.`,
+      retry,
+      setup
+    );
+    if (picked === retry) {
+      await _doConnectHost(host, panel);
+    } else if (picked === setup) {
+      runSetup();
+    }
     return;
-  } catch (e) {
-    log(`connectHost: vscode.openFolder failed: ${e && e.message ? e.message : e}`);
   }
-  // Fallback: trigger open-remote-ssh's own prompt (it will ask for the host).
+
+  let clientDirs = reconcileBrowserRoots();
+
   try {
-    await vscode.commands.executeCommand("openremotessh.openEmptyWindow");
-    return;
+    await vscode.commands.executeCommand("remotepair.terminalSidebar");
   } catch (e) {
-    log(`connectHost: openremotessh.openEmptyWindow failed: ${e && e.message ? e.message : e}`);
+    log(`connectHost: reveal terminal sidebar failed: ${e && e.message ? e.message : e}`, "warn");
   }
-  // Last resort: instructions.
+  try {
+    await vscode.commands.executeCommand("remotepair.sessions.attached.view.focus", { preserveFocus: true });
+  } catch (e) {
+    log(`connectHost: reveal sessions panel failed: ${e && e.message ? e.message : e}`, "warn");
+  }
+
+  if (clientDirs.length === 0) {
+    try {
+      await vscode.commands.executeCommand("workbench.view.explorer");
+    } catch (e) {
+      log(`connectHost: reveal Browser empty-state failed: ${e && e.message ? e.message : e}`, "warn");
+    }
+    const addRootChoice = "Add Mapping";
+    const setup = "Run setup";
+    const picked = await vscode.window.showInformationMessage(
+      "Xpair: no mapped Browser roots are configured for this host.",
+      addRootChoice,
+      setup
+    );
+    if (picked === addRootChoice) {
+      await addRoot();
+      clientDirs = reconcileBrowserRoots();
+    } else if (picked === setup) {
+      setupFileAccess();
+      return;
+    } else {
+      return;
+    }
+    if (clientDirs.length === 0) {
+      return;
+    }
+  }
+
+  launchRemoteClaude();
+
+  try {
+    if (panel) {
+      await panel.reveal();
+      panel.refresh();
+    } else {
+      await vscode.commands.executeCommand("remotepair.openRemoteDesktop");
+      await vscode.commands.executeCommand("remotepair.remoteDesktop.refresh");
+    }
+  } catch (e) {
+    log(`connectHost: RD recovery failed: ${e && e.message ? e.message : e}`, "warn");
+  }
+
   vscode.window.showInformationMessage(
-    `Xpair: open the Remote Explorer and connect to "${host}" via Open Remote - SSH.`
+    `Xpair: ${host} selected. Sessions, Browser mapping, and Remote Desktop are recovering in this window.`
   );
 }
 
@@ -747,7 +933,7 @@ async function _doConnectHost(host) {
  * Show a QuickPick listing the configured endpoint(s) (currently REMOTE_HOST from
  * client.env = one item), then connect to the selected host.
  */
-async function connectHost() {
+async function connectHost(panel) {
   const host = getValidHost();
   if (!host) {
     vscode.window.showWarningMessage(
@@ -763,7 +949,7 @@ async function connectHost() {
     {
       label: `$(remote) ${host}`,
       description: "REMOTE_HOST (client.env)",
-      detail: `Connect to ${host} via Open Remote - SSH`,
+      detail: `Recover Xpair connection, mappings, sessions, and RD for ${host}`,
       host,
     },
   ];
@@ -777,7 +963,7 @@ async function connectHost() {
 
   if (!picked) return; // user cancelled
   log(`connectHost: user selected ${picked.host}`);
-  await _doConnectHost(picked.host);
+  await _doConnectHost(picked.host, panel);
 }
 
 // --- launch remote Claude ---------------------------------------------------
@@ -801,7 +987,10 @@ function launchRemoteClaude() {
     // If the exact subcommand differs on your setup, edit before pressing Enter.
     term.sendText("xpair launch", false);
   } catch (e) {
-    log(`launchRemoteClaude: ${e && e.message ? e.message : e}`);
+    const detail = redact((e && e.message ? e.message : e) || "unknown error");
+    log(`launchRemoteClaude: ${detail}`, "error");
+    vscode.window.showErrorMessage(`Xpair: failed to open a terminal for 'xpair launch'. ${detail}`);
+    return;
   }
   vscode.window.showInformationMessage(
     "Xpair: review 'xpair launch' in the terminal and press Enter to open " +
@@ -825,7 +1014,10 @@ function setupFileAccess() {
     // interactive wizard (it prompts for host / mapping / backend).
     term.sendText("xpair onboard", false);
   } catch (e) {
-    log(`setupFileAccess: ${e && e.message ? e.message : e}`);
+    const detail = redact((e && e.message ? e.message : e) || "unknown error");
+    log(`setupFileAccess: ${detail}`, "error");
+    vscode.window.showErrorMessage(`Xpair: failed to open a terminal for 'xpair onboard'. ${detail}`);
+    return;
   }
   vscode.window.showInformationMessage(
     "Xpair: review 'xpair onboard' in the terminal and press Enter to " +
@@ -886,7 +1078,7 @@ class NotificationPoller {
       const firstRun = this.seen.size === 0;
       this.seen.add(key);
       if (firstRun) continue;
-      if (enabled && obj.type && !enabled.has(obj.type)) continue;
+      if (!obj.type || !enabled.has(obj.type)) continue;
 
       const title = obj.title ? String(obj.title) : "Xpair";
       const message = obj.message ? String(obj.message) : "";
@@ -1107,17 +1299,17 @@ function runXpairCli(args, opts = {}) {
 }
 
 /**
- * C1.D3 — Mount-first add-root flow for the Browser's "Add Root" affordance.
+ * C1.D3 — Mount-first add-mapping flow for the Browser's "Add Mapping" affordance.
  *   1. Prompt for a HOST folder path (v1 = host-path input box).
- *   2. `xpair mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
+ *   2. `xpair mount mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
  *   3. Parse the printed "Mountpoint: <path>" and register a FOLDER_MAP via
  *      `xpair map add <mountpoint> <hostPath>` (writes <mountpoint>::<hostPath>).
  *   4. Reconcile roots so the mountpoint appears as a Browser root without restart.
  */
 async function addRoot() {
   const hostPath = await vscode.window.showInputBox({
-    title: "Xpair — Add Root (mount a host folder)",
-    prompt: "Enter the HOST folder path to mount (SMB by default; appears as a Browser root and in Finder).",
+    title: "Xpair — Add Mapping",
+    prompt: "Enter the host folder path to map (mounts with SMB by default, then appears as a Browser root and in Finder).",
     placeHolder: "/Users/you/Projects/myrepo",
     ignoreFocusOut: true,
     validateInput: (v) => {
@@ -1134,11 +1326,11 @@ async function addRoot() {
     { location: vscode.ProgressLocation.Notification, title: `Xpair: mounting ${host}…`, cancellable: false },
     async () => {
       // Step 2: mount.
-      const mres = await runXpairCli(["mount", host], { timeoutMs: 180000 });
+      const mres = await runXpairCli(["mount", "mount", host], { timeoutMs: 180000 });
       if (mres.code !== 0) {
         log(`addRoot: mount failed (code ${mres.code}): ${mres.stderr || mres.stdout}`);
         const detail = (mres.stderr || mres.stdout || "").trim().split(/\r?\n/).slice(-3).join(" ");
-        vscode.window.showErrorMessage(`Xpair: 'xpair mount ${host}' failed. ${detail}`);
+        vscode.window.showErrorMessage(`Xpair: 'xpair mount mount ${host}' failed. ${detail}`);
         return;
       }
 
@@ -1169,7 +1361,7 @@ async function addRoot() {
       try {
         await vscode.commands.executeCommand("workbench.view.explorer");
       } catch (_e) {}
-      vscode.window.showInformationMessage(`Xpair: added Browser root ${mountpoint} (mounted ${host}).`);
+      vscode.window.showInformationMessage(`Xpair: added mapping ${mountpoint} -> ${host}.`);
     }
   );
 }
@@ -1213,7 +1405,11 @@ async function showLogs() {
       // Staged with auto-execute: a read-only collect is safe to run on Enter.
       term.sendText("xpair logs --collect", true);
     } catch (e) {
-      log(`showLogs: collect terminal failed: ${e && e.message ? e.message : e}`, "error");
+      const detail = redact((e && e.message ? e.message : e) || "unknown error");
+      log(`showLogs: collect terminal failed: ${detail}`, "error");
+      vscode.window.showErrorMessage(
+        `Xpair: failed to open a terminal for log collection. ${detail}`
+      );
     }
   }
 }
@@ -1237,7 +1433,10 @@ function runSetup() {
     fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");
   } catch (e) {
-    log(`runSetup: could not write force-onboarding sentinel: ${e && e.message ? e.message : e}`, "warn");
+    const detail = e && e.message ? e.message : String(e);
+    log(`runSetup: could not write force-onboarding sentinel: ${detail}`, "warn");
+    vscode.window.showErrorMessage(`Xpair: setup could not be scheduled. ${detail}`);
+    return;
   }
   vscode.window
     .showInformationMessage(
@@ -1269,7 +1468,10 @@ function endSessionReonboard() {
         fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
         fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");
       } catch (e) {
-        log(`endSessionReonboard: sentinel write failed: ${e && e.message ? e.message : e}`, "warn");
+        const detail = e && e.message ? e.message : String(e);
+        log(`endSessionReonboard: sentinel write failed: ${detail}`, "warn");
+        vscode.window.showErrorMessage(`Xpair: setup could not be scheduled. ${detail}`);
+        return;
       }
       vscode.commands.executeCommand("workbench.action.quit");
     });
@@ -1299,6 +1501,15 @@ function installSentryHooks() {
 
 function activate(context) {
   log("Xpair activating…");
+
+  syncTelemetryConsentFromSettings();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("xpair.telemetry.enabled")) {
+        syncTelemetryConsentFromSettings();
+      }
+    })
+  );
 
   // Start the CLIENT→HOST liveness heartbeat (writes now + every 30s; idempotent across
   // activations). Fire-and-forget — must never block or crash activation.
@@ -1392,7 +1603,13 @@ function activate(context) {
     /\.ts\.net$/i.test(String(host || "")) ? telemetry.PATHS.TAILSCALE : telemetry.PATHS.LAN;
   const renderHostButton = () => {
     const host = getValidHost();
-    if (!host) {
+    if (localModeActive()) {
+      hostBtn.text = "$(debug-disconnect) 로컬 모드";
+      hostBtn.tooltip = host
+        ? `Xpair: 로컬 모드 — launch/attach use local sessions until ${host} is reachable.`
+        : "Xpair: 로컬 모드 — launch/attach use local sessions.";
+      hostBtn.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    } else if (!host) {
       hostBtn.text = "$(gear) Set host";
       hostBtn.tooltip = "Xpair: no host configured — click to set up";
       hostBtn.backgroundColor = undefined;
@@ -1436,6 +1653,9 @@ function activate(context) {
       probeReason = telemetry.REASONS.HOST_UNREACHABLE;
     }
     hostReachable = ok;
+    if (ok && clearLocalModeFlag()) {
+      log(`local mode cleared: ${host} is reachable`);
+    }
     renderHostButton();
     // Edge-trigger telemetry: only on a change to/from reachable (prev !== current).
     // host_connected cardinality = ONCE PER INSTALL (Insight A/B count installs, not IDE
@@ -1465,11 +1685,14 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.openRemoteDesktop", () => panel.reveal()),
     vscode.commands.registerCommand("remotepair.runSetup", () => runSetup()),
     vscode.commands.registerCommand("remotepair.endSessionReonboard", () => endSessionReonboard()),
-    vscode.commands.registerCommand("remotepair.connectHost", () => connectHost()),
+    vscode.commands.registerCommand("remotepair.connectHost", () => connectHost(panel)),
     vscode.commands.registerCommand("remotepair.launchRemoteClaude", () => launchRemoteClaude()),
     vscode.commands.registerCommand("remotepair.remoteDesktop.refresh", () => panel.refresh()),
     vscode.commands.registerCommand("remotepair.sessions.listJson", () =>
       listSessionsFromCli(runXpairCli, { log })
+    ),
+    vscode.commands.registerCommand("remotepair.sessions.checkAttach", (name) =>
+      checkSessionAvailableFromCli(runXpairCli, name, { log })
     ),
     vscode.commands.registerCommand("remotepair.ensureExtensions", () => ensureExtensions(true)),
     vscode.commands.registerCommand("remotepair.setupFileAccess", () => setupFileAccess()),
@@ -1479,7 +1702,7 @@ function activate(context) {
       // launch-arg / workspace folder and adds the mapped dirs in declared order.
       const clientDirs = reconcileBrowserRoots();
       if (clientDirs.length === 0) {
-        // No mapped roots → reveal the Browser so its empty-state "Add Root" button shows.
+        // No mapped roots → reveal the Browser so its empty-state "Add Mapping" button shows.
         log("openFileBrowser: no FOLDER_MAPS client dirs, revealing empty-state");
       } else {
         log(`openFileBrowser: using FOLDER_MAPS clientDirs=${clientDirs.join(", ")}`);
@@ -1492,11 +1715,11 @@ function activate(context) {
     vscode.commands.registerCommand("remotepair.browser.addRoot", () =>
       addRoot().catch((e) => {
         log(`addRoot: ${e && e.message ? e.message : e}`);
-        vscode.window.showErrorMessage(`Xpair: Add Root failed. ${e && e.message ? e.message : e}`);
+        vscode.window.showErrorMessage(`Xpair: Add Mapping failed. ${e && e.message ? e.message : e}`);
       })
     ),
     vscode.commands.registerCommand("remotepair.openSettings", () => {
-      vscode.commands.executeCommand("workbench.action.openSettings");
+      vscode.commands.executeCommand("workbench.action.openSettings", XPAIR_SETTINGS_QUERY);
     }),
     vscode.commands.registerCommand("remotepair.showLogs", () =>
       showLogs().catch((e) => {

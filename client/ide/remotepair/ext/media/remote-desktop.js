@@ -12,6 +12,8 @@
   const overlayMsg = document.getElementById("overlay-msg");
   const badge = document.getElementById("badge");
 
+  const V2_FIRST_FRAME_TIMEOUT_MS = 15000;
+
   let haveFrame = false;
 
   // v2 (WebRTC) state
@@ -19,6 +21,8 @@
   let pc2 = null;
   let v2Mode = false;
   let v2FirstFrameReported = false;
+  let v2ErrorReported = false;
+  let v2FirstFrameTimer = null;
   let v2Generation = 0;
 
   // -------------------------------------------------------------------------
@@ -36,6 +40,24 @@
   function setBadge() {
     badge.textContent = "view-only";
     badge.className = "off";
+  }
+
+  function clearV2FirstFrameTimer() {
+    if (v2FirstFrameTimer && typeof clearTimeout === "function") {
+      try { clearTimeout(v2FirstFrameTimer); } catch (_e) {}
+    }
+    v2FirstFrameTimer = null;
+  }
+
+  function resetV2AttemptState() {
+    clearV2FirstFrameTimer();
+    haveFrame = false;
+    v2FirstFrameReported = false;
+    v2ErrorReported = false;
+  }
+
+  function clearVideo() {
+    try { video.srcObject = null; } catch (_e) {}
   }
 
   function closeWs() {
@@ -58,29 +80,73 @@
     }
   }
 
+  function cancelV2(showConnecting) {
+    v2Generation += 1;
+    v2Mode = false;
+    resetV2AttemptState();
+    closeWs();
+    closePc2();
+    clearVideo();
+    if (showConnecting) showOverlay("Connecting to host…");
+  }
+
   function connectV2(signalUrl) {
     const generation = ++v2Generation;
     closeWs();
     closePc2();
+    clearVideo();
+    resetV2AttemptState();
     v2Mode = true;
-    v2FirstFrameReported = false;
 
     video.style.display = "block";
     showOverlay("connecting (WebRTC)…");
 
-    const pc = new RTCPeerConnection({ iceServers: [] }); // host candidates (loopback/LAN/VPN)
+    let pc;
+    try {
+      pc = new RTCPeerConnection({ iceServers: [] }); // host candidates (loopback/LAN/VPN)
+    } catch (e) {
+      vscode.postMessage({ type: "v2Error", detail: "RTCPeerConnection ctor threw: " + String(e) });
+      cancelV2();
+      return;
+    }
     pc2 = pc;
     pc.addTransceiver("video", { direction: "recvonly" });
-    // View-only: any host-created input DataChannels (rp-ctl / rp-move) are
-    // simply ignored — we never wire pc.ondatachannel and never send anything.
+    // View-only: close any host-created DataChannel, including legacy
+    // rp-ctl/rp-move input channels. The client never creates a channel or
+    // sends pointer, wheel, text, or keyboard input.
+    pc.ondatachannel = function (ev) {
+      const channel = ev && ev.channel;
+      if (!channel) return;
+      try { channel.close(); } catch (_e) {}
+    };
 
-    let sock;
-    const isCurrent = () => generation === v2Generation && pc2 === pc && ws === sock;
+    let sock = null;
+    const isCurrent = () => v2Mode && generation === v2Generation && pc2 === pc && ws === sock;
+
+    const cancelCurrent = () => {
+      if (!isCurrent()) return;
+      v2Generation += 1;
+      v2Mode = false;
+      clearV2FirstFrameTimer();
+      closeWs();
+      closePc2();
+    };
+
+    const reportCurrentError = (detail) => {
+      if (!isCurrent() || v2ErrorReported) return;
+      v2ErrorReported = true;
+      clearV2FirstFrameTimer();
+      vscode.postMessage({ type: "v2Error", detail });
+    };
 
     pc.ontrack = function (ev) {
       if (!isCurrent()) return;
       video.srcObject = ev.streams[0];
-      if (!haveFrame) { haveFrame = true; hideOverlay(); }
+      if (!haveFrame) {
+        haveFrame = true;
+        clearV2FirstFrameTimer();
+        hideOverlay();
+      }
       if (!v2FirstFrameReported) {
         v2FirstFrameReported = true;
         vscode.postMessage({ type: "v2FirstFrame" });
@@ -88,17 +154,28 @@
     };
     pc.onconnectionstatechange = function () {
       if (isCurrent() && pc.connectionState === "failed") {
-        vscode.postMessage({ type: "v2Error", detail: "peer connection failed" });
+        reportCurrentError("peer connection failed");
+        cancelCurrent();
       }
     };
 
     try {
       sock = new WebSocket(signalUrl);
     } catch (e) {
-      vscode.postMessage({ type: "v2Error", detail: "WebSocket ctor threw: " + String(e) });
+      reportCurrentError("WebSocket ctor threw: " + String(e));
+      cancelCurrent();
       return;
     }
     ws = sock;
+
+    if (typeof setTimeout === "function") {
+      v2FirstFrameTimer = setTimeout(function () {
+        v2FirstFrameTimer = null;
+        if (!isCurrent() || haveFrame) return;
+        reportCurrentError("timed out waiting for first WebRTC frame");
+        cancelCurrent();
+      }, V2_FIRST_FRAME_TIMEOUT_MS);
+    }
 
     pc.onicecandidate = function (ev) {
       if (isCurrent() && ev.candidate && ws && ws.readyState === 1) {
@@ -120,11 +197,18 @@
       let m;
       try { m = JSON.parse(ev.data); } catch (_e) { return; }
       if (m.type === "offer") {
-        await pc.setRemoteDescription({ type: "offer", sdp: m.sdp });
-        const ans = await pc.createAnswer();
-        await pc.setLocalDescription(ans);
-        if (isCurrent()) {
+        try {
+          await pc.setRemoteDescription({ type: "offer", sdp: m.sdp });
+          if (!isCurrent()) return;
+          const ans = await pc.createAnswer();
+          if (!isCurrent()) return;
+          await pc.setLocalDescription(ans);
+          if (!isCurrent()) return;
           ws.send(JSON.stringify({ type: "answer", sdp: ans.sdp }));
+        } catch (e) {
+          if (!isCurrent()) return;
+          reportCurrentError("WebRTC negotiation failed: " + String(e));
+          cancelCurrent();
         }
       } else if (m.type === "candidate") {
         try {
@@ -136,11 +220,13 @@
     });
     sock.addEventListener("error", function () {
       if (!isCurrent()) return;
-      vscode.postMessage({ type: "v2Error", detail: "signaling WebSocket error on " + signalUrl });
+      reportCurrentError("signaling WebSocket error on " + signalUrl);
+      cancelCurrent();
     });
     sock.addEventListener("close", function (ev) {
       if (isCurrent() && v2Mode && !ev.wasClean) {
-        vscode.postMessage({ type: "v2Error", detail: "signaling closed (code=" + ev.code + ")" });
+        reportCurrentError("signaling closed (code=" + ev.code + ")");
+        cancelCurrent();
       }
     });
   }
@@ -159,6 +245,11 @@
       return;
     }
 
+    if (m.type === "v2Cancel") {
+      cancelV2(true);
+      return;
+    }
+
     if (m.type === "status") {
       let msg = "Connecting to host…";
       if (m.state === "no-host") {
@@ -167,10 +258,17 @@
         msg = "Error: " + (m.detail || "unknown") +
           "\nIs XpairHost.app running on the host (screen serve-webrtc)?";
       }
+      if (m.state === "error" || m.state === "no-host") cancelV2(false);
       if (m.state === "error") showOverlay(msg);
+      else if (m.state === "no-host") showOverlay(msg);
       else if (!haveFrame) showOverlay(msg);
     }
   });
+
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("pagehide", function () { cancelV2(false); });
+    window.addEventListener("beforeunload", function () { cancelV2(false); });
+  }
 
   // -------------------------------------------------------------------------
   // Init

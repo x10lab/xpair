@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# xpair-launch — open an agent session (Claude Code, Codex, or OpenCode; remote host or local) for a single folder and attach.
-# Engine is chosen interactively, via RP_ENGINE (set by 'xpair launch --engine <claude|codex|opencode>'), or client.env ENGINE.
+# xpair-launch — open a session (Claude Code, Shell, Codex, or OpenCode; remote host or local) for a single folder and attach.
+# Engine is chosen interactively, via RP_ENGINE (set by 'xpair launch --engine <claude|shell|codex|opencode>'), or client.env ENGINE.
 #
 # Key behavior (1:1 connection only — no session sharing / multi-attach):
 #   • Path mapping: client folder → host folder (FOLDER_MAPS; content is identical via external sync
 #                   but absolute paths may differ)
 #   • Session name: deterministic, based on host path with host-prefix (<HOST>_…) —
 #                   just glance at the status bar to know which machine you're on
-#   • _N numbering: if _1 already has a client (tab) attached → _2 is opened fresh;
-#                   detached sessions are taken over with attach -d
+#   • _N numbering: if _1 already has a client (local tab or host tmux client) attached → _2 is opened fresh;
+#                   detached sessions are taken over with attach -d unless --fresh asks for a clean _N
 #   • computer-use: session is added to the patched tmux-aqua server socket started by
 #                   XpairHost → claude inherits its permissions
 #   • non-interactive: RP_YES=1 (or --yes) skips all prompts (auto dir creation, etc.)
+#   • transient local mode: LOCAL_MODE=1 forces local target selection until remote SSH is restored
 #
-# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>] [<dir>]
+# Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|shell|codex|opencode>] [<dir>]
 #         (typically called via 'xpair launch <dir>' or a Finder Service)
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -25,6 +26,7 @@ for _f in common host client; do
   [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
 done
 REMOTE_HOST="${REMOTE_HOST:-}"
+LOCAL_MODE="${LOCAL_MODE:-0}"
 APP_NAME="${APP_NAME:-XpairHost}"
 BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.xpair-host}"
 REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin}"          # path evaluated on the remote side (preserve quoting)
@@ -40,7 +42,7 @@ RP_ENGINE_EXPLICIT="${RP_ENGINE_EXPLICIT:-0}"
 canonical_engine() {
   case "${1:-}" in
     claude|claudecode|claude-code) printf 'claude' ;;
-    codex|opencode) printf '%s' "$1" ;;
+    shell|codex|opencode) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -59,15 +61,33 @@ if [ -n "$REMOTE_HOST" ] && ! valid_host "$REMOTE_HOST"; then
   REMOTE_HOST=""
 fi
 
+case "$LOCAL_MODE" in
+  1|true|TRUE|yes|YES|on|ON|local) LOCAL_MODE=1 ;;
+  *) LOCAL_MODE=0 ;;
+esac
+local_mode_on() { [ "${LOCAL_MODE:-0}" = 1 ]; }
+
+rp_set() {
+  local k="$1" v="$2" f="$RP_DIR/client.env"
+  mkdir -p "$(dirname "$f")"; touch "$f"
+  { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+clear_local_mode_quiet() {
+  local_mode_on || return 0
+  rp_set LOCAL_MODE 0
+  LOCAL_MODE=0
+}
+
 # Source the shared logger; no-op fallback for partially-updated clients.
 # shellcheck disable=SC1090
 [ -f "$RP_DIR/bin/logging.sh" ] && . "$RP_DIR/bin/logging.sh"
 type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; }
 
 # ── args ──
-TARGET_PREF=""; FRESH=0; RP_YES="${RP_YES:-0}"; DIR_ARG=""
+TARGET_PREF=""; LOCAL_MODE_EXPLICIT=0; FRESH=0; RP_YES="${RP_YES:-0}"; DIR_ARG=""
 while [ $# -gt 0 ]; do case "$1" in
-  --local)  TARGET_PREF=local; shift ;;
+  --local)  TARGET_PREF=local; LOCAL_MODE_EXPLICIT=1; shift ;;
   --remote) TARGET_PREF=remote; shift ;;
   --fresh)  FRESH=1; shift ;;
   --yes|-y) RP_YES=1; shift ;;
@@ -78,7 +98,7 @@ esac; done
 if _canon="$(canonical_engine "$RP_ENGINE")"; then
   RP_ENGINE="$_canon"
 else
-  printf 'unknown engine: %s (use claude|claudecode|codex|opencode)\n' "$RP_ENGINE" >&2
+  printf 'unknown engine: %s (use claude|claudecode|shell|codex|opencode)\n' "$RP_ENGINE" >&2
   exit 2
 fi
 
@@ -110,6 +130,7 @@ have_tty() { [ -t 0 ]; }
 engine_label() {
   case "$1" in
     claude) printf 'Claude Code' ;;
+    shell) printf 'Shell' ;;
     codex) printf 'Codex' ;;
     opencode) printf 'OpenCode' ;;
     *) printf '%s' "$1" ;;
@@ -122,23 +143,26 @@ choose_engine() {
 
   local def ans choice
   case "$RP_ENGINE" in
-    codex) def=2 ;;
-    opencode) def=3 ;;
+    shell) def=2 ;;
+    codex) def=3 ;;
+    opencode) def=4 ;;
     *) def=1 ;;
   esac
 
-  local d1="" d2="" d3=""
+  local d1="" d2="" d3="" d4=""
   [ "$def" = 1 ] && d1=" (default)"
   [ "$def" = 2 ] && d2=" (default)"
   [ "$def" = 3 ] && d3=" (default)"
-  printf 'Agent engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] OpenCode%s\n' \
-    "$d1" "$d2" "$d3"
-  ans="$(ask "select engine [1/2/3] (default $def): ")"
+  [ "$def" = 4 ] && d4=" (default)"
+  printf 'Session engine:\n  [1] Claude Code%s\n  [2] Shell%s\n  [3] Codex%s\n  [4] OpenCode%s\n' \
+    "$d1" "$d2" "$d3" "$d4"
+  ans="$(ask "select engine [1/2/3/4] (default $def): ")"
   choice="${ans:-$def}"
   case "$choice" in
     1|claude|claudecode|claude-code) RP_ENGINE=claude ;;
-    2|codex) RP_ENGINE=codex ;;
-    3|opencode) RP_ENGINE=opencode ;;
+    2|shell) RP_ENGINE=shell ;;
+    3|codex) RP_ENGINE=codex ;;
+    4|opencode) RP_ENGINE=opencode ;;
     *) printf 'unknown engine selection: %s — keeping %s\n' "$choice" "$(engine_label "$RP_ENGINE")" >&2 ;;
   esac
 }
@@ -217,10 +241,23 @@ LOCAL_PROJ="${LOCAL_PROJ//[.:]/_}"
 # in respawn_body_<engine>.
 respawn_body() {
   case "$RP_ENGINE" in
+    claude)   respawn_body_claude ;;
+    shell)    respawn_body_shell ;;
     codex)    respawn_body_codex ;;
     opencode) respawn_body_opencode ;;
     *)        respawn_body_claude ;;
   esac
+}
+
+respawn_body_shell() {
+  # Plain host shell session. No agent binary, auth, or auto-approve shim is involved.
+  cat <<'RESPAWN'
+trap 'kill -- -$$ 2>/dev/null' EXIT
+
+SHELL_BIN="${SHELL:-/bin/zsh}"
+[ -x "$SHELL_BIN" ] || SHELL_BIN="/bin/bash"
+exec "$SHELL_BIN" -l
+RESPAWN
 }
 
 respawn_body_claude() {
@@ -269,11 +306,11 @@ RESPAWN
 }
 
 respawn_body_codex() {
-  # CL_CONTINUE=1 → resume the most recent session (codex resume --last); otherwise fresh.
-  # codex has no --remote-control / RC concept (that is claude-only) and no recorded-id resume —
-  # it uses its own --last picker, so the claude RC/RESUME_SID/~/.claude/last-session logic is
-  # intentionally absent here. --dangerously-bypass-approvals-and-sandbox is codex's auto-approve
-  # (claude --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
+  # Codex has only provider-global resume (`codex resume --last`), not an Xpair path/session-keyed
+  # resume. Existing sessions keep context through tmux reattach; newly spawned codex shells must be
+  # clean so a fresh/new-folder launch cannot inherit a stale global conversation.
+  # --dangerously-bypass-approvals-and-sandbox is codex's auto-approve (claude
+  # --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
   cat <<'RESPAWN'
 # Reap codex children when tmux/bash exits — bash has huponexit OFF by default, so without this
 # the EXIT trap (process-group kill) the agent CLI could survive as an orphan reparented to init.
@@ -285,11 +322,7 @@ command -v codex >/dev/null 2>&1 || {
   exit 11
 }
 while :; do
-  if [ "${CL_CONTINUE:-0}" = 1 ]; then
-    codex --dangerously-bypass-approvals-and-sandbox resume --last || codex --dangerously-bypass-approvals-and-sandbox
-  else
-    codex --dangerously-bypass-approvals-and-sandbox
-  fi
+  codex --dangerously-bypass-approvals-and-sandbox
   [ $? -eq 0 ] && break
   printf '\n[codex crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
@@ -298,7 +331,9 @@ RESPAWN
 }
 
 respawn_body_opencode() {
-  # CL_CONTINUE=1 → continue the last session (opencode --continue); otherwise fresh.
+  # OpenCode's `--continue` is provider-global, not Xpair path/session-keyed. Existing sessions keep
+  # context through tmux reattach; newly spawned opencode shells must be clean so a fresh/new-folder
+  # launch cannot inherit a stale global conversation.
   # opencode's interactive TUI has NO auto-approve flag (--dangerously-skip-permissions exists ONLY on
   # the non-interactive `run` subcommand). Auto-approve for the TUI is config-based: the `permission`
   # block. We inject it non-destructively via OPENCODE_CONFIG_CONTENT (an inline-JSON env override that
@@ -318,11 +353,7 @@ command -v opencode >/dev/null 2>&1 || {
 # Auto-approve via inline config merge (TUI has no skip-permissions flag). Merges with existing config.
 export OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"allow","bash":"allow","webfetch":"allow"}}'
 while :; do
-  if [ "${CL_CONTINUE:-0}" = 1 ]; then
-    opencode --continue || opencode
-  else
-    opencode
-  fi
+  opencode
   [ $? -eq 0 ] && break
   printf '\n[opencode crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
@@ -343,11 +374,40 @@ sync_claude_local() {
 # ── tmux-aqua helper (local) ──
 tm_local() { "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" "$@"; }
 
+local_host_role_expected() {
+  local _role; _role="$(cat "$RP_DIR/role" 2>/dev/null | tr -d '[:space:]')"
+  case "$_role" in
+    host|both) return 0 ;;
+    client)    return 1 ;;
+    *)         [ -f "$RP_DIR/host.env" ] && [ "$(hostname -s)" = "${REMOTE_HOST:-$(hostname -s)}" ] ;;
+  esac
+}
+
+host_setup_recovery_local() {
+  local why="${1:-XpairHost tmux-aqua is not ready}"
+  printf '\nXpairHost setup is required before this host session can start.\n' >&2
+  printf 'Reason: %s\n' "$why" >&2
+  printf 'Recovery on %s:\n' "$LOCAL_HOST" >&2
+  printf '  1. Open %s.app on the host Mac.\n' "$APP_NAME" >&2
+  printf '  2. From the menu bar, choose Set up... or Permissions...\n' >&2
+  printf '  3. Grant Accessibility and Screen Recording, then retry xpair launch.\n' >&2
+  printf 'Diagnostics: tmux-aqua=%s socket=%s\n' "$LOCAL_BIN/tmux-aqua" "$AQUA_SOCK" >&2
+  exit 13
+}
+
 # _local_next_n PROJ_BASE — echo "N state" (best-effort; no die on absence)
 # state: "new" | "reattach" | "fresh"
 _local_next_n() {
-  local base="$1" n=1 aqua="$LOCAL_BIN/tmux-aqua"
+  local base="$1" fresh="${2:-0}" n=1 aqua="$LOCAL_BIN/tmux-aqua"
   if [ ! -x "$aqua" ]; then printf '1 new'; return; fi
+  if [ "$fresh" = 1 ]; then
+    while "$aqua" -S "$AQUA_SOCK" list-clients -t "=${base}_${n}" -F x 2>/dev/null | grep -q x \
+      || "$aqua" -S "$AQUA_SOCK" has-session -t "=${base}_${n}" 2>/dev/null; do
+      n=$((n+1))
+    done
+    printf '%s fresh' "$n"
+    return
+  fi
   # Skip any _N that already has a live client
   while "$aqua" -S "$AQUA_SOCK" list-clients -t "=${base}_${n}" -F x 2>/dev/null | grep -q x; do
     n=$((n+1))
@@ -361,11 +421,15 @@ _local_next_n() {
   fi
 }
 
-# _remote_next_n REMOTE_PROJ_BASE — echo "N state" (best-effort; local pgrep only)
+# _remote_next_n REMOTE_PROJ_BASE [HOST_ATTACHED_SESSIONS] — echo "N state" (best-effort)
 # state: "new/reattach" (N==1, can't cheaply know remote detached state) | "fresh" (N>1)
 _remote_next_n() {
-  local base="$1" n=1
-  while pgrep -f "mosh-client.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1; do
+  local base="$1" attached="${2:-}" n=1
+  # Skip any _N that already has a live client, whether visible as a local mosh tab
+  # or as an attached client on the host tmux server.
+  while pgrep -f "mosh-client.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1 ||
+        printf '%s\n' "$attached" | grep -Fxq "${base}_${n}"
+  do
     n=$((n+1))
   done
   if [ "$n" -gt 1 ]; then
@@ -377,25 +441,41 @@ _remote_next_n() {
 
 ensure_local_host() {
   # The computer-use (aqua-tmux) path is HOST-only. A client has no granted XpairHost,
-  # so local sessions there must use plain tmux — one tmux per machine, no socket fragmentation.
+  # so local sessions there use plain tmux only as a labeled non-computer-use mode.
+  # One tmux per machine, no socket fragmentation.
   # (Mirrors the reference's `AQUA="" on non-host`, but role-based instead of hostname-hardcoded.)
   # Allow the local aqua path only when this machine is in an *actual host role* (role host|both).
   # Prevents leaking to local even if a stray host.env exists on a client (the gh-mac-m4 incident:
   # routed locally, then got reaped by host churn). The role marker is the SSOT; old installs
   # (no marker) fall back to host.env + (remote unset, or this machine IS that remote) — guards against
   # a 'both' regression.
-  local _role; _role="$(cat "$RP_DIR/role" 2>/dev/null | tr -d '[:space:]')"
-  case "$_role" in
-    host|both) [ -f "$RP_DIR/host.env" ] || return 1 ;;
-    client)    return 1 ;;
-    *)         { [ -f "$RP_DIR/host.env" ] && [ "$(hostname -s)" = "${REMOTE_HOST:-$(hostname -s)}" ]; } || return 1 ;;
-  esac
+  local_host_role_expected || return 1
+  [ -f "$RP_DIR/host.env" ] || return 1
   local AQUA="$LOCAL_BIN/tmux-aqua"
   [ -x "$AQUA" ] || return 1
   tm_local has-session 2>/dev/null && return 0
   open -a "$APP_NAME" 2>/dev/null || /bin/launchctl kickstart "gui/$(id -u)/$BUNDLE_PREFIX" 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8; do tm_local has-session 2>/dev/null && return 0; sleep 0.5; done
   return 1
+}
+
+plain_local_non_computer_use_notice() {
+  local mode="local"
+  [ "${TARGET_PREF:-}" = local ] && mode="explicit --local"
+  printf 'Xpair: %s launch is non-computer-use (plain tmux; XpairHost/tmux-aqua unavailable). macOS grants are not inherited.\n' "$mode" >&2
+}
+
+plain_local_respawn_preamble() {
+  cat <<'RESPAWN'
+export XPAIR_COMPUTER_USE=0
+export XPAIR_LAUNCH_MODE=plain-local-tmux
+printf '\n[Xpair: non-computer-use]\n'
+printf 'Plain local tmux is outside XpairHost/tmux-aqua; macOS grants are not inherited.\n\n'
+RESPAWN
+}
+
+plain_local_display_message() {
+  tmux display-message -t "=$1" 'Xpair: non-computer-use (plain local tmux; no XpairHost grants)' 2>/dev/null || true
 }
 
 # tmux 3-way branching policy (local and remote):
@@ -405,9 +485,9 @@ ensure_local_host() {
 # "attached" is based on live client tabs on this machine, so even if a dead mosh-server
 # leaves a stale attach on the remote tmux, we take over the lowest _N without spawning extras.
 
-# ---------------- local launch (function — also used as fallback when remote fails) ----------------
+# ---------------- local launch (explicit local target only) ----------------
 launch_local() {
-  command -v "$RP_ENGINE" >/dev/null 2>&1 || die "$RP_ENGINE not found on $LOCAL_HOST (PATH=$PATH)" 11
+  [ "$RP_ENGINE" = shell ] || command -v "$RP_ENGINE" >/dev/null 2>&1 || die "$RP_ENGINE not found on $LOCAL_HOST (PATH=$PATH)" 11
   local T; T="$(mktemp -t claude-respawn.XXXXXX)"
   sync_claude_local
   cd "$PROJECT_DIR"                                 # local: host == client
@@ -416,16 +496,24 @@ launch_local() {
   # use it; otherwise fall back to plain tmux.
   if ensure_local_host; then
     # Skip any _N that already has a client (tab) attached — opens _2 if _1 is visible on screen
-    local _ln_out; _ln_out="$(_local_next_n "$LOCAL_PROJ")"
+    local _ln_out; _ln_out="$(_local_next_n "$LOCAL_PROJ" "$FRESH")"
     local N="${_ln_out%% *}"
     local SESS="${LOCAL_PROJ}_${N}" CONT=1 NEED_CREATE=1
     [ "$N" -gt 1 ] && CONT=0                                                   # _2+ → fresh
     [ "$FRESH" = 1 ] && CONT=0                                                 # --fresh → fresh
-    tm_local has-session -t "=$SESS" 2>/dev/null && NEED_CREATE=0             # detached → take-over re-attach
+    if [ "$FRESH" = 1 ]; then
+      while tm_local has-session -t "=$SESS" 2>/dev/null; do
+        N=$((N+1))
+        SESS="${LOCAL_PROJ}_${N}"
+      done
+    else
+      tm_local has-session -t "=$SESS" 2>/dev/null && NEED_CREATE=0           # detached → take-over re-attach
+    fi
     if [ "$NEED_CREATE" = 1 ]; then
       [ -d "$PROJECT_DIR" ] || die "project directory missing: $PROJECT_DIR" 1
       { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
-      tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T"
+      tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T" \
+        || host_setup_recovery_local "tmux-aqua could not create session $SESS on $AQUA_SOCK"
     fi   # XpairHost subtree → computer-use
     # host-side session-lifecycle log (local==host here; correlation id = session name).
     # Export RP_SESSION so child claude processes stamp the same id in their log lines.
@@ -439,19 +527,27 @@ launch_local() {
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
+  if local_host_role_expected; then
+    host_setup_recovery_local "XpairHost tmux-aqua server is not ready on $AQUA_SOCK"
+  fi
   # Fallback: plain tmux (no computer-use — machine without XpairHost)
+  plain_local_non_computer_use_notice
   command -v tmux >/dev/null 2>&1 || die "tmux not found on $LOCAL_HOST. Install it: brew install tmux" 10
   # Skip any _N that already has a client (tab) attached
   local TN=1
-  while tmux list-clients -t "=${LOCAL_PROJ}_${TN}" -F x 2>/dev/null | grep -q x; do TN=$((TN+1)); done
+  while tmux list-clients -t "=${LOCAL_PROJ}_${TN}" -F x 2>/dev/null | grep -q x \
+    || { [ "$FRESH" = 1 ] && tmux has-session -t "=${LOCAL_PROJ}_${TN}" 2>/dev/null; }; do
+    TN=$((TN+1))
+  done
   local TSESS="${LOCAL_PROJ}_${TN}" TCONT=1
   [ "$TN" -gt 1 ] && TCONT=0                         # _2+ → fresh
   [ "$FRESH" = 1 ] && TCONT=0
   printf '\033]2;%s\007' "$TSESS"   # Xpair (E): surface tmux session name as terminal title (OSC-2)
-  if tmux has-session -t "=$TSESS" 2>/dev/null; then
+  if [ "$FRESH" != 1 ] && tmux has-session -t "=$TSESS" 2>/dev/null; then
+    plain_local_display_message "$TSESS"
     exec tmux attach -d -t "=$TSESS"                 # detached → take-over re-attach (-d: drop stale clients)
   else
-    { printf "export CLAUDE_WARP_RC=%q\n" "$TSESS"; printf "export CL_CONTINUE=%s\n" "$TCONT"; respawn_body; } > "$T"
+    { printf "export CLAUDE_WARP_RC=%q\n" "$TSESS"; printf "export CL_CONTINUE=%s\n" "$TCONT"; plain_local_respawn_preamble; respawn_body; } > "$T"
     exec tmux new -s "$TSESS" "bash $T"
   fi
 }
@@ -469,56 +565,63 @@ HOST_DIR_Q="$(sh_quote "$HOST_DIR")"
 AQUA_SOCK_Q="$(sh_quote "$AQUA_SOCK")"
 REMOTE_PROJ_Q="$(sh_quote "$REMOTE_PROJ")"
 
+_remote_attached_sessions() {
+  [ -n "$REMOTE_HOST" ] || return 0
+  { ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
+      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true" 2>/dev/null || true; } \
+    | awk '($2!="0"){print $1}'
+}
+
 # Ask this before the machine/target prompt so users choose the agent first.
 choose_engine
 
 if [ -n "$TARGET_PREF" ]; then
   TARGET="$TARGET_PREF"
+elif local_mode_on; then
+  TARGET=local
+  LOCAL_MODE_EXPLICIT=1
 elif [ -z "$REMOTE_HOST" ] || [ "$LOCAL_HOST" = "$REMOTE_HOST" ]; then
   TARGET=local
+  LOCAL_MODE_EXPLICIT=1
 elif [ "$RP_YES" = 1 ]; then
   TARGET=remote
 else
-  # Compute prospective session annotations (best-effort, no extra ssh round-trips)
-  _rn_out="$(_remote_next_n "$REMOTE_PROJ")"
+  # Compute prospective session annotations from local mosh plus a best-effort host tmux probe.
+  _rn_att="$(_remote_attached_sessions)"
+  _rn_out="$(_remote_next_n "$REMOTE_PROJ" "$_rn_att")"
   _rn="${_rn_out%% *}"; _rs="${_rn_out#* }"
   _ln_out="$(_local_next_n "$LOCAL_PROJ")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
   printf 'Launch %s for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
     "$(engine_label "$RP_ENGINE")" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
-  ans="$(ask 'select [1/2]: ')"; [ "${ans:-1}" = 2 ] && TARGET=local || TARGET=remote
+  ans="$(ask 'select [1/2]: ')"
+  if [ "${ans:-1}" = 2 ]; then
+    TARGET=local
+    LOCAL_MODE_EXPLICIT=1
+  else
+    TARGET=remote
+  fi
 fi
-[ "$TARGET" = local ] && launch_local
+if [ "$TARGET" = local ]; then
+  [ "$LOCAL_MODE_EXPLICIT" = 1 ] || die "local launch requires explicit local mode — rerun with --local, or configure a remote host with 'xpair config set host <ssh-host>'" 1
+  launch_local
+fi
 [ -n "$REMOTE_HOST" ] || die "no valid REMOTE_HOST configured — run 'xpair config set host <ssh-host>' or use --local" 1
 
 # Expose ssh errors verbatim — timeout/key-rejection/host-key errors must appear on screen + in log.
 reach() { ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" true; }
 
+remote_disconnect_diag() {
+  local reason="$1" rc="${2:-20}"
+  printf 'remote launch stopped: %s\n' "$reason" >&2
+  printf 'please connect/reconnect to %s (LAN, VPN, or Tailscale), then rerun xpair launch.\n' "$REMOTE_HOST" >&2
+  printf 'Xpair will not change Tailscale exit-node settings or fall back to local automatically.\n' >&2
+  printf 'For a local session, rerun explicitly: xpair launch --local %s\n' "$(sh_quote "$PROJECT_DIR")" >&2
+  exit "$rc"
+}
+
 if ! reach; then
-  if command -v tailscale >/dev/null 2>&1; then
-    exit_node="$(tailscale status --json 2>/dev/null \
-      | /usr/bin/python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-for p in (d.get("Peer") or {}).values():
-    if p.get("ExitNodeOption") and p.get("Online"):
-        print((p.get("DNSName") or "").rstrip("."))
-        break
-' )"
-    if [ -n "$exit_node" ]; then
-      printf 'setting tailscale exit node: %s\n' "$exit_node"
-      sudo tailscale set --exit-node="$exit_node" || true
-      sleep 2
-    else
-      printf 'no online exit-node candidate in `tailscale status`\n' >&2
-    fi
-  else
-    printf '  ⚠ tailscale CLI not found (cannot auto-set exit-node) — retrying reach / falling back to local\n' >&2
-  fi
-  if ! reach; then
-    printf '⚠ cannot reach %s — falling back to local (%s) automatically (check status bar).\n' "$REMOTE_HOST" "$LOCAL_HOST" >&2
-    launch_local
-  fi
+  remote_disconnect_diag "cannot reach $REMOTE_HOST by SSH" 20
 fi
 
 # ---- check that the host folder (mapped path) exists ----
@@ -542,34 +645,36 @@ case "$DIR_CHECK" in
       *)     die "cancelled: directory missing on host ($HOST_DIR)" 5 ;;
     esac ;;
   *)
-    printf '⚠ %s dir-check ssh failed 3 times — falling back to local (%s).\n' "$REMOTE_HOST" "$LOCAL_HOST" >&2
-    launch_local ;;
+    remote_disconnect_diag "$REMOTE_HOST dir-check ssh failed 3 times" 21 ;;
 esac
+clear_local_mode_quiet
 
-# ── zombie tab cleanup ──
+# ── zombie tab cleanup + host attached-client facts ──
 # It's possible for a mosh-client to be alive (tab open) while the remote server is dead
 # (host rebooted, etc.) — prevent frozen tabs from holding _N numbers indefinitely.
 # Query the host's attach list and kill local clients with no matching server → tab closes + number freed.
-# On ssh failure, conservatively treat all as alive (use next number — better than killing wrongly).
+# On ssh failure, keep local clients intact and let host-side setup recheck before attach.
+ATT=""
 if ATT_RAW="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" \
      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true")"; then
-  ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){printf "%s ", $1}')"
+  ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){print $1}')"
   { pgrep -fl mosh-client 2>/dev/null | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
     pid="${line%% *}"
     s="$(printf '%s' "$line" | grep -oE "${REMOTE_PROJ}_[0-9]+" | head -1)"
-    case " $ATT " in
-      (*" $s "*) : ;;                              # server exists → live tab
-      (*) printf 'zombie tab cleanup: %s (no matching server) — killing mosh-client %s\n' "$s" "$pid"
-          kill "$pid" 2>/dev/null || true ;;
-    esac
+    if printf '%s\n' "$ATT" | grep -Fxq "$s"; then
+      :                                            # attached server exists → live tab
+    else
+      printf 'zombie tab cleanup: %s (no matching server) — killing mosh-client %s\n' "$s" "$pid"
+      kill "$pid" 2>/dev/null || true
+    fi
   done
   sleep 0.3   # let kill take effect before RN calculation below
 fi
 
-# Session number is decided solely from facts on this machine: the lowest _N with no live
-# mosh-client (= open tab). No need to check host attach state — attach -d will drop any stale
-# client (and kill its mosh-server) and reclaim the session.
-_rn_final="$(_remote_next_n "$REMOTE_PROJ")"
+# Session number is decided from both local mosh-client facts and live host tmux attached-client
+# facts. Host-side setup rechecks before create/attach so a stale client-side choice cannot
+# take over another active client.
+_rn_final="$(_remote_next_n "$REMOTE_PROJ" "$ATT")"
 RN="${_rn_final%% *}"
 RCONT=1
 [ "$RN" -gt 1 ] && RCONT=0   # _2+ → fresh
@@ -587,7 +692,7 @@ set -e
 export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
-if ! command -v ${RP_ENGINE} >/dev/null 2>&1; then
+if [ "${RP_ENGINE}" != shell ] && ! command -v ${RP_ENGINE} >/dev/null 2>&1; then
   printf '${RP_ENGINE} not found on %s (PATH=%s) — install it (brew install ${RP_ENGINE}) or use --engine claude\n' "\$(hostname -s)" "\$PATH" >&2
   exit 11
 fi
@@ -610,24 +715,66 @@ SESSION=${REMOTE_PROJ_Q}
 SOCK="${AQUA_SOCK}"
 TMUXB="${REMOTE_BIN}/tmux-aqua"
 tm() { "\$TMUXB" -S "\$SOCK" "\$@"; }
+host_setup_recovery() {
+  why="\${1:-XpairHost tmux-aqua is not ready}"
+  printf '__XPAIR_HOST_RECOVERY__\n'
+  printf '\nXpairHost setup is required before this remote session can start.\n' >&2
+  printf 'Reason: %s\n' "\$why" >&2
+  printf 'Recovery on %s:\n' "\$(hostname -s)" >&2
+  printf '  1. Open ${APP_NAME}.app on the host Mac.\n' >&2
+  printf '  2. From the menu bar, choose Set up... or Permissions...\n' >&2
+  printf '  3. Grant Accessibility and Screen Recording, then retry xpair launch.\n' >&2
+  printf 'Diagnostics: tmux-aqua=%s socket=%s\n' "\$TMUXB" "\$SOCK" >&2
+  exit 13
+}
 # Ensure ${APP_NAME} host server is running (LaunchAgent normally starts it; start directly if not)
+[ -x "\$TMUXB" ] || host_setup_recovery "tmux-aqua helper is missing or not executable: \$TMUXB"
 if ! tm has-session 2>/dev/null; then
   open -a "${APP_NAME}" 2>/dev/null || /bin/launchctl kickstart "gui/\$(id -u)/${BUNDLE_PREFIX}" 2>/dev/null || true
   for i in 1 2 3 4 5 6 7 8 9 10 11 12; do tm has-session 2>/dev/null && break; sleep 0.5; done
 fi
 if ! tm has-session 2>/dev/null; then
-  printf '⚠ ${APP_NAME} host (${AQUA_SOCK}) not running — check ~/Applications/${APP_NAME}.app\n' >&2; exit 13
+  host_setup_recovery "${APP_NAME} host server is not running on ${AQUA_SOCK}"
 fi
-# Session number (_N) is determined on the client from local tab facts and injected here.
-# If session exists → attach -d take-over; stale client is dropped and its mosh-server exits,
-# so no remote reconciliation needed. If missing → create at current window size. _2+ → fresh.
-SESSION="\${SESSION}_${RN}"
-CONT=${RCONT}; NEED_CREATE=1
-if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
+# Session number (_N) is preselected from client+host facts and then rechecked here to avoid
+# taking over a session another client attached between the client-side probe and this setup.
+# Start at injected _${RN}; first advance past any session with a LIVE attached host client.
+# Fresh launches additionally skip detached sessions (a clean _N); normal launches take over an
+# existing detached session via attach -d.
+SESSION_BASE="\$SESSION"
+N=${RN}
+CONT=${RCONT}
+while tm list-clients -t "=\${SESSION_BASE}_\${N}" -F x 2>/dev/null | grep -q x; do
+  N=\$((N+1))
+  CONT=0
+done
+SESSION="\${SESSION_BASE}_\$N"
+NEED_CREATE=1
+if [ "${FRESH}" = 1 ]; then
+  CONT=0
+  while tm has-session -t "=\$SESSION" 2>/dev/null; do
+    N=\$((N+1))
+    SESSION="\${SESSION_BASE}_\$N"
+  done
+else
+  if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
+fi
 if [ "\$NEED_CREATE" = 1 ]; then
-  T=\$(mktemp -t claude-respawn.XXXXXX)
-  { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
-  tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T"
+  while :; do
+    T=\$(mktemp -t claude-respawn.XXXXXX)
+    { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
+    if tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T"; then
+      break
+    fi
+    # Create failed. If a fresh launch collided with a session that appeared concurrently, advance _N
+    # and retry; otherwise the server itself is unhealthy → surface host setup recovery.
+    if [ "${FRESH}" = 1 ] && tm has-session -t "=\$SESSION" 2>/dev/null; then
+      N=\$((N+1))
+      SESSION="\${SESSION_BASE}_\$N"
+      continue
+    fi
+    host_setup_recovery "tmux-aqua could not create session \$SESSION on \$SOCK"
+  done
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached).
 # Use shared logger (shared lock \$LOG_DIR/.xpair.log.lock, coordinated with Swift) if installed;
@@ -650,10 +797,19 @@ EOF
 # Use || to capture rc rather than letting ssh failure abort at the assignment under set -e.
 SSH_RC=0
 SSH_OUT="$(ssh -o BatchMode=yes "$REMOTE_HOST" "$REMOTE_SCRIPT" 2>&1)" || SSH_RC=$?
-# Show setup output to user but strip the marker line
-printf '%s\n' "$SSH_OUT" | grep -v '^__SESSION__:' || true
+# Show setup output to user and persist it for `xpair logs --collect`; strip the session + recovery markers.
+SETUP_OUT="$(printf '%s\n' "$SSH_OUT" | grep -Ev '^(__SESSION__:|__XPAIR_HOST_RECOVERY__$)' || true)"
+if [ -n "$SETUP_OUT" ]; then
+  printf '%s\n' "$SETUP_OUT" | while IFS= read -r l; do printf '%s setup %s\n' "$(date '+%T')" "$l" >> "$LAUNCH_LOG"; done
+  printf '%s\n' "$SETUP_OUT"
+fi
 ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | sed 's/^__SESSION__://')"
-[ "$SSH_RC" -ne 0 ] && die "remote setup failed (exit=$SSH_RC)" "$SSH_RC"
+if [ "$SSH_RC" -ne 0 ]; then
+  if printf '%s\n' "$SSH_OUT" | grep -q '^__XPAIR_HOST_RECOVERY__$'; then
+    exit "$SSH_RC"
+  fi
+  die "remote setup failed (exit=$SSH_RC)" "$SSH_RC"
+fi
 [ -z "$ACTUAL_SESSION" ] && die "failed to extract remote session name" 12
 # Export RP_SESSION so any child processes on this side stamp the same correlation id.
 export RP_SESSION="$ACTUAL_SESSION"
@@ -661,35 +817,139 @@ export RP_SESSION="$ACTUAL_SESSION"
 # so the Xpair IDE shows it in the Sessions sidebar header before mosh/ssh takes over the tty.
 printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
+remote_attach_ssh() {
+  printf 'attaching via ssh -t -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
+  ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
+}
+
+resolve_xpair_cli() {
+  if command -v xpair >/dev/null 2>&1; then
+    command -v xpair
+  elif [ -x "$LOCAL_BIN/xpair" ]; then
+    printf '%s\n' "$LOCAL_BIN/xpair"
+  elif [ -x "$RP_DIR/bin/xpair" ]; then
+    printf '%s\n' "$RP_DIR/bin/xpair"
+  else
+    return 1
+  fi
+}
+
+reinstall_mosh() {
+  local rc=0
+  printf 'reinstalling mosh on this client and %s ...\n' "$REMOTE_HOST"
+  if command -v brew >/dev/null 2>&1; then
+    if ! brew reinstall mosh; then
+      brew install mosh || rc=1
+    fi
+    hash -r 2>/dev/null || true
+  else
+    printf 'Homebrew not found locally. Install mosh manually: brew install mosh\n' >&2
+    rc=1
+  fi
+  if ! ssh "$REMOTE_HOST" 'if command -v brew >/dev/null 2>&1; then brew reinstall mosh || brew install mosh; else exit 127; fi'; then
+    printf 'host mosh reinstall failed. On %s, install mosh or run setup repair.\n' "$REMOTE_HOST" >&2
+    rc=1
+  fi
+  return "$rc"
+}
+
+repair_remote_setup() {
+  local xp
+  if ! xp="$(resolve_xpair_cli)"; then
+    printf 'xpair CLI not found; run setup repair from a terminal with xpair on PATH.\n' >&2
+    return 1
+  fi
+  "$xp" install-host --host "$REMOTE_HOST" --force
+}
+
+RECOVERY_ACTION=""
+choose_attach_recovery() {
+  local transport="$1" rc="$2" ans=""
+  printf '\n%s attach failed (exit=%s).\n' "$transport" "$rc" >&2
+  printf 'The host tmux session is preserved: %s:%s\n' "$REMOTE_HOST" "$ACTUAL_SESSION" >&2
+  if [ "$RP_YES" = 1 ] || ! have_tty; then
+    if [ "$transport" = ssh ]; then
+      printf 'SSH fallback also failed; leaving the session detached for the next retry.\n' >&2
+      return "$rc"
+    fi
+    printf 'No interactive prompt is available; trying SSH fallback for the preserved session.\n' >&2
+    RECOVERY_ACTION=ssh
+    return 0
+  fi
+  while :; do
+    cat >&2 <<EOF
+Recovery options:
+  [1] Attach with SSH fallback
+  [2] Retry mosh
+  [3] Reinstall mosh on client and host, then retry mosh
+  [4] Repair Xpair host setup, then retry mosh
+  [5] Leave the session detached and exit
+EOF
+    ans="$(ask 'choose [1/2/3/4/5] (default 1): ')"
+    case "${ans:-1}" in
+      1|s|S|ssh) RECOVERY_ACTION=ssh; return 0 ;;
+      2|r|R|retry) RECOVERY_ACTION=mosh; return 0 ;;
+      3)
+        reinstall_mosh || printf 'mosh reinstall did not complete; the session is still preserved.\n' >&2
+        RECOVERY_ACTION=mosh
+        return 0 ;;
+      4)
+        repair_remote_setup || printf 'setup repair did not complete; the session is still preserved.\n' >&2
+        RECOVERY_ACTION=mosh
+        return 0 ;;
+      5|q|Q|exit)
+        printf 'leaving tmux session detached: %s:%s\n' "$REMOTE_HOST" "$ACTUAL_SESSION" >&2
+        return "$rc" ;;
+      *) printf 'unknown choice: %s\n' "$ans" >&2 ;;
+    esac
+  done
+}
+
 # Phase 2: attach via mosh (UDP-based — resilient to tmux freezes / network hiccups).
-# Fall back to ssh -t if mosh is unavailable.
-if command -v mosh >/dev/null 2>&1; then
-  printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
-  # Specify full paths for mosh-server and tmux-aqua (patched) — bypasses non-interactive PATH.
-  # Commands after mosh '--' are execvp'd directly (no shell) → variables like '$HOME' are NOT expanded.
-  # → tmux-aqua must be an absolute path. Since host and client share the same user (same home path),
-  #   expand local $HOME to build the absolute path (remote home == local home). This also keeps
-  #   'attach -d -t =SESS' clean in the mosh-client argv so zombie/RN pgrep matching works correctly.
-  # Attach to the Xpair fixed socket — independent of client (mosh) context; claude is a server child.
-  # No timeout intentionally — if the client sleeps for a long time, mosh restores the session on wake (roaming).
-  #
-  # Invariant "tmux attached ⟺ open tab on client" enforcement:
-  # On tab close (HUP/TERM) → immediately detach the remote session → remaining mosh-server also exits.
-  # (mosh has no goodbye handshake, so without this a stale attach persists until the next launch.)
-  # Normal detach (Ctrl-b d) and take-over kick are clean exits → trap does not fire → new attach unaffected.
-  # Cleanup is forked as a background orphan so it runs to completion even after the tab's tty is reclaimed.
-  # The only case where stale state remains is a client crash where signal propagation is impossible —
-  # the next attach -d recovers it (dual safety net).
-  on_tab_close() {
-    ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
-        "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} detach-client -s $(sh_quote "=$ACTUAL_SESSION")" \
-        >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-    exit 129
-  }
-  trap on_tab_close HUP TERM
-  mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION"
-  exit $?
-else
-  printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$ACTUAL_SESSION"
-  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
-fi
+# Fall back to ssh -t if mosh is unavailable or if a mosh attach cannot be recovered.
+ATTACH_MODE=mosh
+command -v mosh >/dev/null 2>&1 || ATTACH_MODE=ssh
+while :; do
+  ATTACH_RC=0
+  if [ "$ATTACH_MODE" = mosh ] && command -v mosh >/dev/null 2>&1; then
+    printf 'attaching via mosh -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
+    # Specify full paths for mosh-server and tmux-aqua (patched) — bypasses non-interactive PATH.
+    # Commands after mosh '--' are execvp'd directly (no shell) → variables like '$HOME' are NOT expanded.
+    # → tmux-aqua must be an absolute path. Since host and client share the same user (same home path),
+    #   expand local $HOME to build the absolute path (remote home == local home). This also keeps
+    #   'attach -d -t =SESS' clean in the mosh-client argv so zombie/RN pgrep matching works correctly.
+    # Attach to the Xpair fixed socket — independent of client (mosh) context; claude is a server child.
+    # No timeout intentionally — if the client sleeps for a long time, mosh restores the session on wake (roaming).
+    #
+    # Invariant "tmux attached ⟺ open tab on client" enforcement:
+    # On tab close (HUP/TERM) → immediately detach the remote session → remaining mosh-server also exits.
+    # (mosh has no goodbye handshake, so without this a stale attach persists until the next launch.)
+    # Normal detach (Ctrl-b d) and take-over kick are clean exits → trap does not fire → new attach unaffected.
+    # Cleanup is forked as a background orphan so it runs to completion even after the tab's tty is reclaimed.
+    # The only case where stale state remains is a client crash where signal propagation is impossible —
+    # the next attach -d recovers it (dual safety net).
+    on_tab_close() {
+      ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
+          "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} detach-client -s $(sh_quote "=$ACTUAL_SESSION")" \
+          >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+      exit 129
+    }
+    trap on_tab_close HUP TERM
+    mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION" || ATTACH_RC=$?
+    trap - HUP TERM
+    [ "$ATTACH_RC" = 0 ] && exit 0
+    choose_attach_recovery mosh "$ATTACH_RC" || exit $?
+    ATTACH_MODE="$RECOVERY_ACTION"
+    continue
+  fi
+
+  if [ "$ATTACH_MODE" = mosh ]; then
+    printf 'mosh not found after recovery action; using SSH fallback for tmux "%s".\n' "$ACTUAL_SESSION" >&2
+  elif ! command -v mosh >/dev/null 2>&1; then
+    printf 'mosh not found -> falling back to ssh -t (attach tmux "%s") ...\n' "$ACTUAL_SESSION"
+  fi
+  remote_attach_ssh || ATTACH_RC=$?
+  [ "$ATTACH_RC" = 0 ] && exit 0
+  choose_attach_recovery ssh "$ATTACH_RC" || exit $?
+  ATTACH_MODE="$RECOVERY_ACTION"
+done
