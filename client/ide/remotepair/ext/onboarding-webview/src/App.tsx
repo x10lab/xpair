@@ -110,7 +110,9 @@ export default function App() {
       window.clearInterval(id);
     };
   }, []);
-  const cliMissing = cli !== null && !cli.ready;
+  const cliReady = cli?.ready === true;
+  const cliMissing = !cliReady;
+  const cliNeedsInstall = cli !== null && !cli.ready;
 
   // No dead end: when the CLI is missing we install the BUNDLED CLI (install.sh --role client) in the
   // BACKGROUND while the user proceeds through the CLI-free intro steps. Progress is surfaced in a
@@ -147,13 +149,13 @@ export default function App() {
   // Kick off the background install the moment the probe reports the CLI missing (once per missing
   // edge). If a later probe flips the CLI back to missing after a "ready"/"failed", re-arm.
   useEffect(() => {
-    if (cliMissing && cliInstall === "idle") void installCliNow();
-  }, [cliMissing, cliInstall, installCliNow]);
+    if (cliNeedsInstall && cliInstall === "idle") void installCliNow();
+  }, [cliNeedsInstall, cliInstall, installCliNow]);
   useEffect(() => {
     // CLI became ready by some other means (already installed / installed out-of-band) → clear any
     // stale failed/ready status so the bar disappears.
-    if (!cliMissing && cliInstall !== "idle") setCliInstall("idle");
-  }, [cliMissing, cliInstall]);
+    if (!cliNeedsInstall && cliInstall !== "idle") setCliInstall("idle");
+  }, [cliNeedsInstall, cliInstall]);
 
   // Per-host app guard (Connect/Reconnect): reachable is not enough — the host needs the host app
   // installed AND version-compatible. Only the non-setup paths (manual + reconnect) check this; the
@@ -219,6 +221,7 @@ export default function App() {
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
     (p: Peer) => {
+      if (!cliReady) return;
       setManual(false);
       setPeer(p);
       setHost(p.status === "connect" ? p.target || p.addrs?.[0] || p.name || "" : "");
@@ -228,14 +231,15 @@ export default function App() {
       setLive("idle");
       w.goTo(S.CONNECT, "next");
     },
-    [w],
+    [cliReady, w],
   );
 
   const onManual = useCallback(() => {
+    if (!cliReady) return;
     setManual(true);
     setPeer(null);
     w.goTo(S.CONNECT, "next");
-  }, [w]);
+  }, [cliReady, w]);
 
   // Liveness gate before Done: ssh true + host-app/server reachability. Blocks landing Done on a
   // stale config to an offline host; flags a re-keyed host (TOFU mismatch) for re-pairing.
@@ -298,6 +302,14 @@ export default function App() {
   // CLI hard gate — ONLY on the CLI-dependent steps, and ONLY when the CLI isn't ready yet. On the
   // CLI-free intro/setup steps the install runs in the background and never blocks Next.
   const cliGateActive = CLI_DEPENDENT_STEPS.has(w.index) && cliMissing;
+  const cliGateMessage =
+    cli === null
+      ? "checking xpair CLI…"
+      : cliInstall === "failed"
+      ? `xpair CLI install failed — ${cliInstallErr || cli.err || "see status bar"}`
+      : cliInstall === "installing"
+      ? "installing xpair CLI…"
+      : "waiting for xpair CLI…";
   const nextDisabled =
     cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
@@ -370,9 +382,7 @@ export default function App() {
         // vs failed) so the disabled Next isn't a mystery.
         cliGateActive ? (
           <p className="truncate text-center text-xs text-muted-foreground">
-            {cliInstall === "failed"
-              ? `xpair CLI install failed — ${cliInstallErr || cli?.err || "see status bar"}`
-              : "waiting for xpair CLI…"}
+            {cliGateMessage}
           </p>
         ) : // Connect step: once reachable, surface WHY the host-app gate blocks (not installed /
         // incompatible) so the user isn't staring at a silently-disabled Next.
@@ -443,7 +453,11 @@ export default function App() {
         {w.index === S.WELCOME && <StepWelcome />}
         {w.index === S.CONSENT && <StepConsent />}
         {w.index === S.DISCOVER && (
-          <StepDiscover onSelect={onSelectPeer} onManual={onManual} />
+          <StepDiscover
+            onSelect={onSelectPeer}
+            onManual={onManual}
+            cliBlocked={cliGateActive}
+          />
         )}
         {w.index === S.CONNECT &&
           (manual || isConnect || !peer ? (
@@ -452,6 +466,7 @@ export default function App() {
               setHost={setHost}
               state={connState}
               setState={setConnState}
+              cliBlocked={cliGateActive}
             />
           ) : isReconnect ? (
             <StepReconnect peer={peer} onReady={setReconnectReady} />

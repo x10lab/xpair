@@ -16,6 +16,8 @@ type Props = {
   onSelect: (peer: Peer) => void;
   /** Called when the user chooses "Enter host manually" → falls back to StepConnect. */
   onManual: () => void;
+  /** Blocks CLI-backed discovery/fallback actions until the bundled xpair CLI is ready. */
+  cliBlocked?: boolean;
 };
 
 /** Dedup peers by host-key fingerprint (UI backstop; the CLI already dedups). Peers without a
@@ -43,12 +45,19 @@ const STATUS_LABEL: Record<PeerStatus, string> = {
   setup: "Set up",
 };
 
-export function StepDiscover({ onSelect, onManual }: Props) {
+export function StepDiscover({ onSelect, onManual, cliBlocked = false }: Props) {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [scannedOnce, setScannedOnce] = useState(false);
   const stop = useRef(false);
 
   useEffect(() => {
+    if (cliBlocked) {
+      stop.current = true;
+      setPeers([]);
+      setScannedOnce(false);
+      return;
+    }
+
     stop.current = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -72,7 +81,9 @@ export function StepDiscover({ onSelect, onManual }: Props) {
       stop.current = true;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [cliBlocked]);
+
+  if (cliBlocked) return <CliBlocked />;
 
   // Scanning: no result yet.
   if (!scannedOnce) return <Scanning />;
@@ -117,6 +128,28 @@ function Scanline({ label }: { label: string }) {
     <div className="flex items-center gap-2">
       <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
       {label}
+    </div>
+  );
+}
+
+function CliBlocked() {
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className="relative mb-6 h-20 w-20">
+        <span className="radar-ring" />
+        <span className="radar-ring" style={{ animationDelay: "0.7s" }} />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        </div>
+      </div>
+      <h2 className="text-xl font-semibold tracking-tight text-foreground">
+        Preparing xpair CLI…
+      </h2>
+      <p className="mt-2 max-w-xs text-sm text-muted-foreground">
+        Discovery and manual connection will unlock once the CLI is ready.
+      </p>
     </div>
   );
 }

@@ -31,9 +31,10 @@ type Props = {
   setHost: (s: string) => void;
   state: ConnState;
   setState: (s: ConnState) => void;
+  cliBlocked?: boolean;
 };
 
-export function StepConnect({ host, setHost, state, setState }: Props) {
+export function StepConnect({ host, setHost, state, setState, cliBlocked = false }: Props) {
   const [tailscale, setTailscale] = useState<{
     installed: boolean;
     up: boolean;
@@ -90,6 +91,8 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
       : PATHS.LAN;
 
   const check = async () => {
+    if (cliBlocked || state === "checking" || !host.trim()) return;
+
     setErr("");
     setState("checking");
     const startedAt = Date.now();
@@ -225,7 +228,7 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
           <Button
             size="sm"
             onClick={check}
-            disabled={state === "checking" || !host.trim()}
+            disabled={cliBlocked || state === "checking" || !host.trim()}
           >
             {state === "checking" ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -275,7 +278,7 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
             </span>
           </p>
           <div className="mt-3 pl-7">
-            <Button size="sm" variant="outline" onClick={check}>
+            <Button size="sm" variant="outline" onClick={check} disabled={cliBlocked}>
               Retry
             </Button>
           </div>
