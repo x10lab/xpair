@@ -1237,7 +1237,10 @@ function runSetup() {
     fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");
   } catch (e) {
-    log(`runSetup: could not write force-onboarding sentinel: ${e && e.message ? e.message : e}`, "warn");
+    const detail = e && e.message ? e.message : String(e);
+    log(`runSetup: could not write force-onboarding sentinel: ${detail}`, "warn");
+    vscode.window.showErrorMessage(`Xpair: setup could not be scheduled. ${detail}`);
+    return;
   }
   vscode.window
     .showInformationMessage(
@@ -1269,7 +1272,10 @@ function endSessionReonboard() {
         fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
         fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");
       } catch (e) {
-        log(`endSessionReonboard: sentinel write failed: ${e && e.message ? e.message : e}`, "warn");
+        const detail = e && e.message ? e.message : String(e);
+        log(`endSessionReonboard: sentinel write failed: ${detail}`, "warn");
+        vscode.window.showErrorMessage(`Xpair: setup could not be scheduled. ${detail}`);
+        return;
       }
       vscode.commands.executeCommand("workbench.action.quit");
     });
