@@ -669,20 +669,43 @@ cmd_attach() {
     [ -x "$TMUXB" ] || { echo "tmux-aqua missing: $TMUXB" >&2; return 1; }
     tm has-session -t "=$session" 2>/dev/null || { echo "session not found: $session" >&2; return 4; }
     printf '\033]2;%s\007' "$session"
-    exec "$TMUXB" -S "$AQUA_SOCK" attach -d -t "=$session"
+    on_attach_close() {
+      ( trap '' HUP; "$TMUXB" -S "$AQUA_SOCK" detach-client -s "=$session" \
+          >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+      exit 129
+    }
+    trap on_attach_close HUP TERM
+    local rc=0
+    "$TMUXB" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
+    trap - HUP TERM
+    return "$rc"
   fi
 
   [ "$target" = remote ] || { echo "unknown attach target: $target" >&2; return 2; }
   [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — use --local or 'xpair config set host <ssh-host>'" >&2; return 1; }
-  ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") has-session -t $(sh_quote "=$session")" \
+  local remote_bin="${REMOTE_BIN:-\$HOME/.local/bin}" aqua_sock_q
+  aqua_sock_q="$(sh_quote "$AQUA_SOCK")"
+  ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q has-session -t $(sh_quote "=$session")" \
     || { echo "session not found on $REMOTE_HOST: $session" >&2; return 4; }
   printf '\033]2;%s\007' "$session"
+  on_attach_close() {
+    ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
+        "$remote_bin/tmux-aqua -S $aqua_sock_q detach-client -s $(sh_quote "=$session")" \
+        >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+    exit 129
+  }
+  trap on_attach_close HUP TERM
+  local rc=0
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
-    exec mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
+    mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
+    trap - HUP TERM
+    return "$rc"
   fi
   printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
-  exec ssh -t "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") attach -d -t $(sh_quote "=$session")"
+  ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")" || rc=$?
+  trap - HUP TERM
+  return "$rc"
 }
 
 cmd_host() {
