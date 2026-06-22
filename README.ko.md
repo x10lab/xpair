@@ -8,8 +8,6 @@
 
 이미 구독 중인 에이전트 — **Claude**, **Codex**, 또는 **OpenCode** — 를 항상 켜져 있는 Mac에서, macOS **Computer Use**(스크린샷·클릭·타이핑)를 살린 채로 돌리고, 노트북이나 폰에서 mosh/SSH로 붙는 도구입니다. 자리를 비워도 작업은 계속되고, 내 구독을 그대로 쓰므로 추가 AI 크레딧은 없습니다.
 
-> **이름 안내:** 제품명은 **Xpair**이며 앱·CLI·번들 식별자 전부 Xpair를 씁니다(`XpairHost.app`, `Xpair` IDE, `xpair` CLI, `com.x10lab.xpair*`). 저장소는 [`x10lab/xpair`](https://github.com/x10lab/xpair)입니다. (예전 빌드는 *RemotePair*로 출하됐습니다 — 설치돼 있다면 Xpair로 옮기기 전에 제거하세요. bundle id가 바뀌어 권한이 그대로 넘어오지 않습니다.)
-
 <p align="center">
   <img src="assets/ide-hero.png" alt="Xpair IDE — Sessions 사이드바, Remote Desktop 탭, Attached/Detached 호스트 세션" width="860">
 </p>
@@ -46,13 +44,13 @@ Set up Xpair (https://github.com/x10lab/xpair) on this Mac. Fetch and read its R
 가진 구독을 그대로 가져오세요: `claude`(고유의 `--remote-control` 사용), `codex`, 또는 `opencode`. 에이전트는 호스트에서 돌기 때문에 호스트에 설치돼 있어야 합니다. `xpair config set engine <claude|codex|opencode>`로 바꾸거나, `xpair launch --engine <e>`로 실행마다 덮어쓰세요.
 
 ### 막기만 하지 않고 해결하는 온보딩
-양쪽 모두 첫 실행 시 안내형 설정이 열립니다 — 호스트는 WKWebView, 클라이언트는 IDE 웹뷰. 각 단계는 **스스로 능동적으로 해결하는 hard-gate**입니다: CLI를 깔고, 엔진을 `brew install`하고, API 키를 설정하고, SSH 키 인증을 검증합니다 — "X가 없습니다"에서 막다른 골목에 빠지지 않습니다. 비밀값은 argv·디스크가 아닌 stdin으로 전달됩니다.
+첫 실행 시 안내형 설정이 열리고, 각 단계는 막다른 골목 대신 **스스로 고치는 hard-gate**입니다: CLI를 깔고, 엔진을 `brew install`하고, API 키를 설정하고, SSH 키 인증을 검증합니다. 비밀값은 argv·디스크가 아닌 stdin으로 전달됩니다.
 
 ### 노트북에서도 폰에서도 붙기
 클라이언트 Mac(Finder → 우클릭 → *Launch Remote Pair*), Xpair IDE의 Sessions 사이드바, 또는 폰의 Claude Code를 포함한 모든 SSH/mosh 클라이언트에서 붙습니다. 어디서 붙든 같은 세션, 같은 상태입니다.
 
 ### IDE 안의 Remote Desktop
-Xpair IDE의 Remote Desktop 탭에서 호스트 화면을 보고 조작합니다 — 네이티브 H.264/WebRTC 파이프라인(ScreenCaptureKit → VideoToolbox → webrtc-rs → 브라우저 `<video>`)이며, 클라이언트의 네이티브 WebRTC로 크로스플랫폼 디코딩됩니다. `xpair desktop`은 여전히 macOS 화면 공유를 fallback으로 엽니다.
+Xpair IDE의 Remote Desktop 탭에서 네이티브 H.264/WebRTC 스트림으로 호스트 화면을 보고 조작합니다(view-only). `xpair desktop`은 macOS 화면 공유로 fallback합니다.
 
 ### 대신 답해주는 권한 대화상자
 headless 호스트에서 "허용?" 대화상자(또는 1Password 잠금 해제 프롬프트)가 세션을 막아 세웁니다. on-demand approve 라우터(OCR + 클릭, miss 시 Claude 분류 fallback)가 올바른 버튼을 감지해 눌러줘서, 무인 세션이 멈추지 않습니다.
@@ -78,6 +76,8 @@ curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.
 ```
 
 `xpair` CLI + approve glue를 깔고, 이어서 앱(`XpairHost.app`)을 Homebrew Cask로 설치합니다. 첫 실행 시 앱이 데몬(LaunchAgent, `~/.xpair/host`, tmux-aqua, watchdog)을 스스로 설치하고 호스트 온보딩을 엽니다. 앱은 self-signed이지만 Homebrew가 quarantine 플래그를 떼어주므로 정상 실행되고, 권한도 안정적인 서명 정체성에 묶여 유지됩니다. (앱만, CLI 없이: `brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair-host`.)
+
+> 예전 *RemotePair* 빌드에서 넘어오나요? 먼저 제거하세요 — bundle id가 바뀌어 기존 macOS 권한이 그대로 넘어오지 않습니다.
 
 #### 일회성 권한 부여 — 물리적 화면 또는 VNC 필요
 

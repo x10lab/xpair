@@ -8,8 +8,6 @@
 
 Run the agent you already subscribe to — **Claude**, **Codex**, or **OpenCode** — on an always-on Mac, with full macOS **computer-use** (screenshot, click, type) intact, and attach to it from your laptop or phone over mosh/SSH. Your work keeps running while you're away; you bring your own subscription, so there are no extra AI credits.
 
-> **Naming:** The product is **Xpair** end to end — app, CLI, and bundle identifiers all use it (`XpairHost.app`, the `Xpair` IDE, the `xpair` CLI, `com.x10lab.xpair*`). The repo is [`x10lab/xpair`](https://github.com/x10lab/xpair). (Older builds shipped as *RemotePair*; if you have one installed, uninstall it before moving to Xpair — the bundle id changed, so macOS permissions don't carry over.)
-
 <p align="center">
   <img src="assets/ide-hero.png" alt="The Xpair IDE — Sessions sidebar, Remote Desktop tab, and Attached/Detached host sessions" width="860">
 </p>
@@ -46,13 +44,13 @@ Close the laptop or drop Wi-Fi and a normal agent session dies with the connecti
 Bring whichever subscription you have: `claude` (with its unique `--remote-control`), `codex`, or `opencode`. The agent runs on the host, so it must be installed there. Switch with `xpair config set engine <claude|codex|opencode>`, or override per launch with `xpair launch --engine <e>`.
 
 ### Onboarding that resolves, not just blocks
-First run on each side opens a guided setup — a WKWebView on the host, an IDE webview on the client. Each step is a **hard gate that actively resolves itself**: it installs the CLI, `brew install`s the engine, sets the API key, and verifies SSH key-auth — it never dead-ends on "you're missing X." Secrets go over stdin, never argv or disk.
+First run opens a guided setup where each step is a **hard gate that fixes itself** instead of dead-ending: it installs the CLI, `brew install`s the engine, sets the API key, and verifies SSH key-auth. Secrets go over stdin, never argv or disk.
 
 ### Attach from your laptop or your phone
 Attach from a client Mac (Finder → right-click → *Launch Remote Pair*), the Xpair IDE's Sessions sidebar, or any SSH/mosh client including Claude Code on mobile. Same sessions, same state, wherever you are.
 
 ### Remote Desktop, in the IDE
-View and drive the host screen from the Xpair IDE's Remote Desktop tab — a native H.264/WebRTC pipeline (ScreenCaptureKit → VideoToolbox → webrtc-rs → the browser's `<video>`), decoded cross-platform by the client's native WebRTC. `xpair desktop` still opens macOS Screen Sharing as a fallback.
+View and drive the host screen from the Xpair IDE's Remote Desktop tab over a native H.264/WebRTC stream (view-only). `xpair desktop` falls back to macOS Screen Sharing.
 
 ### Permission dialogs answered for you
 A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host stalls the whole session. An on-demand approve router (OCR + click, with a Claude fallback classifier) detects and clicks the right button, so unattended sessions don't hang.
@@ -78,6 +76,8 @@ curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.
 ```
 
 This installs the `xpair` CLI + approve glue, then the app (`XpairHost.app`) via Homebrew Cask. On first launch the app self-installs its daemon (LaunchAgent, `~/.xpair/host`, tmux-aqua, watchdog) and opens host onboarding. The app is self-signed but Homebrew strips the quarantine flag, so it launches normally and its grants stick to the stable signing identity. (App only, no CLI: `brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair-host`.)
+
+> Coming from an old *RemotePair* build? Uninstall it first — the bundle id changed, so its macOS permission grants don't carry over.
 
 #### One-time permission grant — needs a physical screen or VNC
 
