@@ -107,17 +107,15 @@ index bfd30e64..1d973f00 100644
  		// Global action bar
  		if (this.globalCompositeBar) {
  			this.globalCompositeBar.create(this.element);
-@@ -495,6 +503,45 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
+@@ -495,6 +503,43 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
  		return actions;
  	}
  
 +	// RemotePair: restrict the left rail to an allowlist. The default rail shows
-+	// Explorer/Search/SCM/Run-Debug/Extensions plus extension containers; we only
-+	// want Explorer (file Browser), the Terminal view (if present), and any
-+	// RemotePair-owned container. Everything else is filtered out so the rail
-+	// stays minimal. String ids are used to avoid importing contrib modules.
++	// Explorer/Search/SCM/Run-Debug/Extensions plus extension containers; the
++	// native Terminal rail entry is also excluded because Sessions owns terminal
++	// creation and hosting. Only RemotePair-owned containers stay visible.
 +	private static readonly RAIL_ALLOWED_CONTAINER_IDS = new Set<string>([
-+		'terminal',                // TERMINAL_VIEW_ID, if it is registered as a container
 +	]);
 +
 +	private static isRailAllowedContainer(container: ViewContainer): boolean {
@@ -1289,7 +1287,7 @@ index 00000000..6887d7cb
 + *
 + *  The "Browser" is the relabeled Explorer view container (VIEWLET_ID). This file owns the
 + *  action contributions so they stay out of core explorer files:
-+ *    - Browser title bar: Search / Extensions (MenuId.ViewContainerTitle). The row-1
++ *    - Browser title bar: Search / AI Extensions helper (MenuId.ViewContainerTitle). The row-1
 + *      "Add Mapping" action was removed (C1): the sole add entry point is now the
 + *      below-list / empty-state "Add Root" affordance which runs the mount-first
 + *      `remotepair.browser.addRoot` command (registered in the RemotePair extension).
@@ -1417,7 +1415,9 @@ index 00000000..6887d7cb
 +});
 +
 +/**
-+ * Browser title-bar action: Extensions → opens the Extensions viewlet.
++ * Browser title-bar action: Extensions → runs the Xpair-owned AI extension installer helper.
++ * This intentionally does NOT open the native Extensions viewlet, which would leave the Browser /
++ * Sessions path for a stock VSCodium surface.
 + */
 +registerAction2(class extends Action2 {
 +	constructor() {
@@ -1435,8 +1435,8 @@ index 00000000..6887d7cb
 +		});
 +	}
 +	run(accessor: ServicesAccessor): void {
-+		rpLog('debug', 'browser title-bar action: open Extensions viewlet');
-+		accessor.get(ICommandService).executeCommand('workbench.view.extensions');
++		rpLog('debug', 'browser title-bar action: install AI extensions helper');
++		accessor.get(ICommandService).executeCommand('remotepair.ensureExtensions');
 +	}
 +});
 +

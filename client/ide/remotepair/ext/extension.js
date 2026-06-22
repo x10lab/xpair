@@ -1495,9 +1495,7 @@ function activate(context) {
         vscode.window.showErrorMessage(`Xpair: Add Root failed. ${e && e.message ? e.message : e}`);
       })
     ),
-    vscode.commands.registerCommand("remotepair.openSettings", () => {
-      vscode.commands.executeCommand("workbench.action.openSettings");
-    }),
+    vscode.commands.registerCommand("remotepair.openSettings", () => runSetup()),
     vscode.commands.registerCommand("remotepair.showLogs", () =>
       showLogs().catch((e) => {
         log(`showLogs: ${e && e.message ? e.message : e}`, "error");
