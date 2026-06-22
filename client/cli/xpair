@@ -10,7 +10,9 @@
 #   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
 #   xpair config [list|get <key>|set <key> <value>|maps]
-#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|codex|opencode).
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|codex|opencode), mode (local|auto).
+#   xpair mode [status|local|auto]
+#                              Transient local mode: launch/attach use local only until the remote host is reachable again.
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
@@ -52,6 +54,7 @@ APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/xpair.approve-request}"
 LOG_FILE="${LOG_FILE:-$RP_DIR/logs/xpair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$RP_DIR/logs/xpair.heartbeat}"
 REMOTE_HOST="${REMOTE_HOST:-}"
+LOCAL_MODE="${LOCAL_MODE:-0}"
 FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"     # client::host mappings (legacy SYNC_ROOTS compatible)
 LAUNCHER="${LAUNCHER:-$RP_DIR/bin/xpair-launch}"
 # Terminal app for open-gui/onboard. Default iterm2 if iTerm installed, else terminal.
@@ -96,6 +99,21 @@ canonical_engine() {
     codex|opencode) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
+}
+
+case "$LOCAL_MODE" in
+  1|true|TRUE|yes|YES|on|ON|local) LOCAL_MODE=1 ;;
+  *) LOCAL_MODE=0 ;;
+esac
+local_mode_on() { [ "${LOCAL_MODE:-0}" = 1 ]; }
+mode_label() {
+  if local_mode_on; then
+    printf 'local (transient)'
+  elif [ -n "$REMOTE_HOST" ]; then
+    printf 'auto (remote)'
+  else
+    printf 'auto (local)'
+  fi
 }
 
 STATUS_FILE="${STATUS_FILE:-$RP_DIR/logs/status.json}"
@@ -157,6 +175,31 @@ rp_set() {
   { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
+set_local_mode() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|local)
+      rp_set LOCAL_MODE 1
+      LOCAL_MODE=1
+      ok "local mode enabled — launch/attach will use local only until the host is reachable again"
+      ;;
+    0|false|FALSE|no|NO|off|OFF|auto|remote|"")
+      rp_set LOCAL_MODE 0
+      LOCAL_MODE=0
+      ok "local mode cleared"
+      ;;
+    *)
+      echo "mode must be local or auto" >&2
+      return 2
+      ;;
+  esac
+}
+
+clear_local_mode_quiet() {
+  local_mode_on || return 0
+  rp_set LOCAL_MODE 0
+  LOCAL_MODE=0
+}
+
 # ── mappings ──
 map_client_of() { printf '%s' "${1%%::*}"; }
 map_host_of()   { local p="$1" h="${1#*::}"; [ "$h" = "$p" ] && h="$p"; printf '%s' "$h"; }
@@ -203,7 +246,7 @@ cmd_map() {
 
 cmd_ls_json() {
   local target host raw
-  if [ -n "$REMOTE_HOST" ]; then
+  if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
     target=remote
     host="$REMOTE_HOST"
     raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null || true)"
@@ -245,7 +288,7 @@ cmd_ls() {
     return
   fi
   cmd_map list; echo
-  if [ -n "$REMOTE_HOST" ]; then
+  if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
     echo "[$REMOTE_HOST] tmux-aqua sessions:"
     ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S '$AQUA_SOCK' list-sessions 2>/dev/null" \
       | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none or unreachable)"
@@ -323,6 +366,7 @@ cmd_config() {
     list|"")
       c "Xpair client config"
       printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(local-only)}"
+      printf '%-12s %s\n' "mode"     "$(mode_label)"
       printf '%-12s %s\n' "terminal" "$TERMINAL_APP"
       printf '%-12s %s\n' "engine"   "${ENGINE:-claude}"
       printf '%-12s %s\n' "mappings" "$([ -n "$FOLDER_MAPS" ] && printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c . || echo 0)"
@@ -330,9 +374,11 @@ cmd_config() {
     get)
       case "${2:-}" in
         host)     printf '%s\n' "$REMOTE_HOST" ;;
+        mode)     mode_label; printf '\n' ;;
+        local_mode) printf '%s\n' "$LOCAL_MODE" ;;
         terminal) printf '%s\n' "$TERMINAL_APP" ;;
         engine)   printf '%s\n' "${ENGINE:-claude}" ;;
-        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|codex|opencode
+        *) echo "config get <host|mode|local_mode|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|codex|opencode
       esac
       ;;
     set)
@@ -347,8 +393,12 @@ cmd_config() {
           if [ -n "$val" ]; then
             ok "host set: $val"
             printf '  Checking SSH ... '
-            if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then echo "OK (key auth)"
-            else echo "FAILED"; warn "SSH key auth failed — run 'xpair doctor' for guidance."; fi
+            if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then
+              echo "OK (key auth)"
+              clear_local_mode_quiet
+            else
+              echo "FAILED"; warn "SSH key auth failed — run 'xpair doctor' for guidance."
+            fi
           else
             ok "host cleared (local-only mode)"
           fi
@@ -370,11 +420,27 @@ cmd_config() {
             echo "config set engine <claude|claudecode|codex|opencode>" >&2; return 2
           fi
           ;;
-        *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
+        mode|local_mode)
+          set_local_mode "$val"
+          ;;
+        *) echo "config set <host|mode|local_mode|terminal|engine> <value>" >&2; return 2 ;;
       esac
       ;;
     maps) cmd_map list ;;
     *) echo "config [list|get <key>|set <key> <value>|maps]" >&2; return 2 ;;
+  esac
+}
+
+cmd_mode() {
+  case "${1:-status}" in
+    status|"")
+      c "Xpair mode"
+      printf '%-12s %s\n' "mode" "$(mode_label)"
+      printf '%-12s %s\n' "host" "${REMOTE_HOST:-(none)}"
+      ;;
+    local) set_local_mode local ;;
+    auto|remote|off) set_local_mode auto ;;
+    *) echo "mode [status|local|auto]" >&2; return 2 ;;
   esac
 }
 
@@ -582,9 +648,12 @@ cmd_onboard() {
 }
 
 cmd_launch() {
-  local pass=() dir="" engine="" engine_explicit=0
+  local pass=() dir="" engine="" engine_explicit=0 target_explicit=0 target_pref=""
   while [ $# -gt 0 ]; do case "$1" in
-    --local|--remote|--fresh|--yes|-y) pass+=("$1"); [ "$1" = "--yes" ] || [ "$1" = "-y" ] && RP_YES=1; shift ;;
+    --local) pass+=("$1"); target_explicit=1; target_pref=local; shift ;;
+    --remote) pass+=("$1"); target_explicit=1; target_pref=remote; shift ;;
+    --fresh) pass+=("$1"); shift ;;
+    --yes|-y) pass+=("$1"); RP_YES=1; shift ;;
     --engine) engine="${2:-}"; engine_explicit=1; shift 2 ;;        # per-launch override of client.env ENGINE
     *) dir="$1"; shift ;;
   esac; done
@@ -596,7 +665,16 @@ cmd_launch() {
     fi
   fi
   dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
-  if ! is_mapped "$dir" && [ -n "$REMOTE_HOST" ] && [ "$RP_YES" != 1 ]; then
+  if local_mode_on && [ "$target_explicit" = 0 ]; then
+    pass+=("--local")
+  fi
+  local should_probe_remote=0
+  if [ -n "$REMOTE_HOST" ]; then
+    if [ "$target_pref" = remote ] || { [ -z "$target_pref" ] && ! local_mode_on; }; then
+      should_probe_remote=1
+    fi
+  fi
+  if ! is_mapped "$dir" && [ "$should_probe_remote" = 1 ] && [ "$RP_YES" != 1 ]; then
     # Active host probe: only when the host is reachable. Resolve the candidate host
     # path and check whether it actually exists on the host.
     if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" true 2>/dev/null; then
@@ -662,7 +740,13 @@ cmd_attach() {
 
   local target="$target_pref"
   if [ -z "$target" ]; then
-    [ -n "$REMOTE_HOST" ] && target=remote || target=local
+    if local_mode_on; then
+      target=local
+    elif [ -n "$REMOTE_HOST" ]; then
+      target=remote
+    else
+      target=local
+    fi
   fi
 
   if [ "$target" = local ]; then
@@ -674,8 +758,12 @@ cmd_attach() {
 
   [ "$target" = remote ] || { echo "unknown attach target: $target" >&2; return 2; }
   [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — use --local or 'xpair config set host <ssh-host>'" >&2; return 1; }
-  ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") has-session -t $(sh_quote "=$session")" \
-    || { echo "session not found on $REMOTE_HOST: $session" >&2; return 4; }
+  if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") has-session -t $(sh_quote "=$session")"; then
+    clear_local_mode_quiet
+  else
+    echo "session not found on $REMOTE_HOST: $session" >&2
+    return 4
+  fi
   printf '\033]2;%s\007' "$session"
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
@@ -728,6 +816,7 @@ cmd_status() {
   else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
   in_host_session && printf '%-14s %s\n' "this session" "INSIDE Xpair host → computer-use available here"
   printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(local-only)}"
+  printf '%-14s %s\n' "mode" "$(mode_label)"
   printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
   return 0
 }
@@ -1647,6 +1736,7 @@ case "${1:-help}" in
   map)     shift; cmd_map "$@" ;;
   roots)   shift; cmd_map "$@" ;;     # legacy alias
   config)  shift; cmd_config "$@" ;;
+  mode)    shift; cmd_mode "$@" ;;
   onboard) cmd_onboard ;;
   open-gui) shift; cmd_open_gui "$@" ;;
   discover) shift; cmd_discover "$@" ;;
@@ -1663,6 +1753,6 @@ case "${1:-help}" in
   self-update) shift; cmd_self_update "$@" ;;
   update)  shift; cmd_update "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,29p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,29p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,31p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,31p' "$0"; exit 2 ;;
 esac

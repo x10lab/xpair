@@ -12,6 +12,7 @@
 #   • computer-use: session is added to the patched tmux-aqua server socket started by
 #                   XpairHost → claude inherits its permissions
 #   • non-interactive: RP_YES=1 (or --yes) skips all prompts (auto dir creation, etc.)
+#   • transient local mode: LOCAL_MODE=1 forces local target selection until remote SSH is restored
 #
 # Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>] [<dir>]
 #         (typically called via 'xpair launch <dir>' or a Finder Service)
@@ -25,6 +26,7 @@ for _f in common host client; do
   [ -f "$RP_DIR/$_f.env" ] && { set -a; . "$RP_DIR/$_f.env"; set +a; }
 done
 REMOTE_HOST="${REMOTE_HOST:-}"
+LOCAL_MODE="${LOCAL_MODE:-0}"
 APP_NAME="${APP_NAME:-XpairHost}"
 BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.xpair-host}"
 REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin}"          # path evaluated on the remote side (preserve quoting)
@@ -58,6 +60,24 @@ if [ -n "$REMOTE_HOST" ] && ! valid_host "$REMOTE_HOST"; then
   printf 'invalid REMOTE_HOST ignored: %s\n' "$REMOTE_HOST" >&2
   REMOTE_HOST=""
 fi
+
+case "$LOCAL_MODE" in
+  1|true|TRUE|yes|YES|on|ON|local) LOCAL_MODE=1 ;;
+  *) LOCAL_MODE=0 ;;
+esac
+local_mode_on() { [ "${LOCAL_MODE:-0}" = 1 ]; }
+
+rp_set() {
+  local k="$1" v="$2" f="$RP_DIR/client.env"
+  mkdir -p "$(dirname "$f")"; touch "$f"
+  { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+clear_local_mode_quiet() {
+  local_mode_on || return 0
+  rp_set LOCAL_MODE 0
+  LOCAL_MODE=0
+}
 
 # Source the shared logger; no-op fallback for partially-updated clients.
 # shellcheck disable=SC1090
@@ -474,6 +494,8 @@ choose_engine
 
 if [ -n "$TARGET_PREF" ]; then
   TARGET="$TARGET_PREF"
+elif local_mode_on; then
+  TARGET=local
 elif [ -z "$REMOTE_HOST" ] || [ "$LOCAL_HOST" = "$REMOTE_HOST" ]; then
   TARGET=local
 elif [ "$RP_YES" = 1 ]; then
@@ -520,6 +542,7 @@ for p in (d.get("Peer") or {}).values():
     launch_local
   fi
 fi
+clear_local_mode_quiet
 
 # ---- check that the host folder (mapped path) exists ----
 # Distinguish ssh failure (timeout/hiccup) from "directory genuinely missing" —
