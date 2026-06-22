@@ -112,6 +112,27 @@ cp "$HOME/.local/bin/tmux-aqua" "$HELP/tmux-aqua"; chmod +x "$HELP/tmux-aqua"
 [ -x "$HELP/tmux-aqua" ] || { echo "✗ tmux-aqua bundle embed verification failed: $HELP/tmux-aqua" >&2; exit 1; }
 echo "  embedded: tmux-aqua ($("$HELP/tmux-aqua" -V 2>/dev/null || echo '?')) + xpair-approve-router.sh + ocr-find"
 
+# mosh-server = the host side of the resilient UDP attach. The host arrives via SCP (install-host) with no
+# Homebrew, so it cannot `brew install mosh`. We ship a self-contained STATIC mosh-server (built against
+# protobuf 3.21.12, pre-abseil → 0 brew dylib deps; see build-mosh.sh) so attach works brew-free. If missing,
+# build it; if the build fails, do NOT hard-fail — the CLI falls back to `ssh -t` when mosh-server is absent.
+if [ ! -x "$HOME/.local/bin/mosh-server" ]; then
+  echo "  mosh-server missing (~/.local/bin) → auto-running ./host/build-mosh.sh ..."
+  ./host/build-mosh.sh || echo "⚠ mosh-server build failed — bundling without it (attach falls back to ssh)" >&2
+fi
+if [ -x "$HOME/.local/bin/mosh-server" ]; then
+  cp "$HOME/.local/bin/mosh-server" "$HELP/mosh-server"; chmod +x "$HELP/mosh-server"
+  [ -x "$HELP/mosh-server" ] || { echo "✗ mosh-server bundle embed verification failed: $HELP/mosh-server" >&2; exit 1; }
+  # Guard the whole point of the static build: a brew dylib link means it won't run on a brew-less host.
+  if otool -L "$HELP/mosh-server" | tail -n +2 | grep -q "/opt/homebrew"; then
+    echo "✗ embedded mosh-server links a /opt/homebrew dylib — not self-contained, will break on a brew-less host" >&2
+    otool -L "$HELP/mosh-server" | grep "/opt/homebrew" >&2; exit 1
+  fi
+  echo "  embedded: mosh-server ($("$HELP/mosh-server" --version 2>&1 | head -1 || echo '?'))"
+else
+  echo "  mosh-server not embedded (build unavailable) — host attach will use ssh fallback"
+fi
+
 # ── the 2 screenshare binaries (screen sidecar + rp-screencap helper) → Contents/Helpers ──
 # Since the SSH deploy channel was retired, this bundle is the only delivery path for the two binaries.
 #   • screen           v1 (JPEG/WS) + v2 (WebRTC/H.264) sidecar. v2 requires --features webrtc.

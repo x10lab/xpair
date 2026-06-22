@@ -88,7 +88,7 @@ it "mosh-line/absolute-tmux-aqua"
 assert_contains "$mline" "/.local/bin/tmux-aqua" "mosh line contains absolute-path tmux-aqua"
 
 it "mosh-line/mosh-server-path"
-assert_contains "$mline" "--server=/opt/homebrew/bin/mosh-server" "contains mosh --server absolute path"
+assert_contains "$mline" "--server=$HOME/.local/bin/mosh-server" "contains mosh --server bundled host path"
 
 it "mosh-line/attach-d"
 assert_contains "$mline" "attach" "mosh line contains attach"

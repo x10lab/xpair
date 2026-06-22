@@ -37,8 +37,8 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Releasing v$v"
 
-      - name: Install build deps (tmux-aqua + cliclick for bundle embed)
-        run: brew install libevent ncurses utf8proc cliclick
+      - name: Install build deps (tmux-aqua + mosh-server + cliclick for bundle embed)
+        run: brew install libevent ncurses utf8proc cliclick cmake
 
       # The screen sidecar (Contents/Helpers/screen, --features webrtc) is built by
       # build-host.sh via cargo. macos-latest runners have no Rust toolchain, so install it.

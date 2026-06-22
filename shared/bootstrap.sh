@@ -37,7 +37,7 @@ ask()  { local q="$1" v=""; { printf '%s' "$q" > /dev/tty; read -r v < /dev/tty;
 c "prereq check (role=$ROLE)"
 [ "$(uname -s)" = "Darwin" ] || die "macOS only (current: $(uname -s))"
 command -v git >/dev/null   || die "git not found — run xcode-select --install and try again"
-command -v mosh >/dev/null   || warn "mosh not found — remote attach falls back to ssh (brew install mosh recommended)"
+command -v mosh >/dev/null   || warn "mosh not found — client attach falls back to ssh (brew install mosh on the client for resilient reconnect; the host gets mosh-server from XpairHost.app)"
 ok "prereq OK"
 
 # ── 2. clone / update ──

@@ -40,7 +40,7 @@ it "attach/remote-existing-session"
 assert_rc "$RP_RC" 0 "remote attach succeeds"
 assert_contains "$MLOG" "ssh|-n|-o|BatchMode=yes|-o|ConnectTimeout=4|test-host" "checks remote session existence over ssh"
 assert_contains "$MLOG" "has-session -t '=$SESSION'" "checks exact remote session name"
-assert_contains "$MLOG" "mosh|--server=/opt/homebrew/bin/mosh-server|test-host" "uses mosh for remote attach"
+assert_contains "$MLOG" "mosh|--server=$HOME/.local/bin/mosh-server|test-host" "uses mosh for remote attach"
 assert_contains "$MLOG" "attach|-d|-t|=$SESSION" "attaches exact remote session"
 cleanup_sandbox
 
