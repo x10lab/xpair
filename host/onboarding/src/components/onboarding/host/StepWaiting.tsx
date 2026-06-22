@@ -5,7 +5,11 @@ export type ConnectedClient = { name: string; user: string; ageSec: number };
 
 // Connect step: guide the user to bring up Xpair on their other Mac, then poll the host bridge
 // for connected clients. Read-only — there is no disconnect/revoke, only live status.
-export function StepWaiting() {
+export function StepWaiting({
+  onConnectedChange,
+}: {
+  onConnectedChange?: (connected: boolean) => void;
+} = {}) {
   const [dots, setDots] = useState(1);
   const [hostname, setHostname] = useState("…");
   const [clients, setClients] = useState<ConnectedClient[]>([]);
@@ -36,6 +40,12 @@ export function StepWaiting() {
   }, [clients.length]);
 
   const connected = clients.length > 0;
+
+  // Lift connection status up so the wizard can hold the Connect step's Next until a real client
+  // connects (Q0543: host onboarding must not complete with no connected client).
+  useEffect(() => {
+    onConnectedChange?.(connected);
+  }, [connected, onConnectedChange]);
 
   return (
     <div className="flex flex-col items-center text-center">

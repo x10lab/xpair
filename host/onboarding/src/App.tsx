@@ -37,6 +37,8 @@ export default function App() {
   const [engine, setEngine] = useState<EngineId>("claude");
   // HARD-GATE for the Engine step: the chosen engine must be installed AND signed in on this host.
   const [engineReady, setEngineReady] = useState(false);
+  // Q0543: with no connected client, the Connect step must hold rather than report completion.
+  const [connected, setConnected] = useState(false);
 
   // The Permissions "Next" gate requires Accessibility + Screen Recording (both required:
   // approve auto-click needs AX, screen-share/OCR needs SR). Full Disk Access is recommended.
@@ -45,7 +47,8 @@ export default function App() {
     [perm.ax, perm.sr],
   );
 
-  const nextDisabled = (w.index === 1 && !ready) || (w.index === 2 && !engineReady);
+  const nextDisabled =
+    (w.index === 1 && !ready) || (w.index === 2 && !engineReady) || (w.index === 3 && !connected);
 
   const handleNext = useCallback(() => {
     w.next();
@@ -76,7 +79,7 @@ export default function App() {
         {w.index === 2 && (
           <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
         )}
-        {w.index === 3 && <StepWaiting />}
+        {w.index === 3 && <StepWaiting onConnectedChange={setConnected} />}
         {w.index === 4 && <StepDone />}
       </AnimatedStep>
     </WizardShell>
