@@ -56,7 +56,15 @@ const S = {
   DONE: 8,
 } as const;
 
-type LiveState = "idle" | "checking" | "reachable" | "rekeyed" | "offline";
+type LiveState =
+  | "idle"
+  | "checking"
+  | "reachable"
+  | "rekeyed"
+  | "offline"
+  | "setup"
+  | "host-app"
+  | "permissions";
 
 // CLI readiness — needed only by the CLI-dependent steps (Discover/Connect/Mappings), which shell
 // out to the `xpair` CLI. The CLI-free steps (Welcome/Consent/Installing/Grant) run regardless;
@@ -188,6 +196,7 @@ export default function App() {
   // Reconnect reachability, lifted from the Reconnect step so Next gates until the host answers.
   const [reconnectReady, setReconnectReady] = useState(false);
   const [live, setLive] = useState<LiveState>("idle");
+  const [liveErr, setLiveErr] = useState("");
 
   // Manual-entry fallback reuses the existing StepConnect machine.
   const [manual, setManual] = useState(false);
@@ -226,6 +235,7 @@ export default function App() {
       setInstallState("idle");
       setReconnectReady(false);
       setLive("idle");
+      setLiveErr("");
       w.goTo(S.CONNECT, "next");
     },
     [w],
@@ -234,18 +244,68 @@ export default function App() {
   const onManual = useCallback(() => {
     setManual(true);
     setPeer(null);
+    setLive("idle");
+    setLiveErr("");
     w.goTo(S.CONNECT, "next");
   }, [w]);
 
-  // Liveness gate before Done: ssh true + host-app/server reachability. Blocks landing Done on a
-  // stale config to an offline host; flags a re-keyed host (TOFU mismatch) for re-pairing.
+  // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
+  // setup, host-app, permission, and SSH liveness probes all pass.
   const runLivenessCheck = useCallback(async () => {
-    const target = manual ? host : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+    const target = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
     if (!target) {
+      setLiveErr("No host selected.");
       setLive("offline");
       return;
     }
     setLive("checking");
+    setLiveErr("");
+
+    if (isSetup && installState !== "done") {
+      setLiveErr("Host setup has not finished. Go back and retry setup.");
+      setLive("setup");
+      return;
+    }
+
+    try {
+      const app = await window.remotepair.hostAppStatus(target);
+      setHostApp(app);
+      if (!app.installed || !app.compatible) {
+        setLiveErr(
+          !app.installed
+            ? "Host has no Xpair host app. Install it on the host before finishing."
+            : app.err || "Host version is incompatible with this client.",
+        );
+        setLive("host-app");
+        return;
+      }
+    } catch (e) {
+      setLiveErr(`Host app check failed: ${String(e)}`);
+      setLive("host-app");
+      return;
+    }
+
+    try {
+      const perms = await window.remotepair.hostPermissions({ host: target });
+      const ready = perms.alive && perms.ax && perms.sr;
+      setGrantReady(ready);
+      if (!ready) {
+        setLiveErr(
+          perms.err ||
+            (!perms.alive
+              ? "Host app is not reporting permission status."
+              : "Grant Accessibility and Screen Recording on the host before finishing."),
+        );
+        setLive("permissions");
+        return;
+      }
+    } catch (e) {
+      setGrantReady(false);
+      setLiveErr(`Permission check failed: ${String(e)}`);
+      setLive("permissions");
+      return;
+    }
+
     try {
       const r = await window.remotepair.sshReachable(target);
       if (r.reachable) {
@@ -255,11 +315,13 @@ export default function App() {
       }
       // A host-key mismatch surfaces as an ssh failure mentioning the host key; treat that as a
       // re-key (TOFU mismatch) so the user re-pairs instead of silently failing.
+      setLiveErr(r.err || "Host did not respond.");
       setLive(/host key|REMOTE HOST IDENTIFICATION/i.test(r.err || "") ? "rekeyed" : "offline");
-    } catch {
+    } catch (e) {
+      setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [manual, host, peer, w]);
+  }, [manual, host, peer, isSetup, installState, w]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
@@ -343,11 +405,17 @@ export default function App() {
     w.prev();
   };
 
-  // Unified action label — always "Next" (no step-specific phrases); only the in-flight liveness
-  // check on the Mappings step swaps in a transient "Checking…".
+  // Mappings runs the final gate before Done, so failed probes keep a retry-oriented label.
   const nextLabel =
     w.index === S.MAPPINGS && live === "checking"
       ? "Checking…"
+      : w.index === S.MAPPINGS &&
+        (live === "offline" ||
+          live === "rekeyed" ||
+          live === "setup" ||
+          live === "host-app" ||
+          live === "permissions")
+      ? "Re-check"
       : w.index === S.MAPPINGS && mappings.length === 0
       ? "Skip for now"
       : "Next";
@@ -386,11 +454,23 @@ export default function App() {
           <p className="truncate text-center text-xs text-muted-foreground">
             Set up {engine} on the host to continue.
           </p>
-        ) : w.index === S.MAPPINGS && (live === "offline" || live === "rekeyed") ? (
-          <p className="truncate text-center text-xs text-destructive">
+        ) : w.index === S.MAPPINGS &&
+          (live === "offline" ||
+            live === "rekeyed" ||
+            live === "setup" ||
+            live === "host-app" ||
+            live === "permissions") ? (
+          <p className="text-center text-xs leading-snug text-destructive">
             {live === "rekeyed"
               ? "Host identity changed — re-pair."
-              : "Host unreachable — re-discover."}
+              : liveErr ||
+                (live === "offline"
+                  ? "Host unreachable — re-discover."
+                  : live === "setup"
+                  ? "Host setup has not finished."
+                  : live === "host-app"
+                  ? "Host app check failed."
+                  : "Host permissions are not ready.")}
           </p>
         ) : null
       }
