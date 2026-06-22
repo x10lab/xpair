@@ -1417,7 +1417,8 @@ index 00000000..6887d7cb
 +});
 +
 +/**
-+ * Browser title-bar action: Extensions → opens the Extensions viewlet.
++ * Browser title-bar action: Extensions helper. Keep this affordance Browser-local: opening the
++ * global Extensions viewlet would replace the Browser frame and break the mapping SSOT surface.
 + */
 +registerAction2(class extends Action2 {
 +	constructor() {
@@ -1435,8 +1436,7 @@ index 00000000..6887d7cb
 +		});
 +	}
 +	run(accessor: ServicesAccessor): void {
-+		rpLog('debug', 'browser title-bar action: open Extensions viewlet');
-+		accessor.get(ICommandService).executeCommand('workbench.view.extensions');
++		rpLog('debug', 'browser title-bar action: Extensions helper stays in Browser');
 +	}
 +});
 +
