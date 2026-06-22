@@ -71,8 +71,14 @@
     const pc = new RTCPeerConnection({ iceServers: [] }); // host candidates (loopback/LAN/VPN)
     pc2 = pc;
     pc.addTransceiver("video", { direction: "recvonly" });
-    // View-only: any host-created input DataChannels (rp-ctl / rp-move) are
-    // simply ignored — we never wire pc.ondatachannel and never send anything.
+    // View-only: close any host-created DataChannel, including legacy
+    // rp-ctl/rp-move input channels. The client never creates a channel or
+    // sends pointer, wheel, text, or keyboard input.
+    pc.ondatachannel = function (ev) {
+      const channel = ev && ev.channel;
+      if (!channel) return;
+      try { channel.close(); } catch (_e) {}
+    };
 
     let sock;
     const isCurrent = () => generation === v2Generation && pc2 === pc && ws === sock;
