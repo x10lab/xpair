@@ -13,13 +13,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { capture, EVENTS, PATHS, REASONS, type Reason, type ConnPath } from "@/lib/telemetry";
 
-export type ConnState = "idle" | "checking" | "reachable" | "failed";
+export type ConnState = "idle" | "checking" | "reachable" | "rekeyed" | "failed";
 
 // Map a controlled-reason from the SSH probe outcome (NEVER the raw stderr string — that leaks
 // hostnames/paths). We only have a boolean + opaque err here, so failures bucket to host_unreachable
 // (the dominant cause for a BatchMode probe); the bridge re-coerces anything unknown to `unknown`.
 function reasonFromProbe(): Reason {
   return REASONS.HOST_UNREACHABLE;
+}
+
+function isHostKeyMismatch(err: string): boolean {
+  return /host key|REMOTE HOST IDENTIFICATION/i.test(err);
 }
 
 type Props = {
@@ -105,7 +109,7 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
         });
       } else {
         setErr(r.err || "Host did not respond.");
-        setState("failed");
+        setState(isHostKeyMismatch(r.err || "") ? "rekeyed" : "failed");
         // host_connect_failed + ssh_config_failed: enum reason only (never the raw r.err string).
         const reason = reasonFromProbe();
         capture(EVENTS.HOST_CONNECT_FAILED, { path, reason });
@@ -252,20 +256,22 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
         </div>
       )}
 
-      {state === "failed" && (
+      {(state === "failed" || state === "rekeyed") && (
         <div className="mt-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
           <div className="flex items-center gap-2">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground">
               <X className="h-3.5 w-3.5" />
             </span>
             <span className="text-sm font-medium text-foreground">
-              Couldn't reach host
+              {state === "rekeyed" ? "Host identity changed" : "Couldn't reach host"}
             </span>
           </div>
           <p className="mt-2 flex items-start gap-1.5 pl-7 text-xs text-muted-foreground">
             <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
             <span className="min-w-0 break-words font-mono">
-              {err || "SSH probe failed."}
+              {state === "rekeyed"
+                ? "SSH host key changed. Re-pair this host or update known_hosts, then retry."
+                : err || "SSH probe failed."}
             </span>
           </p>
           <div className="mt-3 pl-7">

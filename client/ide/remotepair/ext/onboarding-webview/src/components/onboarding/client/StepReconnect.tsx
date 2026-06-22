@@ -3,7 +3,11 @@ import { AlertCircle, Check, Loader2, RotateCw, ShieldCheck } from "lucide-react
 import type { Peer } from "@/global";
 import { FingerprintPanel } from "./FingerprintPanel";
 
-type ReconStatus = "checking" | "ready" | "offline";
+type ReconStatus = "checking" | "ready" | "rekeyed" | "offline";
+
+function isHostKeyMismatch(err: string): boolean {
+  return /host key|REMOTE HOST IDENTIFICATION/i.test(err);
+}
 
 type Props = {
   peer: Peer;
@@ -37,7 +41,7 @@ export function StepReconnect({ peer, onReady }: Props) {
       try {
         const r = await window.remotepair.sshReachable(host);
         if (!alive) return;
-        setStatus(r.reachable ? "ready" : "offline");
+        setStatus(r.reachable ? "ready" : isHostKeyMismatch(r.err || "") ? "rekeyed" : "offline");
         onReady(r.reachable);
       } catch {
         if (!alive) return;
@@ -70,17 +74,25 @@ export function StepReconnect({ peer, onReady }: Props) {
       <div
         className={
           "mb-5 flex h-14 w-14 items-center justify-center rounded-full " +
-          (status === "offline" ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary")
+          (status === "offline" || status === "rekeyed"
+            ? "bg-destructive/10 text-destructive"
+            : "bg-primary/10 text-primary")
         }
       >
         <ShieldCheck className="h-6 w-6" />
       </div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
-        {status === "offline" ? "Can't reach the host" : "Reconnect to your host"}
+        {status === "rekeyed"
+          ? "Host identity changed"
+          : status === "offline"
+          ? "Can't reach the host"
+          : "Reconnect to your host"}
       </h2>
       <p className="mt-2 max-w-xs text-sm text-muted-foreground">
         <span className="font-semibold text-foreground">{peer.name}</span> is already set up.{" "}
-        {status === "offline"
+        {status === "rekeyed"
+          ? "Its SSH host key changed. Re-pair it or update known_hosts before continuing."
+          : status === "offline"
           ? "It's not answering over SSH right now — make sure it's awake and on the network."
           : "Reconnecting with your existing key — no PIN or password needed."}
       </p>
@@ -98,7 +110,7 @@ export function StepReconnect({ peer, onReady }: Props) {
             Reachable — your key works. Continue.
           </span>
         )}
-        {status === "offline" && (
+      {(status === "offline" || status === "rekeyed") && (
           <button
             type="button"
             onClick={() => setAttempt((a) => a + 1)}
@@ -110,10 +122,14 @@ export function StepReconnect({ peer, onReady }: Props) {
         )}
       </div>
 
-      {status === "offline" && (
+        {(status === "offline" || status === "rekeyed") && (
         <div className="mt-3 flex items-start gap-2 text-[11.5px] text-muted-foreground">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>If it stays unreachable, the host may have moved networks — re-discover it.</span>
+          <span>
+            {status === "rekeyed"
+              ? "If this is your host, remove the stale SSH key and re-discover it."
+              : "If it stays unreachable, the host may have moved networks — re-discover it."}
+          </span>
         </div>
       )}
 

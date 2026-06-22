@@ -213,16 +213,16 @@ export default function App() {
   // Reconnect: this client already authorized with the host (ssh-config entry) and the app is
   // installed, so there's nothing to install — just re-persist REMOTE_HOST and confirm reachability.
   const isReconnect = peer?.status === "reconnect";
-  // Everything that is NOT a reconnect takes the account-password / install path (this covers the
-  // old "setup" status AND the old PIN "connect" status — a running host whose key isn't authorized
-  // yet). Any unknown status falls here too, so the UI never crashes on an unrecognized value.
-  const isSetup = !!peer && !isReconnect;
+  const isConnect = peer?.status === "connect";
+  const isSetup = !!peer && !isReconnect && !isConnect;
 
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
     (p: Peer) => {
       setManual(false);
       setPeer(p);
+      setHost(p.status === "connect" ? p.target || p.addrs?.[0] || p.name || "" : "");
+      setConnState("idle");
       setInstallState("idle");
       setReconnectReady(false);
       setLive("idle");
@@ -269,9 +269,13 @@ export default function App() {
     ? manualReady
     : isReconnect
     ? reconnectReady
+    : isConnect
+    ? manualReady
     : true;
   // The SSH target for the host-app probe on the non-setup paths.
-  const connectTarget = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+  const connectTarget = manual || isConnect
+    ? host.trim()
+    : peer?.target || peer?.addrs?.[0] || peer?.name || "";
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
   // reconnect, the host app must be installed AND compatible before Next.
   const requiresHostApp = w.index === S.CONNECT && !isSetup;
@@ -442,7 +446,7 @@ export default function App() {
           <StepDiscover onSelect={onSelectPeer} onManual={onManual} />
         )}
         {w.index === S.CONNECT &&
-          (manual || !peer ? (
+          (manual || isConnect || !peer ? (
             <StepConnect
               host={host}
               setHost={setHost}
@@ -452,7 +456,6 @@ export default function App() {
           ) : isReconnect ? (
             <StepReconnect peer={peer} onReady={setReconnectReady} />
           ) : (
-            // Everything else (old "setup" + old PIN "connect" + unknown status) → password path.
             <StepSetupPassword
               peer={peer}
               user={account}
