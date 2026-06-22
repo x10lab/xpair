@@ -83,7 +83,14 @@ test("Q0343 host onboarding does not install, open, or operate the client workbe
 
   assert.match(clientBridge, /async installHost\(\{ host, user, password \} = \{\}\)/);
   assert.match(clientExtension, /vscode\.commands\.registerCommand\("remotepair\.openRemoteDesktop"/);
-  assert.match(clientExtension, /vscode\.openFolder/);
+  // The client (not the host) operates the workbench's folder roots. Per round-1
+  // decision #3 (Xpair Sessions only — native workbench surfaces stay hidden during
+  // owned Xpair flows) the connect flow routes through Xpair surfaces and reconciles
+  // Browser roots via updateWorkspaceFolders, rather than opening a separate
+  // open-remote-ssh window. See ssh-connect-flow-requirement.test.js, which asserts
+  // the client extension must NOT contain vscode.openFolder.
+  assert.match(clientExtension, /vscode\.workspace\.updateWorkspaceFolders/);
+  assert.doesNotMatch(clientExtension, /vscode\.openFolder/);
 });
 
 console.log(`${__filename}`);
