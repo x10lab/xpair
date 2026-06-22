@@ -116,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.
 xpair install-host --host <user@host>
 ```
 
-The host app isn't a separate download — the client carries the signed `XpairHost.app` and `xpair install-host` copies it over (the same step onboarding runs for you).
+You normally don't download the host app yourself — the client carries the signed `XpairHost.app` and `xpair install-host` copies it over (the same step onboarding runs for you). It's still published as a release asset if you ever need it directly.
 
 Uninstall: `~/.local/share/xpair/shared/uninstall.sh [--purge]`.
 
@@ -202,7 +202,7 @@ Still stuck? [Open an issue](https://github.com/x10lab/xpair/issues) with your v
 
 ## For maintainers
 
-Single monorepo (`host/` + `client/` + `shared/`), built in lockstep. Versions are declared once in `shared/identity/versions.json` (host **0.5.0**, client **0.1.0**, screen-engine **0.1.0**) and verified across consumers; everything is signed with one stable cert (the in-app Updater verifies the leaf CN). The host app is built first and **bundled into the client**, which delivers it to the host via `xpair install-host`; `.github/workflows/release.yml` ships the client cask.
+Single monorepo (`host/` + `client/` + `shared/`), built in lockstep. Versions are declared once in `shared/identity/versions.json` (host **0.5.0**, client **0.1.0**, screen-engine **0.1.0**) and verified across consumers; everything is signed with one stable cert (the in-app Updater verifies the leaf CN). The host app is built first — **published to the release and bundled into the client**, which delivers it to the host via `xpair install-host`. `.github/workflows/release.yml` ships both; users install the client cask and let it push the host.
 
 ```bash
 ./host/build-host.sh                   # → build/XpairHost.app (signed + verified)
