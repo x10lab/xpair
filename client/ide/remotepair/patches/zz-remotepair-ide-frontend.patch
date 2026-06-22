@@ -1913,10 +1913,10 @@ index 0000000..ba861e2
 +}
 diff --git a/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
 new file mode 100644
-index 0000000..bbb8f38
+index 0000000..515cbd0
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,375 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (C2): Favorites store + Favorites view at the bottom of the Browser container.
 + *
@@ -1930,10 +1930,12 @@ index 0000000..bbb8f38
 + *      setSessionLauncher / setAttachedSessionsProvider injection pattern in the terminal
 + *      sidebar, so C3's per-folder star can call toggleFavorite/isFavorite without a hard
 + *      import cycle.
-+ *    - RemotePairFavoritesView (extends ViewPane): renders the favorites as a simple list.
-+ *      Clicking a row or its inline '+' starts a new Sessions terminal rooted at that folder
-+ *      via the existing `remotepair.terminalSidebar.openSessionInFolder` command (single open
-+ *      contract — never creates terminals directly). Each row also has an inline remove (X).
++ *    - RemotePairFavoritesView (extends ViewPane): renders the current Browser-mapped favorites
++ *      as a simple list. Clicking a row or its inline '+' starts a new Sessions terminal rooted at
++ *      that folder via the existing `remotepair.terminalSidebar.openSessionInFolder` command
++ *      (single open contract — never creates terminals directly). Each row also has an inline
++ *      remove (X). Persisted favorites outside current mapped roots stay stored but are hidden so
++ *      Favorites never becomes a second folder-mapping source.
 + *    - Registration of the Favorites view into the Browser VIEW_CONTAINER, ordered AFTER the
 + *      file tree (mirroring how Outline/Timeline register as sibling views).
 + *
@@ -1961,6 +1963,8 @@ index 0000000..bbb8f38
 +import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 +import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 +import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
++import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
 +import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, Extensions as ViewContainerExtensions } from '../../../common/views.js';
@@ -2168,6 +2172,8 @@ index 0000000..bbb8f38
 +		@IThemeService themeService: IThemeService,
 +		@IHoverService hoverService: IHoverService,
 +		@IStorageService storageService: IStorageService,
++		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
++		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 +		@ICommandService private readonly commandService: ICommandService
 +	) {
 +		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -2187,7 +2193,16 @@ index 0000000..bbb8f38
 +		container.classList.add('remotepair-favorites');
 +		this.list = append(container, $('.remotepair-favorites-list'));
 +		this._register(this.store.onDidChangeFavorites(() => this.refresh()));
++		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.refresh()));
 +		this.refresh();
++	}
++
++	private getMappedFavorites(): URI[] {
++		const roots = this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri);
++		if (roots.length === 0) {
++			return [];
++		}
++		return this.store.getFavorites().filter(uri => roots.some(root => this.uriIdentityService.extUri.isEqualOrParent(uri, root)));
 +	}
 +
 +	private refresh(): void {
@@ -2198,10 +2213,10 @@ index 0000000..bbb8f38
 +		this.rowDisposables.clear();
 +		clearNode(list);
 +
-+		const favorites = this.store.getFavorites();
++		const favorites = this.getMappedFavorites();
 +		if (favorites.length === 0) {
 +			const empty = append(list, $('.remotepair-favorites-empty'));
-+			empty.textContent = localize('remotepairFavoritesEmpty', "Star a folder to add it here.");
++			empty.textContent = localize('remotepairFavoritesEmpty', "Star a mapped folder to add it here.");
 +			return;
 +		}
 +
