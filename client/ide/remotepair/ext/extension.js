@@ -571,6 +571,7 @@ class RemoteDesktopPanel {
   _stopV2() {
     this._v2Generation += 1;
     this._v2Active = false;
+    this.post({ type: "v2Cancel" });
     if (this._v2SettleTimer) {
       try { clearTimeout(this._v2SettleTimer); } catch (_e) {}
       this._v2SettleTimer = null;
