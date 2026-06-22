@@ -31,6 +31,24 @@ REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin}"          # path evaluated on the r
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 MOSH_SERVER="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}"
+# ── Transport (single codebase, capability-based) ──
+# mac↔mac → mosh present → mosh (UDP roaming, survives sleep/NAT).
+# win↔mac → no mosh on the Windows client → ssh.
+# Features need not match across platforms; the codebase is one. Decide ONCE here so the
+# interactive attach (Phase 2) and the local tab/zombie detection below stay consistent.
+# Override with XPAIR_TRANSPORT=ssh|mosh (mosh honored only when actually installed).
+if [ "${XPAIR_TRANSPORT:-}" = ssh ]; then
+  TRANSPORT=ssh
+elif command -v mosh >/dev/null 2>&1; then
+  TRANSPORT=mosh
+else
+  TRANSPORT=ssh
+fi
+# Local process that carries the interactive `attach -d -t =SESS` argv (for pgrep tab counting).
+# mosh → the mosh-client; ssh → the ssh client itself. Where pgrep is unavailable (e.g. a bare
+# Git-Bash Windows client) the counting loops below simply find nothing and fall back to _1 —
+# acceptable feature degradation, same code path.
+[ "$TRANSPORT" = mosh ] && _CLIENT_PAT="mosh-client" || _CLIENT_PAT="ssh"
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
 # Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
@@ -365,7 +383,7 @@ _local_next_n() {
 # state: "new/reattach" (N==1, can't cheaply know remote detached state) | "fresh" (N>1)
 _remote_next_n() {
   local base="$1" n=1
-  while pgrep -f "mosh-client.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1; do
+  while pgrep -f "${_CLIENT_PAT}.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1; do
     n=$((n+1))
   done
   if [ "$n" -gt 1 ]; then
@@ -547,19 +565,20 @@ case "$DIR_CHECK" in
 esac
 
 # ── zombie tab cleanup ──
-# It's possible for a mosh-client to be alive (tab open) while the remote server is dead
-# (host rebooted, etc.) — prevent frozen tabs from holding _N numbers indefinitely.
+# It's possible for a transport client (mosh-client / ssh) to be alive (tab open) while the
+# remote server is dead (host rebooted, etc.) — prevent frozen tabs from holding _N numbers.
 # Query the host's attach list and kill local clients with no matching server → tab closes + number freed.
 # On ssh failure, conservatively treat all as alive (use next number — better than killing wrongly).
+# Matches the active transport's client process ($_CLIENT_PAT); a no-pgrep client finds none.
 if ATT_RAW="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" \
      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true")"; then
   ATT="$(printf '%s\n' "$ATT_RAW" | awk '($2!="0"){printf "%s ", $1}')"
-  { pgrep -fl mosh-client 2>/dev/null | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
+  { pgrep -fl "$_CLIENT_PAT" 2>/dev/null | grep -E "attach -d -t =${REMOTE_PROJ}_[0-9]+" || true; } | while IFS= read -r line; do
     pid="${line%% *}"
     s="$(printf '%s' "$line" | grep -oE "${REMOTE_PROJ}_[0-9]+" | head -1)"
     case " $ATT " in
       (*" $s "*) : ;;                              # server exists → live tab
-      (*) printf 'zombie tab cleanup: %s (no matching server) — killing mosh-client %s\n' "$s" "$pid"
+      (*) printf 'zombie tab cleanup: %s (no matching server) — killing client %s (%s)\n' "$s" "$pid" "$_CLIENT_PAT"
           kill "$pid" 2>/dev/null || true ;;
     esac
   done
@@ -661,9 +680,10 @@ export RP_SESSION="$ACTUAL_SESSION"
 # so the Xpair IDE shows it in the Sessions sidebar header before mosh/ssh takes over the tty.
 printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
-# Phase 2: attach via mosh (UDP-based — resilient to tmux freezes / network hiccups).
-# Fall back to ssh -t if mosh is unavailable.
-if command -v mosh >/dev/null 2>&1; then
+# Phase 2: attach using the transport resolved at startup ($TRANSPORT).
+#   mosh — UDP-based, resilient to tmux freezes / network hiccups (mac↔mac).
+#   ssh  — universal TCP path (windows↔mac, or when mosh is absent).
+if [ "$TRANSPORT" = mosh ]; then
   printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
   # Specify full paths for mosh-server and tmux-aqua (patched) — bypasses non-interactive PATH.
   # Commands after mosh '--' are execvp'd directly (no shell) → variables like '$HOME' are NOT expanded.
@@ -690,6 +710,10 @@ if command -v mosh >/dev/null 2>&1; then
   mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION"
   exit $?
 else
-  printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$ACTUAL_SESSION"
-  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
+  printf 'attaching via ssh -t → tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
+  # Keepalive so an idle/NAT'd link does not silently drop and corrupt the tmux render; the PTY
+  # (-t) is required for tmux. On tab close ssh receives HUP and closes the channel, so the remote
+  # tmux client detaches on its own (no goodbye-handshake gap like mosh → no explicit detach trap).
+  exec ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+    "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
 fi

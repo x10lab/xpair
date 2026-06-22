@@ -30,8 +30,8 @@ test("launch/attach preserves persistent host session identity and context (Q005
   );
   assert.match(
     launcher,
-    /while pgrep -f "mosh-client\.\*attach -d -t =\$\{base\}_\$\{n\}\( \|\\\$\)"[\s\S]*n=\$\(\(n\+1\)\)/,
-    "a live client tab must advance to a fresh _N session instead of stealing the attached one",
+    /while pgrep -f "\$\{_CLIENT_PAT\}\.\*attach -d -t =\$\{base\}_\$\{n\}\( \|\\\$\)"[\s\S]*n=\$\(\(n\+1\)\)/,
+    "a live client tab (matched per active transport) must advance to a fresh _N session instead of stealing the attached one",
   );
   assert.match(
     launcher,
