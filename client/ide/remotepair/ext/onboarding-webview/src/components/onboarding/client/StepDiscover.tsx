@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Download,
   Globe,
   Loader2,
+  RefreshCw,
   Search,
   Server,
   Terminal,
@@ -43,45 +44,86 @@ const STATUS_LABEL: Record<PeerStatus, string> = {
   setup: "Set up",
 };
 
+type DiscoverDiagnostics = {
+  error: string | null;
+  retrying: boolean;
+  retry: () => void;
+};
+
+const DiscoverDiagnosticsContext = createContext<DiscoverDiagnostics>({
+  error: null,
+  retrying: false,
+  retry: () => {},
+});
+
+function errorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "Discovery failed.");
+  return message.length > 180 ? `${message.slice(0, 177)}...` : message;
+}
+
 export function StepDiscover({ onSelect, onManual }: Props) {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [scannedOnce, setScannedOnce] = useState(false);
-  const stop = useRef(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
+
+  const retryDiscover = useCallback(() => {
+    setPeers([]);
+    setDiscoverError(null);
+    setScannedOnce(false);
+    setRetryNonce((nonce) => nonce + 1);
+  }, []);
 
   useEffect(() => {
-    stop.current = false;
+    let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     // Poll discover until the first result, then keep browsing so late peers appear.
     const tick = async () => {
-      if (stop.current) return;
+      if (stopped) return;
+      setDiscovering(true);
       try {
         const res = await window.remotepair.discover();
-        if (stop.current) return;
-        setPeers(dedup(res.peers || []));
-      } catch {
-        /* keep browsing; transient CLI/spawn errors must not stop discovery */
+        if (stopped) return;
+        const nextPeers = dedup(res.peers || []);
+        setPeers(nextPeers);
+        setDiscoverError(res.err && nextPeers.length === 0 ? errorMessage(res.err) : null);
+      } catch (error) {
+        if (stopped) return;
+        setDiscoverError(errorMessage(error));
       }
       setScannedOnce(true);
+      setDiscovering(false);
       // Keep polling (browsing) so peers that join later still surface.
       timer = setTimeout(tick, 3000);
     };
     void tick();
 
     return () => {
-      stop.current = true;
+      stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [retryNonce]);
 
-  // Scanning: no result yet.
-  if (!scannedOnce) return <Scanning />;
+  const content = (() => {
+    // Scanning: no result yet.
+    if (!scannedOnce) return <Scanning />;
 
-  // Empty: scanned, nothing found → diagnosis FIRST, then fallbacks.
-  if (peers.length === 0) return <EmptyDiagnose onManual={onManual} />;
+    // Empty: scanned, nothing found → diagnosis FIRST, then fallbacks.
+    if (peers.length === 0) return <EmptyDiagnose onManual={onManual} />;
 
-  // Found: deduped peer list with per-peer status, still browsing.
-  return <Found peers={peers} onSelect={onSelect} onManual={onManual} />;
+    // Found: deduped peer list with per-peer status, still browsing.
+    return <Found peers={peers} onSelect={onSelect} onManual={onManual} />;
+  })();
+
+  return (
+    <DiscoverDiagnosticsContext.Provider
+      value={{ error: discoverError, retrying: discovering, retry: retryDiscover }}
+    >
+      {content}
+    </DiscoverDiagnosticsContext.Provider>
+  );
 }
 
 /* ------------------------------ scanning ------------------------------ */
@@ -227,18 +269,41 @@ function SourceBadge({ source }: { source: PeerSource }) {
 /* ------------------------------ empty / diagnose ------------------------------ */
 
 function EmptyDiagnose({ onManual }: { onManual: () => void }) {
+  const { error, retrying, retry } = useContext(DiscoverDiagnosticsContext);
+  const hasError = !!error;
+
   return (
     <div>
       <div className="flex flex-col items-center text-center">
-        <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-muted text-muted-foreground">
-          <Search className="h-5 w-5" />
+        <div
+          className={
+            "mb-3 flex h-14 w-14 items-center justify-center rounded-full " +
+            (hasError ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")
+          }
+        >
+          {hasError ? <AlertTriangle className="h-5 w-5" /> : <Search className="h-5 w-5" />}
         </div>
         <h2 className="text-xl font-semibold tracking-tight text-foreground">
-          No other Mac here yet
+          {hasError ? "Discovery couldn't finish" : "No other Mac here yet"}
         </h2>
         <p className="mt-2 max-w-xs text-sm text-muted-foreground">
-          We couldn't see a host on this network.
+          {hasError
+            ? "We couldn't complete the last network scan."
+            : "We couldn't see a host on this network."}
         </p>
+        <button
+          type="button"
+          onClick={retry}
+          disabled={retrying}
+          className="mt-4 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold text-foreground transition-colors hover:border-foreground/20 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {retrying ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" />
+          )}
+          {retrying ? "Scanning..." : "Retry scan"}
+        </button>
       </div>
 
       {/* Diagnosis FIRST: client/network isolation is the most common cause. */}
@@ -248,10 +313,13 @@ function EmptyDiagnose({ onManual }: { onManual: () => void }) {
             <AlertTriangle className="h-4 w-4" />
           </span>
           <div>
-            <div className="text-sm font-semibold text-foreground">On the same Wi-Fi?</div>
+            <div className="text-sm font-semibold text-foreground">
+              {hasError ? "Discovery scan failed" : "On the same Wi-Fi?"}
+            </div>
             <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
-              Public/office Wi-Fi often blocks devices from seeing each other. If so, use
-              Tailscale below.
+              {hasError
+                ? error
+                : "Public/office Wi-Fi often blocks devices from seeing each other. If so, use Tailscale below."}
             </div>
           </div>
         </div>
