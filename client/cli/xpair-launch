@@ -377,7 +377,8 @@ _remote_next_n() {
 
 ensure_local_host() {
   # The computer-use (aqua-tmux) path is HOST-only. A client has no granted XpairHost,
-  # so local sessions there must use plain tmux — one tmux per machine, no socket fragmentation.
+  # so local sessions there use plain tmux only as a labeled non-computer-use mode.
+  # One tmux per machine, no socket fragmentation.
   # (Mirrors the reference's `AQUA="" on non-host`, but role-based instead of hostname-hardcoded.)
   # Allow the local aqua path only when this machine is in an *actual host role* (role host|both).
   # Prevents leaking to local even if a stray host.env exists on a client (the gh-mac-m4 incident:
@@ -396,6 +397,25 @@ ensure_local_host() {
   open -a "$APP_NAME" 2>/dev/null || /bin/launchctl kickstart "gui/$(id -u)/$BUNDLE_PREFIX" 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8; do tm_local has-session 2>/dev/null && return 0; sleep 0.5; done
   return 1
+}
+
+plain_local_non_computer_use_notice() {
+  local mode="local"
+  [ "${TARGET_PREF:-}" = local ] && mode="explicit --local"
+  printf 'Xpair: %s launch is non-computer-use (plain tmux; XpairHost/tmux-aqua unavailable). macOS grants are not inherited.\n' "$mode" >&2
+}
+
+plain_local_respawn_preamble() {
+  cat <<'RESPAWN'
+export XPAIR_COMPUTER_USE=0
+export XPAIR_LAUNCH_MODE=plain-local-tmux
+printf '\n[Xpair: non-computer-use]\n'
+printf 'Plain local tmux is outside XpairHost/tmux-aqua; macOS grants are not inherited.\n\n'
+RESPAWN
+}
+
+plain_local_display_message() {
+  tmux display-message -t "=$1" 'Xpair: non-computer-use (plain local tmux; no XpairHost grants)' 2>/dev/null || true
 }
 
 # tmux 3-way branching policy (local and remote):
@@ -440,6 +460,7 @@ launch_local() {
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
   # Fallback: plain tmux (no computer-use — machine without XpairHost)
+  plain_local_non_computer_use_notice
   command -v tmux >/dev/null 2>&1 || die "tmux not found on $LOCAL_HOST. Install it: brew install tmux" 10
   # Skip any _N that already has a client (tab) attached
   local TN=1
@@ -449,9 +470,10 @@ launch_local() {
   [ "$FRESH" = 1 ] && TCONT=0
   printf '\033]2;%s\007' "$TSESS"   # Xpair (E): surface tmux session name as terminal title (OSC-2)
   if tmux has-session -t "=$TSESS" 2>/dev/null; then
+    plain_local_display_message "$TSESS"
     exec tmux attach -d -t "=$TSESS"                 # detached → take-over re-attach (-d: drop stale clients)
   else
-    { printf "export CLAUDE_WARP_RC=%q\n" "$TSESS"; printf "export CL_CONTINUE=%s\n" "$TCONT"; respawn_body; } > "$T"
+    { printf "export CLAUDE_WARP_RC=%q\n" "$TSESS"; printf "export CL_CONTINUE=%s\n" "$TCONT"; plain_local_respawn_preamble; respawn_body; } > "$T"
     exec tmux new -s "$TSESS" "bash $T"
   fi
 }
