@@ -6,8 +6,7 @@
 // Remote Desktop is a single WebRTC path (v2): an ssh local-forward tunnel carries
 // only the signaling WebSocket (ws://127.0.0.1:<port> → host `screen serve-webrtc`).
 // The H.264 media itself flows P2P over UDP/RTP/ICE and is decoded natively by the
-// webview. This Remote Desktop view is PERMANENTLY view-only: no cursor/keyboard
-// input is captured or forwarded (display/video only, no remote control).
+// webview. Host input is forwarded over the v2 RD input channels when available.
 
 const vscode = require("vscode");
 const cp = require("child_process");
@@ -594,8 +593,8 @@ class RemoteDesktopPanel {
       this._startStream();
       return;
     }
-    // v2 (WebRTC) feedback from webview. This view is view-only (no input
-    // forwarding), so the extension only handles status/first-frame events.
+    // v2 (WebRTC) feedback from webview. Input stays on the RD peer path, so the
+    // extension only handles status/first-frame events.
     if (msg.type === "v2FirstFrame") {
       log(`v2: media track rendering`);
       return;
@@ -659,7 +658,7 @@ class RemoteDesktopPanel {
       <div id="overlay-title">Xpair</div>
       <div id="overlay-msg">Connecting to host…</div>
     </div>
-    <div id="badge" class="off" title="View-only (no remote control)">view-only</div>
+    <div id="badge" class="off" title="Remote input connects over the RD channel">input pending</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
