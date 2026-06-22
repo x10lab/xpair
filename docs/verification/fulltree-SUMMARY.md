@@ -3,17 +3,17 @@
 Companion to `fulltree-verdicts.csv` (one row per unique flow ID, openable in Excel).
 
 ## Method
-- Every distinct (동작→예상) expectation in `docs/subagents/` (8,568 units) judged **directly against
+- Every distinct (동작→예상) expectation in `docs/subagents/` (9,456 units) judged **directly against
   requirements.md** (the only user-query-backed authority — behavior-spec/ NOT used). 16 codex workers,
   each verdict carrying a verbatim requirement quote; default UNSPECIFIED when silent.
 - Verdicts joined back to **every flow ID** (path-independent: requirements-backing of an expectation
   does not change with the path that reaches it). Output = `fulltree-verdicts.csv`, one row per unique
   flow ID with verdict + req §/Q-ID + evidence quote, so any row is auditable in one hop.
-- Integrity: 8,568/8,568 units judged, 0 missing, **0 hallucinated Q-IDs**.
+- Integrity: 9,456/9,456 units judged, 0 missing, 0 unmatched, **0 hallucinated Q-IDs**.
 
 ## Coverage
-- **22,594 unique flow IDs**, each verdict'd: UNSPECIFIED 15,453 (68%) · BACKED 7,127 (32%) · CONTRADICTS 13.
-- **208 inconsistent-duplicate IDs** flagged (`dup_status` column): same flow ID defined in 2+ files with
+- **30,773 unique flow IDs**, each verdict'd: UNSPECIFIED 23,078 (75%) · BACKED 7,681 (25%) · CONTRADICTS 14.
+- **188 inconsistent-duplicate IDs** flagged (`dup_status` column): same flow ID defined in 2+ files with
   *different* expected text. Root cause = step/subagent seam overlap (benign for the 1,995 consistent
   dups; these 208 are where the two definitions disagree → structural cleanup needed).
 
