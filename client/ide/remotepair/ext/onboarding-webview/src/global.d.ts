@@ -70,14 +70,11 @@ declare global {
       sshKeygen: () => Promise<{ pubkey: string; keygenNew: boolean }>
       sshReachable: (host: string) => Promise<{ reachable: boolean; err: string }>
       tailscaleStatus: () => Promise<{ installed: boolean; up: boolean }>
-      // Discovery / remote-install (component ⑤). The only secret that transits here is the account
-      // password (installHost), handed to the CLI over an inherited pipe (never argv/log/disk) and
-      // never sent to telemetry; key passphrases are collected only by the separate askpass helper.
+      // Discovery / remote-install (component ⑤). Client onboarding uses key auth only: the setup
+      // step prepares/reuses the client key, installHost authorizes it on the host, and failures
+      // return to explicit recovery instead of password or pairing-code entry.
       discover: () => Promise<{ peers: Peer[]; err: string }>
-      // `password` is the account password the user typed into the onboarding (no separate dialog).
-      // It is handed to the CLI over an inherited pipe (never argv/log/disk). Omit when the host
-      // already trusts the client key — the install then authenticates by key.
-      installHost: (opts: { host: string; user?: string; password?: string }) => Promise<{
+      installHost: (opts: { host: string; user?: string }) => Promise<{
         ok: boolean
         out: string
         err: string

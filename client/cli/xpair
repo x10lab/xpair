@@ -1049,7 +1049,7 @@ _rp_peer_status() {
   if [ -n "$name" ] && _rp_in_ssh_config "$name"; then printf 'reconnect'; return; fi
   if [ -n "$addr" ] && _rp_in_ssh_config "$addr"; then printf 'reconnect'; return; fi
   if [ -n "${REMOTE_HOST:-}" ] && { [ "$REMOTE_HOST" = "$name" ] || [ "$REMOTE_HOST" = "$addr" ]; }; then printf 'reconnect'; return; fi
-  # A peer advertising the Xpair service (any role) → account-password connect; otherwise plain SSH setup.
+  # A peer advertising the Xpair service (any role) → key-auth connect; otherwise plain SSH setup.
   case "$role" in host|both|client) printf 'connect' ;; *) printf 'setup' ;; esac
 }
 
@@ -1299,25 +1299,22 @@ cmd_install_host() {
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
   local target="$host"; [ -n "$account" ] && target="$account@$host"
 
-  # SSH with NO controlling TTY (stdin </dev/null) so SSH_ASKPASS_REQUIRE=force routes any password
-  # prompt to the helper (C5), never the terminal.
+  # SSH with NO controlling TTY (stdin </dev/null). The onboarding's primary path is key-auth only:
+  # do not invoke askpass unless a caller explicitly supplied the one-shot password pipe.
   local askpass; askpass="$(rp_askpass_path)"
   local SSHENV=()
-  if [ -n "$askpass" ]; then
+  if [ -n "${RP_ASKPASS_FD:-}" ] && [ -n "$askpass" ]; then
     SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0")
-    # The onboarding hands us the account password on an inherited pipe FD (RP_ASKPASS_FD) so the
-    # askpass helper reads it from the pipe (Path 1) instead of popping a SEPARATE GUI dialog — the
-    # password is collected INSIDE the onboarding window. Propagate the FD number through
-    # env → ssh → askpass (the descriptor itself is inherited, never re-opened or written to disk).
-    [ -n "${RP_ASKPASS_FD:-}" ] && SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
+    # Legacy/password-assisted callers hand us the account password on an inherited pipe FD so the
+    # askpass helper reads it from the pipe. The descriptor itself is inherited, never re-opened or
+    # written to disk.
+    SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
   fi
-  # Multiplex the WHOLE install over ONE SSH connection: authenticate once (by key, or the password
-  # read a SINGLE time from the pipe), then reuse the master for every rm/scp/install.sh. This makes
-  # a one-shot password pipe sufficient (no repeated prompt → no half-installed dead-end) and is
-  # faster. A unique ControlPath avoids colliding with any stale mux socket; it is torn down on
-  # return. StrictHostKeyChecking=accept-new because the host key was already confirmed (TOFU) in the
-  # onboarding fingerprint step — so a first connect never blocks on an interactive host-key prompt
-  # (which, with askpass forced, would otherwise hang a GUI dialog and fail the install).
+  # Multiplex the WHOLE install over ONE SSH connection: authenticate once, then reuse the master
+  # for every rm/scp/install.sh. Key-auth failures now return to onboarding recovery instead of
+  # falling back to a GUI password prompt. A unique ControlPath avoids colliding with any stale mux
+  # socket; it is torn down on return. StrictHostKeyChecking=accept-new because the host key was
+  # already confirmed (TOFU) in the onboarding fingerprint step.
   local RP_CM; RP_CM="$(mktemp -u "${TMPDIR:-/tmp}/rp-cm-XXXXXX")"
   local RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
                     -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
@@ -1386,8 +1383,8 @@ cmd_install_host() {
     fi
   fi
 
-  # Authorize the client's key on the host over the SAME askpass (password) SSH
-  # connection — for BOTH the fresh-install AND the already-installed paths. This is
+  # Authorize the client's key on the host over the SAME SSH master connection — for BOTH the
+  # fresh-install AND the already-installed paths. This is
   # what REPLACES PIN pairing: a host that is already running but has never seen this
   # client's key must still authorize it (the old PIN scenario). Without this,
   # BatchMode=yes (key-only) calls below — and every later editor/desktop/notify call
@@ -1396,7 +1393,7 @@ cmd_install_host() {
   local pubpath; pubpath="$(rp_ssh_pubkey)" || { err "could not resolve client pubkey"; return 1; }
   local pubdata; pubdata="$(cat "$pubpath" 2>/dev/null)"
   [ -n "$pubdata" ] || { err "empty client pubkey: $pubpath"; return 1; }
-  c "authorizing client key on $target (over the password connection) …"
+  c "authorizing client key on $target (over the setup connection) …"
   # ssh-copy-id-style append: idempotent (grep -qxF guard), correct perms. Rides the
   # SAME multiplexed master (RP_SSHOPTS/SSHENV) the connection authenticated — so no
   # re-auth, no separate password prompt, no host-key prompt. The pubkey is piped
@@ -1406,6 +1403,20 @@ cmd_install_host() {
   printf '%s\n' "$pubdata" | "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "$rp_authcmd" \
     || { err "failed to authorize client key on $target"; return 1; }
   ok "client key authorized on $target"
+
+  # Persist a managed SSH config block for future key-auth connections. This is deliberately after
+  # authorization: a written config should mean the host accepts the pinned client key.
+  local cfg_user; cfg_user="$account"
+  if [ -z "$cfg_user" ]; then
+    cfg_user="$(_rp_ssh -o BatchMode=yes "$target" 'id -un 2>/dev/null || whoami' 2>/dev/null | tr -d '\r' || true)"
+  fi
+  if [ -n "$cfg_user" ]; then
+    rp_ssh_config_write "$host" "$host" "$cfg_user" "$HOME/.ssh/id_ed25519" \
+      && ok "managed SSH config updated for $host" \
+      || warn "managed SSH config update failed for $host"
+  else
+    warn "could not determine host user; managed SSH config was not updated"
+  fi
 
   # Persist the host so the extension/CLI (which read client.env) find a configured
   # host after onboarding — mirrors the pair path's rp_set REMOTE_HOST.
@@ -1427,7 +1438,7 @@ cmd_install_host() {
 # the app's tick loop) and emit {alive,ax,sr,fda} as JSON. The onboarding's post-install step polls
 # this to show whether the user has granted Accessibility / Screen Recording / Full Disk Access on
 # the host's own screen (macOS forbids granting these remotely). Key auth only + bounded + anti-hang
-# so it never prompts: TOFU + any password already happened at install.
+# so it never prompts: TOFU + key auth already happened at install.
 cmd_host_permissions() {
   local host="${REMOTE_HOST:-}"
   while [ $# -gt 0 ]; do case "$1" in

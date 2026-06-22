@@ -1,84 +1,140 @@
 import { useEffect, useState } from "react";
-import { Input } from "@/components/ui/input";
+import { AlertCircle, Check, KeyRound, Loader2 } from "lucide-react";
 import type { Peer } from "@/global";
 import { FingerprintPanel } from "./FingerprintPanel";
 
 type Props = {
   peer: Peer;
-  user: string;
-  setUser: (u: string) => void;
-  password: string;
-  setPassword: (p: string) => void;
+  onReady: (ready: boolean) => void;
 };
 
+type KeyState = "preparing" | "ready" | "failed";
+
 /**
- * Set-up path: the host is SSH-able but Xpair is not installed. The user confirms the account
- * and (if the host doesn't already trust the SSH key) types the account password RIGHT HERE — no
- * separate OS dialog. The password is handed to the CLI over a pipe (never argv/log/disk), used once
- * to install, then key-based forever. Leave it blank if the Mac already trusts your key.
+ * Set-up path: the user confirms the host key fingerprint, then Xpair uses the client's SSH key.
+ * No account password or pairing code is collected in this renderer step.
  */
-export function StepSetupPassword({ peer, user, setUser, password, setPassword }: Props) {
+export function StepSetupPassword({ peer, onReady }: Props) {
+  const host = peer.target || peer.addrs[0] || peer.name;
   const [fp, setFp] = useState<string | null>(peer.fp ?? null);
+  const [fpErr, setFpErr] = useState("");
+  const [pubkey, setPubkey] = useState("");
+  const [keyState, setKeyState] = useState<KeyState>("preparing");
+  const [keygenNew, setKeygenNew] = useState(false);
+
+  useEffect(() => {
+    setFp(peer.fp ?? null);
+    setFpErr("");
+  }, [host, peer.fp]);
+
+  useEffect(() => {
+    let alive = true;
+    setKeyState("preparing");
+    setPubkey("");
+    setKeygenNew(false);
+    void window.remotepair
+      .sshKeygen()
+      .then((r) => {
+        if (!alive) return;
+        setPubkey(r.pubkey || "");
+        setKeygenNew(!!r.keygenNew);
+        setKeyState(r.pubkey ? "ready" : "failed");
+      })
+      .catch(() => {
+        if (alive) setKeyState("failed");
+      });
+    return () => {
+      alive = false;
+      onReady(false);
+    };
+  }, [onReady]);
 
   useEffect(() => {
     if (fp) return;
     let alive = true;
     void window.remotepair
-      .hostKeyFingerprint(peer.target || peer.addrs[0] || peer.name)
+      .hostKeyFingerprint(host)
       .then((r) => {
-        if (alive && r.fp) setFp(r.fp);
+        if (!alive) return;
+        if (r.fp) setFp(r.fp);
+        else setFpErr(r.err || "Could not read this host's SSH fingerprint.");
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (alive) setFpErr(String(e));
+      });
     return () => {
       alive = false;
     };
-  }, [fp, peer]);
+  }, [fp, host]);
+
+  useEffect(() => {
+    onReady(keyState === "ready" && !!fp);
+  }, [keyState, fp, onReady]);
 
   return (
     <div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
-        Sign in to install Xpair
+        Confirm this host
       </h2>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        {peer.name} doesn't have Xpair yet. Sign in once so we can set it up — after this it's
-        key-based, no more passwords.
+        Xpair will set up <span className="font-semibold text-foreground">{peer.name}</span> with
+        your SSH key. No account password or 6-digit code is used.
       </p>
 
-      <div className="mt-5">
-        <label className="mb-1.5 block text-[11px] text-muted-foreground">Connect as</label>
-        <div className="flex items-stretch overflow-hidden rounded-lg border border-border bg-muted/30">
-          <Input
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-            placeholder="ghyeong"
-            className="rounded-none border-0 bg-transparent font-mono text-sm shadow-none focus-visible:ring-0"
-          />
-          <span className="flex items-center whitespace-nowrap border-l border-border bg-muted/40 px-3 text-sm text-muted-foreground">
-            @ {peer.name}
-          </span>
+      <div className="mt-5 rounded-xl border border-border bg-muted/30 p-3.5">
+        <div className="flex items-center gap-2">
+          <KeyRound className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium text-foreground">Client SSH key</span>
+          {keyState === "preparing" ? (
+            <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Preparing
+            </span>
+          ) : keyState === "ready" ? (
+            <span className="ml-auto flex items-center gap-1.5 text-[11px] text-primary">
+              <Check className="h-3 w-3" />
+              {keygenNew ? "Generated" : "Reused"}
+            </span>
+          ) : (
+            <span className="ml-auto text-[11px] text-destructive">Failed</span>
+          )}
         </div>
-        <p className="mt-1.5 text-[11px] text-muted-foreground">
-          Defaults to your username. Change it for a different account on that Mac.
-        </p>
-      </div>
 
-      <div className="mt-4">
-        <label className="mb-1.5 block text-[11px] text-muted-foreground">Account password</label>
-        <Input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="••••••••"
-          autoComplete="off"
-          className="rounded-lg border-border bg-muted/30 font-mono text-sm"
-        />
-        <p className="mt-1.5 text-[11px] text-muted-foreground">
-          Used once to install, then never again. Xpair sends it straight to the host — it's
-          never stored. Leave blank if this Mac already trusts your SSH key.
+        {pubkey ? (
+          <div className="mt-2 truncate rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[10px] text-muted-foreground">
+            {pubkey}
+          </div>
+        ) : null}
+
+        <div className="mt-3 rounded-lg border border-border bg-background px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">SSH target</div>
+          <div className="mt-0.5 truncate font-mono text-sm text-foreground">{host}</div>
+        </div>
+
+        <p className="mt-2 text-xs text-muted-foreground">
+          During setup, Xpair authorizes this public key on the host and writes its managed SSH
+          config for future key-auth connections.
         </p>
       </div>
 
       <FingerprintPanel host={peer.name} fp={fp} firstTime />
+
+      {(keyState === "failed" || fpErr || !fp) && (
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
+          {keyState === "preparing" && !fpErr ? (
+            <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          )}
+          <span className="min-w-0">
+            {keyState === "failed"
+              ? "Could not prepare the client SSH key. Check ~/.ssh permissions, then retry onboarding."
+              : fpErr
+              ? fpErr
+              : "Fetching the host fingerprint. Continue after it is available and matches the host."}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

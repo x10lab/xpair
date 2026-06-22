@@ -6,16 +6,11 @@ export type InstallState = "idle" | "installing" | "done" | "failed";
 
 type Props = {
   peer: Peer;
-  user: string;
-  // Account password the user typed on the previous step. Empty ⇒ the host already trusts the SSH
-  // key, so the install authenticates by key. Cleared (setPassword("")) once the install succeeds.
-  password: string;
-  setPassword: (p: string) => void;
   state: InstallState;
   setState: (s: InstallState) => void;
   // Install succeeded (host app is up) → wizard advances to the independent Grant step.
   onDone: () => void;
-  // Install failed → wizard returns to the setup/password step so the user can re-enter and retry.
+  // Install failed → user can return to the fingerprint-confirm setup step for recovery.
   onFail: () => void;
 };
 
@@ -27,17 +22,12 @@ const PHASES = [
 ];
 
 /**
- * Remote install progress. Drives window.remotepair.installHost() with the password the user typed
- * IN the onboarding (handed to the CLI over a pipe — never argv/log). This step is never a dead-end:
- * on success it AUTO-ADVANCES to the Grant step; on failure it shows the error briefly then
- * AUTO-RETURNS to the setup step to re-enter the password (the install is idempotent, so a retry
- * after a transient SSH hiccup just re-registers).
+ * Remote install progress. Drives window.remotepair.installHost() over SSH key auth only. This step
+ * is never a dead end: on success it auto-advances to Grant; on failure it stays on an explicit
+ * recovery surface so the user can retry key auth or review the fingerprint.
  */
 export function StepInstalling({
   peer,
-  user,
-  password,
-  setPassword,
   state,
   setState,
   onDone,
@@ -48,7 +38,7 @@ export function StepInstalling({
   const host = peer.target || peer.addrs[0] || peer.name;
 
   // Run the install. Cosmetic phase advance while the single blocking CLI call runs; the real result
-  // overrides it. The secret is dropped on SUCCESS; kept on failure so the re-entry step is pre-filled.
+  // overrides it.
   const runInstall = useCallback(() => {
     setErr("");
     setPhase(0);
@@ -57,11 +47,10 @@ export function StepInstalling({
       setPhase((p) => Math.min(PHASES.length - 2, p + 1));
     }, 1200);
     window.remotepair
-      .installHost({ host, user, password })
+      .installHost({ host })
       .then((r) => {
         clearInterval(adv);
         if (r.ok) {
-          setPassword(""); // consumed — drop the secret from renderer state
           setPhase(PHASES.length);
           setState("done");
         } else {
@@ -74,7 +63,7 @@ export function StepInstalling({
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });
-  }, [host, user, password, setPassword, setState]);
+  }, [host, setState]);
 
   // Kick off once on mount (also re-runs when the user returns to this step and proceeds again).
   const started = useRef(false);
@@ -84,17 +73,13 @@ export function StepInstalling({
     runInstall();
   }, [runInstall]);
 
-  // Success → advance to Grant. Failure → show the error briefly, then return to re-enter password.
+  // Success → advance to Grant. Failure stays here with explicit key-auth recovery actions.
   useEffect(() => {
     if (state === "done") {
       const t = setTimeout(onDone, 600);
       return () => clearTimeout(t);
     }
-    if (state === "failed") {
-      const t = setTimeout(onFail, 2200);
-      return () => clearTimeout(t);
-    }
-  }, [state, onDone, onFail]);
+  }, [state, onDone]);
 
   const installing = state === "installing";
 
@@ -145,12 +130,30 @@ export function StepInstalling({
       </div>
 
       {state === "failed" && (
-        <div className="mt-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3.5 text-xs text-destructive">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            {err || "Install failed."} Nothing was left half-installed — taking you back to re-enter
-            the account password…
-          </span>
+        <div className="mt-5 rounded-xl border border-destructive/30 bg-destructive/5 p-3.5 text-xs text-destructive">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="min-w-0 break-words">
+              {err || "Install failed."} Key auth did not complete. Make sure Remote Login is on,
+              this host is reachable, and the fingerprint still matches.
+            </span>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 pl-6">
+            <button
+              type="button"
+              onClick={runInstall}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-destructive/10 px-3 py-1.5 font-semibold text-destructive transition-colors hover:bg-destructive/15"
+            >
+              Retry key auth
+            </button>
+            <button
+              type="button"
+              onClick={onFail}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-muted/60 px-3 py-1.5 font-semibold text-muted-foreground transition-colors hover:bg-muted"
+            >
+              Review fingerprint
+            </button>
+          </div>
         </div>
       )}
     </div>

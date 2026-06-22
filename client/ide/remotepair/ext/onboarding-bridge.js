@@ -121,8 +121,7 @@ function spawnEnv(extra = {}) {
 
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
  *  publickey-only auth, and BatchMode so ssh NEVER drops to a password prompt (which would hang the
- *  GUI with no tty). Used by every read/probe ssh call; the install path (runSecret) is exempt —
- *  it legitimately registers the key with the account password. */
+ *  GUI with no tty). */
 function sshProbeOpts(connectTimeout = 5) {
   const opts = [
     "-o", "BatchMode=yes",
@@ -160,41 +159,6 @@ function run(cmd, args, opts = {}) {
   });
 }
 const cli = (args) => run(rpBin(), args);
-
-/** Like run(), but hands the CLI ONE secret (the account password) over an inherited pipe on fd 3,
- *  NOT via argv / an env VALUE / a temp file — so the secret never appears in `ps`, a log line, or
- *  on disk. The child exports RP_ASKPASS_FD=3; the install ssh's askpass helper reads the single
- *  line from that descriptor (Path 1) instead of popping a separate GUI dialog. The secret is
- *  written once and the pipe closed immediately. Used ONLY by installHost's password path; the
- *  key-auth path uses plain cli() and no pipe is ever created. */
-function runSecret(cmd, args, secret) {
-  return new Promise((resolve) => {
-    let out = "";
-    let err = "";
-    let child;
-    try {
-      child = cp.spawn(cmd, args, {
-        windowsHide: true,
-        env: spawnEnv({ RP_ASKPASS_FD: "3" }),
-        stdio: ["ignore", "pipe", "pipe", "pipe"], // fd3 = inherited pipe; the child reads the secret
-      });
-    } catch (e) {
-      return resolve({ code: -1, out: "", err: String(e && e.message ? e.message : e) });
-    }
-    try {
-      const w = child.stdio[3];
-      w.on("error", () => {}); // EPIPE if the child never reads (e.g. key auth won) — benign.
-      w.write(String(secret) + "\n");
-      w.end();
-    } catch {
-      /* a write race (child already gone) must never crash the main process */
-    }
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => resolve({ code: -1, out, err: String(e.message) }));
-    child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
-  });
-}
 
 /** Like run(), but writes ONE secret line to the child's STDIN (fd 0) then closes it — for handing a
  *  secret to a remote `read -r KEY` over ssh WITHOUT it ever touching argv (`ps`), a log line, or
@@ -636,11 +600,9 @@ const bridge = {
 
   // --- Discovery / remote-install (component ⑤ — shells to the CLI brain) -----------------------
   //
-  // SECURITY (Principle 2): NONE of these methods ever receives or returns a key passphrase —
-  // those are collected ONLY by the separate askpass helper (the renderer never sees them). The
-  // ONE secret that transits here is the account password (installHost), and it is handed to the
-  // CLI over an inherited pipe (never argv/log/disk). Do NOT add a tCapture/telemetry call inside
-  // discover/installHost.
+  // SECURITY (Principle 2): NONE of these methods receives an account password or pairing code.
+  // The setup path is key-auth only and failures route to the renderer recovery UI. Do NOT add a
+  // tCapture/telemetry call inside discover/installHost.
 
   // Discovery — concurrent Bonjour + Tailscale sweep via the CLI. Returns a deduped peer array
   // (deduped by host-key fingerprint inside the CLI; the UI dedups again as a backstop).
@@ -658,18 +620,14 @@ const bridge = {
     return { peers, err: "" };
   },
 
-  // Setup — remote install over SSH. `password` (optional) is the account password the user typed
-  // INTO the onboarding window (no separate dialog). It is handed to the CLI over an inherited pipe
-  // via runSecret (fd 3 → ssh askpass), NEVER argv/log/disk, and is dropped here right after. When
-  // the host already trusts the client key, omit it — the install authenticates by key. Returns
-  // {ok, out, err}; `out` carries the redacted progress stream for StepInstalling.
-  async installHost({ host, user, password } = {}) {
+  // Setup — remote install over SSH key auth. The CLI generates/reuses the client key, authorizes
+  // it on the host, writes managed SSH config, and persists REMOTE_HOST. Returns {ok, out, err};
+  // `out` carries the redacted progress stream for StepInstalling.
+  async installHost({ host, user } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
     const args = ["install-host", "--host", String(host)];
     if (user) args.push("--account", String(user));
-    const r = password
-      ? await runSecret(rpBin(), args, password)
-      : await cli(args);
+    const r = await cli(args);
     return { ok: r.code === 0, out: r.out, err: r.code === 0 ? "" : (r.err || "install failed") };
   },
 

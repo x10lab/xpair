@@ -29,7 +29,7 @@ import { capture, EVENTS } from "@/lib/telemetry";
 
 // Step indices for the discovery flow:
 //   0 Welcome → 1 Before you start (consent) → 2 Discover → 3 Connect/Setup (auto-branch)
-//   → 4 Installing (setup path only, auto-advances) → 5 Grant permissions (setup path only)
+//   → 4 Installing (setup path only, auto-advances on success) → 5 Grant permissions (setup path only)
 //   → 6 Choose engine (host engine install/auth hard guard) → 7 File access & mapping
 //   → 8 Done (liveness-gated on every path).
 const STEP_TITLES = [
@@ -179,9 +179,9 @@ export default function App() {
   // Discovery / connect state.
   const [peer, setPeer] = useState<Peer | null>(null);
   const [account, setAccount] = useState("");
-  // Account password typed on the setup step → consumed by StepInstalling (handed to the CLI over a
-  // pipe, never argv/log), then cleared. Empty ⇒ install authenticates by SSH key.
-  const [password, setPassword] = useState("");
+  // Setup path readiness: the fingerprint-confirm step must prepare/reuse the client SSH key and
+  // fetch the host fingerprint before Next starts the key-auth install.
+  const [setupReady, setSetupReady] = useState(false);
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
@@ -222,6 +222,7 @@ export default function App() {
       setManual(false);
       setPeer(p);
       setHost(p.status === "connect" ? p.target || p.addrs?.[0] || p.name || "" : "");
+      setSetupReady(false);
       setConnState("idle");
       setInstallState("idle");
       setReconnectReady(false);
@@ -234,6 +235,7 @@ export default function App() {
   const onManual = useCallback(() => {
     setManual(true);
     setPeer(null);
+    setSetupReady(false);
     w.goTo(S.CONNECT, "next");
   }, [w]);
 
@@ -264,7 +266,7 @@ export default function App() {
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
   // Reachability (SSH) for the non-setup paths. The setup path installs the app later, so it gates
-  // only on the password step's own flow (Next → Installing), not on reachability/host-app here.
+  // on the fingerprint-confirm/key-prep step before Installing, not on host-app here.
   const reachReady = manual
     ? manualReady
     : isReconnect
@@ -301,7 +303,7 @@ export default function App() {
   const nextDisabled =
     cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
-    (w.index === S.CONNECT && (!connectReady || hostAppChecking)) ||
+    (w.index === S.CONNECT && (isSetup ? !setupReady : !connectReady || hostAppChecking)) ||
     (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
     (w.index === S.ENGINE && !engineReady); // wait until the engine is installed + authed on the host
   // Folder mappings are OPTIONAL — you can attach to a host for screen share / terminal without
@@ -324,7 +326,7 @@ export default function App() {
   };
 
   // Prev routing: from Mappings, go back to Grant (setup) or Connect (others); Grant and Installing
-  // both fall back to the setup/password step.
+  // both fall back to the fingerprint-confirm setup step.
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
       // Mappings always follows the Engine step.
@@ -458,18 +460,12 @@ export default function App() {
           ) : (
             <StepSetupPassword
               peer={peer}
-              user={account}
-              setUser={setAccount}
-              password={password}
-              setPassword={setPassword}
+              onReady={setSetupReady}
             />
           ))}
         {w.index === S.INSTALL && peer && (
           <StepInstalling
             peer={peer}
-            user={account}
-            password={password}
-            setPassword={setPassword}
             state={installState}
             setState={setInstallState}
             onDone={() => {
