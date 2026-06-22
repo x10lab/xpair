@@ -17,9 +17,10 @@ jobs:
           fail=0
           for f in shared/bootstrap.sh \
                    shared/install.sh shared/uninstall.sh shared/config.sh shared/lib.sh shared/sync-setup.sh \
-                   client/cli/remote-pair client/cli/remote-pair-launch \
+                   client/cli/xpair client/cli/xpair-launch client/cli/xpair-askpass \
+                   client/cli/xpair-desktop client/cli/xpair-mount client/cli/xpair-editor \
                    host/build-host.sh host/build-tmux-aqua.sh host/make-signing-cert.sh \
-                   host/remote-pair-approve-router.sh; do
+                   host/xpair-approve-router.sh; do
             [ -f "$f" ] || continue
             if bash -n "$f"; then echo "ok  $f"; else echo "FAIL $f"; fail=1; fi
           done

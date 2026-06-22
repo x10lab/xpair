@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # xpair — Xpair single entry-point CLI (client side).
 #
-#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|codex|opencode>]
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
 #                              Launch/attach an agent session (remote host/local) for a folder. Prompts to register if unmapped.
 #                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
-#   xpair ls             List host (or local) tmux-aqua sessions + registered folder mappings
+#   xpair attach [--local|--remote] <session-name>
+#                              Attach an existing exact tmux-aqua session by name; never creates a new session.
+#   xpair ls [--json]    List host (or local) tmux-aqua sessions + registered folder mappings
 #   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
 #   xpair config [list|get <key>|set <key> <value>|maps]
-#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|codex|opencode).
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|codex|opencode).
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
@@ -73,6 +75,28 @@ type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ p
 # ── UI helpers (err/info/warn come from logging.sh or the fallback above) ──
 c()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok() { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
+
+sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+valid_host() {
+  case "${1:-}" in
+    ''|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if [ -n "$REMOTE_HOST" ] && ! valid_host "$REMOTE_HOST"; then
+  warn "invalid REMOTE_HOST ignored: $REMOTE_HOST"
+  REMOTE_HOST=""
+fi
+
+canonical_engine() {
+  case "${1:-}" in
+    claude|claudecode|claude-code) printf 'claude' ;;
+    codex|opencode) printf '%s' "$1" ;;
+    *) return 1 ;;
+  esac
+}
 
 STATUS_FILE="${STATUS_FILE:-$RP_DIR/logs/status.json}"
 
@@ -177,7 +201,49 @@ cmd_map() {
   esac
 }
 
+cmd_ls_json() {
+  local target host raw
+  if [ -n "$REMOTE_HOST" ]; then
+    target=remote
+    host="$REMOTE_HOST"
+    raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null || true)"
+  else
+    target=local
+    host=""
+    raw="$(tm list-sessions -F '#S	#{session_attached}' 2>/dev/null || true)"
+  fi
+  TARGET="$target" HOST="$host" python3 -c '
+import json
+import os
+import sys
+
+sessions = []
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    parts = line.split("\t", 1)
+    name = parts[0]
+    if name.startswith("_keeper"):
+        continue
+    attached_raw = parts[1] if len(parts) > 1 else "0"
+    try:
+        attached = int(attached_raw)
+    except ValueError:
+        attached = 0
+    sessions.append({"name": name, "attached": attached})
+
+print(json.dumps({"target": os.environ.get("TARGET", "local"), "host": os.environ.get("HOST", ""), "sessions": sessions}, separators=(",", ":")))
+' <<EOF
+$raw
+EOF
+}
+
 cmd_ls() {
+  if [ "${1:-}" = "--json" ]; then
+    cmd_ls_json
+    return
+  fi
   cmd_map list; echo
   if [ -n "$REMOTE_HOST" ]; then
     echo "[$REMOTE_HOST] tmux-aqua sessions:"
@@ -225,14 +291,14 @@ map_register_interactive() {
     if [ -z "$REMOTE_HOST" ]; then
       break   # cannot probe without a host; accept as-is
     fi
-    if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d '$host_dir' ]" 2>/dev/null; then
+    if ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d $(sh_quote "$host_dir") ]" 2>/dev/null; then
       ok "exists on $REMOTE_HOST: $host_dir"
       break
     fi
     warn "not found on $REMOTE_HOST: $host_dir"
     { printf '  [r] re-enter path  [c] create it on host  [N] cancel: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
     case "$ans" in
-      c|C) ssh "$REMOTE_HOST" "mkdir -p '$host_dir'" 2>/dev/null && { ok "created on $REMOTE_HOST: $host_dir"; break; } || { warn "mkdir failed on $REMOTE_HOST"; } ;;
+      c|C) ssh "$REMOTE_HOST" "mkdir -p $(sh_quote "$host_dir")" 2>/dev/null && { ok "created on $REMOTE_HOST: $host_dir"; break; } || { warn "mkdir failed on $REMOTE_HOST"; } ;;
       r|R) : ;;
       *)   echo "cancelled."; return 1 ;;
     esac
@@ -266,13 +332,17 @@ cmd_config() {
         host)     printf '%s\n' "$REMOTE_HOST" ;;
         terminal) printf '%s\n' "$TERMINAL_APP" ;;
         engine)   printf '%s\n' "${ENGINE:-claude}" ;;
-        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|codex|opencode
+        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|codex|opencode
       esac
       ;;
     set)
       local key="${2:-}" val="${3:-}"
       case "$key" in
         host)
+          if [ -n "$val" ] && ! valid_host "$val"; then
+            echo "invalid host: $val" >&2
+            return 2
+          fi
           rp_set REMOTE_HOST "$val"; REMOTE_HOST="$val"
           if [ -n "$val" ]; then
             ok "host set: $val"
@@ -293,10 +363,12 @@ cmd_config() {
           # Agent engine used by 'xpair launch'. Each engine auto-approves (so none needs the approve
           # router): claude=--dangerously-skip-permissions, codex=--dangerously-bypass-approvals-and-sandbox,
           # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT.
-          case "$val" in
-            claude|codex|opencode) rp_set ENGINE "$val"; ENGINE="$val"; ok "engine set: $val" ;;
-            *) echo "config set engine <claude|codex|opencode>" >&2; return 2 ;;
-          esac
+          local canon
+          if canon="$(canonical_engine "$val")"; then
+            rp_set ENGINE "$canon"; ENGINE="$canon"; ok "engine set: $canon"
+          else
+            echo "config set engine <claude|claudecode|codex|opencode>" >&2; return 2
+          fi
           ;;
         *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
       esac
@@ -510,22 +582,26 @@ cmd_onboard() {
 }
 
 cmd_launch() {
-  local pass=() dir="" engine=""
+  local pass=() dir="" engine="" engine_explicit=0
   while [ $# -gt 0 ]; do case "$1" in
     --local|--remote|--fresh|--yes|-y) pass+=("$1"); [ "$1" = "--yes" ] || [ "$1" = "-y" ] && RP_YES=1; shift ;;
-    --engine) engine="${2:-}"; shift 2 ;;        # per-launch override of client.env ENGINE
+    --engine) engine="${2:-}"; engine_explicit=1; shift 2 ;;        # per-launch override of client.env ENGINE
     *) dir="$1"; shift ;;
   esac; done
-  # Resolve engine: --engine flag wins, else client.env ENGINE, else claude. Validate before passing on.
-  engine="${engine:-${ENGINE:-claude}}"
-  case "$engine" in claude|codex|opencode) : ;; *) echo "unknown engine: $engine (use claude|codex|opencode)" >&2; return 2 ;; esac
+  # Validate explicit override here. Otherwise let xpair-launch read client.env ENGINE and ask interactively.
+  if [ "$engine_explicit" = 1 ]; then
+    local canon
+    if canon="$(canonical_engine "$engine")"; then engine="$canon"
+    else echo "unknown engine: $engine (use claude|claudecode|codex|opencode)" >&2; return 2
+    fi
+  fi
   dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
   if ! is_mapped "$dir" && [ -n "$REMOTE_HOST" ] && [ "$RP_YES" != 1 ]; then
     # Active host probe: only when the host is reachable. Resolve the candidate host
     # path and check whether it actually exists on the host.
     if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" true 2>/dev/null; then
       local hostdir; hostdir="$(resolve_host "$dir")"
-      if ssh -n -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d '$hostdir' ]" 2>/dev/null; then
+      if ssh -n -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" "[ -d $(sh_quote "$hostdir") ]" 2>/dev/null; then
         # Exists on host → offer to register.
         c "This folder is outside any registered mapping:"
         printf '  client: %s\n' "$dir"
@@ -547,7 +623,7 @@ cmd_launch() {
   choose: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
         case "$ans" in
           m|M) map_register_interactive "$dir" || return 1 ;;
-          c|C) ssh "$REMOTE_HOST" "mkdir -p '$hostdir'" 2>/dev/null && ok "created on $REMOTE_HOST: $hostdir" || { echo "mkdir failed on $REMOTE_HOST" >&2; return 1; } ;;
+          c|C) ssh "$REMOTE_HOST" "mkdir -p $(sh_quote "$hostdir")" 2>/dev/null && ok "created on $REMOTE_HOST: $hostdir" || { echo "mkdir failed on $REMOTE_HOST" >&2; return 1; } ;;
           *)   echo "cancelled." >&2; return 1 ;;
         esac
       fi
@@ -557,7 +633,56 @@ cmd_launch() {
   fi
   [ -x "$LAUNCHER" ] || { echo "launcher missing: $LAUNCHER (client install required)" >&2; return 1; }
   # bash 3.2 + set -u: an empty array "${pass[@]}" is "unbound" → guard with ${arr[@]+...}
-  RP_YES="$RP_YES" RP_ENGINE="$engine" exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
+  if [ "$engine_explicit" = 1 ]; then
+    RP_YES="$RP_YES" RP_ENGINE="$engine" RP_ENGINE_EXPLICIT=1 exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
+  else
+    RP_YES="$RP_YES" exec "$LAUNCHER" ${pass[@]+"${pass[@]}"} "$dir"
+  fi
+}
+
+cmd_attach() {
+  local target_pref="" session=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --local)  target_pref=local; shift ;;
+    --remote) target_pref=remote; shift ;;
+    -h|--help) echo "attach [--local|--remote] <session-name>"; return 0 ;;
+    --*) echo "unknown attach option: $1" >&2; return 2 ;;
+    *)
+      if [ -n "$session" ]; then
+        echo "attach requires exactly one session name" >&2
+        return 2
+      fi
+      session="$1"
+      shift
+      ;;
+  esac; done
+
+  [ -n "$session" ] || { echo "attach requires a session name" >&2; return 2; }
+  case "$session" in *[!A-Za-z0-9_.-]*|'') echo "invalid session name: $session" >&2; return 2 ;; esac
+
+  local target="$target_pref"
+  if [ -z "$target" ]; then
+    [ -n "$REMOTE_HOST" ] && target=remote || target=local
+  fi
+
+  if [ "$target" = local ]; then
+    [ -x "$TMUXB" ] || { echo "tmux-aqua missing: $TMUXB" >&2; return 1; }
+    tm has-session -t "=$session" 2>/dev/null || { echo "session not found: $session" >&2; return 4; }
+    printf '\033]2;%s\007' "$session"
+    exec "$TMUXB" -S "$AQUA_SOCK" attach -d -t "=$session"
+  fi
+
+  [ "$target" = remote ] || { echo "unknown attach target: $target" >&2; return 2; }
+  [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — use --local or 'xpair config set host <ssh-host>'" >&2; return 1; }
+  ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") has-session -t $(sh_quote "=$session")" \
+    || { echo "session not found on $REMOTE_HOST: $session" >&2; return 4; }
+  printf '\033]2;%s\007' "$session"
+  if command -v mosh >/dev/null 2>&1; then
+    printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
+    exec mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
+  fi
+  printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
+  exec ssh -t "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") attach -d -t $(sh_quote "=$session")"
 }
 
 cmd_host() {
@@ -1517,7 +1642,8 @@ EOF
 
 case "${1:-help}" in
   launch)  shift; cmd_launch "$@" ;;
-  ls)      cmd_ls ;;
+  attach)  shift; cmd_attach "$@" ;;
+  ls)      shift; cmd_ls "$@" ;;
   map)     shift; cmd_map "$@" ;;
   roots)   shift; cmd_map "$@" ;;     # legacy alias
   config)  shift; cmd_config "$@" ;;
@@ -1537,6 +1663,6 @@ case "${1:-help}" in
   self-update) shift; cmd_self_update "$@" ;;
   update)  shift; cmd_update "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,27p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,27p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,29p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,29p' "$0"; exit 2 ;;
 esac

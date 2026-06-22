@@ -19,12 +19,14 @@ extract_session() {
 }
 
 # Compute the expected session name with the same rules as the launcher (independent impl for verification).
-# readable: keep as-is if ASCII, otherwise use the given slug. Then cut -c1-15 and strip a trailing '-'.
+# readable: keep as-is if ASCII, otherwise use the given slug. Then sanitize to the
+# launcher's safe session alphabet, cut -c1-15, and strip a trailing '-'.
 # base = "<readable15>_<sha5(fullpath)>", final = "<host>_<base>" with [.:]→_.
 expect_name() { # $1=fullpath  $2=readable(slug; may be omitted if basename is ASCII)
   local dir="$1" readable="$2" base name hash
   [ -z "$readable" ] && readable="$(basename "$dir")"
-  name="$(printf '%s' "$readable" | cut -c1-15 | LC_ALL=C sed 's/-$//')"
+  name="$(printf '%s' "$readable" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9_.-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-15)"
+  [ -n "$name" ] || name=session
   hash="$(printf '%s' "$dir" | shasum -a 256 | cut -c1-5)"
   base="${name}_${hash}"
   name="${LOCAL_HOST}_${base}_1"   # first session → _1
@@ -111,8 +113,58 @@ EXP4="$(expect_name "$HAN_DIR4" "romanX")"
 it "nonascii/hangul-fallback"
 assert_rc "$RP_RC" 0 "claude-translation-failure romanization fallback launch succeeds"
 assert_contains "$MLOG" "claude|" "claude -p attempted (present but empty output)"
-assert_contains "$GOT4" "romanX" "session name contains the romanization result"
-assert_eq "$GOT4" "$EXP4" "session name = host_romanX_<5hex>_1"
+assert_contains "$GOT4" "romanx" "session name contains the sanitized romanization result"
+assert_eq "$GOT4" "$EXP4" "session name = host_romanx_<5hex>_1"
+cleanup_sandbox
+
+# ───────────────────────────────────────────────────────────────────
+# Scenario 4b — claude prints an auth/API failure on stdout → treat as failure and romanize.
+# ───────────────────────────────────────────────────────────────────
+SBX_REMOTE_HOST="" new_sandbox
+make_all_mocks
+{
+  printf '#!/bin/bash\n'
+  printf '{ printf "%%s" "$(basename "$0")"; for a in "$@"; do printf "|%%s" "$a"; done; printf "\\n"; } >> "$MOCKLOG"\n'
+  printf 'case " $* " in *" -p "*) printf "Failed to authenticate. API Error: 401 Invalid authentication credentials\\n"; exit 42 ;; esac\n'
+  printf 'exit 0\n'
+} > "$MOCKBIN/claude"; chmod +x "$MOCKBIN/claude"
+cp "$MOCKBIN/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; chmod +x "$RP_DIR/bin/hangul-romanize"
+HAN_DIR4B="$SBX/회의녹음본"; mkdir -p "$HAN_DIR4B"
+MOCK_HASSESSION=0 MOCK_HROMANIZE=hoeui-nogeum-bon run_launcher --local "$HAN_DIR4B"
+GOT4B="$(extract_session)"
+EXP4B="$(expect_name "$HAN_DIR4B" "hoeui-nogeum-bon")"
+
+it "nonascii/claude-auth-failure-fallback"
+assert_rc "$RP_RC" 0 "claude auth failure output falls back to romanizer"
+assert_contains "$MLOG" "claude|" "claude -p attempted"
+assert_contains "$MLOG" "hangul-romanize|" "auth failure triggers romanizer"
+assert_absent "$GOT4B" "failed-to-auth" "session name does not cache auth error text"
+assert_eq "$GOT4B" "$EXP4B" "session name = host_romanized_<5hex>_1"
+cleanup_sandbox
+
+# ───────────────────────────────────────────────────────────────────
+# Scenario 4c — any non-zero claude -p failure, regardless of message → romanization fallback.
+# ───────────────────────────────────────────────────────────────────
+SBX_REMOTE_HOST="" new_sandbox
+make_all_mocks
+{
+  printf '#!/bin/bash\n'
+  printf '{ printf "%%s" "$(basename "$0")"; for a in "$@"; do printf "|%%s" "$a"; done; printf "\\n"; } >> "$MOCKLOG"\n'
+  printf 'case " $* " in *" -p "*) printf "provider exploded in a novel way\\n"; exit 77 ;; esac\n'
+  printf 'exit 0\n'
+} > "$MOCKBIN/claude"; chmod +x "$MOCKBIN/claude"
+cp "$MOCKBIN/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; chmod +x "$RP_DIR/bin/hangul-romanize"
+HAN_DIR4C="$SBX/번역실패"; mkdir -p "$HAN_DIR4C"
+MOCK_HASSESSION=0 MOCK_HROMANIZE=beonyeok-silpae run_launcher --local "$HAN_DIR4C"
+GOT4C="$(extract_session)"
+EXP4C="$(expect_name "$HAN_DIR4C" "beonyeok-silpae")"
+
+it "nonascii/claude-any-error-fallback"
+assert_rc "$RP_RC" 0 "any claude -p non-zero failure falls back to romanizer"
+assert_contains "$MLOG" "claude|" "claude -p attempted"
+assert_contains "$MLOG" "hangul-romanize|" "generic failure triggers romanizer"
+assert_absent "$GOT4C" "provider-exploded" "session name does not cache arbitrary error text"
+assert_eq "$GOT4C" "$EXP4C" "session name = host_romanized_<5hex>_1"
 cleanup_sandbox
 
 # ───────────────────────────────────────────────────────────────────
@@ -131,14 +183,14 @@ make_all_mocks
 HAN_DIR5="$SBX/한글폴더"; mkdir -p "$HAN_DIR5"
 MOCK_HASSESSION=0 run_launcher --local "$HAN_DIR5"
 GOT5="$(extract_session)"
-# Fallback = raw basename "한글폴더" → after cut -c1-15 then [.:]→_ (Hangul is left intact).
+# Fallback = raw basename "한글폴더" → sanitized to safe fallback slug.
 EXP5="$(expect_name "$HAN_DIR5" "한글폴더")"
 
 it "nonascii/raw-fallback"
 assert_rc "$RP_RC" 0 "claude-failure + romanizer-absent → raw fallback succeeds"
 assert_contains "$MLOG" "claude|" "claude -p attempted (empty output)"
 assert_absent "$MLOG" "hangul-romanize|" "romanizer absent (RP_DIR/bin is empty)"
-assert_eq "$GOT5" "$EXP5" "session name = host_한글폴더_<5hex>_1 (raw fallback)"
+assert_eq "$GOT5" "$EXP5" "session name = host_session_<5hex>_1 (safe raw fallback)"
 cleanup_sandbox
 
 # ───────────────────────────────────────────────────────────────────
