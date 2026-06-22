@@ -3217,7 +3217,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,656 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3245,6 +3245,7 @@ index 00000000..820a8de4
 +import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 +import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 +import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
++import { INotificationService } from '../../../../platform/notification/common/notification.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
 +import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, IViewContainersRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation } from '../../../common/views.js';
@@ -3331,6 +3332,11 @@ index 00000000..820a8de4
 +	private readonly activeGroupListener: MutableDisposable<IDisposable> = this._register(new MutableDisposable());
 +
 +	private static readonly DEFAULT_TITLE = localize('remotepairSessions', "Sessions");
++	private static readonly INPUT_RECOVERY_GUIDANCE_MIN_CHARS = 8192;
++	private static readonly INPUT_RECOVERY_GUIDANCE_MIN_LINES = 20;
++	private static readonly INPUT_RECOVERY_GUIDANCE_COOLDOWN_MS = 30000;
++
++	private lastInputRecoveryGuidanceAt = 0;
 +
 +	constructor(
 +		options: IViewPaneOptions,
@@ -3344,6 +3350,7 @@ index 00000000..820a8de4
 +		@IThemeService themeService: IThemeService,
 +		@IHoverService hoverService: IHoverService,
 +		@IClipboardService private readonly clipboardService: IClipboardService,
++		@INotificationService private readonly notificationService: INotificationService,
 +		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 +		@ITerminalInstanceService private readonly terminalInstanceService: ITerminalInstanceService
 +	) {
@@ -3700,11 +3707,38 @@ index 00000000..820a8de4
 +			this.clipboardService.readText().then(text => {
 +				if (this.activeTerminalInstance() === instance) {
 +					instance.sendText(text, false, true);
++					this.maybeOfferInputRecoveryGuidance(text);
 +				}
 +			}, e => {
 +				rpLog('warn', `paste: clipboard read failed: ${e}`);
 +			});
 +		}
++	}
++
++	private maybeOfferInputRecoveryGuidance(text: string): void {
++		if (!this.shouldOfferInputRecoveryGuidance(text)) {
++			return;
++		}
++
++		const now = Date.now();
++		if (now - this.lastInputRecoveryGuidanceAt < RemotePairTerminalSidebarView.INPUT_RECOVERY_GUIDANCE_COOLDOWN_MS) {
++			return;
++		}
++		this.lastInputRecoveryGuidanceAt = now;
++
++		this.notificationService.info(localize(
++			'remotepairTerminalInputRecoveryGuidance',
++			"If a native terminal or agent input limit rejects or truncates this paste, edit it in place, shorten it, or retry paste. Xpair does not switch to file transfer for this flow."
++		));
++	}
++
++	private shouldOfferInputRecoveryGuidance(text: string): boolean {
++		if (text.length >= RemotePairTerminalSidebarView.INPUT_RECOVERY_GUIDANCE_MIN_CHARS) {
++			return true;
++		}
++
++		const lineBreaks = text.match(/\r\n|\r|\n/g)?.length ?? 0;
++		return lineBreaks >= RemotePairTerminalSidebarView.INPUT_RECOVERY_GUIDANCE_MIN_LINES;
 +	}
 +
 +	/**
