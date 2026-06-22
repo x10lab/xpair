@@ -650,8 +650,12 @@ EOF
 # Use || to capture rc rather than letting ssh failure abort at the assignment under set -e.
 SSH_RC=0
 SSH_OUT="$(ssh -o BatchMode=yes "$REMOTE_HOST" "$REMOTE_SCRIPT" 2>&1)" || SSH_RC=$?
-# Show setup output to user but strip the marker line
-printf '%s\n' "$SSH_OUT" | grep -v '^__SESSION__:' || true
+# Show setup output to user and persist it for `xpair logs --collect`; strip the session marker.
+SETUP_OUT="$(printf '%s\n' "$SSH_OUT" | grep -v '^__SESSION__:' || true)"
+if [ -n "$SETUP_OUT" ]; then
+  printf '%s\n' "$SETUP_OUT" | while IFS= read -r l; do printf '%s setup %s\n' "$(date '+%T')" "$l" >> "$LAUNCH_LOG"; done
+  printf '%s\n' "$SETUP_OUT"
+fi
 ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | sed 's/^__SESSION__://')"
 [ "$SSH_RC" -ne 0 ] && die "remote setup failed (exit=$SSH_RC)" "$SSH_RC"
 [ -z "$ACTUAL_SESSION" ] && die "failed to extract remote session name" 12
