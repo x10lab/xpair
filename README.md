@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon/AppIcon-1024.png" alt="Xpair" width="128">
+  <img src="assets/icon/Logo-1024.png" alt="Xpair" width="128">
 </p>
 
 <h1 align="center">Xpair</h1>
@@ -15,6 +15,10 @@ Run the agent you already subscribe to — **Claude**, **Codex**, or **OpenCode*
 - **Host Mac** — runs your agent inside persistent tmux sessions, 24/7, with computer-use working.
 - **Client** — the Xpair IDE (a VSCodium fork) or the `xpair` CLI; attach with a Finder right-click.
 - **Mobile** — reach the same sessions from any SSH/mosh client, including Claude Code on your phone.
+
+<p align="center">
+  <img src="assets/ide-hero.png" alt="The Xpair IDE — Sessions sidebar, Remote Desktop tab, and Attached/Detached host sessions" width="860">
+</p>
 
 ---
 

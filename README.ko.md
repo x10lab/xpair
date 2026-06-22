@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon/AppIcon-1024.png" alt="Xpair" width="128">
+  <img src="assets/icon/Logo-1024.png" alt="Xpair" width="128">
 </p>
 
 <h1 align="center">Xpair</h1>
@@ -15,6 +15,10 @@
 - **호스트 Mac** — 에이전트를 영속 tmux 세션 안에서, Computer Use가 살아 있는 채로 24/7 돌립니다.
 - **클라이언트** — Xpair IDE(VSCodium 포크) 또는 `xpair` CLI; Finder 우클릭으로 붙습니다.
 - **모바일** — 폰의 Claude Code를 포함한 모든 SSH/mosh 클라이언트에서 같은 세션에 들어갑니다.
+
+<p align="center">
+  <img src="assets/ide-hero.png" alt="Xpair IDE — Sessions 사이드바, Remote Desktop 탭, Attached/Detached 호스트 세션" width="860">
+</p>
 
 ---
 
