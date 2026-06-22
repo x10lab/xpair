@@ -840,6 +840,9 @@ async function ensureExtensions(interactive) {
  * @param {RemoteDesktopPanel} [panel]
  */
 async function _doConnectHost(host, panel) {
+  // NOTE: connect deliberately keeps the host connection, mappings, sessions, and
+  // Remote Desktop inside THIS window by routing through the Xpair surfaces below,
+  // rather than spawning a separate open-remote-ssh window for the host filesystem.
   log(`connectHost: routing ${host} through Xpair surfaces`);
 
   const reach = await vscode.window.withProgress(

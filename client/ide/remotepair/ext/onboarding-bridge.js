@@ -273,9 +273,12 @@ function runSecretStdin(cmd, args, secret) {
   });
 }
 
-// --- Engine constants (claude | shell | codex | opencode) -------------------------------------
-// The session engine runs ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
-const ENGINES = new Set(["claude", "shell", "codex", "opencode"]);
+// --- Engine constants (claude | codex | opencode | shell) -------------------------------------
+// Agent engines run ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
+// `shell` is a valid session engine (plain login shell, no install/auth guard), so it is only a
+// member of SESSION_ENGINES — never of the install/auth-guarded ENGINES set.
+const ENGINES = new Set(["claude", "codex", "opencode"]);
+const SESSION_ENGINES = new Set([...ENGINES, "shell"]);
 
 // Per-engine host probe: a single shell line (run over key-auth SSH) that prints a RP_* block:
 //   RP_ENGINE_INSTALLED=1|0, RP_ENGINE_VERSION=<v>, RP_ENGINE_AUTHED=1 (only when authed).
@@ -535,11 +538,11 @@ const bridge = {
     return cli(["config", "set", "host", host]);
   },
 
-  // Engine — persist the chosen session engine via the CLI (`config set engine <claude|shell|codex|opencode>`,
+  // Engine — persist the chosen session engine via the CLI (`config set engine <claude|codex|opencode|shell>`,
   // → client.env ENGINE, consumed by `xpair launch`). Validates the engine here too so a bad value
   // never reaches the CLI. Returns {code, out, err}.
   async setEngine(engine) {
-    if (!ENGINES.has(String(engine))) {
+    if (!SESSION_ENGINES.has(String(engine))) {
       return { code: -1, out: "", err: `unknown engine: ${engine}` };
     }
     return cli(["config", "set", "engine", String(engine)]);

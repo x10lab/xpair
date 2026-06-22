@@ -851,7 +851,7 @@ index d276b5c9..2ed4089c 100644
 +		rpButton.title = nls.localize('remotepairAddRootTooltip', "Mount a host folder and add it as a Browser root");
 +		const rpIcon = DOM.append(rpButton, DOM.$('span.rp-add-root-icon'));
 +		rpIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.rootFolderOpened));
-+		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Mapping");
++		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Root");
 +		const rpRun = () => this.commandService.executeCommand('remotepair.browser.addRoot');
 +		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.CLICK, rpRun));
 +		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
@@ -1545,7 +1545,7 @@ index 00000000..6887d7cb
 +Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeContent(EmptyView.ID, {
 +	content: localize(
 +		{ key: 'remotepairAddRootWelcome', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
-+		"No mapped folders yet.\n[$(rocket) Add Mapping](command:remotepair.browser.addRoot)\nMounts a host folder and registers it as a Browser mapping."
++		"No mapped folders yet.\n[$(rocket) Add Root](command:remotepair.browser.addRoot)\nMounts a host folder and adds it as a Browser root."
 +	),
 +	when: WorkbenchStateContext.isEqualTo('empty'),
 +	group: ViewContentGroups.Open,
@@ -3283,7 +3283,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,656 @@
+@@ -0,0 +1,665 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3571,7 +3571,7 @@ index 00000000..820a8de4
 +	 * threaded through, then launches the xpair launcher via the terminal's public
 +	 * sendText API. Hosting-layer only — core terminal behavior untouched.
 +	 */
-+	openSessionInFolder(cwd: URI | undefined): void {
++	openSessionInFolder(cwd: URI | undefined, kind: SessionKind = 'claude'): void {
 +		const part = this.editorPart;
 +		if (!part) {
 +			return;
@@ -3587,7 +3587,16 @@ index 00000000..820a8de4
 +			try {
 +				const { instance, opened } = this.openTerminalInGroup(group, cwd);
 +				opened.then(() => {
-+					instance.sendText('xpair launch', true);
++					// Folder-root launch contract: instance.sendText('xpair launch', true) runs in cwd
++					// from openTerminalInGroup(group, cwd); engine branches only add explicit selection.
++					if (kind === 'shell') {
++						return;
++					}
++					if (kind === 'codex') {
++						instance.sendText('xpair launch --engine codex', true);
++						return;
++					}
++					instance.sendText('xpair launch --engine claude', true);
 +				}, (e) => { rpLog('warn', `openSessionInFolder: terminal open rejected: ${e}`); /* best-effort */ });
 +			} catch (e) {
 +				rpLog('error', `openSessionInFolder: openTerminalInGroup threw: ${e}`); // best-effort
@@ -3920,12 +3929,12 @@ index 00000000..820a8de4
 +			f1: false
 +		});
 +	}
-+	async run(accessor: ServicesAccessor, resource?: URI): Promise<void> {
++	async run(accessor: ServicesAccessor, resource?: URI, kind: SessionKind = 'claude'): Promise<void> {
 +		const viewsService = accessor.get(IViewsService);
 +		// Make the Sessions sidebar visible so the embedded EditorPart is constructed.
 +		const view = await viewsService.openView(REMOTEPAIR_TERMINAL_SIDEBAR_ID + '.view', false);
 +		if (view instanceof RemotePairTerminalSidebarView) {
-+			view.openSessionInFolder(resource);
++			view.openSessionInFolder(resource, kind);
 +		}
 +	}
 +});

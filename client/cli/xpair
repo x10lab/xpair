@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # xpair — Xpair single entry-point CLI (client side).
 #
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
+#                              Plain shell sessions are also supported via --engine shell.
 #   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|shell|codex|opencode>]
 #                              Launch/attach a session (remote host/local) for a folder. Prompts to register if unmapped.
 #                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
@@ -864,24 +866,12 @@ cmd_attach() {
     return 4
   fi
   printf '\033]2;%s\007' "$session"
-  on_attach_close() {
-    ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
-        "$remote_bin/tmux-aqua -S $aqua_sock_q detach-client -s $(sh_quote "=$session")" \
-        >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-    exit 129
-  }
-  trap on_attach_close HUP TERM
-  local rc=0
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
-    mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
-    trap - HUP TERM
-    return "$rc"
+    exec mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
   fi
   printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
-  ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")" || rc=$?
-  trap - HUP TERM
-  return "$rc"
+  exec ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")"
 }
 
 cmd_host() {

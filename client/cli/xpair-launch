@@ -143,9 +143,9 @@ choose_engine() {
 
   local def ans choice
   case "$RP_ENGINE" in
-    shell) def=2 ;;
-    codex) def=3 ;;
-    opencode) def=4 ;;
+    codex) def=2 ;;
+    opencode) def=3 ;;
+    shell) def=4 ;;
     *) def=1 ;;
   esac
 
@@ -154,15 +154,15 @@ choose_engine() {
   [ "$def" = 2 ] && d2=" (default)"
   [ "$def" = 3 ] && d3=" (default)"
   [ "$def" = 4 ] && d4=" (default)"
-  printf 'Session engine:\n  [1] Claude Code%s\n  [2] Shell%s\n  [3] Codex%s\n  [4] OpenCode%s\n' \
+  printf 'Agent engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] OpenCode%s\n  [4] Shell%s\n' \
     "$d1" "$d2" "$d3" "$d4"
   ans="$(ask "select engine [1/2/3/4] (default $def): ")"
   choice="${ans:-$def}"
   case "$choice" in
     1|claude|claudecode|claude-code) RP_ENGINE=claude ;;
-    2|shell) RP_ENGINE=shell ;;
-    3|codex) RP_ENGINE=codex ;;
-    4|opencode) RP_ENGINE=opencode ;;
+    2|codex) RP_ENGINE=codex ;;
+    3|opencode) RP_ENGINE=opencode ;;
+    4|shell) RP_ENGINE=shell ;;
     *) printf 'unknown engine selection: %s — keeping %s\n' "$choice" "$(engine_label "$RP_ENGINE")" >&2 ;;
   esac
 }
@@ -306,8 +306,10 @@ RESPAWN
 }
 
 respawn_body_codex() {
-  # Codex has only provider-global resume (`codex resume --last`), not an Xpair path/session-keyed
-  # resume. Existing sessions keep context through tmux reattach; newly spawned codex shells must be
+  # Codex has only provider-global resume, not an Xpair path/session-keyed resume.
+  # Historical Codex CLI form kept as a compatibility note only:
+  #   codex --dangerously-bypass-approvals-and-sandbox resume --last
+  # Existing sessions keep context through tmux reattach; newly spawned codex shells must be
   # clean so a fresh/new-folder launch cannot inherit a stale global conversation.
   # --dangerously-bypass-approvals-and-sandbox is codex's auto-approve (claude
   # --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
@@ -819,7 +821,7 @@ printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
 remote_attach_ssh() {
   printf 'attaching via ssh -t -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
-  ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
+  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
 }
 
 resolve_xpair_cli() {
