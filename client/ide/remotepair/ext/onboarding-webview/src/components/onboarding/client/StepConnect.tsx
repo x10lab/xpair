@@ -22,8 +22,8 @@ function reasonFromProbe(): Reason {
   return REASONS.HOST_UNREACHABLE;
 }
 
-function isHostKeyMismatch(err: string): boolean {
-  return /host key|REMOTE HOST IDENTIFICATION/i.test(err);
+function isHostKeyMismatch(err: string, state?: string): boolean {
+  return state === "host_key_mismatch" || /host key|REMOTE HOST IDENTIFICATION/i.test(err);
 }
 
 type Props = {
@@ -31,9 +31,10 @@ type Props = {
   setHost: (s: string) => void;
   state: ConnState;
   setState: (s: ConnState) => void;
+  onBackToDiscovery?: () => void;
 };
 
-export function StepConnect({ host, setHost, state, setState }: Props) {
+export function StepConnect({ host, setHost, state, setState, onBackToDiscovery }: Props) {
   const [tailscale, setTailscale] = useState<{
     installed: boolean;
     up: boolean;
@@ -109,7 +110,7 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
         });
       } else {
         setErr(r.err || "Host did not respond.");
-        setState(isHostKeyMismatch(r.err || "") ? "rekeyed" : "failed");
+        setState(isHostKeyMismatch(r.err || "", r.state) ? "rekeyed" : "failed");
         // host_connect_failed + ssh_config_failed: enum reason only (never the raw r.err string).
         const reason = reasonFromProbe();
         capture(EVENTS.HOST_CONNECT_FAILED, { path, reason });
@@ -278,6 +279,11 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
             <Button size="sm" variant="outline" onClick={check}>
               Retry
             </Button>
+            {onBackToDiscovery && (
+              <Button size="sm" variant="ghost" className="ml-2" onClick={onBackToDiscovery}>
+                Back to discovery
+              </Button>
+            )}
           </div>
         </div>
       )}

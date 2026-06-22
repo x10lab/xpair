@@ -68,19 +68,23 @@ declare global {
       hostPathExists: (p: string) => Promise<{ exists: boolean; err: string }>
       defaultMountpoint: (hostPath: string) => Promise<string>
       sshKeygen: () => Promise<{ pubkey: string; keygenNew: boolean }>
-      sshReachable: (host: string) => Promise<{ reachable: boolean; err: string }>
+      sshReachable: (host: string) => Promise<{
+        reachable: boolean
+        err: string
+        state?: "ready" | "invalid_host" | "host_key_mismatch" | "key_auth_blocked" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "retry"
+      }>
       tailscaleStatus: () => Promise<{ installed: boolean; up: boolean }>
-      // Discovery / remote-install (component ⑤). The only secret that transits here is the account
-      // password (installHost), handed to the CLI over an inherited pipe (never argv/log/disk) and
-      // never sent to telemetry; key passphrases are collected only by the separate askpass helper.
+      // Discovery / remote-install (component ⑤). SSH key auth is the primary path: the bridge uses
+      // BatchMode/publickey-only probes and returns explicit recovery states for host-key mismatch
+      // or key-agent/passphrase failures.
       discover: () => Promise<{ peers: Peer[]; err: string }>
-      // `password` is the account password the user typed into the onboarding (no separate dialog).
-      // It is handed to the CLI over an inherited pipe (never argv/log/disk). Omit when the host
-      // already trusts the client key — the install then authenticates by key.
-      installHost: (opts: { host: string; user?: string; password?: string }) => Promise<{
+      installHost: (opts: { host: string; user?: string }) => Promise<{
         ok: boolean
         out: string
         err: string
+        state?: "ready" | "invalid_host" | "invalid_account" | "host_key_mismatch" | "key_auth_blocked" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "retry"
       }>
       // Post-install TCC grant status read from the host app's status.json over SSH. AX/SR/FDA must
       // be granted on the host's own screen (macOS forbids remote grants); the install step polls

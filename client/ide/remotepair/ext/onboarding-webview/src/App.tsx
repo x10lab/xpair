@@ -179,9 +179,6 @@ export default function App() {
   // Discovery / connect state.
   const [peer, setPeer] = useState<Peer | null>(null);
   const [account, setAccount] = useState("");
-  // Account password typed on the setup step → consumed by StepInstalling (handed to the CLI over a
-  // pipe, never argv/log), then cleared. Empty ⇒ install authenticates by SSH key.
-  const [password, setPassword] = useState("");
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
@@ -264,7 +261,7 @@ export default function App() {
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
   // Reachability (SSH) for the non-setup paths. The setup path installs the app later, so it gates
-  // only on the password step's own flow (Next → Installing), not on reachability/host-app here.
+  // only on the setup confirmation flow (Next → Installing), not on reachability/host-app here.
   const reachReady = manual
     ? manualReady
     : isReconnect
@@ -324,7 +321,7 @@ export default function App() {
   };
 
   // Prev routing: from Mappings, go back to Grant (setup) or Connect (others); Grant and Installing
-  // both fall back to the setup/password step.
+  // both fall back to the setup confirmation step.
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
       // Mappings always follows the Engine step.
@@ -452,6 +449,7 @@ export default function App() {
               setHost={setHost}
               state={connState}
               setState={setConnState}
+              onBackToDiscovery={() => w.goTo(S.DISCOVER, "prev")}
             />
           ) : isReconnect ? (
             <StepReconnect peer={peer} onReady={setReconnectReady} />
@@ -460,16 +458,12 @@ export default function App() {
               peer={peer}
               user={account}
               setUser={setAccount}
-              password={password}
-              setPassword={setPassword}
             />
           ))}
         {w.index === S.INSTALL && peer && (
           <StepInstalling
             peer={peer}
             user={account}
-            password={password}
-            setPassword={setPassword}
             state={installState}
             setState={setInstallState}
             onDone={() => {

@@ -7,17 +7,15 @@ type Props = {
   peer: Peer;
   user: string;
   setUser: (u: string) => void;
-  password: string;
-  setPassword: (p: string) => void;
 };
 
 /**
- * Set-up path: the host is SSH-able but Xpair is not installed. The user confirms the account
- * and (if the host doesn't already trust the SSH key) types the account password RIGHT HERE — no
- * separate OS dialog. The password is handed to the CLI over a pipe (never argv/log/disk), used once
- * to install, then key-based forever. Leave it blank if the Mac already trusts your key.
+ * Set-up path: the host is SSH-able but Xpair is not installed. The user confirms the target
+ * account and fingerprint; install proceeds over public-key SSH only. If the key agent/passphrase
+ * is locked or the host does not trust this key yet, the bridge returns an explicit recovery state
+ * and the user can approve/unlock/authorize the key before retrying.
  */
-export function StepSetupPassword({ peer, user, setUser, password, setPassword }: Props) {
+export function StepSetupPassword({ peer, user, setUser }: Props) {
   const [fp, setFp] = useState<string | null>(peer.fp ?? null);
 
   useEffect(() => {
@@ -37,11 +35,11 @@ export function StepSetupPassword({ peer, user, setUser, password, setPassword }
   return (
     <div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
-        Sign in to install Xpair
+        Confirm SSH access
       </h2>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        {peer.name} doesn't have Xpair yet. Sign in once so we can set it up — after this it's
-        key-based, no more passwords.
+        {peer.name} doesn't have Xpair yet. We'll install it over your SSH key after you confirm
+        the host fingerprint.
       </p>
 
       <div className="mt-5">
@@ -59,22 +57,6 @@ export function StepSetupPassword({ peer, user, setUser, password, setPassword }
         </div>
         <p className="mt-1.5 text-[11px] text-muted-foreground">
           Defaults to your username. Change it for a different account on that Mac.
-        </p>
-      </div>
-
-      <div className="mt-4">
-        <label className="mb-1.5 block text-[11px] text-muted-foreground">Account password</label>
-        <Input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="••••••••"
-          autoComplete="off"
-          className="rounded-lg border-border bg-muted/30 font-mono text-sm"
-        />
-        <p className="mt-1.5 text-[11px] text-muted-foreground">
-          Used once to install, then never again. Xpair sends it straight to the host — it's
-          never stored. Leave blank if this Mac already trusts your SSH key.
         </p>
       </div>
 

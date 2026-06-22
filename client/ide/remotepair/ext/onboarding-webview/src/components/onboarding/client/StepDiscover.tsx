@@ -12,7 +12,7 @@ import {
 import type { Peer, PeerSource, PeerStatus } from "@/global";
 
 type Props = {
-  /** Called when the user picks a peer (drives the auto-branch to reconnect vs password). */
+  /** Called when the user picks a peer (drives the auto-branch to reconnect vs setup). */
   onSelect: (peer: Peer) => void;
   /** Called when the user chooses "Enter host manually" → falls back to StepConnect. */
   onManual: () => void;
