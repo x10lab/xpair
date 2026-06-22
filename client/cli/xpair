@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # xpair — Xpair single entry-point CLI (client side).
 #
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
+#                              Plain shell sessions are also supported via --engine shell.
 #   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|shell|opencode>]
 #                              Launch/attach an agent session (remote host/local) for a folder. Prompts to register if unmapped.
 #                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
@@ -93,7 +95,8 @@ fi
 canonical_engine() {
   case "${1:-}" in
     claude|claudecode|claude-code) printf 'claude' ;;
-    codex|shell|opencode) printf '%s' "$1" ;;
+    codex|opencode) printf '%s' "$1" ;;
+    shell) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -1477,6 +1480,9 @@ cmd_desktop() {
 cmd_mount() {
   local tool; tool="$(_resolve_client_tool xpair-mount)" \
     || { echo "xpair-mount not found (install client, or run from the repo)" >&2; return 1; }
+  case "${1:-}" in
+    /*) set -- mount "$@" ;;
+  esac
   exec "$tool" "$@"
 }
 

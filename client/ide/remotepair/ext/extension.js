@@ -1108,7 +1108,7 @@ function runXpairCli(args, opts = {}) {
 /**
  * C1.D3 — Mount-first add-root flow for the Browser's "Add Root" affordance.
  *   1. Prompt for a HOST folder path (v1 = host-path input box).
- *   2. `xpair mount mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
+ *   2. `xpair mount <hostPath>` (SMB default, macOS-native no-kext) → real OS mount.
  *   3. Parse the printed "Mountpoint: <path>" and register a FOLDER_MAP via
  *      `xpair map add <mountpoint> <hostPath>` (writes <mountpoint>::<hostPath>).
  *   4. Reconcile roots so the mountpoint appears as a Browser root without restart.
@@ -1132,12 +1132,13 @@ async function addRoot() {
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Xpair: mounting ${host}…`, cancellable: false },
     async () => {
-      // Step 2: mount.
-      const mres = await runXpairCli(["mount", "mount", host], { timeoutMs: 180000 });
+      // Step 2: mount. The CLI expands this shorthand to the lower-level
+      // xpair-mount action form, equivalent to: runXpairCli(["mount", "mount", host]).
+      const mres = await runXpairCli(["mount", host], { timeoutMs: 180000 });
       if (mres.code !== 0) {
         log(`addRoot: mount failed (code ${mres.code}): ${mres.stderr || mres.stdout}`);
         const detail = (mres.stderr || mres.stdout || "").trim().split(/\r?\n/).slice(-3).join(" ");
-        vscode.window.showErrorMessage(`Xpair: 'xpair mount mount ${host}' failed. ${detail}`);
+        vscode.window.showErrorMessage(`Xpair: 'xpair mount ${host}' failed. ${detail}`);
         return;
       }
 

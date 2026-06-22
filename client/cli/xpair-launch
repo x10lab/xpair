@@ -40,7 +40,8 @@ RP_ENGINE_EXPLICIT="${RP_ENGINE_EXPLICIT:-0}"
 canonical_engine() {
   case "${1:-}" in
     claude|claudecode|claude-code) printf 'claude' ;;
-    codex|shell|opencode) printf '%s' "$1" ;;
+    codex|opencode) printf '%s' "$1" ;;
+    shell) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -124,8 +125,8 @@ choose_engine() {
   local def ans choice
   case "$RP_ENGINE" in
     codex) def=2 ;;
-    shell) def=3 ;;
-    opencode) def=4 ;;
+    opencode) def=3 ;;
+    shell) def=4 ;;
     *) def=1 ;;
   esac
 
@@ -134,15 +135,15 @@ choose_engine() {
   [ "$def" = 2 ] && d2=" (default)"
   [ "$def" = 3 ] && d3=" (default)"
   [ "$def" = 4 ] && d4=" (default)"
-  printf 'Agent engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] Shell%s\n  [4] OpenCode%s\n' \
+  printf 'Agent engine:\n  [1] Claude Code%s\n  [2] Codex%s\n  [3] OpenCode%s\n  [4] Shell%s\n' \
     "$d1" "$d2" "$d3" "$d4"
   ans="$(ask "select engine [1/2/3/4] (default $def): ")"
   choice="${ans:-$def}"
   case "$choice" in
     1|claude|claudecode|claude-code) RP_ENGINE=claude ;;
     2|codex) RP_ENGINE=codex ;;
-    3|shell) RP_ENGINE=shell ;;
-    4|opencode) RP_ENGINE=opencode ;;
+    3|opencode) RP_ENGINE=opencode ;;
+    4|shell) RP_ENGINE=shell ;;
     *) printf 'unknown engine selection: %s — keeping %s\n' "$choice" "$(engine_label "$RP_ENGINE")" >&2 ;;
   esac
 }
@@ -275,9 +276,10 @@ RESPAWN
 }
 
 respawn_body_codex() {
-  # Codex has no path-keyed recorded-id resume here. New tmux sessions must start fresh
-  # rather than using provider-global "last" state from another folder/path. Detached
-  # sessions are still continued by reattaching the existing tmux session.
+  # Do NOT run provider-global resume for new path-scoped sessions.
+  # Historical Codex CLI form kept as a compatibility note only:
+  # codex --dangerously-bypass-approvals-and-sandbox resume --last
+  # Detached sessions are continued by reattaching the existing tmux session.
   # --dangerously-bypass-approvals-and-sandbox is codex's auto-approve
   # (claude --dangerously-skip-permissions equivalent), so the approve router is not needed for codex.
   cat <<'RESPAWN'

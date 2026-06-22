@@ -15,8 +15,8 @@
   let haveFrame = false;
   let inputArmed = false;
   let inputSeq = 0;
-  let ctlDc = null;
-  let moveDc = null;
+  let ctlDC = null;
+  let moveDC = null;
   let lastMoveTs = 0;
   const MOVE_MIN_MS = 1000 / 60;
   const BUFFER_LIMIT = 65536;
@@ -41,7 +41,16 @@
     ArrowLeft: 123, ArrowRight: 124, ArrowDown: 125, ArrowUp: 126,
   };
 
-  const textCapture = document.createElement("div");
+  const textCapture = typeof document.createElement === "function"
+    ? document.createElement("div")
+    : {
+        contentEditable: "",
+        style: {},
+        textContent: "",
+        setAttribute() {},
+        addEventListener() {},
+        focus() {},
+      };
   textCapture.contentEditable = "true";
   textCapture.setAttribute("aria-hidden", "true");
   textCapture.style.position = "absolute";
@@ -52,7 +61,9 @@
   textCapture.style.opacity = "0";
   textCapture.style.pointerEvents = "none";
   textCapture.style.overflow = "hidden";
-  stage.appendChild(textCapture);
+  if (stage && typeof stage.appendChild === "function") {
+    stage.appendChild(textCapture);
+  }
   video.tabIndex = 0;
 
   // v2 (WebRTC) state
@@ -75,7 +86,7 @@
   }
 
   function setBadge() {
-    const inputOn = ctlDc && ctlDc.readyState === "open";
+    const inputOn = ctlDC && ctlDC.readyState === "open";
     badge.textContent = inputOn ? "input on" : "input pending";
     badge.className = inputOn ? "on" : "off";
   }
@@ -88,27 +99,29 @@
   }
 
   function resetInputChannels() {
-    ctlDc = null;
-    moveDc = null;
+    ctlDC = null;
+    moveDC = null;
     inputSeq = 0;
     setBadge();
   }
 
   function wireInputChannel(channel) {
     if (!channel || (channel.label !== "rp-ctl" && channel.label !== "rp-move")) return;
-    if (channel.label === "rp-ctl") ctlDc = channel;
-    else moveDc = channel;
-    channel.addEventListener("open", setBadge);
-    channel.addEventListener("close", setBadge);
-    channel.addEventListener("error", setBadge);
+    if (channel.label === "rp-ctl") ctlDC = channel;
+    else moveDC = channel;
+    if (typeof channel.addEventListener === "function") {
+      channel.addEventListener("open", setBadge);
+      channel.addEventListener("close", setBadge);
+      channel.addEventListener("error", setBadge);
+    }
     setBadge();
   }
 
-  function sendInput(dc, input) {
-    if (!dc || dc.readyState !== "open" || dc.bufferedAmount > BUFFER_LIMIT) return false;
+  function sendInput(channel, input) {
+    if (!channel || channel.readyState !== "open" || channel.bufferedAmount > BUFFER_LIMIT) return false;
     input.seq = ++inputSeq;
     try {
-      dc.send(JSON.stringify(input));
+      channel.send(JSON.stringify(input));
       return true;
     } catch (_e) {
       return false;
@@ -116,11 +129,11 @@
   }
 
   function sendControlInput(input) {
-    return sendInput(ctlDc, input);
+    return sendInput(ctlDC, input);
   }
 
   function sendMoveInput(input) {
-    return sendInput(moveDc, input);
+    return sendInput(moveDC, input);
   }
 
   function armInput() {
@@ -184,6 +197,10 @@
     const pc = new RTCPeerConnection({ iceServers: [] }); // host candidates (loopback/LAN/VPN)
     pc2 = pc;
     pc.addTransceiver("video", { direction: "recvonly" });
+    if (typeof pc.createDataChannel === "function") {
+      wireInputChannel(pc.createDataChannel("rp-ctl"));
+      wireInputChannel(pc.createDataChannel("rp-move"));
+    }
 
     let sock;
     const isCurrent = () => generation === v2Generation && pc2 === pc && ws === sock;
@@ -265,6 +282,7 @@
   // Remote input capture
   // -------------------------------------------------------------------------
 
+  if (video && typeof video.addEventListener === "function") {
   video.addEventListener("pointerdown", function (ev) {
     armInput();
     if (typeof video.setPointerCapture === "function") {
@@ -322,6 +340,7 @@
     if (text) sendControlInput({ t: "x", s: text });
     clearCapturedText();
   });
+  }
 
   // -------------------------------------------------------------------------
   // Messages from the extension

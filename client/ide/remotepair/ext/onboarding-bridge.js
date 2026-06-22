@@ -230,8 +230,9 @@ function runSecretStdin(cmd, args, secret) {
 }
 
 // --- Engine constants (claude | codex | opencode | shell) --------------------------------------
-// The agent engine runs ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
-const ENGINES = new Set(["claude", "codex", "opencode", "shell"]);
+// Agent engines run ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
+const ENGINES = new Set(["claude", "codex", "opencode"]);
+const SESSION_ENGINES = new Set([...ENGINES, "shell"]);
 
 // Per-engine host probe: a single shell line (run over key-auth SSH) that prints a RP_* block:
 //   RP_ENGINE_INSTALLED=1|0, RP_ENGINE_VERSION=<v>, RP_ENGINE_AUTHED=1 (only when authed).
@@ -240,7 +241,6 @@ const ENGINES = new Set(["claude", "codex", "opencode", "shell"]);
 //   claude    — ANTHROPIC_API_KEY exported in the login shell, OR ~/.claude/.credentials.json (OAuth).
 //   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
 //   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
-//   shell     — first-class plain shell session; no agent binary or auth required.
 const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
 const ENGINE_PROBE = {
   claude:
@@ -263,8 +263,6 @@ const ENGINE_PROBE = {
     'KEY="$(bash -lc \'printf %s "${ANTHROPIC_API_KEY}${OPENAI_API_KEY}"\' 2>/dev/null)"; ' +
     'if [ -n "$KEY" ] || [ -f "$HOME/.local/share/opencode/auth.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
     'else echo RP_ENGINE_INSTALLED=0; fi',
-  shell:
-    'echo RP_ENGINE_INSTALLED=1; echo "RP_ENGINE_VERSION=${SHELL:-/bin/zsh}"; echo RP_ENGINE_AUTHED=1',
 };
 
 // Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
@@ -272,7 +270,6 @@ const ENGINE_INSTALL = {
   claude: 'brew install --quiet claude || npm install -g @anthropic-ai/claude-code',
   codex: 'brew install --quiet codex',
   opencode: 'brew install --quiet opencode',
-  shell: ':',
 };
 
 // Per-engine host auth WRITER — a remote shell command that reads ONE secret line from STDIN
@@ -485,7 +482,7 @@ const bridge = {
   // → client.env ENGINE, consumed by `xpair launch`). Validates the engine here too so a bad value
   // never reaches the CLI. Returns {code, out, err}.
   async setEngine(engine) {
-    if (!ENGINES.has(String(engine))) {
+    if (!SESSION_ENGINES.has(String(engine))) {
       return { code: -1, out: "", err: `unknown engine: ${engine}` };
     }
     return cli(["config", "set", "engine", String(engine)]);

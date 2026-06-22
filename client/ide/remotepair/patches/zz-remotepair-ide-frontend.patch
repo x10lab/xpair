@@ -2844,6 +2844,16 @@ index 0000000..6e5d586
 +		}
 +	}
 +
++	/** Append a display-only session title. Persisted history can be a terminal title, so it
++	 *  must not become an exact-name `xpair attach` target unless it came from the live session list. */
++	private addDisplayCard(text: string): void {
++		const row = this.row!;
++		const card = append(row, $('.remotepair-session-card.remotepair-session-card-readonly'));
++		card.title = text;
++		const label = append(card, $('.remotepair-session-card-label'));
++		label.textContent = text;
++	}
++
 +	/** Return the close action for a session card. History cards without an explicit
 +	 *  close handler remove their persisted entry; other rows close only when the
 +	 *  caller provides a close action (attached sessions dispose live terminals). */
@@ -2952,16 +2962,18 @@ index 0000000..6e5d586
 +			}
 +			return;
 +		}
-+		// Fallback: the persisted last-seen set holds validated session names surfaced as
-+		// terminal titles by the launcher, so they can use the same reattach path.
-+		// Invalid/generic terminal titles are filtered before persistence.
++		// Fallback: exact saved session names can reattach; display-only terminal titles stay inert.
 +		const persisted = this.readHistory();
 +		if (persisted.length === 0) {
 +			this.addEmpty(localize('remotepairNoHistory', "No history"));
 +			return;
 +		}
 +		for (const name of persisted) {
-+			this.addCard(name, () => reattach(name));
++			if (SESSION_NAME_RE.test(name)) {
++				this.addCard(name, () => reattach(name));
++			} else {
++				this.addDisplayCard(name);
++			}
 +		}
 +	}
 +
@@ -2985,7 +2997,7 @@ index 0000000..6e5d586
 +		}
 +		try {
 +			const parsed = JSON.parse(raw);
-+			return Array.isArray(parsed) ? parsed.map(n => typeof n === 'string' ? n.trim() : '').filter(n => n !== 'Session' && SESSION_NAME_RE.test(n)) : [];
++			return Array.isArray(parsed) ? parsed.map(n => typeof n === 'string' ? n.trim() : '').filter(n => n !== '' && n !== 'Session') : [];
 +		} catch (e) {
 +			rpLog('warn', `history storage parse failed; resetting to empty: ${e instanceof Error ? e.message : String(e)}`);
 +			return [];
@@ -3504,6 +3516,8 @@ index 00000000..820a8de4
 +			try {
 +				const { instance, opened } = this.openTerminalInGroup(group, cwd);
 +				opened.then(() => {
++					// Folder-root launch contract: instance.sendText('xpair launch', true) runs in cwd
++					// from openTerminalInGroup(group, cwd); engine branches only add explicit selection.
 +					if (kind === 'shell') {
 +						return;
 +					}
