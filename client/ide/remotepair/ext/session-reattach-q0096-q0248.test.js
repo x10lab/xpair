@@ -71,10 +71,15 @@ test("named sessions remain distinct and exact-name attachable (Q0096 Q0248)", (
     /instance\.sendText\('xpair attach ' \+ shellSingleQuote\(name\), true\)/,
     "the Sessions UI must attach exactly the selected quoted name",
   );
+  assert.doesNotMatch(
+    patch,
+    /addDisplayCard|remotepair-session-card-readonly|display-only rather than wiring a reattach/,
+    "restored History entries must not render as inert display-only cards",
+  );
   assert.match(
     patch,
-    /const persisted = this\.readHistory\(\);[\s\S]*this\.addDisplayCard\(name/,
-    "persisted display-only titles must not become attach targets",
+    /const persisted = this\.readHistory\(\);[\s\S]*for \(const name of persisted\)[\s\S]*this\.addCard\(name, \(\) => reattach\(name\)\)/,
+    "persisted real session names must reattach through xpair attach",
   );
 
   const attach = extract(cli, "cmd_attach() {", "\ncmd_host() {");

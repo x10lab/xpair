@@ -1,8 +1,9 @@
 # M5 Remote Desktop — Staged Plan
 
-Remote Desktop lets the operator view (and eventually control) the host Mac's screen from the client
-browser tab labelled "Remote Desktop". This document records the staged rollout, license rationale,
-and integration contracts.
+Remote Desktop lets the operator view the host Mac's screen from the client tab
+labelled "Remote Desktop". It is view-only: no pointer, wheel, text, or keyboard
+input is forwarded to the host. This document records the staged rollout,
+license rationale, and integration contracts.
 
 ---
 
@@ -68,7 +69,7 @@ host-side endpoint (outside the .app — see INVARIANT) that:
 
 **Feasibility:** high. `screencapture -x` is stdlib-level (ships with macOS), needs no new binary,
 and SR is already granted. The bottleneck is SSH round-trip latency (~50-200 ms), which is
-acceptable for a status/monitoring view. For interactive control, v1 is needed.
+acceptable for a status/monitoring view.
 
 **Constraint:** this is view-only. No input forwarding at this tier.
 
@@ -77,11 +78,12 @@ acceptable for a status/monitoring view. For interactive control, v1 is needed.
 ## v1 — WebRTC / ScreenCaptureKit + VideoToolbox
 
 **Requires:**
-- Input Monitoring permission on the host (for keyboard/mouse injection).
 - A native host-side component using ScreenCaptureKit (macOS 12.3+) + VideoToolbox H.264 encode.
-- WebRTC signalling server (or a direct SSH-tunnelled WebRTC data channel).
+- WebRTC signalling server over an SSH-tunnelled loopback WebSocket.
+- Receive-only media in the client webview. The client creates no `rp-ctl` /
+  `rp-move` DataChannels and closes/ignores any host-created DataChannel.
 
-**Scope:** out of scope until v1.0. Tracked in `docs/future.md`.
+Remote control is out of scope unless a later product decision explicitly reopens it.
 
 ---
 

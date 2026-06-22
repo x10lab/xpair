@@ -3,9 +3,7 @@
   "screen": {
     "v1aPort": 8889,
     "v2SignalPort": 8890,
-    "inputThrottleMs": 120,
-    "reqFile": "/tmp/xpair.input-req",
-    "resFile": "/tmp/xpair.input-res"
+    "remoteInputSupported": false
   },
   "identity": {
     "product": "Xpair",

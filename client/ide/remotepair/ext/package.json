@@ -19,7 +19,8 @@
   "main": "./extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:remotepair.sessions.listJson"
+    "onCommand:remotepair.sessions.listJson",
+    "onCommand:remotepair.sessions.checkAttach"
   ],
   "contributes": {
     "commands": [
@@ -94,6 +95,49 @@
       "workbench.editor.showTabs": "multiple",
       "workbench.startupEditor": "none",
       "terminal.integrated.tabs.enabled": true
+    },
+    "configuration": {
+      "title": "Xpair",
+      "properties": {
+        "xpair.notifications.stop": {
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "order": 10,
+          "description": "Show host session completion and Stop notifications in the Xpair client."
+        },
+        "xpair.notifications.askQuestion": {
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "order": 20,
+          "description": "Show Ask-a-question notifications forwarded from the host."
+        },
+        "xpair.notifications.subagentStop": {
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "order": 30,
+          "description": "Show subagent completion notifications forwarded from the host."
+        },
+        "xpair.notifications.approval": {
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "order": 40,
+          "description": "Show approve notifications forwarded from the host, including approval type when available."
+        },
+        "xpair.telemetry.enabled": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "order": 50,
+          "tags": [
+            "usesOnlineServices"
+          ],
+          "description": "Opt in to Xpair product analytics and crash reports for this client."
+        }
+      }
     },
     "walkthroughs": [
       {

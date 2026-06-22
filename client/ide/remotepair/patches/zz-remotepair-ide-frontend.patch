@@ -107,17 +107,15 @@ index bfd30e64..1d973f00 100644
  		// Global action bar
  		if (this.globalCompositeBar) {
  			this.globalCompositeBar.create(this.element);
-@@ -495,6 +503,45 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
+@@ -495,6 +503,43 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
  		return actions;
  	}
  
 +	// RemotePair: restrict the left rail to an allowlist. The default rail shows
-+	// Explorer/Search/SCM/Run-Debug/Extensions plus extension containers; we only
-+	// want Explorer (file Browser), the Terminal view (if present), and any
-+	// RemotePair-owned container. Everything else is filtered out so the rail
-+	// stays minimal. String ids are used to avoid importing contrib modules.
++	// Explorer/Search/SCM/Run-Debug/Extensions plus extension containers; the
++	// native Terminal rail entry is also excluded because Sessions owns terminal
++	// creation and hosting. Only RemotePair-owned containers stay visible.
 +	private static readonly RAIL_ALLOWED_CONTAINER_IDS = new Set<string>([
-+		'terminal',                // TERMINAL_VIEW_ID, if it is registered as a container
 +	]);
 +
 +	private static isRailAllowedContainer(container: ViewContainer): boolean {
@@ -632,10 +630,10 @@ index ecc6af48..285e075b 100644
  	content: localize({ key: 'noFolderButEditorsHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
  		"You have not yet opened a folder.\n{0}\nOpening a folder will close all currently open editors. To keep them open, {1} instead.", openFolderButton, addAFolderButton),
  	when: ContextKeyExpr.and(
-+		// RemotePair: this is not a local IDE — the empty Browser offers "Add Root" (mount a host
++		// Xpair: this is not a local IDE — the empty Browser offers "Add Mapping" (mount a host
 +		// folder), not the native "Open Folder". Gate the native local no-folder welcomes off the
 +		// 'empty' workbench state (the only state EmptyView appears in for a RemotePair client) so
-+		// only the RemotePair Add Root welcome shows.
++		// only the Xpair Add Mapping welcome shows.
 +		WorkbenchStateContext.notEqualsTo('empty'),
  		// editors are opened
  		ContextKeyExpr.has('editorIsOpen'),
@@ -644,8 +642,8 @@ index ecc6af48..285e075b 100644
  	content: localize({ key: 'noFolderHelp', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
  		"You have not yet opened a folder.\n{0}", openFolderButton),
  	when: ContextKeyExpr.and(
-+		// RemotePair: see noFolderButEditorsHelp above — suppress the native "Open Folder" welcome in
-+		// the 'empty' state so only the RemotePair Add Root welcome shows.
++		// Xpair: see noFolderButEditorsHelp above — suppress the native "Open Folder" welcome in
++		// the 'empty' state so only the Xpair Add Mapping welcome shows.
 +		WorkbenchStateContext.notEqualsTo('empty'),
  		// no editor is open
  		ContextKeyExpr.has('editorIsOpen')?.negate(),
@@ -675,9 +673,9 @@ index 0f75b632..a70c75f9 100644
 -}
 \ No newline at end of file
 +}
-+/* --- RemotePair (C1): below-list "Add Root" footer --- */
++/* --- Xpair (C1): below-list "Add Mapping" footer --- */
 +/* The explorer pane body becomes a flex column so the folder list (flex:1) and the
-+   Add Root footer (fixed) stack; the tree height is reserved in layoutBody so the
++   Add Mapping footer (fixed) stack; the tree height is reserved in layoutBody so the
 +   footer is always visible ~20px below the list. */
 +.rp-explorer-body {
 +    display: flex;
@@ -810,7 +808,7 @@ index d276b5c9..2ed4089c 100644
  import { EditorResourceAccessor, SideBySideEditor } from '../../../../common/editor.js';
  import { IExplorerService, IExplorerView } from '../files.js';
  import { Codicon } from '../../../../../base/common/codicons.js';
-+import { ThemeIcon } from '../../../../../base/common/themables.js'; // RemotePair (C1): below-list Add Root footer icon
++import { ThemeIcon } from '../../../../../base/common/themables.js'; // Xpair (C1): below-list Add Mapping footer icon
  import { ICommandService } from '../../../../../platform/commands/common/commands.js';
  import { IEditorResolverService } from '../../../../services/editor/common/editorResolverService.js';
  import { EditorOpenSource } from '../../../../../platform/editor/common/editor.js';
@@ -818,7 +816,7 @@ index d276b5c9..2ed4089c 100644
  
  	private treeContainer!: HTMLElement;
  	private container!: HTMLElement;
-+	private rpAddRootFooter: HTMLElement | undefined; // RemotePair (C1): below-list Add Root footer
++	private rpAddRootFooter: HTMLElement | undefined; // Xpair (C1): below-list Add Mapping footer
  	private compressedFocusContext: IContextKey<boolean>;
  	private compressedFocusFirstContext: IContextKey<boolean>;
  	private compressedFocusLastContext: IContextKey<boolean>;
@@ -827,7 +825,7 @@ index d276b5c9..2ed4089c 100644
  	protected override layoutBody(height: number, width: number): void {
  		super.layoutBody(height, width);
 -		this.tree.layout(height, width);
-+		// RemotePair (C1): reserve space for the below-list "Add Root" footer so it is always
++		// Xpair (C1): reserve space for the below-list "Add Mapping" footer so it is always
 +		// visible under the folder list (the tree otherwise fills 100% of the body height).
 +		const rpFooterHeight = this.rpAddRootFooter ? this.rpAddRootFooter.clientHeight || 44 : 0;
 +		this.tree.layout(Math.max(0, height - rpFooterHeight), width);
@@ -838,7 +836,7 @@ index d276b5c9..2ed4089c 100644
  
  		this.createTree(this.treeContainer);
  
-+		// RemotePair (C1): below-list "Add Root" footer. Appended into the renderBody container
++		// Xpair (C1): below-list "Add Mapping" footer. Appended into the renderBody container
 +		// AFTER the tree (later sibling) so it sits ~20px below the folder list (see
 +		// .rp-add-root-footer in explorerviewlet.css). Runs the mount-first
 +		// `remotepair.browser.addRoot` command (registered in the RemotePair extension). The
@@ -959,7 +957,7 @@ new file mode 100644
 index 00000000..d5f156ec
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/media/remotePairSessionManager.css
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,114 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair session tabs: each bottom-panel tab (Attached / Detached / History) renders ONLY
 + *  its own category as a single horizontally-scrolling row of session cards. Since only one
@@ -1065,16 +1063,6 @@ index 00000000..d5f156ec
 +	opacity: 1;
 +	background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 +	border-radius: 4px;
-+}
-+
-+/* Read-only history cards (persisted titles that are not reattachable): no pointer affordance. */
-+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly {
-+	cursor: default;
-+	opacity: 0.6;
-+}
-+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly:hover {
-+	background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
-+	border-color: var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
 +}
 +
 +.monaco-workbench .remotepair-session-empty {
@@ -1289,11 +1277,11 @@ index 00000000..6887d7cb
 + *
 + *  The "Browser" is the relabeled Explorer view container (VIEWLET_ID). This file owns the
 + *  action contributions so they stay out of core explorer files:
-+ *    - Browser title bar: Search / Extensions (MenuId.ViewContainerTitle). The row-1
++ *    - Browser title bar: Search / AI Extensions helper (MenuId.ViewContainerTitle). The row-1
 + *      "Add Mapping" action was removed (C1): the sole add entry point is now the
-+ *      below-list / empty-state "Add Root" affordance which runs the mount-first
++ *      below-list / empty-state "Add Mapping" affordance which runs the mount-first
 + *      `remotepair.browser.addRoot` command (registered in the RemotePair extension).
-+ *    - Empty-state "Add Root" button: a viewsWelcome entry on the explorer EmptyView.
++ *    - Empty-state "Add Mapping" button: a viewsWelcome entry on the explorer EmptyView.
 + *    - Per-folder inline "+": creates a Sessions terminal rooted at that folder.
 + *    - Per-folder inline star (C3): toggles the folder in the C2 Favorites store.
 + *    - Per-folder-row hover controls (C3): a star + '+' rendered on EVERY folder row (roots and
@@ -1417,7 +1405,9 @@ index 00000000..6887d7cb
 +});
 +
 +/**
-+ * Browser title-bar action: Extensions → opens the Extensions viewlet.
++ * Browser title-bar action: Extensions → runs the Xpair-owned AI extension installer helper.
++ * This intentionally does NOT open the native Extensions viewlet, which would leave the Browser /
++ * Sessions path for a stock VSCodium surface.
 + */
 +registerAction2(class extends Action2 {
 +	constructor() {
@@ -1435,8 +1425,8 @@ index 00000000..6887d7cb
 +		});
 +	}
 +	run(accessor: ServicesAccessor): void {
-+		rpLog('debug', 'browser title-bar action: open Extensions viewlet');
-+		accessor.get(ICommandService).executeCommand('workbench.view.extensions');
++		rpLog('debug', 'browser title-bar action: install AI extensions helper');
++		accessor.get(ICommandService).executeCommand('remotepair.ensureExtensions');
 +	}
 +});
 +
@@ -1531,7 +1521,7 @@ index 00000000..6887d7cb
 +});
 +
 +/**
-+ * C1 empty-state "Add Root" button. When there are no FOLDER_MAPS roots the Browser removes all
++ * C1 empty-state "Add Mapping" button. When there are no FOLDER_MAPS roots the Browser removes all
 + * workspace roots (extension reconcileBrowserRoots), leaving zero folders → the workbench enters
 + * the 'empty' state and the explorer EmptyView shows. This viewsWelcome entry renders a single
 + * button that runs the mount-first `remotepair.browser.addRoot` command (registered in the
@@ -1913,10 +1903,10 @@ index 0000000..ba861e2
 +}
 diff --git a/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
 new file mode 100644
-index 0000000..bbb8f38
+index 0000000..515cbd0
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairFavorites.ts
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,375 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (C2): Favorites store + Favorites view at the bottom of the Browser container.
 + *
@@ -1930,10 +1920,12 @@ index 0000000..bbb8f38
 + *      setSessionLauncher / setAttachedSessionsProvider injection pattern in the terminal
 + *      sidebar, so C3's per-folder star can call toggleFavorite/isFavorite without a hard
 + *      import cycle.
-+ *    - RemotePairFavoritesView (extends ViewPane): renders the favorites as a simple list.
-+ *      Clicking a row or its inline '+' starts a new Sessions terminal rooted at that folder
-+ *      via the existing `remotepair.terminalSidebar.openSessionInFolder` command (single open
-+ *      contract — never creates terminals directly). Each row also has an inline remove (X).
++ *    - RemotePairFavoritesView (extends ViewPane): renders the current Browser-mapped favorites
++ *      as a simple list. Clicking a row or its inline '+' starts a new Sessions terminal rooted at
++ *      that folder via the existing `remotepair.terminalSidebar.openSessionInFolder` command
++ *      (single open contract — never creates terminals directly). Each row also has an inline
++ *      remove (X). Persisted favorites outside current mapped roots stay stored but are hidden so
++ *      Favorites never becomes a second folder-mapping source.
 + *    - Registration of the Favorites view into the Browser VIEW_CONTAINER, ordered AFTER the
 + *      file tree (mirroring how Outline/Timeline register as sibling views).
 + *
@@ -1961,6 +1953,8 @@ index 0000000..bbb8f38
 +import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 +import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 +import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
++import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
 +import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, Extensions as ViewContainerExtensions } from '../../../common/views.js';
@@ -2168,6 +2162,8 @@ index 0000000..bbb8f38
 +		@IThemeService themeService: IThemeService,
 +		@IHoverService hoverService: IHoverService,
 +		@IStorageService storageService: IStorageService,
++		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
++		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 +		@ICommandService private readonly commandService: ICommandService
 +	) {
 +		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -2187,7 +2183,16 @@ index 0000000..bbb8f38
 +		container.classList.add('remotepair-favorites');
 +		this.list = append(container, $('.remotepair-favorites-list'));
 +		this._register(this.store.onDidChangeFavorites(() => this.refresh()));
++		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.refresh()));
 +		this.refresh();
++	}
++
++	private getMappedFavorites(): URI[] {
++		const roots = this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri);
++		if (roots.length === 0) {
++			return [];
++		}
++		return this.store.getFavorites().filter(uri => roots.some(root => this.uriIdentityService.extUri.isEqualOrParent(uri, root)));
 +	}
 +
 +	private refresh(): void {
@@ -2198,10 +2203,10 @@ index 0000000..bbb8f38
 +		this.rowDisposables.clear();
 +		clearNode(list);
 +
-+		const favorites = this.store.getFavorites();
++		const favorites = this.getMappedFavorites();
 +		if (favorites.length === 0) {
 +			const empty = append(list, $('.remotepair-favorites-empty'));
-+			empty.textContent = localize('remotepairFavoritesEmpty', "Star a folder to add it here.");
++			empty.textContent = localize('remotepairFavoritesEmpty', "Star a mapped folder to add it here.");
 +			return;
 +		}
 +
@@ -2579,7 +2584,7 @@ index 0000000..6e5d586
 + */
 +export interface AttachedSessionsProvider {
 +	getAttached(): readonly AttachedSessionInfo[];
-+	reveal(id: string): void;
++	reveal(id: string): boolean;
 +	/** Close (dispose) the attached session identified by `id`. Optional → default no-op. */
 +	close?(id: string): void;
 +	/** The id of the currently-active attached session, if known. Optional → default undefined. */
@@ -2624,6 +2629,7 @@ index 0000000..6e5d586
 +let sessionRefreshInFlight = false;
 +let sessionRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 +let sessionListUnavailable = false;
++let sessionCardCause: string | undefined;
 +const SESSION_REFRESH_RETRY_MS = 1000;
 +const SESSION_REFRESH_INTERVAL_MS = 10000;
 +const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
@@ -2659,12 +2665,32 @@ index 0000000..6e5d586
 +	return isRecord(value) && value.unavailable === true;
 +}
 +
++function commandResultCause(value: unknown): string | undefined {
++	if (!isRecord(value) || typeof value.cause !== 'string') {
++		return undefined;
++	}
++	const cause = value.cause.trim();
++	return cause || undefined;
++}
++
++export function setSessionCardCause(cause: string | undefined): void {
++	if (sessionCardCause === cause) {
++		return;
++	}
++	sessionCardCause = cause;
++	sessionDataChangeEmitter.fire();
++}
++
 +function cachedDetachedSessions(): readonly string[] {
 +	return liveSessionCache.filter(s => s.attached === 0).map(s => s.name);
 +}
 +
 +function cachedHistorySessions(): readonly string[] {
 +	return liveSessionCache.filter(s => s.attached > 0).map(s => s.name);
++}
++
++function cachedSessionNames(): readonly string[] {
++	return liveSessionCache.map(s => s.name);
 +}
 +
 +function sameSessionCache(a: readonly SessionListEntry[], b: readonly SessionListEntry[]): boolean {
@@ -2729,13 +2755,60 @@ index 0000000..6e5d586
 +	reattacher(name);
 +}
 +
++function applySessionCheckResult(value: unknown): string | undefined {
++	const nextUnavailable = commandResultUnavailable(value);
++	const unavailableChanged = sessionListUnavailable !== nextUnavailable;
++	sessionListUnavailable = nextUnavailable;
++	const next = normalizeSessionCommandResult(value);
++	const cacheChanged = !sameSessionCache(liveSessionCache, next);
++	const cause = commandResultCause(value);
++	const causeChanged = sessionCardCause !== cause;
++	if (cacheChanged) {
++		liveSessionCache = next;
++	}
++	if (causeChanged) {
++		sessionCardCause = cause;
++	}
++	if (unavailableChanged || cacheChanged || causeChanged) {
++		sessionDataChangeEmitter.fire();
++	}
++	return cause;
++}
++
++function validateAndReattach(name: string, commandService: ICommandService): void {
++	if (!SESSION_NAME_RE.test(name)) {
++		setSessionCardCause(localize('remotepairInvalidSessionCard', "This session card is invalid. The list was refreshed; choose another session or start a new one."));
++		refreshSessionData(commandService);
++		return;
++	}
++	if (!reattacher) {
++		setSessionCardCause(localize('remotepairSessionAttachUnavailable', "Session attach is not ready yet. Reopen Sessions or retry in a moment."));
++		refreshSessionData(commandService);
++		return;
++	}
++	commandService.executeCommand('remotepair.sessions.checkAttach', name).then((value) => {
++		const cause = applySessionCheckResult(value);
++		if (isRecord(value) && value.ok === true) {
++			setSessionCardCause(undefined);
++			reattach(name);
++			return;
++		}
++		setSessionCardCause(cause ?? localize('remotepairSessionAttachCheckFailed', "Session is no longer available. The list was refreshed; choose another session or start a new one."));
++		scheduleSessionRefresh(commandService, SESSION_REFRESH_RETRY_MS);
++	}, (error) => {
++		rpLog('warn', `session attach check failed for ${name}: ${error instanceof Error ? error.message : String(error)}`);
++		setSessionCardCause(localize('remotepairSessionStatusUnavailable', "Session status unavailable. Check the host connection, then retry."));
++		refreshSessionData(commandService);
++	});
++}
++
 +function shellSingleQuote(value: string): string {
 +	return `'${value.replace(/'/g, `'\\''`)}'`;
 +}
 +
 +// --- view -------------------------------------------------------------------
 +
-+const HISTORY_STORAGE_KEY = 'remotepair.sessionManager.history';
++const HISTORY_STORAGE_KEY = 'remotepair.sessionManager.history.v2';
 +
 +/**
 + * Shared Panel ViewPane rendering ONE session category (attached / detached / history) as a
@@ -2782,6 +2855,9 @@ index 0000000..6e5d586
 +			this._register(onDidChangeAttachedSessions(() => this.refresh()));
 +			// Fallback: also react to ITerminalService.instances for any other terminal sources.
 +			this._register(this.terminalService.onDidChangeInstances(() => this.refresh()));
++			this._register(onDidChangeSessionData(() => this.refresh()));
++			this._register(onDidChangeAttachedSessions(() => refreshSessionData(this.commandService)));
++			refreshSessionData(this.commandService);
 +		} else {
 +			this._register(onDidChangeSessionData(() => this.refresh()));
 +			this._register(onDidChangeAttachedSessions(() => refreshSessionData(this.commandService)));
@@ -2844,25 +2920,6 @@ index 0000000..6e5d586
 +		}
 +	}
 +
-+	/** Append a non-actionable (display-only) tab — used for History entries that are not
-+	 *  reattachable (persisted titles, not real session names). The X removes the entry from the
-+	 *  persisted history when `onClose` is supplied. */
-+	private addDisplayCard(text: string, onClose?: () => void): void {
-+		const card = append(this.row!, $('.remotepair-session-card.remotepair-session-card-readonly'));
-+		card.title = text;
-+		const label = append(card, $('.remotepair-session-card-label'));
-+		label.textContent = text;
-+		if (onClose) {
-+			const close = append(card, $('.remotepair-session-card-close.codicon.codicon-close'));
-+			close.title = localize('remotepairRemoveHistory', "Remove from History");
-+			close.setAttribute('role', 'button');
-+			this.cardDisposables.add(addDisposableListener(close, EventType.CLICK, (e) => {
-+				e.stopPropagation();
-+				onClose();
-+			}));
-+		}
-+	}
-+
 +	/** Render an empty-state message in the row. */
 +	private addEmpty(text: string): void {
 +		const empty = append(this.row!, $('.remotepair-session-empty'));
@@ -2876,20 +2933,30 @@ index 0000000..6e5d586
 +		}
 +		clearNode(row);
 +		this.cardDisposables.clear();
++		const cause = sessionCardCause;
 +
 +		if (attachedProvider) {
 +			// Primary source: the Sessions sidebar tracks its own terminals (S0 isolation means
 +			// those instances never appear in ITerminalService.instances).
 +			const provider = attachedProvider;
 +			const sessions = provider.getAttached();
-+			this.recordHistory(sessions.map(s => s.title));
++			this.recordHistory(this.reattachableHistoryNames());
 +			if (sessions.length === 0) {
-+				this.addEmpty(localize('remotepairNoAttached', "No attached sessions"));
++				this.addEmpty(cause ?? localize('remotepairNoAttached', "No attached sessions"));
 +				return;
++			}
++			if (cause) {
++				this.addEmpty(cause);
 +			}
 +			const activeId = provider.getActiveId?.();
 +			for (const session of sessions) {
-+				this.addCard(session.title, () => provider.reveal(session.id), {
++				this.addCard(session.title, () => {
++					if (provider.reveal(session.id) === false) {
++						setSessionCardCause(localize('remotepairAttachedSessionGone', "That attached terminal is gone. The Attached list was refreshed."));
++					} else {
++						setSessionCardCause(undefined);
++					}
++				}, {
 +					active: !!activeId && session.id === activeId,
 +					onClose: provider.close ? () => provider.close!(session.id) : undefined,
 +				});
@@ -2897,10 +2964,13 @@ index 0000000..6e5d586
 +		} else {
 +			// Fallback: read from ITerminalService for any other terminal sources.
 +			const instances = this.terminalService.instances;
-+			this.recordHistory(instances.map(i => i.title));
++			this.recordHistory(this.reattachableHistoryNames());
 +			if (instances.length === 0) {
-+				this.addEmpty(localize('remotepairNoAttached', "No attached sessions"));
++				this.addEmpty(cause ?? localize('remotepairNoAttached', "No attached sessions"));
 +				return;
++			}
++			if (cause) {
++				this.addEmpty(cause);
 +			}
 +			const active = this.terminalService.activeInstance;
 +			for (const instance of instances) {
@@ -2920,16 +2990,20 @@ index 0000000..6e5d586
 +		clearNode(row);
 +		this.cardDisposables.clear();
 +		if (sessionListUnavailable) {
-+			this.addEmpty(localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
++			this.addEmpty(sessionCardCause ?? localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
 +			return;
 +		}
 +		const names = dataProvider?.getDetached() ?? cachedDetachedSessions();
++		this.recordHistory(names);
 +		if (names.length === 0) {
-+			this.addEmpty(localize('remotepairNoDetached', "No detached sessions"));
++			this.addEmpty(sessionCardCause ?? localize('remotepairNoDetached', "No detached sessions"));
 +			return;
 +		}
++		if (sessionCardCause) {
++			this.addEmpty(sessionCardCause);
++		}
 +		for (const name of names) {
-+			this.addCard(name, () => reattach(name));
++			this.addCard(name, () => validateAndReattach(name, this.commandService));
 +		}
 +	}
 +
@@ -2941,27 +3015,28 @@ index 0000000..6e5d586
 +		clearNode(row);
 +		this.cardDisposables.clear();
 +		if (sessionListUnavailable) {
-+			this.addEmpty(localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
++			this.addEmpty(sessionCardCause ?? localize('remotepairSessionListUnavailable', "Session list unavailable; retrying..."));
 +			return;
 +		}
 +		// Live provider names are real, reattachable session names → clickable.
 +		const providerNames = dataProvider?.getHistory() ?? cachedHistorySessions();
++		this.recordHistory(providerNames);
 +		if (providerNames && providerNames.length > 0) {
++			if (sessionCardCause) {
++				this.addEmpty(sessionCardCause);
++			}
 +			for (const name of providerNames) {
-+				this.addCard(name, () => reattach(name));
++				this.addCard(name, () => validateAndReattach(name, this.commandService));
 +			}
 +			return;
 +		}
-+		// Fallback: the persisted last-seen set holds display TITLES (e.g. "zsh"), which are not
-+		// valid `xpair attach` names — render them display-only rather than wiring a reattach
-+		// that would silently fail.
 +		const persisted = this.readHistory();
 +		if (persisted.length === 0) {
-+			this.addEmpty(localize('remotepairNoHistory', "No history"));
++			this.addEmpty(sessionCardCause ?? localize('remotepairNoHistory', "No history"));
 +			return;
 +		}
 +		for (const name of persisted) {
-+			this.addDisplayCard(name, () => this.removeHistory(name));
++			this.addCard(name, () => reattach(name));
 +		}
 +	}
 +
@@ -2978,6 +3053,10 @@ index 0000000..6e5d586
 +
 +	// --- history persistence (workspace scope) -----------------------------
 +
++	private reattachableHistoryNames(): readonly string[] {
++		return dataProvider ? [...dataProvider.getDetached(), ...dataProvider.getHistory()] : cachedSessionNames();
++	}
++
 +	private readHistory(): string[] {
 +		const raw = this.storageService.get(HISTORY_STORAGE_KEY, StorageScope.WORKSPACE);
 +		if (!raw) {
@@ -2985,17 +3064,16 @@ index 0000000..6e5d586
 +		}
 +		try {
 +			const parsed = JSON.parse(raw);
-+			return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string') : [];
++			return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string' && SESSION_NAME_RE.test(n)) : [];
 +		} catch (e) {
 +			rpLog('warn', `history storage parse failed; resetting to empty: ${e instanceof Error ? e.message : String(e)}`);
 +			return [];
 +		}
 +	}
 +
-+	/** Merge newly-seen names into the persisted last-seen set, then refresh the History tab.
-+	 *  Skips empty/generic titles (e.g. the "Session" fallback) which carry no useful history. */
++	/** Merge newly-seen real tmux session names into the persisted last-seen set. */
 +	private recordHistory(names: readonly string[]): void {
-+		const meaningful = names.filter(n => !!n && n.trim() !== '' && n !== 'Session');
++		const meaningful = names.filter(n => SESSION_NAME_RE.test(n));
 +		if (meaningful.length === 0) {
 +			return;
 +		}
@@ -3011,18 +3089,6 @@ index 0000000..6e5d586
 +		}
 +	}
 +
-+	/** Drop a single name from the persisted last-seen set (the History tab's X), then re-render. */
-+	private removeHistory(name: string): void {
-+		const existing = this.readHistory();
-+		const next = existing.filter(n => n !== name);
-+		if (next.length === existing.length) {
-+			return; // not present
-+		}
-+		this.storageService.store(HISTORY_STORAGE_KEY, JSON.stringify(next), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-+		if (this.category === 'history') {
-+			this.renderHistory();
-+		}
-+	}
 +}
 +
 +/** Attached tab view. */
@@ -3217,7 +3283,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,665 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3245,6 +3311,7 @@ index 00000000..820a8de4
 +import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 +import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 +import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
++import { INotificationService } from '../../../../platform/notification/common/notification.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
 +import { ViewPane, IViewPaneOptions } from '../../../browser/parts/views/viewPane.js';
 +import { IViewDescriptor, IViewDescriptorService, IViewsRegistry, IViewContainersRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation } from '../../../common/views.js';
@@ -3263,7 +3330,7 @@ index 00000000..820a8de4
 +import { EditorInput } from '../../../common/editor/editorInput.js';
 +import { SessionPickerInput } from './remotePairSessionPicker.js';
 +import { VIEWLET_ID as BROWSER_VIEWLET_ID } from '../../files/common/files.js';
-+import { setSessionReattacher, setAttachedSessionsProvider, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
++import { setSessionReattacher, setAttachedSessionsProvider, setSessionCardCause, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
 +import { rpLog } from './remotePairLog.js';
 +
 +export const REMOTEPAIR_TERMINAL_SIDEBAR_ID = 'remotepair.terminalSidebar';
@@ -3331,6 +3398,11 @@ index 00000000..820a8de4
 +	private readonly activeGroupListener: MutableDisposable<IDisposable> = this._register(new MutableDisposable());
 +
 +	private static readonly DEFAULT_TITLE = localize('remotepairSessions', "Sessions");
++	private static readonly INPUT_RECOVERY_GUIDANCE_MIN_CHARS = 8192;
++	private static readonly INPUT_RECOVERY_GUIDANCE_MIN_LINES = 20;
++	private static readonly INPUT_RECOVERY_GUIDANCE_COOLDOWN_MS = 30000;
++
++	private lastInputRecoveryGuidanceAt = 0;
 +
 +	constructor(
 +		options: IViewPaneOptions,
@@ -3344,6 +3416,7 @@ index 00000000..820a8de4
 +		@IThemeService themeService: IThemeService,
 +		@IHoverService hoverService: IHoverService,
 +		@IClipboardService private readonly clipboardService: IClipboardService,
++		@INotificationService private readonly notificationService: INotificationService,
 +		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 +		@ITerminalInstanceService private readonly terminalInstanceService: ITerminalInstanceService
 +	) {
@@ -3363,9 +3436,19 @@ index 00000000..820a8de4
 +			reveal: (id) => {
 +				const v = this.attached.get(id);
 +				if (v) {
-+					v.group.openEditor(v.input, { pinned: true }).then(undefined, (e) => { rpLog('warn', `reveal: openEditor failed for attached session id=${id}: ${e}`); /* best-effort */ });
++					v.group.openEditor(v.input, { pinned: true }).then(() => setSessionCardCause(undefined), (e) => {
++						rpLog('warn', `reveal: openEditor failed for attached session id=${id}: ${e}`);
++						this.attached.delete(id);
++						setSessionCardCause(localize('remotepairAttachedRevealFailed', "That attached terminal could not be shown. The Attached list was refreshed."));
++						notifyAttachedSessionsChanged();
++					});
 +					v.instance.focus(true);
++					return true;
 +				}
++				rpLog('warn', `reveal: attached session id=${id} is stale; removing card`);
++				setSessionCardCause(localize('remotepairAttachedSessionGone', "That attached terminal is gone. The Attached list was refreshed."));
++				notifyAttachedSessionsChanged();
++				return false;
 +			},
 +			// Close (dispose) the attached session — the instance's onDisposed handler removes it
 +			// from `this.attached` and notifies the Attached row. Public dispose() only.
@@ -3488,7 +3571,7 @@ index 00000000..820a8de4
 +	 * threaded through, then launches the xpair launcher via the terminal's public
 +	 * sendText API. Hosting-layer only — core terminal behavior untouched.
 +	 */
-+	openSessionInFolder(cwd: URI | undefined): void {
++	openSessionInFolder(cwd: URI | undefined, kind: SessionKind = 'claude'): void {
 +		const part = this.editorPart;
 +		if (!part) {
 +			return;
@@ -3504,7 +3587,16 @@ index 00000000..820a8de4
 +			try {
 +				const { instance, opened } = this.openTerminalInGroup(group, cwd);
 +				opened.then(() => {
-+					instance.sendText('xpair launch', true);
++					// Folder-root launch contract: instance.sendText('xpair launch', true) runs in cwd
++					// from openTerminalInGroup(group, cwd); engine branches only add explicit selection.
++					if (kind === 'shell') {
++						return;
++					}
++					if (kind === 'codex') {
++						instance.sendText('xpair launch --engine codex', true);
++						return;
++					}
++					instance.sendText('xpair launch --engine claude', true);
 +				}, (e) => { rpLog('warn', `openSessionInFolder: terminal open rejected: ${e}`); /* best-effort */ });
 +			} catch (e) {
 +				rpLog('error', `openSessionInFolder: openTerminalInGroup threw: ${e}`); // best-effort
@@ -3700,11 +3792,38 @@ index 00000000..820a8de4
 +			this.clipboardService.readText().then(text => {
 +				if (this.activeTerminalInstance() === instance) {
 +					instance.sendText(text, false, true);
++					this.maybeOfferInputRecoveryGuidance(text);
 +				}
 +			}, e => {
 +				rpLog('warn', `paste: clipboard read failed: ${e}`);
 +			});
 +		}
++	}
++
++	private maybeOfferInputRecoveryGuidance(text: string): void {
++		if (!this.shouldOfferInputRecoveryGuidance(text)) {
++			return;
++		}
++
++		const now = Date.now();
++		if (now - this.lastInputRecoveryGuidanceAt < RemotePairTerminalSidebarView.INPUT_RECOVERY_GUIDANCE_COOLDOWN_MS) {
++			return;
++		}
++		this.lastInputRecoveryGuidanceAt = now;
++
++		this.notificationService.info(localize(
++			'remotepairTerminalInputRecoveryGuidance',
++			"If a native terminal or agent input limit rejects or truncates this paste, edit it in place, shorten it, or retry paste. Xpair does not switch to file transfer for this flow."
++		));
++	}
++
++	private shouldOfferInputRecoveryGuidance(text: string): boolean {
++		if (text.length >= RemotePairTerminalSidebarView.INPUT_RECOVERY_GUIDANCE_MIN_CHARS) {
++			return true;
++		}
++
++		const lineBreaks = text.match(/\r\n|\r|\n/g)?.length ?? 0;
++		return lineBreaks >= RemotePairTerminalSidebarView.INPUT_RECOVERY_GUIDANCE_MIN_LINES;
 +	}
 +
 +	/**
@@ -3810,12 +3929,12 @@ index 00000000..820a8de4
 +			f1: false
 +		});
 +	}
-+	async run(accessor: ServicesAccessor, resource?: URI): Promise<void> {
++	async run(accessor: ServicesAccessor, resource?: URI, kind: SessionKind = 'claude'): Promise<void> {
 +		const viewsService = accessor.get(IViewsService);
 +		// Make the Sessions sidebar visible so the embedded EditorPart is constructed.
 +		const view = await viewsService.openView(REMOTEPAIR_TERMINAL_SIDEBAR_ID + '.view', false);
 +		if (view instanceof RemotePairTerminalSidebarView) {
-+			view.openSessionInFolder(resource);
++			view.openSessionInFolder(resource, kind);
 +		}
 +	}
 +});
@@ -3826,7 +3945,7 @@ index 00000000..820a8de4
 +	constructor() {
 +		super({
 +			id: 'remotepair.browser.addMapping',
-+			title: localize2('remotepairAddMapping', "RemotePair: Add Folder Mapping"),
++			title: localize2('remotepairAddMapping', "Xpair: Add Mapping"),
 +			icon: Codicon.add,
 +			f1: true
 +		});
@@ -3869,7 +3988,7 @@ index 795ac6e0..54a64cbd 100644
  	},
  	order: 2,
 -	when: OpenFolderWorkspaceSupportContext
-+	// RemotePair: not a local IDE — hide the stock "Open Folder" from the File menu (Add Root mounts host folders).
++	// Xpair: not a local IDE — hide the stock "Open Folder" from the File menu (Add Mapping mounts host folders).
 +	when: ContextKeyExpr.false()
  });
  

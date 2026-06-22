@@ -21,17 +21,10 @@
     "quality": { "min": 1, "max": 100 },
     "scale": { "min": 0.1, "max": 1.0 }
   },
-  "input": {
-    "channel": "host InputServer file channel",
-    "reqFile": "/tmp/xpair.input-req",
-    "resFile": "/tmp/xpair.input-res",
-    "wireFormat": "<verb>\\t<args...>",
-    "throttleMs": 120,
-    "webviewCoords": "relative 0..1 (rx,ry); the extension converts to host pixels using the frame dimensions",
-    "verbs": {
-      "click": "click\\t<x>\\t<y>  ->  click at host display PIXELS",
-      "key": "key\\t<combo>  ->  key combo"
-    }
+  "remoteInput": {
+    "supported": false,
+    "policy": "Remote Desktop is view-only. The IDE must not capture or forward pointer, wheel, text, or keyboard input.",
+    "webrtcDataChannels": "No client-created DataChannels; host-created channels, including legacy rp-ctl/rp-move, are closed or ignored."
   },
-  "webviewToExtMessages": ["click", "key", "ready", "v1Dimensions", "v1Error", "v1FirstFrame", "v2Error", "v2FirstFrame"]
+  "webviewToExtMessages": ["ready", "v2Error", "v2FirstFrame"]
 }

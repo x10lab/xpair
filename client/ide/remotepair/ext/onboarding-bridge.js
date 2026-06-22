@@ -20,6 +20,7 @@ const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
 const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
+const ACCOUNT_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 
 function validHost(host) {
   return HOST_RE.test(String(host || "").trim());
@@ -27,6 +28,14 @@ function validHost(host) {
 
 function invalidHost(host) {
   return `invalid host: ${String(host || "").trim()}`;
+}
+
+function validAccount(account) {
+  return ACCOUNT_RE.test(String(account || "").trim());
+}
+
+function invalidAccount(account) {
+  return `invalid account: ${String(account || "").trim()}`;
 }
 
 /** Resolve the xpair binary (installed to ~/.local/bin, else on PATH). */
@@ -120,20 +129,90 @@ function spawnEnv(extra = {}) {
 }
 
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
- *  publickey-only auth, and BatchMode so ssh NEVER drops to a password prompt (which would hang the
- *  GUI with no tty). Used by every read/probe ssh call; the install path (runSecret) is exempt —
- *  it legitimately registers the key with the account password. */
+ *  publickey-only auth, and BatchMode so ssh NEVER drops to a password/passphrase prompt (which
+ *  would hang or spawn an out-of-band GUI prompt). Used by every read/probe ssh call and by the
+ *  install preflight: fingerprint-confirmed key auth is the primary path. */
 function sshProbeOpts(connectTimeout = 5) {
   const opts = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${connectTimeout}`,
+    "-o", "ConnectionAttempts=1",
     "-o", "PreferredAuthentications=publickey",
+    "-o", "PubkeyAuthentication=yes",
+    "-o", "PasswordAuthentication=no",
+    "-o", "KbdInteractiveAuthentication=no",
+    "-o", "NumberOfPasswordPrompts=0",
     "-o", "StrictHostKeyChecking=accept-new",
   ];
   try {
     if (fs.existsSync(SSH_KEY)) opts.push("-o", "IdentitiesOnly=yes", "-i", SSH_KEY);
   } catch { /* key probe failed — let ssh use the agent / defaults */ }
   return opts;
+}
+
+const SSH_STATE = Object.freeze({
+  READY: "ready",
+  INVALID_HOST: "invalid_host",
+  INVALID_ACCOUNT: "invalid_account",
+  HOST_KEY_MISMATCH: "host_key_mismatch",
+  KEY_AUTH_BLOCKED: "key_auth_blocked",
+  UNREACHABLE: "unreachable",
+});
+
+const SSH_ACTION = Object.freeze({
+  CONTINUE: "continue",
+  ABORT: "abort",
+  RECOVER_HOST_KEY: "recover_host_key",
+  APPROVE_OR_RETRY: "approve_or_retry",
+  RETRY: "retry",
+});
+
+function sshFailureKind(err) {
+  const s = String(err || "");
+  if (/REMOTE HOST IDENTIFICATION|Host key verification failed|POSSIBLE DNS SPOOFING|Offending .*known_hosts|host key .*changed/i.test(s)) {
+    return SSH_STATE.HOST_KEY_MISMATCH;
+  }
+  if (/Permission denied \(publickey|sign_and_send_pubkey|agent refused operation|Could not open a connection to your authentication agent|Enter passphrase|passphrase|Too many authentication failures|no such identity|identity file .*not accessible|Load key .*Permission denied|Load key .*invalid format|error in libcrypto/i.test(s)) {
+    return SSH_STATE.KEY_AUTH_BLOCKED;
+  }
+  return SSH_STATE.UNREACHABLE;
+}
+
+function sshFailureMessage(state, err) {
+  if (state === SSH_STATE.HOST_KEY_MISMATCH) {
+    return "SSH host key mismatch: the host identity changed. Re-confirm the fingerprint, remove the stale known_hosts entry if this is your Mac, then retry.";
+  }
+  if (state === SSH_STATE.KEY_AUTH_BLOCKED) {
+    return "SSH key auth blocked: unlock or approve your SSH agent/key passphrase, make sure this Mac's public key is authorized on the host, then retry.";
+  }
+  return err || "could not reach host over SSH";
+}
+
+function sshActionForState(state) {
+  if (state === SSH_STATE.READY) return SSH_ACTION.CONTINUE;
+  if (state === SSH_STATE.INVALID_HOST || state === SSH_STATE.INVALID_ACCOUNT) return SSH_ACTION.ABORT;
+  if (state === SSH_STATE.HOST_KEY_MISMATCH) return SSH_ACTION.RECOVER_HOST_KEY;
+  if (state === SSH_STATE.KEY_AUTH_BLOCKED) return SSH_ACTION.APPROVE_OR_RETRY;
+  return SSH_ACTION.RETRY;
+}
+
+function sshResult(r, fallbackErr) {
+  if (r.code === 0) {
+    return {
+      reachable: true,
+      err: "",
+      state: SSH_STATE.READY,
+      action: SSH_ACTION.CONTINUE,
+    };
+  }
+  const raw = r.err || r.out || fallbackErr || "could not reach host over SSH";
+  const state = sshFailureKind(raw);
+  return {
+    reachable: false,
+    err: sshFailureMessage(state, raw),
+    state,
+    action: sshActionForState(state),
+  };
 }
 
 /** Run argv-safe; resolve {code, out, err} (never rejects).
@@ -160,41 +239,6 @@ function run(cmd, args, opts = {}) {
   });
 }
 const cli = (args) => run(rpBin(), args);
-
-/** Like run(), but hands the CLI ONE secret (the account password) over an inherited pipe on fd 3,
- *  NOT via argv / an env VALUE / a temp file — so the secret never appears in `ps`, a log line, or
- *  on disk. The child exports RP_ASKPASS_FD=3; the install ssh's askpass helper reads the single
- *  line from that descriptor (Path 1) instead of popping a separate GUI dialog. The secret is
- *  written once and the pipe closed immediately. Used ONLY by installHost's password path; the
- *  key-auth path uses plain cli() and no pipe is ever created. */
-function runSecret(cmd, args, secret) {
-  return new Promise((resolve) => {
-    let out = "";
-    let err = "";
-    let child;
-    try {
-      child = cp.spawn(cmd, args, {
-        windowsHide: true,
-        env: spawnEnv({ RP_ASKPASS_FD: "3" }),
-        stdio: ["ignore", "pipe", "pipe", "pipe"], // fd3 = inherited pipe; the child reads the secret
-      });
-    } catch (e) {
-      return resolve({ code: -1, out: "", err: String(e && e.message ? e.message : e) });
-    }
-    try {
-      const w = child.stdio[3];
-      w.on("error", () => {}); // EPIPE if the child never reads (e.g. key auth won) — benign.
-      w.write(String(secret) + "\n");
-      w.end();
-    } catch {
-      /* a write race (child already gone) must never crash the main process */
-    }
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => resolve({ code: -1, out, err: String(e.message) }));
-    child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
-  });
-}
 
 /** Like run(), but writes ONE secret line to the child's STDIN (fd 0) then closes it — for handing a
  *  secret to a remote `read -r KEY` over ssh WITHOUT it ever touching argv (`ps`), a log line, or
@@ -229,15 +273,19 @@ function runSecretStdin(cmd, args, secret) {
   });
 }
 
-// --- Engine constants (claude | codex | opencode) ---------------------------------------------
-// The agent engine runs ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
+// --- Engine constants (claude | codex | opencode | shell) -------------------------------------
+// Agent engines run ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
+// `shell` is a valid session engine (plain login shell, no install/auth guard), so it is only a
+// member of SESSION_ENGINES — never of the install/auth-guarded ENGINES set.
 const ENGINES = new Set(["claude", "codex", "opencode"]);
+const SESSION_ENGINES = new Set([...ENGINES, "shell"]);
 
 // Per-engine host probe: a single shell line (run over key-auth SSH) that prints a RP_* block:
 //   RP_ENGINE_INSTALLED=1|0, RP_ENGINE_VERSION=<v>, RP_ENGINE_AUTHED=1 (only when authed).
 // PATH is enriched first so a Homebrew/npm-global engine resolves under a non-login ssh command.
 // Auth detection is engine-specific:
 //   claude    — ANTHROPIC_API_KEY exported in the login shell, OR ~/.claude/.credentials.json (OAuth).
+//   shell     — no auth; uses the host account's default login shell.
 //   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
 //   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
 const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
@@ -248,6 +296,11 @@ const ENGINE_PROBE = {
     'echo "RP_ENGINE_VERSION=$(claude --version 2>/dev/null | head -1)"; ' +
     'KEY="$(bash -lc \'printf %s "$ANTHROPIC_API_KEY"\' 2>/dev/null)"; ' +
     'if [ -n "$KEY" ] || [ -f "$HOME/.claude/.credentials.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
+    'else echo RP_ENGINE_INSTALLED=0; fi',
+  shell:
+    'SHELL_BIN="${SHELL:-/bin/zsh}"; ' +
+    'if [ -x "$SHELL_BIN" ]; then echo RP_ENGINE_INSTALLED=1; echo "RP_ENGINE_VERSION=$SHELL_BIN"; echo RP_ENGINE_AUTHED=1; ' +
+    'elif [ -x /bin/bash ]; then echo RP_ENGINE_INSTALLED=1; echo "RP_ENGINE_VERSION=/bin/bash"; echo RP_ENGINE_AUTHED=1; ' +
     'else echo RP_ENGINE_INSTALLED=0; fi',
   codex:
     PATH_PREFIX +
@@ -267,6 +320,7 @@ const ENGINE_PROBE = {
 // Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
 const ENGINE_INSTALL = {
   claude: 'brew install --quiet claude || npm install -g @anthropic-ai/claude-code',
+  shell: 'true',
   codex: 'brew install --quiet codex',
   opencode: 'brew install --quiet opencode',
 };
@@ -467,9 +521,16 @@ const bridge = {
   async sshReachable(host) {
     const h = String(host || "").trim();
     if (!h) return { reachable: false, err: "no host" };
-    if (!validHost(h)) return { reachable: false, err: invalidHost(h) };
+    if (!validHost(h)) {
+      return {
+        reachable: false,
+        err: invalidHost(h),
+        state: SSH_STATE.INVALID_HOST,
+        action: SSH_ACTION.ABORT,
+      };
+    }
     const r = await run("ssh", [...sshProbeOpts(5), h, "true"]);
-    return { reachable: r.code === 0, err: r.err };
+    return sshResult(r);
   },
 
   // Connection — persist REMOTE_HOST via the CLI.
@@ -477,11 +538,11 @@ const bridge = {
     return cli(["config", "set", "host", host]);
   },
 
-  // Engine — persist the chosen agent engine via the CLI (`config set engine <claude|codex|opencode>`,
+  // Engine — persist the chosen session engine via the CLI (`config set engine <claude|codex|opencode|shell>`,
   // → client.env ENGINE, consumed by `xpair launch`). Validates the engine here too so a bad value
   // never reaches the CLI. Returns {code, out, err}.
   async setEngine(engine) {
-    if (!ENGINES.has(String(engine))) {
+    if (!SESSION_ENGINES.has(String(engine))) {
       return { code: -1, out: "", err: `unknown engine: ${engine}` };
     }
     return cli(["config", "set", "engine", String(engine)]);
@@ -489,8 +550,8 @@ const bridge = {
 
   // --- Engine host-readiness hard guard (component — same philosophy as the CLI/host-app guards) ---
   //
-  // The chosen agent engine runs ON THE HOST (xpair launch SSHes in and execs `claude`/`codex`/
-  // `opencode` there). So before pairing we must confirm THAT engine is installed AND authenticated
+  // The chosen session engine runs ON THE HOST (xpair launch SSHes in and execs `claude`/`codex`/
+  // `opencode`, or a plain shell, there). So before pairing we must confirm THAT engine is available
   // on the host, or `xpair launch` dead-ends with "<engine> not found on host" / an auth prompt the
   // GUI can never answer. These three methods mirror installHost's pattern: probe → install → set
   // auth, all over key-auth SSH (BatchMode, never prompts).
@@ -503,12 +564,29 @@ const bridge = {
     const e = String(engine || "");
     const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { installed: false, authed: false, version: "", err: "REMOTE_HOST not set" };
-    if (!validHost(host)) return { installed: false, authed: false, version: "", err: invalidHost(host) };
+    if (!validHost(host)) {
+      return {
+        installed: false,
+        authed: false,
+        version: "",
+        err: invalidHost(host),
+        state: SSH_STATE.INVALID_HOST,
+        action: SSH_ACTION.ABORT,
+      };
+    }
     const probe = ENGINE_PROBE[e];
     if (!probe) return { installed: false, authed: false, version: "", err: `unknown engine: ${e}` };
     const r = await run("ssh", [...sshProbeOpts(6), host, probe]);
     if (r.code !== 0) {
-      return { installed: false, authed: false, version: "", err: r.err || "could not reach host over SSH" };
+      const s = sshResult(r);
+      return {
+        installed: false,
+        authed: false,
+        version: "",
+        err: s.err,
+        state: s.state,
+        action: s.action,
+      };
     }
     const out = r.out || "";
     const installed = /RP_ENGINE_INSTALLED=1/.test(out);
@@ -534,14 +612,17 @@ const bridge = {
     const e = String(engine || "");
     const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { ok: false, err: "REMOTE_HOST not set" };
-    if (!validHost(host)) return { ok: false, err: invalidHost(host) };
+    if (!validHost(host)) {
+      return { ok: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
+    }
     if (!ENGINE_INSTALL[e]) return { ok: false, err: `unknown engine: ${e}` };
     // Login shell so the host's brew (e.g. /opt/homebrew/bin) is on PATH; NONINTERACTIVE=1 keeps brew
     // from prompting. The formula name differs per engine (ENGINE_INSTALL).
     const cmd = `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; NONINTERACTIVE=1 ${ENGINE_INSTALL[e]}`;
     const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* brew can take a while */ });
     if (r.code !== 0) {
-      return { ok: false, err: r.err || r.out || `install exited ${r.code}` };
+      const s = sshResult(r, `install exited ${r.code}`);
+      return { ok: false, err: s.err, state: s.state, action: s.action };
     }
     return { ok: true, err: "" };
   },
@@ -556,7 +637,9 @@ const bridge = {
     const e = String(engine || "");
     const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { ok: false, err: "REMOTE_HOST not set" };
-    if (!validHost(host)) return { ok: false, err: invalidHost(host) };
+    if (!validHost(host)) {
+      return { ok: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
+    }
     if (!apiKey) return { ok: false, err: "no API key" };
     const writer = ENGINE_AUTH_WRITE[e];
     if (!writer) return { ok: false, err: `unknown engine: ${e}` };
@@ -565,7 +648,8 @@ const bridge = {
     // remote shell directly.
     const r = await runSecretStdin("ssh", [...sshProbeOpts(15), host, writer], apiKey);
     if (r.code !== 0) {
-      return { ok: false, err: r.err || r.out || `auth write exited ${r.code}` };
+      const s = sshResult(r, `auth write exited ${r.code}`);
+      return { ok: false, err: s.err, state: s.state, action: s.action };
     }
     return { ok: true, err: "" };
   },
@@ -583,9 +667,13 @@ const bridge = {
     if (!p) return { exists: false, err: "no path" };
     const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
     if (!host) return { exists: false, err: "REMOTE_HOST not set" };
-    if (!validHost(host)) return { exists: false, err: invalidHost(host) };
+    if (!validHost(host)) {
+      return { exists: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
+    }
     const r = await run("ssh", [...sshProbeOpts(5), host, "test", "-e", p]);
-    return { exists: r.code === 0, err: r.err };
+    if (r.code === 0) return { exists: true, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
+    const s = sshResult(r);
+    return { exists: false, err: s.err, state: s.state, action: s.action };
   },
 
   // Mappings — compute the default mountpoint the same way xpair-mount does, so the UI
@@ -636,11 +724,10 @@ const bridge = {
 
   // --- Discovery / remote-install (component ⑤ — shells to the CLI brain) -----------------------
   //
-  // SECURITY (Principle 2): NONE of these methods ever receives or returns a key passphrase —
-  // those are collected ONLY by the separate askpass helper (the renderer never sees them). The
-  // ONE secret that transits here is the account password (installHost), and it is handed to the
-  // CLI over an inherited pipe (never argv/log/disk). Do NOT add a tCapture/telemetry call inside
-  // discover/installHost.
+  // SECURITY (Principle 2): NONE of these methods ever receives or returns an SSH key passphrase or
+  // uses a password/PIN as the primary path. SSH probes/install preflight are BatchMode,
+  // publickey-only; host-key mismatch and key-agent/passphrase failures are returned as explicit
+  // recovery states. Do NOT add a tCapture/telemetry call inside discover/installHost.
 
   // Discovery — concurrent Bonjour + Tailscale sweep via the CLI. Returns a deduped peer array
   // (deduped by host-key fingerprint inside the CLI; the UI dedups again as a backstop).
@@ -658,19 +745,48 @@ const bridge = {
     return { peers, err: "" };
   },
 
-  // Setup — remote install over SSH. `password` (optional) is the account password the user typed
-  // INTO the onboarding window (no separate dialog). It is handed to the CLI over an inherited pipe
-  // via runSecret (fd 3 → ssh askpass), NEVER argv/log/disk, and is dropped here right after. When
-  // the host already trusts the client key, omit it — the install authenticates by key. Returns
-  // {ok, out, err}; `out` carries the redacted progress stream for StepInstalling.
+  // Setup — remote install over SSH. Primary path is automatic public-key auth after the user has
+  // confirmed the host fingerprint. We preflight that exact key-only path before calling the CLI so
+  // the CLI's legacy askpass path never becomes a password/passphrase prompt. `password` remains in
+  // the destructuring only for older preload/renderers; it is intentionally ignored. Returns
+  // {ok,out,err,state,action}; `out` carries the redacted progress stream for StepInstalling.
   async installHost({ host, user, password } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
-    const args = ["install-host", "--host", String(host)];
-    if (user) args.push("--account", String(user));
-    const r = password
-      ? await runSecret(rpBin(), args, password)
-      : await cli(args);
-    return { ok: r.code === 0, out: r.out, err: r.code === 0 ? "" : (r.err || "install failed") };
+    const h = String(host || "").trim();
+    if (!validHost(h)) {
+      return {
+        ok: false,
+        out: "",
+        err: invalidHost(h),
+        state: SSH_STATE.INVALID_HOST,
+        action: SSH_ACTION.ABORT,
+      };
+    }
+    const account = String(user || "").trim();
+    if (account && !validAccount(account)) {
+      return {
+        ok: false,
+        out: "",
+        err: invalidAccount(account),
+        state: SSH_STATE.INVALID_ACCOUNT,
+        action: SSH_ACTION.ABORT,
+      };
+    }
+    void password; // compatibility-only: do not route onboarding through account-password auth.
+    const target = account ? `${account}@${h}` : h;
+    const preflight = await run("ssh", [...sshProbeOpts(8), target, "true"]);
+    if (preflight.code !== 0) {
+      const s = sshResult(preflight);
+      return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
+    }
+    const args = ["install-host", "--host", h];
+    if (account) args.push("--account", account);
+    const r = await cli(args);
+    if (r.code === 0) {
+      return { ok: true, out: r.out, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
+    }
+    const s = sshResult(r, "install failed");
+    return { ok: false, out: r.out, err: s.err, state: s.state, action: s.action };
   },
 
   // Host TCC grant status — after install, the host app cannot be granted Accessibility / Screen
@@ -684,7 +800,16 @@ const bridge = {
     // emits {alive,ax,sr,fda} as JSON.
     const r = await cli(["host-permissions", "--host", String(host)]);
     if (r.code !== 0) {
-      return { alive: false, ax: false, sr: false, fda: false, err: r.err || "could not read host status" };
+      const s = sshResult(r, "could not read host status");
+      return {
+        alive: false,
+        ax: false,
+        sr: false,
+        fda: false,
+        err: s.err,
+        state: s.state,
+        action: s.action,
+      };
     }
     try {
       const j = JSON.parse(r.out.trim() || "{}");
@@ -727,7 +852,16 @@ const bridge = {
   async hostAppStatus(host) {
     const h = String(host || "").trim();
     if (!h) return { installed: false, version: "", compatible: false, err: "no host" };
-    if (!validHost(h)) return { installed: false, version: "", compatible: false, err: invalidHost(h) };
+    if (!validHost(h)) {
+      return {
+        installed: false,
+        version: "",
+        compatible: false,
+        err: invalidHost(h),
+        state: SSH_STATE.INVALID_HOST,
+        action: SSH_ACTION.ABORT,
+      };
+    }
     const sshArgs = sshProbeOpts(6);
     // One round-trip: print whether the .app dir exists, then the status.json contents.
     const probe =
@@ -735,7 +869,8 @@ const bridge = {
       'cat "$HOME/.xpair/host/logs/status.json" 2>/dev/null || true';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
-      return { installed: false, version: "", compatible: false, err: r.err || "could not reach host over SSH" };
+      const s = sshResult(r);
+      return { installed: false, version: "", compatible: false, err: s.err, state: s.state, action: s.action };
     }
     const out = r.out || "";
     const installed = /RP_APP_INSTALLED=1/.test(out);

@@ -22,8 +22,11 @@ function reasonFromProbe(): Reason {
   return REASONS.HOST_UNREACHABLE;
 }
 
-function isHostKeyMismatch(err: string): boolean {
-  return /host key|REMOTE HOST IDENTIFICATION/i.test(err);
+function isHostKeyMismatch(err: string, state?: string): boolean {
+  return (
+    state === "host_key_mismatch" ||
+    /host key|known_hosts|REMOTE HOST IDENTIFICATION|offending .*key|key verification/i.test(err)
+  );
 }
 
 type Props = {
@@ -31,9 +34,11 @@ type Props = {
   setHost: (s: string) => void;
   state: ConnState;
   setState: (s: ConnState) => void;
+  cliBlocked?: boolean;
+  onBackToDiscovery?: () => void;
 };
 
-export function StepConnect({ host, setHost, state, setState }: Props) {
+export function StepConnect({ host, setHost, state, setState, cliBlocked = false, onBackToDiscovery }: Props) {
   const [tailscale, setTailscale] = useState<{
     installed: boolean;
     up: boolean;
@@ -41,6 +46,7 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
   const [pubkey, setPubkey] = useState("");
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
+  const [hostIdentityTrusted, setHostIdentityTrusted] = useState(false);
   // Telemetry inputs for ssh_config_completed: whether a fresh key was generated this run, and how
   // the user transferred the pubkey to the host (auto = clicked the copy button; manual_paste = not).
   const [keygenNew, setKeygenNew] = useState(false);
@@ -90,6 +96,8 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
       : PATHS.LAN;
 
   const check = async () => {
+    if (cliBlocked || state === "checking" || !host.trim()) return;
+
     setErr("");
     setState("checking");
     const startedAt = Date.now();
@@ -109,15 +117,18 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
         });
       } else {
         setErr(r.err || "Host did not respond.");
-        setState(isHostKeyMismatch(r.err || "") ? "rekeyed" : "failed");
+        if (isHostKeyMismatch(r.err || "", r.state)) setHostIdentityTrusted(false);
+        setState(isHostKeyMismatch(r.err || "", r.state) ? "rekeyed" : "failed");
         // host_connect_failed + ssh_config_failed: enum reason only (never the raw r.err string).
         const reason = reasonFromProbe();
         capture(EVENTS.HOST_CONNECT_FAILED, { path, reason });
         capture(EVENTS.SSH_CONFIG_FAILED, { reason });
       }
     } catch (e) {
-      setErr(String(e));
-      setState("failed");
+      const message = e instanceof Error ? e.message : String(e);
+      setErr(message);
+      if (isHostKeyMismatch(message)) setHostIdentityTrusted(false);
+      setState(isHostKeyMismatch(message) ? "rekeyed" : "failed");
       capture(EVENTS.HOST_CONNECT_FAILED, { path, reason: REASONS.UNKNOWN });
       capture(EVENTS.SSH_CONFIG_FAILED, { reason: REASONS.UNKNOWN });
     }
@@ -216,6 +227,8 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
               onChange={(e) => {
                 setHost(e.target.value);
                 if (state !== "idle") setState("idle");
+                setErr("");
+                setHostIdentityTrusted(false);
               }}
               placeholder="host tailnet name or user@host"
               className="pl-9 font-mono text-sm"
@@ -270,14 +283,50 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
             <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
             <span className="min-w-0 break-words font-mono">
               {state === "rekeyed"
-                ? "SSH host key changed. Re-pair this host or update known_hosts, then retry."
+                ? "SSH host key changed. Re-pair this host, or verify the Mac and update known_hosts before retrying."
                 : err || "SSH probe failed."}
             </span>
           </p>
+          {state === "rekeyed" && (
+            <div className="mt-3 space-y-2 pl-7">
+              <p className="text-xs text-muted-foreground">
+                If this is your host, remove only the stale known_hosts entry after
+                checking the Mac itself. If this name points at a different Mac,
+                change the host or re-discover before continuing.
+              </p>
+              <label className="flex items-start gap-2 rounded-lg border border-destructive/20 bg-background/80 p-2 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  checked={hostIdentityTrusted}
+                  onChange={(e) => setHostIdentityTrusted(e.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 accent-primary"
+                />
+                <span>
+                  I re-paired this host or verified its identity and updated known_hosts.
+                </span>
+              </label>
+            </div>
+          )}
+          {state === "failed" && (
+            <p className="mt-3 pl-7 text-xs text-muted-foreground">
+              Use a reachable SSH host, start Tailscale, or go back to discovery
+              to choose another Mac.
+            </p>
+          )}
           <div className="mt-3 pl-7">
-            <Button size="sm" variant="outline" onClick={check}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={check}
+              disabled={cliBlocked || (state === "rekeyed" && !hostIdentityTrusted)}
+            >
               Retry
             </Button>
+            {onBackToDiscovery && (
+              <Button size="sm" variant="ghost" className="ml-2" onClick={onBackToDiscovery}>
+                Back to discovery
+              </Button>
+            )}
           </div>
         </div>
       )}

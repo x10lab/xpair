@@ -24,9 +24,7 @@ const out = {
   screen: {
     v1aPort: proto.transport.v1a_jpeg.defaultPort,
     v2SignalPort: proto.transport.v2_webrtc.defaultSignalPort,
-    inputThrottleMs: proto.input.throttleMs,
-    reqFile: proto.input.reqFile,
-    resFile: proto.input.resFile,
+    remoteInputSupported: proto.remoteInput.supported,
   },
   identity: {
     product: ident.product,

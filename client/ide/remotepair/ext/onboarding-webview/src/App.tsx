@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { WizardShell } from "@/components/onboarding/WizardShell";
 import { AnimatedStep } from "@/components/onboarding/AnimatedStep";
 import { useWizard } from "@/components/onboarding/useWizard";
@@ -29,7 +29,7 @@ import { capture, EVENTS } from "@/lib/telemetry";
 
 // Step indices for the discovery flow:
 //   0 Welcome → 1 Before you start (consent) → 2 Discover → 3 Connect/Setup (auto-branch)
-//   → 4 Installing (setup path only, auto-advances) → 5 Grant permissions (setup path only)
+//   → 4 Installing (setup path only, auto-advances on success) → 5 Grant permissions (setup path only)
 //   → 6 Choose engine (host engine install/auth hard guard) → 7 File access & mapping
 //   → 8 Done (liveness-gated on every path).
 const STEP_TITLES = [
@@ -56,7 +56,15 @@ const S = {
   DONE: 8,
 } as const;
 
-type LiveState = "idle" | "checking" | "reachable" | "rekeyed" | "offline";
+type LiveState =
+  | "idle"
+  | "checking"
+  | "reachable"
+  | "rekeyed"
+  | "offline"
+  | "setup"
+  | "host-app"
+  | "permissions";
 
 // CLI readiness — needed only by the CLI-dependent steps (Discover/Connect/Mappings), which shell
 // out to the `xpair` CLI. The CLI-free steps (Welcome/Consent/Installing/Grant) run regardless;
@@ -75,7 +83,10 @@ const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([
 ]);
 // Per-host app readiness, checked on the Connect/Reconnect step. null = not yet checked.
 type HostAppState =
-  | { installed: boolean; version: string; compatible: boolean; err: string }
+  | { target: string; installed: boolean; version: string; compatible: boolean; err: string }
+  | null;
+type HostPermState =
+  | { target: string; alive: boolean; ax: boolean; sr: boolean; fda: boolean; err: string }
   | null;
 
 export default function App() {
@@ -110,7 +121,13 @@ export default function App() {
       window.clearInterval(id);
     };
   }, []);
-  const cliMissing = cli !== null && !cli.ready;
+  // cliReady: the CLI probe has returned and reports runnable. cliMissing gates the CLI-dependent
+  // steps whenever the CLI isn't proven ready (including the not-yet-checked null state, so Next
+  // can't slip through before the first probe). cliNeedsInstall is the narrower "probed AND not
+  // ready" edge that arms the background install.
+  const cliReady = cli?.ready === true;
+  const cliMissing = !cliReady;
+  const cliNeedsInstall = cli !== null && !cli.ready;
 
   // No dead end: when the CLI is missing we install the BUNDLED CLI (install.sh --role client) in the
   // BACKGROUND while the user proceeds through the CLI-free intro steps. Progress is surfaced in a
@@ -147,47 +164,55 @@ export default function App() {
   // Kick off the background install the moment the probe reports the CLI missing (once per missing
   // edge). If a later probe flips the CLI back to missing after a "ready"/"failed", re-arm.
   useEffect(() => {
-    if (cliMissing && cliInstall === "idle") void installCliNow();
-  }, [cliMissing, cliInstall, installCliNow]);
+    if (cliNeedsInstall && cliInstall === "idle") void installCliNow();
+  }, [cliNeedsInstall, cliInstall, installCliNow]);
   useEffect(() => {
     // CLI became ready by some other means (already installed / installed out-of-band) → clear any
     // stale failed/ready status so the bar disappears.
-    if (!cliMissing && cliInstall !== "idle") setCliInstall("idle");
-  }, [cliMissing, cliInstall]);
+    if (!cliNeedsInstall && cliInstall !== "idle") setCliInstall("idle");
+  }, [cliNeedsInstall, cliInstall]);
 
   // Per-host app guard (Connect/Reconnect): reachable is not enough — the host needs the host app
   // installed AND version-compatible. Only the non-setup paths (manual + reconnect) check this; the
   // setup path INSTALLS the app on the Installing step, so it must not be blocked for "not installed".
   const [hostApp, setHostApp] = useState<HostAppState>(null);
   const [hostAppChecking, setHostAppChecking] = useState(false);
+  const hostAppProbeId = useRef(0);
+  const [hostPerms, setHostPerms] = useState<HostPermState>(null);
+  const [hostPermChecking, setHostPermChecking] = useState(false);
   const checkHostApp = useCallback(async (target: string) => {
+    const probeId = ++hostAppProbeId.current;
     if (!target) {
-      setHostApp({ installed: false, version: "", compatible: false, err: "no host" });
+      setHostAppChecking(false);
+      setHostApp({ target, installed: false, version: "", compatible: false, err: "no host" });
       return;
     }
     setHostAppChecking(true);
     try {
       const r = await window.remotepair.hostAppStatus(target);
-      setHostApp(r);
+      if (hostAppProbeId.current === probeId) setHostApp({ target, ...r });
     } catch (e) {
-      setHostApp({ installed: false, version: "", compatible: false, err: String(e) });
+      if (hostAppProbeId.current === probeId) {
+        setHostApp({ target, installed: false, version: "", compatible: false, err: String(e) });
+      }
     } finally {
-      setHostAppChecking(false);
+      if (hostAppProbeId.current === probeId) setHostAppChecking(false);
     }
   }, []);
 
   // Discovery / connect state.
   const [peer, setPeer] = useState<Peer | null>(null);
   const [account, setAccount] = useState("");
-  // Account password typed on the setup step → consumed by StepInstalling (handed to the CLI over a
-  // pipe, never argv/log), then cleared. Empty ⇒ install authenticates by SSH key.
-  const [password, setPassword] = useState("");
+  // Setup path readiness: the fingerprint-confirm step must prepare/reuse the client SSH key and
+  // fetch the host fingerprint before Next starts the key-auth install.
+  const [setupReady, setSetupReady] = useState(false);
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
   // Reconnect reachability, lifted from the Reconnect step so Next gates until the host answers.
   const [reconnectReady, setReconnectReady] = useState(false);
   const [live, setLive] = useState<LiveState>("idle");
+  const [liveErr, setLiveErr] = useState("");
 
   // Manual-entry fallback reuses the existing StepConnect machine.
   const [manual, setManual] = useState(false);
@@ -219,33 +244,95 @@ export default function App() {
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
     (p: Peer) => {
+      if (!cliReady) return;
       setManual(false);
       setPeer(p);
       setHost(p.status === "connect" ? p.target || p.addrs?.[0] || p.name || "" : "");
+      setSetupReady(false);
       setConnState("idle");
+      hostAppProbeId.current += 1;
+      setHostApp(null);
+      setHostAppChecking(false);
+      setHostPerms(null);
       setInstallState("idle");
       setReconnectReady(false);
       setLive("idle");
+      setLiveErr("");
       w.goTo(S.CONNECT, "next");
     },
-    [w],
+    [cliReady, w],
   );
 
   const onManual = useCallback(() => {
     setManual(true);
     setPeer(null);
+    setSetupReady(false);
+    hostAppProbeId.current += 1;
+    setHostApp(null);
+    setHostAppChecking(false);
+    setHostPerms(null);
+    setLive("idle");
+    setLiveErr("");
     w.goTo(S.CONNECT, "next");
   }, [w]);
 
-  // Liveness gate before Done: ssh true + host-app/server reachability. Blocks landing Done on a
-  // stale config to an offline host; flags a re-keyed host (TOFU mismatch) for re-pairing.
+  // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
+  // setup, host-app, permission, and SSH liveness probes all pass.
   const runLivenessCheck = useCallback(async () => {
-    const target = manual ? host : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+    const target = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
     if (!target) {
+      setLiveErr("No host selected.");
       setLive("offline");
       return;
     }
     setLive("checking");
+    setLiveErr("");
+
+    if (isSetup && installState !== "done") {
+      setLiveErr("Host setup has not finished. Go back and retry setup.");
+      setLive("setup");
+      return;
+    }
+
+    try {
+      const app = await window.remotepair.hostAppStatus(target);
+      setHostApp({ target, ...app });
+      if (!app.installed || !app.compatible) {
+        setLiveErr(
+          !app.installed
+            ? "Host has no Xpair host app. Install it on the host before finishing."
+            : app.err || "Host version is incompatible with this client.",
+        );
+        setLive("host-app");
+        return;
+      }
+    } catch (e) {
+      setLiveErr(`Host app check failed: ${String(e)}`);
+      setLive("host-app");
+      return;
+    }
+
+    try {
+      const perms = await window.remotepair.hostPermissions({ host: target });
+      const ready = perms.alive && perms.ax && perms.sr;
+      setGrantReady(ready);
+      if (!ready) {
+        setLiveErr(
+          perms.err ||
+            (!perms.alive
+              ? "Host app is not reporting permission status."
+              : "Grant Accessibility and Screen Recording on the host before finishing."),
+        );
+        setLive("permissions");
+        return;
+      }
+    } catch (e) {
+      setGrantReady(false);
+      setLiveErr(`Permission check failed: ${String(e)}`);
+      setLive("permissions");
+      return;
+    }
+
     try {
       const r = await window.remotepair.sshReachable(target);
       if (r.reachable) {
@@ -255,16 +342,18 @@ export default function App() {
       }
       // A host-key mismatch surfaces as an ssh failure mentioning the host key; treat that as a
       // re-key (TOFU mismatch) so the user re-pairs instead of silently failing.
+      setLiveErr(r.err || "Host did not respond.");
       setLive(/host key|REMOTE HOST IDENTIFICATION/i.test(r.err || "") ? "rekeyed" : "offline");
-    } catch {
+    } catch (e) {
+      setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [manual, host, peer, w]);
+  }, [manual, host, peer, isSetup, installState, w]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
   // Reachability (SSH) for the non-setup paths. The setup path installs the app later, so it gates
-  // only on the password step's own flow (Next → Installing), not on reachability/host-app here.
+  // on the fingerprint-confirm/key-prep step before Installing, not on host-app here.
   const reachReady = manual
     ? manualReady
     : isReconnect
@@ -281,7 +370,18 @@ export default function App() {
   const requiresHostApp = w.index === S.CONNECT && !isSetup;
   const hostAppReady =
     !requiresHostApp ||
-    (!!hostApp && hostApp.installed && hostApp.compatible);
+    (!!hostApp &&
+      hostApp.target === connectTarget &&
+      hostApp.installed &&
+      hostApp.compatible);
+  const requiresHostPerms = w.index === S.CONNECT && !isSetup;
+  const hostPermReady =
+    !requiresHostPerms ||
+    (!!hostPerms &&
+      hostPerms.target === connectTarget &&
+      hostPerms.alive &&
+      hostPerms.ax &&
+      hostPerms.sr);
 
   // Once reachable on a non-setup path, probe the host app exactly once per (target, reachable) edge.
   useEffect(() => {
@@ -289,19 +389,71 @@ export default function App() {
       void checkHostApp(connectTarget);
     } else if (!requiresHostApp || !reachReady) {
       // Leaving the gate (path change / no longer reachable) clears stale host-app state.
+      hostAppProbeId.current += 1;
       setHostApp(null);
+      setHostAppChecking(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
 
-  const connectReady = reachReady && hostAppReady;
+  // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
+  // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
+  useEffect(() => {
+    if (!requiresHostPerms || !reachReady || !hostAppReady || !connectTarget) {
+      setHostPerms(null);
+      setHostPermChecking(false);
+      return;
+    }
+
+    let alive = true;
+    const poll = async () => {
+      setHostPermChecking(true);
+      try {
+        const r = await window.remotepair.hostPermissions({ host: connectTarget });
+        if (alive) setHostPerms({ target: connectTarget, ...r });
+      } catch (e) {
+        if (alive) {
+          setHostPerms({
+            target: connectTarget,
+            alive: false,
+            ax: false,
+            sr: false,
+            fda: false,
+            err: String(e),
+          });
+        }
+      } finally {
+        if (alive) setHostPermChecking(false);
+      }
+    };
+
+    void poll();
+    const id = window.setInterval(poll, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [requiresHostPerms, reachReady, hostAppReady, connectTarget]);
+
+  const connectReady = reachReady && hostAppReady && hostPermReady;
   // CLI hard gate — ONLY on the CLI-dependent steps, and ONLY when the CLI isn't ready yet. On the
   // CLI-free intro/setup steps the install runs in the background and never blocks Next.
   const cliGateActive = CLI_DEPENDENT_STEPS.has(w.index) && cliMissing;
+  const cliGateMessage =
+    cli === null
+      ? "checking xpair CLI…"
+      : cliInstall === "failed"
+      ? `xpair CLI install failed — ${cliInstallErr || cli.err || "see status bar"}`
+      : cliInstall === "installing"
+      ? "installing xpair CLI…"
+      : "waiting for xpair CLI…";
   const nextDisabled =
     cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
-    (w.index === S.CONNECT && (!connectReady || hostAppChecking)) ||
+    (w.index === S.CONNECT &&
+      (isSetup
+        ? !setupReady
+        : !connectReady || hostAppChecking || (hostPermChecking && !hostPermReady))) ||
     (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
     (w.index === S.ENGINE && !engineReady); // wait until the engine is installed + authed on the host
   // Folder mappings are OPTIONAL — you can attach to a host for screen share / terminal without
@@ -324,7 +476,7 @@ export default function App() {
   };
 
   // Prev routing: from Mappings, go back to Grant (setup) or Connect (others); Grant and Installing
-  // both fall back to the setup/password step.
+  // both fall back to the fingerprint-confirm setup step.
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
       // Mappings always follows the Engine step.
@@ -343,11 +495,17 @@ export default function App() {
     w.prev();
   };
 
-  // Unified action label — always "Next" (no step-specific phrases); only the in-flight liveness
-  // check on the Mappings step swaps in a transient "Checking…".
+  // Mappings runs the final gate before Done, so failed probes keep a retry-oriented label.
   const nextLabel =
     w.index === S.MAPPINGS && live === "checking"
       ? "Checking…"
+      : w.index === S.MAPPINGS &&
+        (live === "offline" ||
+          live === "rekeyed" ||
+          live === "setup" ||
+          live === "host-app" ||
+          live === "permissions")
+      ? "Re-check"
       : w.index === S.MAPPINGS && mappings.length === 0
       ? "Skip for now"
       : "Next";
@@ -370,9 +528,7 @@ export default function App() {
         // vs failed) so the disabled Next isn't a mystery.
         cliGateActive ? (
           <p className="truncate text-center text-xs text-muted-foreground">
-            {cliInstall === "failed"
-              ? `xpair CLI install failed — ${cliInstallErr || cli?.err || "see status bar"}`
-              : "waiting for xpair CLI…"}
+            {cliGateMessage}
           </p>
         ) : // Connect step: once reachable, surface WHY the host-app gate blocks (not installed /
         // incompatible) so the user isn't staring at a silently-disabled Next.
@@ -382,15 +538,34 @@ export default function App() {
               ? "Host has no Xpair host app — install it on the host."
               : hostApp.err || "Host version is incompatible with this client."}
           </p>
+        ) : requiresHostPerms && reachReady && hostAppReady && !hostPermReady ? (
+          <p className="truncate text-center text-xs text-destructive">
+            {hostPermChecking
+              ? "Checking host permissions…"
+              : hostPerms?.err ||
+                "Grant Accessibility and Screen Recording on the host to continue."}
+          </p>
         ) : w.index === S.ENGINE && !engineReady ? (
           <p className="truncate text-center text-xs text-muted-foreground">
             Set up {engine} on the host to continue.
           </p>
-        ) : w.index === S.MAPPINGS && (live === "offline" || live === "rekeyed") ? (
-          <p className="truncate text-center text-xs text-destructive">
+        ) : w.index === S.MAPPINGS &&
+          (live === "offline" ||
+            live === "rekeyed" ||
+            live === "setup" ||
+            live === "host-app" ||
+            live === "permissions") ? (
+          <p className="text-center text-xs leading-snug text-destructive">
             {live === "rekeyed"
               ? "Host identity changed — re-pair."
-              : "Host unreachable — re-discover."}
+              : liveErr ||
+                (live === "offline"
+                  ? "Host unreachable — re-discover."
+                  : live === "setup"
+                  ? "Host setup has not finished."
+                  : live === "host-app"
+                  ? "Host app check failed."
+                  : "Host permissions are not ready.")}
           </p>
         ) : null
       }
@@ -452,24 +627,20 @@ export default function App() {
               setHost={setHost}
               state={connState}
               setState={setConnState}
+              cliBlocked={cliGateActive}
+              onBackToDiscovery={() => w.goTo(S.DISCOVER, "prev")}
             />
           ) : isReconnect ? (
             <StepReconnect peer={peer} onReady={setReconnectReady} />
           ) : (
             <StepSetupPassword
               peer={peer}
-              user={account}
-              setUser={setAccount}
-              password={password}
-              setPassword={setPassword}
+              onReady={setSetupReady}
             />
           ))}
         {w.index === S.INSTALL && peer && (
           <StepInstalling
             peer={peer}
-            user={account}
-            password={password}
-            setPassword={setPassword}
             state={installState}
             setState={setInstallState}
             onDone={() => {

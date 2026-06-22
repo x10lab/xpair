@@ -8,8 +8,8 @@ import {
   StepPermissions,
   type PermState,
 } from "@/components/onboarding/host/StepPermissions";
-import { StepWaiting } from "@/components/onboarding/host/StepWaiting";
-import { StepDone } from "@/components/onboarding/host/StepDone";
+import { StepWaiting, type ConnectedClient } from "@/components/onboarding/host/StepWaiting";
+import { HostDoneClientContext, StepDone } from "@/components/onboarding/host/StepDone";
 import { StepEngine } from "@/components/onboarding/host/StepEngine";
 import type { EngineId } from "@/global";
 
@@ -38,7 +38,7 @@ export default function App() {
   // HARD-GATE for the Engine step: the chosen engine must be installed AND signed in on this host.
   const [engineReady, setEngineReady] = useState(false);
   // Q0543: with no connected client, the Connect step must hold rather than report completion.
-  const [connected, setConnected] = useState(false);
+  const [connectedClients, setConnectedClients] = useState<ConnectedClient[]>([]);
 
   // The Permissions "Next" gate requires Accessibility + Screen Recording (both required:
   // approve auto-click needs AX, screen-share/OCR needs SR). Full Disk Access is recommended.
@@ -46,6 +46,9 @@ export default function App() {
     () => perm.ax === "granted" && perm.sr === "granted",
     [perm.ax, perm.sr],
   );
+
+  const connected = connectedClients.length > 0;
+  const pairedClient = connectedClients[0] ?? null;
 
   const nextDisabled =
     (w.index === 1 && !ready) || (w.index === 2 && !engineReady) || (w.index === 3 && !connected);
@@ -73,15 +76,17 @@ export default function App() {
       }
       centerSlot={null}
     >
-      <AnimatedStep stepKey={w.index} direction={w.direction}>
-        {w.index === 0 && <StepWelcome />}
-        {w.index === 1 && <StepPermissions state={perm} setState={setPerm} />}
-        {w.index === 2 && (
-          <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
-        )}
-        {w.index === 3 && <StepWaiting onConnectedChange={setConnected} />}
-        {w.index === 4 && <StepDone />}
-      </AnimatedStep>
+      <HostDoneClientContext.Provider value={pairedClient}>
+        <AnimatedStep stepKey={w.index} direction={w.direction}>
+          {w.index === 0 && <StepWelcome />}
+          {w.index === 1 && <StepPermissions state={perm} setState={setPerm} />}
+          {w.index === 2 && (
+            <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
+          )}
+          {w.index === 3 && <StepWaiting onClientsChange={setConnectedClients} />}
+          {w.index === 4 && <StepDone />}
+        </AnimatedStep>
+      </HostDoneClientContext.Provider>
     </WizardShell>
   );
 }

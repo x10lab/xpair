@@ -2,7 +2,9 @@
 # xpair — Xpair single entry-point CLI (client side).
 #
 #   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
-#                              Launch/attach an agent session (remote host/local) for a folder. Prompts to register if unmapped.
+#                              Plain shell sessions are also supported via --engine shell.
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|shell|codex|opencode>]
+#                              Launch/attach a session (remote host/local) for a folder. Prompts to register if unmapped.
 #                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
 #   xpair attach [--local|--remote] <session-name>
 #                              Attach an existing exact tmux-aqua session by name; never creates a new session.
@@ -10,7 +12,9 @@
 #   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
 #   xpair config [list|get <key>|set <key> <value>|maps]
-#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|codex|opencode).
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|shell|codex|opencode), mode (local|auto).
+#   xpair mode [status|local|auto]
+#                              Transient local mode: launch/attach use local only until the remote host is reachable again.
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
@@ -52,6 +56,7 @@ APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/xpair.approve-request}"
 LOG_FILE="${LOG_FILE:-$RP_DIR/logs/xpair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$RP_DIR/logs/xpair.heartbeat}"
 REMOTE_HOST="${REMOTE_HOST:-}"
+LOCAL_MODE="${LOCAL_MODE:-0}"
 FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"     # client::host mappings (legacy SYNC_ROOTS compatible)
 LAUNCHER="${LAUNCHER:-$RP_DIR/bin/xpair-launch}"
 # Terminal app for open-gui/onboard. Default iterm2 if iTerm installed, else terminal.
@@ -93,9 +98,24 @@ fi
 canonical_engine() {
   case "${1:-}" in
     claude|claudecode|claude-code) printf 'claude' ;;
-    codex|opencode) printf '%s' "$1" ;;
+    shell|codex|opencode) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
+}
+
+case "$LOCAL_MODE" in
+  1|true|TRUE|yes|YES|on|ON|local) LOCAL_MODE=1 ;;
+  *) LOCAL_MODE=0 ;;
+esac
+local_mode_on() { [ "${LOCAL_MODE:-0}" = 1 ]; }
+mode_label() {
+  if local_mode_on; then
+    printf 'local (transient)'
+  elif [ -n "$REMOTE_HOST" ]; then
+    printf 'auto (remote)'
+  else
+    printf 'auto (local)'
+  fi
 }
 
 STATUS_FILE="${STATUS_FILE:-$RP_DIR/logs/status.json}"
@@ -157,9 +177,73 @@ rp_set() {
   { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
+set_local_mode() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|local)
+      rp_set LOCAL_MODE 1
+      LOCAL_MODE=1
+      ok "local mode enabled — launch/attach will use local only until the host is reachable again"
+      ;;
+    0|false|FALSE|no|NO|off|OFF|auto|remote|"")
+      rp_set LOCAL_MODE 0
+      LOCAL_MODE=0
+      ok "local mode cleared"
+      ;;
+    *)
+      echo "mode must be local or auto" >&2
+      return 2
+      ;;
+  esac
+}
+
+clear_local_mode_quiet() {
+  local_mode_on || return 0
+  rp_set LOCAL_MODE 0
+  LOCAL_MODE=0
+}
+
 # ── mappings ──
 map_client_of() { printf '%s' "${1%%::*}"; }
 map_host_of()   { local p="$1" h="${1#*::}"; [ "$h" = "$p" ] && h="$p"; printf '%s' "$h"; }
+
+mapping_invalid_reason() {
+  local pair="$1" c h
+  case "$pair" in *::*::*) printf 'contains more than one :: separator'; return 0 ;; esac
+  c="$(map_client_of "$pair")"; h="$(map_host_of "$pair")"
+  [ -n "$c" ] || { printf 'missing client path'; return 0; }
+  [ -n "$h" ] || { printf 'missing host path'; return 0; }
+  case "$c" in /*) : ;; *) printf 'client path is not absolute'; return 0 ;; esac
+  case "$h" in /*) : ;; *) printf 'host path is not absolute'; return 0 ;; esac
+  return 1
+}
+
+validate_folder_maps_config() {
+  local pair reason c IFS=';'
+  for pair in $FOLDER_MAPS; do
+    [ -n "$pair" ] || continue
+    if reason="$(mapping_invalid_reason "$pair")"; then
+      c="$(map_client_of "$pair")"
+      warn "invalid folder mapping record: $reason"
+      printf '  record: %s\n' "$pair" >&2
+      printf 'Reset the mapping before launch:\n' >&2
+      printf '  xpair map list\n' >&2
+      [ -n "$c" ] && printf '  xpair map rm %s\n' "$(sh_quote "$c")" >&2
+      printf '  xpair map add <client-dir> <host-dir-that-exists-on-host>\n' >&2
+      printf 'Or edit %s and remove the bad FOLDER_MAPS entry.\n' "$CLIENT_ENV" >&2
+      return 1
+    fi
+  done
+}
+
+mapping_for_dir() {
+  local d="$1" best="" best_c="" c pair IFS=';'
+  for pair in $FOLDER_MAPS; do
+    [ -n "$pair" ] || continue
+    c="$(map_client_of "$pair")"
+    case "$d" in "$c"|"$c"/*) [ "${#c}" -gt "${#best_c}" ] && { best_c="$c"; best="$pair"; } ;; esac
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+}
 
 resolve_host() { # $1=clientDir → echo hostDir (longest-prefix; same path if unmapped)
   local d="$1" best_c="" best_h="" c h pair IFS=';'
@@ -171,6 +255,47 @@ resolve_host() { # $1=clientDir → echo hostDir (longest-prefix; same path if u
   [ -n "$best_c" ] && printf '%s%s' "$best_h" "${d#"$best_c"}" || printf '%s' "$d"
 }
 is_mapped() { local d="$1" c pair IFS=';'; for pair in $FOLDER_MAPS; do [ -n "$pair" ] || continue; c="$(map_client_of "$pair")"; case "$d" in "$c"|"$c"/*) return 0 ;; esac; done; return 1; }
+
+ensure_mapped_host_dir_ready() {
+  local dir="$1" pair="$2" mapped_client hostdir check ans=""
+  mapped_client="$(map_client_of "$pair")"
+  hostdir="$(resolve_host "$dir")"
+  check="$(ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "[ -d $(sh_quote "$hostdir") ] && echo __YES__ || echo __NO__" 2>/dev/null)" || return 0
+  case "$check" in
+    *__YES__*) return 0 ;;
+    *__NO__*) : ;;
+    *) return 0 ;;
+  esac
+
+  c "This folder is covered by a registered mapping, but the host folder is missing:"
+  printf '  client:  %s\n' "$dir"
+  printf '  mapping: %s  ->  %s\n' "$mapped_client" "$(map_host_of "$pair")"
+  printf '  host:    %s\n' "$hostdir"
+  warn "stale mapping detected — not launching into a raw host-dir failure."
+
+  if [ "$RP_YES" = 1 ] || ! have_tty; then
+    cat >&2 <<EOF
+Reset or repair the mapping, then launch again:
+  xpair map rm $(sh_quote "$mapped_client")
+  xpair map add $(sh_quote "$mapped_client") <host-dir-that-exists-on-host>
+For a new empty project only, create the mapped host folder first:
+  ssh $(sh_quote "$REMOTE_HOST") mkdir -p $(sh_quote "$hostdir")
+EOF
+    return 1
+  fi
+
+  { printf '  [m] reset and map to the host path that actually has this content
+  [c] create an empty dir on host (new project only — content will not be synced here)
+  [r] remove this stale mapping
+  [N] cancel
+  choose: ' >/dev/tty; read -r ans </dev/tty; } 2>/dev/null || true
+  case "$ans" in
+    m|M) cmd_map rm "$mapped_client" && map_register_interactive "$dir" || return 1 ;;
+    c|C) ssh "$REMOTE_HOST" "mkdir -p $(sh_quote "$hostdir")" 2>/dev/null && ok "created on $REMOTE_HOST: $hostdir" || { echo "mkdir failed on $REMOTE_HOST" >&2; return 1; } ;;
+    r|R) cmd_map rm "$mapped_client"; return 1 ;;
+    *)   echo "cancelled." >&2; return 1 ;;
+  esac
+}
 
 cmd_map() {
   case "${1:-list}" in
@@ -203,7 +328,7 @@ cmd_map() {
 
 cmd_ls_json() {
   local target host raw
-  if [ -n "$REMOTE_HOST" ]; then
+  if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
     target=remote
     host="$REMOTE_HOST"
     raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null || true)"
@@ -245,7 +370,7 @@ cmd_ls() {
     return
   fi
   cmd_map list; echo
-  if [ -n "$REMOTE_HOST" ]; then
+  if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
     echo "[$REMOTE_HOST] tmux-aqua sessions:"
     ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S '$AQUA_SOCK' list-sessions 2>/dev/null" \
       | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none or unreachable)"
@@ -323,6 +448,7 @@ cmd_config() {
     list|"")
       c "Xpair client config"
       printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(local-only)}"
+      printf '%-12s %s\n' "mode"     "$(mode_label)"
       printf '%-12s %s\n' "terminal" "$TERMINAL_APP"
       printf '%-12s %s\n' "engine"   "${ENGINE:-claude}"
       printf '%-12s %s\n' "mappings" "$([ -n "$FOLDER_MAPS" ] && printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c . || echo 0)"
@@ -330,9 +456,11 @@ cmd_config() {
     get)
       case "${2:-}" in
         host)     printf '%s\n' "$REMOTE_HOST" ;;
+        mode)     mode_label; printf '\n' ;;
+        local_mode) printf '%s\n' "$LOCAL_MODE" ;;
         terminal) printf '%s\n' "$TERMINAL_APP" ;;
         engine)   printf '%s\n' "${ENGINE:-claude}" ;;
-        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|codex|opencode
+        *) echo "config get <host|mode|local_mode|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|shell|codex|opencode
       esac
       ;;
     set)
@@ -347,8 +475,12 @@ cmd_config() {
           if [ -n "$val" ]; then
             ok "host set: $val"
             printf '  Checking SSH ... '
-            if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then echo "OK (key auth)"
-            else echo "FAILED"; warn "SSH key auth failed — run 'xpair doctor' for guidance."; fi
+            if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then
+              echo "OK (key auth)"
+              clear_local_mode_quiet
+            else
+              echo "FAILED"; warn "SSH key auth failed — run 'xpair doctor' for guidance."
+            fi
           else
             ok "host cleared (local-only mode)"
           fi
@@ -360,21 +492,37 @@ cmd_config() {
           esac
           ;;
         engine)
-          # Agent engine used by 'xpair launch'. Each engine auto-approves (so none needs the approve
+          # Session engine used by 'xpair launch'. Agent engines auto-approve (so none needs the approve
           # router): claude=--dangerously-skip-permissions, codex=--dangerously-bypass-approvals-and-sandbox,
-          # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT.
+          # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT. shell is a plain login shell.
           local canon
           if canon="$(canonical_engine "$val")"; then
             rp_set ENGINE "$canon"; ENGINE="$canon"; ok "engine set: $canon"
           else
-            echo "config set engine <claude|claudecode|codex|opencode>" >&2; return 2
+            echo "config set engine <claude|claudecode|shell|codex|opencode>" >&2; return 2
           fi
           ;;
-        *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
+        mode|local_mode)
+          set_local_mode "$val"
+          ;;
+        *) echo "config set <host|mode|local_mode|terminal|engine> <value>" >&2; return 2 ;;
       esac
       ;;
     maps) cmd_map list ;;
     *) echo "config [list|get <key>|set <key> <value>|maps]" >&2; return 2 ;;
+  esac
+}
+
+cmd_mode() {
+  case "${1:-status}" in
+    status|"")
+      c "Xpair mode"
+      printf '%-12s %s\n' "mode" "$(mode_label)"
+      printf '%-12s %s\n' "host" "${REMOTE_HOST:-(none)}"
+      ;;
+    local) set_local_mode local ;;
+    auto|remote|off) set_local_mode auto ;;
+    *) echo "mode [status|local|auto]" >&2; return 2 ;;
   esac
 }
 
@@ -582,9 +730,12 @@ cmd_onboard() {
 }
 
 cmd_launch() {
-  local pass=() dir="" engine="" engine_explicit=0
+  local pass=() dir="" engine="" engine_explicit=0 target_explicit=0 target_pref=""
   while [ $# -gt 0 ]; do case "$1" in
-    --local|--remote|--fresh|--yes|-y) pass+=("$1"); [ "$1" = "--yes" ] || [ "$1" = "-y" ] && RP_YES=1; shift ;;
+    --local) pass+=("$1"); target_explicit=1; target_pref=local; shift ;;
+    --remote) pass+=("$1"); target_explicit=1; target_pref=remote; shift ;;
+    --fresh) pass+=("$1"); shift ;;
+    --yes|-y) pass+=("$1"); RP_YES=1; shift ;;
     --engine) engine="${2:-}"; engine_explicit=1; shift 2 ;;        # per-launch override of client.env ENGINE
     *) dir="$1"; shift ;;
   esac; done
@@ -592,11 +743,28 @@ cmd_launch() {
   if [ "$engine_explicit" = 1 ]; then
     local canon
     if canon="$(canonical_engine "$engine")"; then engine="$canon"
-    else echo "unknown engine: $engine (use claude|claudecode|codex|opencode)" >&2; return 2
+    else echo "unknown engine: $engine (use claude|claudecode|shell|codex|opencode)" >&2; return 2
     fi
   fi
   dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
-  if ! is_mapped "$dir" && [ -n "$REMOTE_HOST" ] && [ "$RP_YES" != 1 ]; then
+  if local_mode_on && [ "$target_explicit" = 0 ]; then
+    pass+=("--local")
+  fi
+  local should_probe_remote=0
+  if [ -n "$REMOTE_HOST" ]; then
+    if [ "$target_pref" = remote ] || { [ -z "$target_pref" ] && ! local_mode_on; }; then
+      should_probe_remote=1
+    fi
+  fi
+  if [ "$should_probe_remote" = 1 ]; then
+    validate_folder_maps_config || return 1
+    local mapped_pair=""
+    mapped_pair="$(mapping_for_dir "$dir")"
+    if [ -n "$mapped_pair" ]; then
+      ensure_mapped_host_dir_ready "$dir" "$mapped_pair" || return 1
+    fi
+  fi
+  if ! is_mapped "$dir" && [ "$should_probe_remote" = 1 ] && [ "$RP_YES" != 1 ]; then
     # Active host probe: only when the host is reachable. Resolve the candidate host
     # path and check whether it actually exists on the host.
     if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" true 2>/dev/null; then
@@ -662,27 +830,48 @@ cmd_attach() {
 
   local target="$target_pref"
   if [ -z "$target" ]; then
-    [ -n "$REMOTE_HOST" ] && target=remote || target=local
+    if local_mode_on; then
+      target=local
+    elif [ -n "$REMOTE_HOST" ]; then
+      target=remote
+    else
+      target=local
+    fi
   fi
 
   if [ "$target" = local ]; then
     [ -x "$TMUXB" ] || { echo "tmux-aqua missing: $TMUXB" >&2; return 1; }
     tm has-session -t "=$session" 2>/dev/null || { echo "session not found: $session" >&2; return 4; }
     printf '\033]2;%s\007' "$session"
-    exec "$TMUXB" -S "$AQUA_SOCK" attach -d -t "=$session"
+    on_attach_close() {
+      ( trap '' HUP; "$TMUXB" -S "$AQUA_SOCK" detach-client -s "=$session" \
+          >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+      exit 129
+    }
+    trap on_attach_close HUP TERM
+    local rc=0
+    "$TMUXB" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
+    trap - HUP TERM
+    return "$rc"
   fi
 
   [ "$target" = remote ] || { echo "unknown attach target: $target" >&2; return 2; }
   [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — use --local or 'xpair config set host <ssh-host>'" >&2; return 1; }
-  ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") has-session -t $(sh_quote "=$session")" \
-    || { echo "session not found on $REMOTE_HOST: $session" >&2; return 4; }
+  local remote_bin="${REMOTE_BIN:-\$HOME/.local/bin}" aqua_sock_q
+  aqua_sock_q="$(sh_quote "$AQUA_SOCK")"
+  if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q has-session -t $(sh_quote "=$session")"; then
+    clear_local_mode_quiet
+  else
+    echo "session not found on $REMOTE_HOST: $session" >&2
+    return 4
+  fi
   printf '\033]2;%s\007' "$session"
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
     exec mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
   fi
   printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
-  exec ssh -t "$REMOTE_HOST" "${REMOTE_BIN:-\$HOME/.local/bin}/tmux-aqua -S $(sh_quote "$AQUA_SOCK") attach -d -t $(sh_quote "=$session")"
+  exec ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")"
 }
 
 cmd_host() {
@@ -728,6 +917,7 @@ cmd_status() {
   else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
   in_host_session && printf '%-14s %s\n' "this session" "INSIDE Xpair host → computer-use available here"
   printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(local-only)}"
+  printf '%-14s %s\n' "mode" "$(mode_label)"
   printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
   return 0
 }
@@ -1025,6 +1215,7 @@ rp_norm_fp() { case "$1" in SHA256:*) printf '%s' "$1" ;; *) printf 'SHA256:%s' 
 #    "status":"reconnect|connect|setup"}
 # Dedup by host-key fingerprint; cross-reference ~/.ssh/config + client.env.
 RP_BONJOUR_TYPE="_xpair._tcp"
+RP_LEGACY_BONJOUR_TYPE="_remotepair._tcp"
 # Auto-detect the Tailscale CLI across install layouts (App Store sandbox, brew, manual).
 rp_tailscale_bin() {
   local p
@@ -1049,7 +1240,7 @@ _rp_peer_status() {
   if [ -n "$name" ] && _rp_in_ssh_config "$name"; then printf 'reconnect'; return; fi
   if [ -n "$addr" ] && _rp_in_ssh_config "$addr"; then printf 'reconnect'; return; fi
   if [ -n "${REMOTE_HOST:-}" ] && { [ "$REMOTE_HOST" = "$name" ] || [ "$REMOTE_HOST" = "$addr" ]; }; then printf 'reconnect'; return; fi
-  # A peer advertising the Xpair service (any role) → account-password connect; otherwise plain SSH setup.
+  # A peer advertising the Xpair service (any role) → key-auth connect; otherwise plain SSH setup.
   case "$role" in host|both|client) printf 'connect' ;; *) printf 'setup' ;; esac
 }
 
@@ -1100,40 +1291,48 @@ cmd_discover() {
   # cutting a multi-host discover from ~17s to ~5s. (BUG #5)
   if command -v dns-sd >/dev/null 2>&1; then
     local resolve_to=1   # TXT comes back immediately; only the kill is bounded
-    local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
-    ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & local bpid=$!
-    ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
-    wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
-    # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>". Collect unique instance
-    # names, then fan out one resolve per name into its own temp file, all at once.
-    local svcname lk; local -a _lpids=() _lfiles=() _lnames=()
-    while IFS= read -r line; do
-      case "$line" in *" Add "*) ;; *) continue ;; esac
-      svcname="$(printf '%s' "$line" | sed -n 's/.*'"$RP_BONJOUR_TYPE"'\.[[:space:]]*\(.*\)$/\1/p')"
-      [ -n "$svcname" ] || continue
-      case " ${_lnames[*]:-} " in *" $svcname "*) continue ;; esac   # dedup browse repeats
-      lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
-      ( dns-sd -t "$resolve_to" -L "$svcname" "$RP_BONJOUR_TYPE" >"$lk" 2>/dev/null ) & local _p=$!
-      ( sleep "$resolve_to"; kill "$_p" 2>/dev/null ) >/dev/null 2>&1 &
-      _lpids+=("$_p"); _lfiles+=("$lk"); _lnames+=("$svcname")
-    done < "$browse"
-    rm -f "$browse"
-    # Barrier: wait for every parallel resolve to finish (or be killed), then parse each TXT.
-    local _i
-    for _i in "${!_lpids[@]}"; do wait "${_lpids[$_i]}" 2>/dev/null || true; done
-    for _i in "${!_lfiles[@]}"; do
-      lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
-      # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
-      local txt hn fp role addr
-      txt="$(cat "$lk" 2>/dev/null)"
-      addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
-      hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
-      fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
-      role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
-      [ -n "$hn" ] || hn="$svcname"
-      [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
-      printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
-      rm -f "$lk"
+    local bonjour_type
+    for bonjour_type in "$RP_BONJOUR_TYPE" "$RP_LEGACY_BONJOUR_TYPE"; do
+      local browse; browse="$(mktemp "${TMPDIR:-/tmp}/rp-bro.XXXXXX")"
+      local bpid
+      if [ "$bonjour_type" = "$RP_BONJOUR_TYPE" ]; then
+        ( dns-sd -t "$timeout" -B "$RP_BONJOUR_TYPE" >"$browse" 2>/dev/null ) & bpid=$!
+      else
+        ( dns-sd -t "$timeout" -B "$bonjour_type" >"$browse" 2>/dev/null ) & bpid=$!
+      fi
+      ( sleep "$timeout"; kill "$bpid" 2>/dev/null ) >/dev/null 2>&1 & local kpid=$!
+      wait "$bpid" 2>/dev/null || true; kill "$kpid" 2>/dev/null || true
+      # Browse lines: "<ts> Add <flags> <if> <domain> <type> <instanceName>". Collect unique instance
+      # names, then fan out one resolve per name into its own temp file, all at once.
+      local svcname lk; local -a _lpids=() _lfiles=() _lnames=()
+      while IFS= read -r line; do
+        case "$line" in *" Add "*) ;; *) continue ;; esac
+        svcname="$(printf '%s' "$line" | sed -n 's/.*'"$bonjour_type"'\.[[:space:]]*\(.*\)$/\1/p')"
+        [ -n "$svcname" ] || continue
+        case " ${_lnames[*]:-} " in *" $svcname "*) continue ;; esac   # dedup browse repeats
+        lk="$(mktemp "${TMPDIR:-/tmp}/rp-lk.XXXXXX")"
+        ( dns-sd -t "$resolve_to" -L "$svcname" "$bonjour_type" >"$lk" 2>/dev/null ) & local _p=$!
+        ( sleep "$resolve_to"; kill "$_p" 2>/dev/null ) >/dev/null 2>&1 &
+        _lpids+=("$_p"); _lfiles+=("$lk"); _lnames+=("$svcname")
+      done < "$browse"
+      rm -f "$browse"
+      # Barrier: wait for every parallel resolve to finish (or be killed), then parse each TXT.
+      local _i
+      for _i in "${!_lpids[@]}"; do wait "${_lpids[$_i]}" 2>/dev/null || true; done
+      for _i in "${!_lfiles[@]}"; do
+        lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
+        # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
+        local txt hn fp role addr
+        txt="$(cat "$lk" 2>/dev/null)"
+        addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
+        hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
+        fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
+        role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
+        [ -n "$hn" ] || hn="$svcname"
+        [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
+        rm -f "$lk"
+      done
     done
   fi
 
@@ -1299,25 +1498,22 @@ cmd_install_host() {
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
   local target="$host"; [ -n "$account" ] && target="$account@$host"
 
-  # SSH with NO controlling TTY (stdin </dev/null) so SSH_ASKPASS_REQUIRE=force routes any password
-  # prompt to the helper (C5), never the terminal.
+  # SSH with NO controlling TTY (stdin </dev/null). The onboarding's primary path is key-auth only:
+  # do not invoke askpass unless a caller explicitly supplied the one-shot password pipe.
   local askpass; askpass="$(rp_askpass_path)"
   local SSHENV=()
-  if [ -n "$askpass" ]; then
+  if [ -n "${RP_ASKPASS_FD:-}" ] && [ -n "$askpass" ]; then
     SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0")
-    # The onboarding hands us the account password on an inherited pipe FD (RP_ASKPASS_FD) so the
-    # askpass helper reads it from the pipe (Path 1) instead of popping a SEPARATE GUI dialog — the
-    # password is collected INSIDE the onboarding window. Propagate the FD number through
-    # env → ssh → askpass (the descriptor itself is inherited, never re-opened or written to disk).
-    [ -n "${RP_ASKPASS_FD:-}" ] && SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
+    # Legacy/password-assisted callers hand us the account password on an inherited pipe FD so the
+    # askpass helper reads it from the pipe. The descriptor itself is inherited, never re-opened or
+    # written to disk.
+    SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
   fi
-  # Multiplex the WHOLE install over ONE SSH connection: authenticate once (by key, or the password
-  # read a SINGLE time from the pipe), then reuse the master for every rm/scp/install.sh. This makes
-  # a one-shot password pipe sufficient (no repeated prompt → no half-installed dead-end) and is
-  # faster. A unique ControlPath avoids colliding with any stale mux socket; it is torn down on
-  # return. StrictHostKeyChecking=accept-new because the host key was already confirmed (TOFU) in the
-  # onboarding fingerprint step — so a first connect never blocks on an interactive host-key prompt
-  # (which, with askpass forced, would otherwise hang a GUI dialog and fail the install).
+  # Multiplex the WHOLE install over ONE SSH connection: authenticate once, then reuse the master
+  # for every rm/scp/install.sh. Key-auth failures now return to onboarding recovery instead of
+  # falling back to a GUI password prompt. A unique ControlPath avoids colliding with any stale mux
+  # socket; it is torn down on return. StrictHostKeyChecking=accept-new because the host key was
+  # already confirmed (TOFU) in the onboarding fingerprint step.
   local RP_CM; RP_CM="$(mktemp -u "${TMPDIR:-/tmp}/rp-cm-XXXXXX")"
   local RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
                     -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
@@ -1386,8 +1582,8 @@ cmd_install_host() {
     fi
   fi
 
-  # Authorize the client's key on the host over the SAME askpass (password) SSH
-  # connection — for BOTH the fresh-install AND the already-installed paths. This is
+  # Authorize the client's key on the host over the SAME SSH master connection — for BOTH the
+  # fresh-install AND the already-installed paths. This is
   # what REPLACES PIN pairing: a host that is already running but has never seen this
   # client's key must still authorize it (the old PIN scenario). Without this,
   # BatchMode=yes (key-only) calls below — and every later editor/desktop/notify call
@@ -1396,7 +1592,7 @@ cmd_install_host() {
   local pubpath; pubpath="$(rp_ssh_pubkey)" || { err "could not resolve client pubkey"; return 1; }
   local pubdata; pubdata="$(cat "$pubpath" 2>/dev/null)"
   [ -n "$pubdata" ] || { err "empty client pubkey: $pubpath"; return 1; }
-  c "authorizing client key on $target (over the password connection) …"
+  c "authorizing client key on $target (over the setup connection) …"
   # ssh-copy-id-style append: idempotent (grep -qxF guard), correct perms. Rides the
   # SAME multiplexed master (RP_SSHOPTS/SSHENV) the connection authenticated — so no
   # re-auth, no separate password prompt, no host-key prompt. The pubkey is piped
@@ -1406,6 +1602,20 @@ cmd_install_host() {
   printf '%s\n' "$pubdata" | "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "$rp_authcmd" \
     || { err "failed to authorize client key on $target"; return 1; }
   ok "client key authorized on $target"
+
+  # Persist a managed SSH config block for future key-auth connections. This is deliberately after
+  # authorization: a written config should mean the host accepts the pinned client key.
+  local cfg_user; cfg_user="$account"
+  if [ -z "$cfg_user" ]; then
+    cfg_user="$(_rp_ssh -o BatchMode=yes "$target" 'id -un 2>/dev/null || whoami' 2>/dev/null | tr -d '\r' || true)"
+  fi
+  if [ -n "$cfg_user" ]; then
+    rp_ssh_config_write "$host" "$host" "$cfg_user" "$HOME/.ssh/id_ed25519" \
+      && ok "managed SSH config updated for $host" \
+      || warn "managed SSH config update failed for $host"
+  else
+    warn "could not determine host user; managed SSH config was not updated"
+  fi
 
   # Persist the host so the extension/CLI (which read client.env) find a configured
   # host after onboarding — mirrors the pair path's rp_set REMOTE_HOST.
@@ -1427,7 +1637,7 @@ cmd_install_host() {
 # the app's tick loop) and emit {alive,ax,sr,fda} as JSON. The onboarding's post-install step polls
 # this to show whether the user has granted Accessibility / Screen Recording / Full Disk Access on
 # the host's own screen (macOS forbids granting these remotely). Key auth only + bounded + anti-hang
-# so it never prompts: TOFU + any password already happened at install.
+# so it never prompts: TOFU + key auth already happened at install.
 cmd_host_permissions() {
   local host="${REMOTE_HOST:-}"
   while [ $# -gt 0 ]; do case "$1" in
@@ -1495,7 +1705,7 @@ cmd_notify() {
   [ -n "$REMOTE_HOST" ] || { warn "no REMOTE_HOST configured — notify pulls from the host ('xpair config set host <ssh-host>')"; return 0; }
 
   # Local ENABLED_TYPES filter (mirror xpair-notify.sh parsing). Default: all on.
-  local enabled="Stop,Notification,SubagentStop,approve"
+  local enabled="Stop,Notification,SubagentStop,approve-wait,approve"
   local conf="$RP_DIR/notify.conf"
   if [ -f "$conf" ]; then
     local v; v="$(sed -n 's/^[[:space:]]*ENABLED_TYPES[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' "$conf" | tail -1)"
@@ -1647,6 +1857,7 @@ case "${1:-help}" in
   map)     shift; cmd_map "$@" ;;
   roots)   shift; cmd_map "$@" ;;     # legacy alias
   config)  shift; cmd_config "$@" ;;
+  mode)    shift; cmd_mode "$@" ;;
   onboard) cmd_onboard ;;
   open-gui) shift; cmd_open_gui "$@" ;;
   discover) shift; cmd_discover "$@" ;;
@@ -1663,6 +1874,6 @@ case "${1:-help}" in
   self-update) shift; cmd_self_update "$@" ;;
   update)  shift; cmd_update "$@" ;;
   host)    cmd_host ;;
-  help|-h|--help) sed -n '3,29p' "$0" ;;
-  *) echo "unknown command: $1" >&2; sed -n '3,29p' "$0"; exit 2 ;;
+  help|-h|--help) sed -n '3,32p' "$0" ;;
+  *) echo "unknown command: $1" >&2; sed -n '3,32p' "$0"; exit 2 ;;
 esac

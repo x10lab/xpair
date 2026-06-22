@@ -35,12 +35,16 @@ test("Q0183 Q0443 Q0473 permission steps are separated, retryable, and gate prog
   assert.match(permissions, /key: "sr"[\s\S]*name: "Screen Recording \(required\)"/);
   assert.match(permissions, /key: "fda"[\s\S]*name: "Full Disk Access \(recommended\)"/);
   assert.match(permissions, /const s = await window\.xpair\.getStatus\(\);/);
-  assert.match(permissions, /ax: s\.ax \? "granted" : cur\.ax/);
-  assert.match(permissions, /sr: s\.sr \? "granted" : cur\.sr/);
+  assert.match(permissions, /if \(current === "opening"\) return "retry"/);
+  assert.match(permissions, /ax: nextStatus\(s\.ax, cur\.ax\)/);
+  assert.match(permissions, /sr: nextStatus\(s\.sr, cur\.sr\)/);
+  assert.match(permissions, /fda: nextStatus\(s\.fda, cur\.fda\)/);
   assert.match(
     permissions,
-    /window\.xpair\.requestPermission\(r\.key\);[\s\S]*window\.xpair\.openPermissionPane\(r\.key\);[\s\S]*setState\(\{ \.\.\.state, \[r\.key\]: "opening" \}\);/,
+    /window\.xpair\.requestPermission\(r\.key\);[\s\S]*window\.xpair\.openPermissionPane\(r\.key\);[\s\S]*setState\(\{ \.\.\.stateRef\.current, \[r\.key\]: "opening" \}\);/,
   );
+  assert.match(permissions, /setState\(\{ \.\.\.stateRef\.current, \[r\.key\]: "failed" \}\);/);
+  assert.doesNotMatch(permissions, /disabled=\{status === "opening"\}/);
 
   assert.match(
     appDelegate,

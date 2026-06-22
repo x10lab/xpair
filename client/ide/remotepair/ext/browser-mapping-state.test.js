@@ -61,7 +61,7 @@ test("Q0398 Browser UI reflects FOLDER_MAPS and does not add roots on mount/map 
   const reconcileCall = addRoot.indexOf("reconcileBrowserRoots();");
   assert.ok(mountFailure !== -1 && mountFailure < reconcileCall, "mount failure must return before adding a Browser root");
   assert.ok(mapFailure !== -1 && mapFailure < reconcileCall, "map failure must return before adding a Browser root");
-  assert.match(addRoot.slice(mountFailure, mapFailure), /showErrorMessage\(`Xpair: 'xpair mount \$\{host\}' failed\./);
+  assert.match(addRoot.slice(mountFailure, mapFailure), /showErrorMessage\(`Xpair: 'xpair mount mount \$\{host\}' failed\./);
   assert.match(addRoot.slice(mapFailure, reconcileCall), /showErrorMessage\(`Xpair: mounted at \$\{mountpoint\} but registering the folder map failed\.`/);
 
   assert.match(frontendPatch, /No mapped folders yet\.[\s\S]*command:remotepair\.browser\.addRoot/);

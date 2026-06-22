@@ -17,14 +17,21 @@ function check(name, fn) {
   }
 }
 
-check("Q0183 Q0261 Q0474 Connect opens a new SSH remote window and continues into Xpair status surfaces", () => {
+check("Q0183 Q0261 Q0474 Connect routes host selection through Xpair surfaces", () => {
   assert.ok(pkg.contributes.commands.some((cmd) => cmd.command === "remotepair.connectHost"));
-  assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.connectHost", \(\) => connectHost\(\)\)/);
+  assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.connectHost", \(\) => connectHost\(panel\)\)/);
 
-  assert.match(extension, /async function _doConnectHost\(host\) \{[\s\S]+scheme: "vscode-remote"[\s\S]+authority: `ssh-remote\+\$\{host\}`/);
-  assert.match(extension, /await vscode\.commands\.executeCommand\("vscode\.openFolder", uri, \{ forceNewWindow: true \}\);/);
-  assert.match(extension, /detail: `Connect to \$\{host\} via Open Remote - SSH`/);
-  assert.match(extension, /await _doConnectHost\(picked\.host\);/);
+  assert.match(extension, /async function _doConnectHost\(host, panel\) \{[\s\S]+sshRun\(host, "true", \{ timeoutMs: 6000 \}\)/);
+  assert.match(extension, /let clientDirs = reconcileBrowserRoots\(\);/);
+  assert.match(extension, /vscode\.commands\.executeCommand\("remotepair\.terminalSidebar"\)/);
+  assert.match(extension, /vscode\.commands\.executeCommand\("remotepair\.sessions\.attached\.view\.focus", \{ preserveFocus: true \}\)/);
+  assert.match(extension, /if \(clientDirs\.length === 0\) \{[\s\S]+vscode\.commands\.executeCommand\("workbench\.view\.explorer"\)[\s\S]+await addRoot\(\);/);
+  assert.match(extension, /launchRemoteClaude\(\);/);
+  assert.match(extension, /await panel\.reveal\(\);[\s\S]+panel\.refresh\(\);/);
+  assert.match(extension, /detail: `Recover Xpair connection, mappings, sessions, and RD for \$\{host\}`/);
+  assert.match(extension, /await _doConnectHost\(picked\.host, panel\);/);
+  assert.doesNotMatch(extension, /vscode\.openFolder/);
+  assert.doesNotMatch(extension, /openremotessh\.openEmptyWindow/);
 
   assert.match(extension, /let hostReachable = null;/);
   assert.match(extension, /const probeHost = async \(\) => \{[\s\S]+const r = await sshRun\(host, "true", \{ timeoutMs: 6000 \}\);[\s\S]+hostReachable = ok;[\s\S]+renderHostButton\(\);/);

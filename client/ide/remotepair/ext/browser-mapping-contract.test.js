@@ -28,8 +28,12 @@ test("Browser shows mapped roots and only offers Add Root/Add Mapping flow from 
   assert.match(extension, /vscode\.commands\.executeCommand\("workbench\.view\.explorer"\)/);
 
   assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.browser\.addRoot"/);
-  assert.match(extension, /title: "Xpair — Add Root \(mount a host folder\)"/);
-  assert.match(extension, /runXpairCli\(\["mount", host\]/);
+  // The mount-first add-root flow is implemented by addRoot(). Per the ratified Track C
+  // contract (see folder-mapping-q0041.test.js and browser-mapping-state.test.js) the
+  // input box is titled "Xpair — Add Mapping" and the CLI is invoked with the explicit
+  // xpair-mount action form runXpairCli(["mount", "mount", host]).
+  assert.match(extension, /title: "Xpair — Add Mapping"/);
+  assert.match(extension, /runXpairCli\(\["mount", "mount", host\]/);
   assert.match(extension, /runXpairCli\(\["map", "add", mountpoint, host\]/);
   assert.match(extension, /reconcileBrowserRoots\(\)/);
 

@@ -151,15 +151,29 @@ export function FingerprintPanel({
   fp: string | null;
   firstTime?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
     <div className="mt-5 w-full rounded-xl border border-border bg-muted/30 p-3.5 text-left">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-        <Lock className="h-3.5 w-3.5" />
-        Host key fingerprint
-      </div>
-      <div className="mt-1.5 break-all font-mono text-[12.5px] leading-relaxed text-foreground">
-        {fp || "fetching…"}
-      </div>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <Lock className="h-3.5 w-3.5" />
+          Host key fingerprint
+        </span>
+        <span className="text-[11px] font-medium text-primary">
+          {expanded ? "Hide" : "Show"}
+        </span>
+      </button>
+      {expanded && (
+        <div className="mt-1.5 break-all font-mono text-[12.5px] leading-relaxed text-foreground">
+          {fp || "fetching…"}
+        </div>
+      )}
       <div className="mt-2 text-[11.5px] text-muted-foreground">
         {firstTime
           ? `First time connecting — confirm this is the right Mac.`

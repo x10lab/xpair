@@ -21,30 +21,33 @@ function test(name, fn) {
   }
 }
 
-function hasInputEventCapture(source) {
+function hasRemoteInputEventCapture(source) {
   return /(?:window|document|video|stage)\.addEventListener\(\s*["'](?:pointerdown|pointerup|mousedown|mouseup|click|keydown|keyup|wheel)/.test(
     source,
   );
 }
 
 function hasRemoteInputSend(source) {
-  return /(?:postMessage|\.send)\([^)]*(?:rdInput|remoteInput|input|pointer|mouse|click|key|wheel)/is.test(source);
+  return /(?:postMessage|\.send)\([^)]*(?:rdInput|remoteInput|pointer|mouse|click|key|wheel|\bt:\s*["'](?:c|m|k|x)["'])/is.test(source);
 }
 
 // §1.9 Q0346/Q0438/Q0474: Remote Desktop is a core Client IDE surface and user
-// operations such as clicking the host must travel over the RD path, then the
-// viewer remains on the latest host frame.
-test("Q0346/Q0438/Q0474 RD auto-opens and forwards host input", () => {
+// operations such as clicking or typing into the RD surface must not travel to
+// the host. The viewer remains a display-only stream of the latest host frame.
+test("Q0346/Q0438/Q0474 RD auto-opens as a view-only surface", () => {
   assert.match(manifest, /"command":\s*"remotepair\.openRemoteDesktop"/);
   assert.match(extension, /panel\.reveal\(\)\.catch/);
   assert.match(extension, /registerCommand\("remotepair\.remoteDesktop\.refresh",\s*\(\) => panel\.refresh\(\)\)/);
+  assert.match(webview, /pc\.addTransceiver\("video", \{ direction: "recvonly" \}\)/);
+  assert.match(webview, /pc\.ondatachannel = function[\s\S]*channel\.close\(\)/);
+  assert.doesNotMatch(webview, /createDataChannel\(/);
   assert.ok(
-    hasInputEventCapture(webview),
-    "remote-desktop.js must listen for pointer/keyboard/wheel events on the RD surface",
+    !hasRemoteInputEventCapture(webview),
+    "remote-desktop.js must not capture pointer/keyboard/wheel events on the RD surface",
   );
   assert.ok(
-    hasRemoteInputSend(webview) || hasRemoteInputSend(extension),
-    "RD input events must be forwarded to the host over the remote path",
+    !hasRemoteInputSend(webview) && !hasRemoteInputSend(extension),
+    "RD input events must not be forwarded to the host over the remote path",
   );
 });
 
