@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { WizardShell } from "@/components/onboarding/WizardShell";
 import { AnimatedStep } from "@/components/onboarding/AnimatedStep";
 import { useWizard } from "@/components/onboarding/useWizard";
@@ -75,7 +75,10 @@ const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([
 ]);
 // Per-host app readiness, checked on the Connect/Reconnect step. null = not yet checked.
 type HostAppState =
-  | { installed: boolean; version: string; compatible: boolean; err: string }
+  | { target: string; installed: boolean; version: string; compatible: boolean; err: string }
+  | null;
+type HostPermState =
+  | { target: string; alive: boolean; ax: boolean; sr: boolean; fda: boolean; err: string }
   | null;
 
 export default function App() {
@@ -160,19 +163,26 @@ export default function App() {
   // setup path INSTALLS the app on the Installing step, so it must not be blocked for "not installed".
   const [hostApp, setHostApp] = useState<HostAppState>(null);
   const [hostAppChecking, setHostAppChecking] = useState(false);
+  const hostAppProbeId = useRef(0);
+  const [hostPerms, setHostPerms] = useState<HostPermState>(null);
+  const [hostPermChecking, setHostPermChecking] = useState(false);
   const checkHostApp = useCallback(async (target: string) => {
+    const probeId = ++hostAppProbeId.current;
     if (!target) {
-      setHostApp({ installed: false, version: "", compatible: false, err: "no host" });
+      setHostAppChecking(false);
+      setHostApp({ target, installed: false, version: "", compatible: false, err: "no host" });
       return;
     }
     setHostAppChecking(true);
     try {
       const r = await window.remotepair.hostAppStatus(target);
-      setHostApp(r);
+      if (hostAppProbeId.current === probeId) setHostApp({ target, ...r });
     } catch (e) {
-      setHostApp({ installed: false, version: "", compatible: false, err: String(e) });
+      if (hostAppProbeId.current === probeId) {
+        setHostApp({ target, installed: false, version: "", compatible: false, err: String(e) });
+      }
     } finally {
-      setHostAppChecking(false);
+      if (hostAppProbeId.current === probeId) setHostAppChecking(false);
     }
   }, []);
 
@@ -223,6 +233,10 @@ export default function App() {
       setPeer(p);
       setHost(p.status === "connect" ? p.target || p.addrs?.[0] || p.name || "" : "");
       setConnState("idle");
+      hostAppProbeId.current += 1;
+      setHostApp(null);
+      setHostAppChecking(false);
+      setHostPerms(null);
       setInstallState("idle");
       setReconnectReady(false);
       setLive("idle");
@@ -234,6 +248,10 @@ export default function App() {
   const onManual = useCallback(() => {
     setManual(true);
     setPeer(null);
+    hostAppProbeId.current += 1;
+    setHostApp(null);
+    setHostAppChecking(false);
+    setHostPerms(null);
     w.goTo(S.CONNECT, "next");
   }, [w]);
 
@@ -281,7 +299,18 @@ export default function App() {
   const requiresHostApp = w.index === S.CONNECT && !isSetup;
   const hostAppReady =
     !requiresHostApp ||
-    (!!hostApp && hostApp.installed && hostApp.compatible);
+    (!!hostApp &&
+      hostApp.target === connectTarget &&
+      hostApp.installed &&
+      hostApp.compatible);
+  const requiresHostPerms = w.index === S.CONNECT && !isSetup;
+  const hostPermReady =
+    !requiresHostPerms ||
+    (!!hostPerms &&
+      hostPerms.target === connectTarget &&
+      hostPerms.alive &&
+      hostPerms.ax &&
+      hostPerms.sr);
 
   // Once reachable on a non-setup path, probe the host app exactly once per (target, reachable) edge.
   useEffect(() => {
@@ -289,19 +318,61 @@ export default function App() {
       void checkHostApp(connectTarget);
     } else if (!requiresHostApp || !reachReady) {
       // Leaving the gate (path change / no longer reachable) clears stale host-app state.
+      hostAppProbeId.current += 1;
       setHostApp(null);
+      setHostAppChecking(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
 
-  const connectReady = reachReady && hostAppReady;
+  // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
+  // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
+  useEffect(() => {
+    if (!requiresHostPerms || !reachReady || !hostAppReady || !connectTarget) {
+      setHostPerms(null);
+      setHostPermChecking(false);
+      return;
+    }
+
+    let alive = true;
+    const poll = async () => {
+      setHostPermChecking(true);
+      try {
+        const r = await window.remotepair.hostPermissions({ host: connectTarget });
+        if (alive) setHostPerms({ target: connectTarget, ...r });
+      } catch (e) {
+        if (alive) {
+          setHostPerms({
+            target: connectTarget,
+            alive: false,
+            ax: false,
+            sr: false,
+            fda: false,
+            err: String(e),
+          });
+        }
+      } finally {
+        if (alive) setHostPermChecking(false);
+      }
+    };
+
+    void poll();
+    const id = window.setInterval(poll, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [requiresHostPerms, reachReady, hostAppReady, connectTarget]);
+
+  const connectReady = reachReady && hostAppReady && hostPermReady;
   // CLI hard gate — ONLY on the CLI-dependent steps, and ONLY when the CLI isn't ready yet. On the
   // CLI-free intro/setup steps the install runs in the background and never blocks Next.
   const cliGateActive = CLI_DEPENDENT_STEPS.has(w.index) && cliMissing;
   const nextDisabled =
     cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
-    (w.index === S.CONNECT && (!connectReady || hostAppChecking)) ||
+    (w.index === S.CONNECT &&
+      (!connectReady || hostAppChecking || (hostPermChecking && !hostPermReady))) ||
     (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
     (w.index === S.ENGINE && !engineReady); // wait until the engine is installed + authed on the host
   // Folder mappings are OPTIONAL — you can attach to a host for screen share / terminal without
@@ -381,6 +452,13 @@ export default function App() {
             {!hostApp.installed
               ? "Host has no Xpair host app — install it on the host."
               : hostApp.err || "Host version is incompatible with this client."}
+          </p>
+        ) : requiresHostPerms && reachReady && hostAppReady && !hostPermReady ? (
+          <p className="truncate text-center text-xs text-destructive">
+            {hostPermChecking
+              ? "Checking host permissions…"
+              : hostPerms?.err ||
+                "Grant Accessibility and Screen Recording on the host to continue."}
           </p>
         ) : w.index === S.ENGINE && !engineReady ? (
           <p className="truncate text-center text-xs text-muted-foreground">
