@@ -274,7 +274,10 @@ export function StepConnect({ host, setHost, state, setState }: Props) {
                 : err || "SSH probe failed."}
             </span>
           </p>
-          <div className="mt-3 pl-7">
+          <div className="mt-3 space-y-2 pl-7">
+            <p className="text-xs text-muted-foreground">
+              Use local LAN IP, hostname, or another reachable SSH host, then check again.
+            </p>
             <Button size="sm" variant="outline" onClick={check}>
               Retry
             </Button>
