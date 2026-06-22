@@ -801,7 +801,10 @@ function launchRemoteClaude() {
     // If the exact subcommand differs on your setup, edit before pressing Enter.
     term.sendText("xpair launch", false);
   } catch (e) {
-    log(`launchRemoteClaude: ${e && e.message ? e.message : e}`);
+    const detail = redact((e && e.message ? e.message : e) || "unknown error");
+    log(`launchRemoteClaude: ${detail}`, "error");
+    vscode.window.showErrorMessage(`Xpair: failed to open a terminal for 'xpair launch'. ${detail}`);
+    return;
   }
   vscode.window.showInformationMessage(
     "Xpair: review 'xpair launch' in the terminal and press Enter to open " +
@@ -825,7 +828,10 @@ function setupFileAccess() {
     // interactive wizard (it prompts for host / mapping / backend).
     term.sendText("xpair onboard", false);
   } catch (e) {
-    log(`setupFileAccess: ${e && e.message ? e.message : e}`);
+    const detail = redact((e && e.message ? e.message : e) || "unknown error");
+    log(`setupFileAccess: ${detail}`, "error");
+    vscode.window.showErrorMessage(`Xpair: failed to open a terminal for 'xpair onboard'. ${detail}`);
+    return;
   }
   vscode.window.showInformationMessage(
     "Xpair: review 'xpair onboard' in the terminal and press Enter to " +
@@ -1213,7 +1219,11 @@ async function showLogs() {
       // Staged with auto-execute: a read-only collect is safe to run on Enter.
       term.sendText("xpair logs --collect", true);
     } catch (e) {
-      log(`showLogs: collect terminal failed: ${e && e.message ? e.message : e}`, "error");
+      const detail = redact((e && e.message ? e.message : e) || "unknown error");
+      log(`showLogs: collect terminal failed: ${detail}`, "error");
+      vscode.window.showErrorMessage(
+        `Xpair: failed to open a terminal for log collection. ${detail}`
+      );
     }
   }
 }
