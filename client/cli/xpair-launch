@@ -343,6 +343,27 @@ sync_claude_local() {
 # ── tmux-aqua helper (local) ──
 tm_local() { "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" "$@"; }
 
+local_host_role_expected() {
+  local _role; _role="$(cat "$RP_DIR/role" 2>/dev/null | tr -d '[:space:]')"
+  case "$_role" in
+    host|both) return 0 ;;
+    client)    return 1 ;;
+    *)         [ -f "$RP_DIR/host.env" ] && [ "$(hostname -s)" = "${REMOTE_HOST:-$(hostname -s)}" ] ;;
+  esac
+}
+
+host_setup_recovery_local() {
+  local why="${1:-XpairHost tmux-aqua is not ready}"
+  printf '\nXpairHost setup is required before this host session can start.\n' >&2
+  printf 'Reason: %s\n' "$why" >&2
+  printf 'Recovery on %s:\n' "$LOCAL_HOST" >&2
+  printf '  1. Open %s.app on the host Mac.\n' "$APP_NAME" >&2
+  printf '  2. From the menu bar, choose Set up... or Permissions...\n' >&2
+  printf '  3. Grant Accessibility and Screen Recording, then retry xpair launch.\n' >&2
+  printf 'Diagnostics: tmux-aqua=%s socket=%s\n' "$LOCAL_BIN/tmux-aqua" "$AQUA_SOCK" >&2
+  exit 13
+}
+
 # _local_next_n PROJ_BASE — echo "N state" (best-effort; no die on absence)
 # state: "new" | "reattach" | "fresh"
 _local_next_n() {
@@ -384,12 +405,8 @@ ensure_local_host() {
   # routed locally, then got reaped by host churn). The role marker is the SSOT; old installs
   # (no marker) fall back to host.env + (remote unset, or this machine IS that remote) — guards against
   # a 'both' regression.
-  local _role; _role="$(cat "$RP_DIR/role" 2>/dev/null | tr -d '[:space:]')"
-  case "$_role" in
-    host|both) [ -f "$RP_DIR/host.env" ] || return 1 ;;
-    client)    return 1 ;;
-    *)         { [ -f "$RP_DIR/host.env" ] && [ "$(hostname -s)" = "${REMOTE_HOST:-$(hostname -s)}" ]; } || return 1 ;;
-  esac
+  local_host_role_expected || return 1
+  [ -f "$RP_DIR/host.env" ] || return 1
   local AQUA="$LOCAL_BIN/tmux-aqua"
   [ -x "$AQUA" ] || return 1
   tm_local has-session 2>/dev/null && return 0
@@ -425,7 +442,8 @@ launch_local() {
     if [ "$NEED_CREATE" = 1 ]; then
       [ -d "$PROJECT_DIR" ] || die "project directory missing: $PROJECT_DIR" 1
       { printf "export CLAUDE_WARP_RC=%q\n" "$SESS"; printf "export CL_CONTINUE=%s\n" "$CONT"; respawn_body; } > "$T"
-      tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T"
+      tm_local new-session -d -s "$SESS" -c "$PROJECT_DIR" "bash $T" \
+        || host_setup_recovery_local "tmux-aqua could not create session $SESS on $AQUA_SOCK"
     fi   # XpairHost subtree → computer-use
     # host-side session-lifecycle log (local==host here; correlation id = session name).
     # Export RP_SESSION so child claude processes stamp the same id in their log lines.
@@ -438,6 +456,9 @@ launch_local() {
     printf '\033]2;%s\007' "$SESS"
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
+  fi
+  if local_host_role_expected; then
+    host_setup_recovery_local "XpairHost tmux-aqua server is not ready on $AQUA_SOCK"
   fi
   # Fallback: plain tmux (no computer-use — machine without XpairHost)
   command -v tmux >/dev/null 2>&1 || die "tmux not found on $LOCAL_HOST. Install it: brew install tmux" 10
@@ -610,13 +631,26 @@ SESSION=${REMOTE_PROJ_Q}
 SOCK="${AQUA_SOCK}"
 TMUXB="${REMOTE_BIN}/tmux-aqua"
 tm() { "\$TMUXB" -S "\$SOCK" "\$@"; }
+host_setup_recovery() {
+  why="\${1:-XpairHost tmux-aqua is not ready}"
+  printf '__XPAIR_HOST_RECOVERY__\n'
+  printf '\nXpairHost setup is required before this remote session can start.\n' >&2
+  printf 'Reason: %s\n' "\$why" >&2
+  printf 'Recovery on %s:\n' "\$(hostname -s)" >&2
+  printf '  1. Open ${APP_NAME}.app on the host Mac.\n' >&2
+  printf '  2. From the menu bar, choose Set up... or Permissions...\n' >&2
+  printf '  3. Grant Accessibility and Screen Recording, then retry xpair launch.\n' >&2
+  printf 'Diagnostics: tmux-aqua=%s socket=%s\n' "\$TMUXB" "\$SOCK" >&2
+  exit 13
+}
 # Ensure ${APP_NAME} host server is running (LaunchAgent normally starts it; start directly if not)
+[ -x "\$TMUXB" ] || host_setup_recovery "tmux-aqua helper is missing or not executable: \$TMUXB"
 if ! tm has-session 2>/dev/null; then
   open -a "${APP_NAME}" 2>/dev/null || /bin/launchctl kickstart "gui/\$(id -u)/${BUNDLE_PREFIX}" 2>/dev/null || true
   for i in 1 2 3 4 5 6 7 8 9 10 11 12; do tm has-session 2>/dev/null && break; sleep 0.5; done
 fi
 if ! tm has-session 2>/dev/null; then
-  printf '⚠ ${APP_NAME} host (${AQUA_SOCK}) not running — check ~/Applications/${APP_NAME}.app\n' >&2; exit 13
+  host_setup_recovery "${APP_NAME} host server is not running on ${AQUA_SOCK}"
 fi
 # Session number (_N) is determined on the client from local tab facts and injected here.
 # If session exists → attach -d take-over; stale client is dropped and its mosh-server exits,
@@ -627,7 +661,8 @@ if tm has-session -t "=\$SESSION" 2>/dev/null; then NEED_CREATE=0; fi
 if [ "\$NEED_CREATE" = 1 ]; then
   T=\$(mktemp -t claude-respawn.XXXXXX)
   { printf "export CLAUDE_WARP_RC=%q\n" "\$SESSION"; printf "export CL_CONTINUE=%s\n" "\$CONT"; printf '%s' "\$RESPAWN_B64" | base64 -d; } > "\$T"
-  tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T"
+  tm new-session -d -x ${COLS} -y ${LINES} -s "\$SESSION" -c ${HOST_DIR_Q} "bash \$T" \
+    || host_setup_recovery "tmux-aqua could not create session \$SESSION on \$SOCK"
 fi
 # host-side session-lifecycle log (correlation id = session name; records which client attached).
 # Use shared logger (shared lock \$LOG_DIR/.xpair.log.lock, coordinated with Swift) if installed;
@@ -651,9 +686,14 @@ EOF
 SSH_RC=0
 SSH_OUT="$(ssh -o BatchMode=yes "$REMOTE_HOST" "$REMOTE_SCRIPT" 2>&1)" || SSH_RC=$?
 # Show setup output to user but strip the marker line
-printf '%s\n' "$SSH_OUT" | grep -v '^__SESSION__:' || true
+printf '%s\n' "$SSH_OUT" | grep -Ev '^(__SESSION__:|__XPAIR_HOST_RECOVERY__$)' || true
 ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | sed 's/^__SESSION__://')"
-[ "$SSH_RC" -ne 0 ] && die "remote setup failed (exit=$SSH_RC)" "$SSH_RC"
+if [ "$SSH_RC" -ne 0 ]; then
+  if printf '%s\n' "$SSH_OUT" | grep -q '^__XPAIR_HOST_RECOVERY__$'; then
+    exit "$SSH_RC"
+  fi
+  die "remote setup failed (exit=$SSH_RC)" "$SSH_RC"
+fi
 [ -z "$ACTUAL_SESSION" ] && die "failed to extract remote session name" 12
 # Export RP_SESSION so any child processes on this side stamp the same correlation id.
 export RP_SESSION="$ACTUAL_SESSION"
