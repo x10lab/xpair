@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # xpair — Xpair single entry-point CLI (client side).
 #
-#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
+#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|shell|opencode>]
 #                              Launch/attach an agent session (remote host/local) for a folder. Prompts to register if unmapped.
 #                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
 #   xpair attach [--local|--remote] <session-name>
@@ -10,7 +10,7 @@
 #   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
 #   xpair config [list|get <key>|set <key> <value>|maps]
-#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|codex|opencode).
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|codex|shell|opencode).
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
@@ -93,7 +93,7 @@ fi
 canonical_engine() {
   case "${1:-}" in
     claude|claudecode|claude-code) printf 'claude' ;;
-    codex|opencode) printf '%s' "$1" ;;
+    codex|shell|opencode) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -332,7 +332,7 @@ cmd_config() {
         host)     printf '%s\n' "$REMOTE_HOST" ;;
         terminal) printf '%s\n' "$TERMINAL_APP" ;;
         engine)   printf '%s\n' "${ENGINE:-claude}" ;;
-        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|codex|opencode
+        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|codex|shell|opencode
       esac
       ;;
     set)
@@ -360,14 +360,14 @@ cmd_config() {
           esac
           ;;
         engine)
-          # Agent engine used by 'xpair launch'. Each engine auto-approves (so none needs the approve
+          # Session engine used by 'xpair launch'. Agent engines auto-approve (so none needs the approve
           # router): claude=--dangerously-skip-permissions, codex=--dangerously-bypass-approvals-and-sandbox,
-          # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT.
+          # opencode=permission:allow config injected via OPENCODE_CONFIG_CONTENT. shell opens the login shell.
           local canon
           if canon="$(canonical_engine "$val")"; then
             rp_set ENGINE "$canon"; ENGINE="$canon"; ok "engine set: $canon"
           else
-            echo "config set engine <claude|claudecode|codex|opencode>" >&2; return 2
+            echo "config set engine <claude|claudecode|codex|shell|opencode>" >&2; return 2
           fi
           ;;
         *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
@@ -592,7 +592,7 @@ cmd_launch() {
   if [ "$engine_explicit" = 1 ]; then
     local canon
     if canon="$(canonical_engine "$engine")"; then engine="$canon"
-    else echo "unknown engine: $engine (use claude|claudecode|codex|opencode)" >&2; return 2
+    else echo "unknown engine: $engine (use claude|claudecode|codex|shell|opencode)" >&2; return 2
     fi
   fi
   dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
