@@ -63,7 +63,7 @@ A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host sta
 - macOS Sequoia or later recommended
 - **Remote Login** enabled on the host (onboarding generates the SSH key and wires the rest)
 - `mosh` on both machines — onboarding installs it via Homebrew; without it, attach falls back to plain SSH (which dies on disconnect)
-- **Host:** Homebrew + git. The engine CLI (`claude` / `codex` / `opencode`) and the host app are installed for you by onboarding — no build needed.
+- **Host:** Homebrew. The engine CLI (`claude` / `codex` / `opencode`) and the host app are installed for you by onboarding — no build, no git needed.
 
 ---
 
@@ -103,7 +103,7 @@ Then pick up the grants: `launchctl kickstart -k gui/$(id -u)/com.x10lab.xpair-h
 
 ### Doing it by hand (CLI only)
 
-Prefer the CLI to the app? The bootstrap script and `xpair install-host` do the same work:
+Prefer the CLI to the app? The bootstrap script and `xpair install-host` do the same work (the bootstrap script needs `git` — it clones the repo for its source):
 
 ```bash
 # Client: CLI + Finder Quick Action (auto-runs `xpair onboard`):
