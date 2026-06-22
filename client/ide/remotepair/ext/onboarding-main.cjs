@@ -158,11 +158,10 @@ function openOnboardingWindow({ electron, onComplete }) {
     try { shell.openExternal(url) } catch { /* */ }
     return { action: 'deny' }
   })
-  // If the user closes the onboarding window WITHOUT completing (traffic-light), don't leave the app
-  // running window-less: fall through to opening the workbench so they still land in the IDE.
+  // If the user closes onboarding WITHOUT completing setup, leave this launch incomplete. The next
+  // launch will show onboarding again because setup has not been marked complete.
   _win.on('closed', () => {
     _win = null
-    if (!_completed) { try { if (typeof onComplete === 'function') onComplete() } catch { /* */ } }
   })
   return _win
 }
