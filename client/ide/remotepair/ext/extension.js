@@ -395,29 +395,20 @@ class RemoteDesktopPanel {
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
   async reveal() {
     if (this.panel) {
-      try {
-        this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
-      } catch (_e) {}
-      this.visible = true;
-      this._startStream();
+      this._revealOwnedPanelAndRestart();
       return;
     }
     // Cross-extension-host dedup: this window runs TWO local extension hosts (a pre-existing
     // workbench quirk), so activate() — and this reveal() — runs twice and would open a SECOND "RD"
     // tab. Editor tabs are renderer-level (visible to every exthost via tabGroups), so if an RD
-    // webview tab already exists we skip creating another. This is the robust fix for the
-    // "RD opens twice" bug (the per-instance singleton + serializer dedup cannot span exthosts).
-    try {
-      for (const g of vscode.window.tabGroups.all) {
-        for (const t of g.tabs) {
-          const vt = t.input && t.input.viewType;
-          if (typeof vt === "string" && vt.indexOf("remotepair.remoteDesktop") !== -1) {
-            log("RD: an RD tab already exists (opened by another extension host) — skipping duplicate creation");
-            return;
-          }
-        }
-      }
-    } catch (_e) {}
+    // webview tab already exists, reveal/adopt it and restart its stream instead of creating a
+    // second tab or leaving a restored RD tab inert.
+    const existingTab = this._findExistingRdTab();
+    if (existingTab) {
+      log("RD: an RD tab already exists (opened by another extension host) — adopting/revealing singleton");
+      const handled = await this._adoptExistingRdTab(existingTab);
+      if (handled) return;
+    }
     const panel = vscode.window.createWebviewPanel(
       "remotepair.remoteDesktop",
       "RD",
@@ -438,6 +429,86 @@ class RemoteDesktopPanel {
     if (this.visible) this._startStream();
   }
 
+  _findExistingRdTab() {
+    try {
+      for (const g of vscode.window.tabGroups.all) {
+        const tabs = g.tabs || [];
+        for (let i = 0; i < tabs.length; i += 1) {
+          const t = tabs[i];
+          const vt = t.input && t.input.viewType;
+          if (typeof vt === "string" && vt.indexOf("remotepair.remoteDesktop") !== -1) {
+            return { group: g, tab: t, index: i };
+          }
+        }
+      }
+    } catch (_e) {}
+    return null;
+  }
+
+  async _adoptExistingRdTab(existing) {
+    await this._revealExistingRdTab(existing);
+    try {
+      await vscode.commands.executeCommand("remotepair.remoteDesktop.refresh");
+    } catch (_e) {}
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (this.panel) {
+      this._revealOwnedPanelAndRestart();
+      return true;
+    }
+    try {
+      const closed = await vscode.window.tabGroups.close(existing.tab, true);
+      if (closed) {
+        log("RD: closed an orphaned existing RD tab so the singleton can be recreated");
+        return false;
+      }
+    } catch (e) {
+      log(`RD: existing RD tab cleanup failed; keeping singleton tab: ${e && e.message ? e.message : e}`);
+    }
+    return true;
+  }
+
+  async _revealExistingRdTab(existing) {
+    const group = existing && existing.group;
+    const oneBasedIndex = (existing && existing.index !== undefined ? existing.index : 0) + 1;
+    try {
+      if (group && !group.isActive) {
+        const names = {
+          1: "First",
+          2: "Second",
+          3: "Third",
+          4: "Fourth",
+          5: "Fifth",
+          6: "Sixth",
+          7: "Seventh",
+          8: "Eighth",
+        };
+        const name = names[group.viewColumn];
+        if (name) {
+          await vscode.commands.executeCommand(`workbench.action.focus${name}EditorGroup`);
+        }
+      }
+    } catch (_e) {}
+    try {
+      await vscode.commands.executeCommand("workbench.action.openEditorAtIndex", [oneBasedIndex]);
+      return;
+    } catch (_e) {}
+    if (oneBasedIndex >= 1 && oneBasedIndex <= 9) {
+      try {
+        await vscode.commands.executeCommand(`workbench.action.openEditorAtIndex${oneBasedIndex}`);
+      } catch (_e) {}
+    }
+  }
+
+  _revealOwnedPanelAndRestart() {
+    if (!this.panel) return;
+    try {
+      this.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active, false);
+    } catch (_e) {}
+    this.visible = true;
+    this._stopAll();
+    this._startStream();
+  }
+
   /** Adopt a webview panel (freshly created OR restored by VSCode across a reload) as THE single
    *  RD panel. If a singleton already exists, the incoming one is a restore-duplicate → dispose it
    *  so there is never a second "RD" tab. This is the fix for the pre-existing "RD opens twice"
@@ -445,8 +516,17 @@ class RemoteDesktopPanel {
    *  creates a new one. The serializer (registered in activate) routes restores through here. */
   _adopt(panel) {
     if (this.panel && this.panel !== panel) {
-      try { panel.dispose(); } catch (_e) {}
-      return;
+      try {
+        panel.dispose();
+        this._revealOwnedPanelAndRestart();
+        return;
+      } catch (e) {
+        log(`RD: duplicate RD cleanup failed; adopting incoming panel: ${e && e.message ? e.message : e}`);
+        const previous = this.panel;
+        this.panel = null;
+        this._stopAll();
+        try { previous.dispose(); } catch (_e) {}
+      }
     }
     this.panel = panel;
     try {
@@ -455,7 +535,7 @@ class RemoteDesktopPanel {
     panel.webview.html = this.getHtml(panel.webview);
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
     panel.onDidChangeViewState(() => {
-      if (!this.panel) return;
+      if (this.panel !== panel) return;
       if (panel.visible) {
         this.visible = true;
         this._startStream();
@@ -465,6 +545,7 @@ class RemoteDesktopPanel {
       }
     });
     panel.onDidDispose(() => {
+      if (this.panel !== panel) return;
       this.visible = false;
       this._stopAll();
       this.panel = null;
