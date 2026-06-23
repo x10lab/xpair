@@ -1,3 +1,17 @@
+diff --git a/src/vs/workbench/electron-browser/desktop.contribution.ts b/src/vs/workbench/electron-browser/desktop.contribution.ts
+index be899620..be899621 100644
+--- a/src/vs/workbench/electron-browser/desktop.contribution.ts
++++ b/src/vs/workbench/electron-browser/desktop.contribution.ts
+@@ -164,7 +164,8 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
+ 			'properties': {
+ 				'window.confirmSaveUntitledWorkspace': {
+ 					'type': 'boolean',
+-					'default': true,
++					// Xpair: the client builds an untitled multi-root workspace via updateWorkspaceFolders, so VSCode otherwise prompts "save your workspace configuration as a file?" on every close. Default off → always discard the untitled workspace, no prompt.
++					'default': false,
+ 					'description': localize('confirmSaveUntitledWorkspace', "Controls whether a confirmation dialog shows asking to save or discard an opened untitled workspace in the window when switching to another workspace. Disabling the confirmation dialog will always discard the untitled workspace."),
+ 				},
+ 				'window.openWithoutArgumentsInNewWindow': {
 diff --git a/src/vs/workbench/browser/layout.ts b/src/vs/workbench/browser/layout.ts
 index 3480283a..edd00a3d 100644
 --- a/src/vs/workbench/browser/layout.ts
@@ -2536,7 +2550,7 @@ new file mode 100644
 index 0000000..6e5d586
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionManager.ts
-@@ -0,0 +1,618 @@
+@@ -0,0 +1,689 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: bottom-panel session tabs. Three Panel view containers — Attached / Detached /
 + *  History — each surfaced as a horizontal TAB in the bottom-panel composite bar (exactly like
@@ -2558,12 +2572,13 @@ index 0000000..6e5d586
 +import { localize, localize2 } from '../../../../nls.js';
 +import { $, append, clearNode, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
 +import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
-+import { KeyCode } from '../../../../base/common/keyCodes.js';
++import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 +import { Emitter, Event } from '../../../../base/common/event.js';
 +import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 +import { DisposableStore } from '../../../../base/common/lifecycle.js';
 +import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
-+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 +import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 +import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 +import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -3155,6 +3170,76 @@ index 0000000..6e5d586
 +registerSessionTab(REMOTEPAIR_SESSIONS_ATTACHED_ID, localize2('remotepairAttached', "Attached"), 1, RemotePairAttachedSessionsView);
 +registerSessionTab(REMOTEPAIR_SESSIONS_DETACHED_ID, localize2('remotepairDetached', "Detached"), 2, RemotePairDetachedSessionsView);
 +registerSessionTab(REMOTEPAIR_SESSIONS_HISTORY_ID, localize2('remotepairHistory', "History"), 3, RemotePairHistorySessionsView);
++
++// --- Ctrl+Tab: cycle Xpair sessions (override the native editor-tab switch) ------------------
++//
++// Xpair owns the IDE: there is no user-facing native editor-tab strip (RD / Welcome) to switch
++// between — the only meaningful "tabs" are the attached Xpair session terminals living in the
++// Sessions sidebar's embedded EditorPart. So Ctrl+Tab must cycle THOSE, not fire the native
++// `quickOpenPreviousRecentlyUsedEditorInGroup` (Ctrl+Tab) / its Shift sibling.
++//
++// Both source + target are the SAME attached-session set the bottom Sessions "Attached" tab
++// renders (the `attachedProvider` module hook: getAttached()/getActiveId()/reveal()). reveal(id)
++// is exactly the click-a-card path — it opens the session's terminal editor in the embedded
++// group AND focuses its xterm — so "cycle to next session" reuses the proven open/focus path.
++
++/**
++ * Focus/open the next (forward=true) or previous attached Xpair session, wrapping around.
++ * No-ops gracefully when there is no provider or no attached sessions; with a single session it
++ * simply (re)reveals it. Returns true when a reveal was attempted so the keybinding can report
++ * whether it handled the chord (it always claims the chord on the locked product regardless).
++ */
++function cycleAttachedSession(forward: boolean): boolean {
++	const provider = attachedProvider;
++	if (!provider) {
++		return false;
++	}
++	const sessions = provider.getAttached();
++	if (sessions.length === 0) {
++		return false;
++	}
++	if (sessions.length === 1) {
++		provider.reveal(sessions[0].id);
++		return true;
++	}
++	const activeId = provider.getActiveId?.();
++	// When the active session is unknown (focus elsewhere), treat -1 so forward lands on the
++	// first card and backward on the last — a sensible "enter the cycle" entry point.
++	const currentIndex = activeId ? sessions.findIndex(s => s.id === activeId) : -1;
++	const count = sessions.length;
++	const delta = forward ? 1 : -1;
++	const nextIndex = ((currentIndex + delta) % count + count) % count;
++	provider.reveal(sessions[nextIndex].id);
++	return true;
++}
++
++export const REMOTEPAIR_SESSIONS_CYCLE_NEXT_ID = 'remotepair.sessions.cycleNext';
++export const REMOTEPAIR_SESSIONS_CYCLE_PREV_ID = 'remotepair.sessions.cyclePrev';
++
++// Weight WorkbenchContrib + 100 (= 300) outranks the native Ctrl+Tab editor bindings
++// (`quickOpenPreviousRecentlyUsedEditorInGroup`, weight WorkbenchContrib = 200, and the
++// `quickOpenNavigateNext/PreviousInEditorPicker` rules at WorkbenchContrib + 50 = 250). When
++// multiple rules bind the same chord the highest weight wins and the others do NOT fire, so the
++// native editor-tab switch is effectively disabled on Ctrl+Tab / Ctrl+Shift+Tab. We claim the
++// chord globally (no `when`) and match the native binding on every platform: primary
++// CtrlCmd|Tab plus the mac WinCtrl|Tab variant the native rule actually occupies on macOS.
++const REMOTEPAIR_SESSIONS_CYCLE_WEIGHT = KeybindingWeight.WorkbenchContrib + 100;
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: REMOTEPAIR_SESSIONS_CYCLE_NEXT_ID,
++	weight: REMOTEPAIR_SESSIONS_CYCLE_WEIGHT,
++	primary: KeyMod.CtrlCmd | KeyCode.Tab,
++	mac: { primary: KeyMod.WinCtrl | KeyCode.Tab },
++	handler: (_accessor: ServicesAccessor) => { cycleAttachedSession(true); }
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: REMOTEPAIR_SESSIONS_CYCLE_PREV_ID,
++	weight: REMOTEPAIR_SESSIONS_CYCLE_WEIGHT,
++	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Tab,
++	mac: { primary: KeyMod.WinCtrl | KeyMod.Shift | KeyCode.Tab },
++	handler: (_accessor: ServicesAccessor) => { cycleAttachedSession(false); }
++});
 diff --git a/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts b/src/vs/workbench/contrib/terminal/browser/remotePairSessionPicker.ts
 new file mode 100644
 index 00000000..4d355d93
