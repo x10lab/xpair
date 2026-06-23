@@ -1271,7 +1271,7 @@ new file mode 100644
 index 00000000..6887d7cb
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,427 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (G005): top-of-Browser actions and per-folder session creation.
 + *
@@ -2512,7 +2512,7 @@ new file mode 100644
 index 0000000..6e5d586
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionManager.ts
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,622 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: bottom-panel session tabs. Three Panel view containers — Attached / Detached /
 + *  History — each surfaced as a horizontal TAB in the bottom-panel composite bar (exactly like
