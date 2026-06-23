@@ -312,10 +312,12 @@ function sshRun(host, remoteCmd, opts = {}) {
     "StrictHostKeyChecking=accept-new",
     // ControlMaster: reuse ONE persistent connection across frames → faster polling
     // and a single SSH-agent (1Password) authorization instead of one per frame.
+    // pid-scoped ControlPath (see spawnTunnel): a stale socket from a prior session must never
+    // collide with this one (that's what made the RD tunnel exit 255 → "signaling closed 1006").
     "-o",
     "ControlMaster=auto",
     "-o",
-    "ControlPath=/tmp/rp-cm-%C",
+    `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
     "-o",
     "ControlPersist=300",
     host, // validated against HOST_RE; passed as its own argv element
@@ -402,12 +404,18 @@ function spawnTunnel(host, localPort, remotePort) {
   // IS the tunnel and can be killed. ControlMaster=auto reuses the existing authenticated
   // master so there's no new key prompt.
   const rport = remotePort;
+  // ControlPath is SCOPED TO THIS PROCESS (pid). A bare /tmp/rp-cm-%C is keyed only on host/port/user,
+  // so a stale socket left by a PRIOR session (master died but the file lingers — e.g. after a host
+  // reinstall or yesterday's run) collides with today's tunnel: ControlMaster=auto tries the dead
+  // master and ssh exits 255, the tunnel never forms, and RD shows "signaling closed (1006)". Adding
+  // the pid makes the path unique per IDE session, so a stale socket can never break a fresh launch,
+  // while reconnects WITHIN this session still reuse the live master (no re-auth).
   const args = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ControlMaster=auto",
-    "-o", "ControlPath=/tmp/rp-cm-%C",
+    "-o", `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
     "-o", "ControlPersist=300",
     "-N",
     "-L", `${localPort}:127.0.0.1:${rport}`,
