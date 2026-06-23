@@ -198,8 +198,34 @@ async fn handle_session(
             })
         }));
     }
+    // RD keep-awake: hold a `caffeinate -d` child while the peer is connected so the
+    // remote display never sleeps / shows the screensaver / idle-locks — RD always
+    // mirrors a live screen. Released on disconnect/teardown. Pair is 1:1, so a single
+    // child tracks the one active viewer.
+    let caffeinate: Arc<std::sync::Mutex<Option<std::process::Child>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let caffeinate_cb = Arc::clone(&caffeinate);
     pc.on_peer_connection_state_change(Box::new(move |s| {
+        use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
         tracing::info!("serve-webrtc: peer connection state: {s}");
+        if let Ok(mut guard) = caffeinate_cb.lock() {
+            match s {
+                RTCPeerConnectionState::Connected => {
+                    if guard.is_none() {
+                        *guard = Command::new("caffeinate").arg("-d").spawn().ok();
+                    }
+                }
+                RTCPeerConnectionState::Disconnected
+                | RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed => {
+                    if let Some(mut c) = guard.take() {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                }
+                _ => {}
+            }
+        }
         Box::pin(async {})
     }));
 

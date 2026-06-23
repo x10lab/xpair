@@ -234,6 +234,11 @@ fn capture_loop(
     // viewer (re)connects after an idle gap, so `prev_raw` from before the idle
     // period can never suppress the first frame the new viewer needs.
     let mut had_clients = false;
+    // RD keep-awake: while >=1 client is connected, hold a `caffeinate -d` child so the
+    // remote display never sleeps / shows the screensaver / idle-locks — RD always
+    // mirrors a live screen. Released the instant the last client disconnects, so the
+    // Mac sleeps normally when nobody is viewing.
+    let mut caffeinate: Option<std::process::Child> = None;
 
     loop {
         let cycle_start = Instant::now();
@@ -250,6 +255,11 @@ fn capture_loop(
         let have_clients = !clients.lock().unwrap().is_empty();
         if !have_clients {
             had_clients = false;
+            // Last viewer gone: drop keep-awake so the Mac can sleep normally.
+            if let Some(mut c) = caffeinate.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
             thread::sleep(frame_interval);
             continue;
         }
@@ -259,6 +269,13 @@ fn capture_loop(
             prev_raw.clear();
         }
         had_clients = true;
+        // First viewer present: hold display-sleep off for the duration of viewing.
+        if caffeinate.is_none() {
+            caffeinate = std::process::Command::new("caffeinate")
+                .arg("-d")
+                .spawn()
+                .ok();
+        }
 
         match monitor.capture_image() {
             Ok(frame) => {
