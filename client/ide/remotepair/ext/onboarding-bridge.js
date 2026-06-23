@@ -865,7 +865,9 @@ const bridge = {
     const sshArgs = sshProbeOpts(6);
     // One round-trip: print whether the .app dir exists, then the status.json contents.
     const probe =
-      '[ -d "$HOME/Applications/XpairHost.app" ] && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +
+      // install-host puts the app in /Applications (system) OR ~/Applications; check BOTH so a
+      // correctly-installed host app is never false-flagged "missing" (which would wrongly gate onboarding).
+      '{ [ -d "$HOME/Applications/XpairHost.app" ] || [ -d "/Applications/XpairHost.app" ]; } && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +
       'cat "$HOME/.xpair/host/logs/status.json" 2>/dev/null || true';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {

@@ -990,7 +990,7 @@ EOF
   # host-side config
   local rb='$HOME/.local/bin/tmux-aqua'
   printf '%-22s %s\n' "host tmux-aqua" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -x $rb ]" 2>/dev/null && echo OK || { echo "missing — run install.sh --role host on the host"; fail=1; })"
-  printf '%-22s %s\n' "host app" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -d ~/Applications/$APP_NAME.app ]" 2>/dev/null && echo "OK ($APP_NAME.app)" || { echo "missing"; fail=1; })"
+  printf '%-22s %s\n' "host app" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "[ -d /Applications/$APP_NAME.app ] || [ -d ~/Applications/$APP_NAME.app ]" 2>/dev/null && echo "OK ($APP_NAME.app)" || { echo "missing"; fail=1; })"
   printf '%-22s %s\n' "host server" "$(ssh -o BatchMode=yes "$REMOTE_HOST" "$rb -S '$AQUA_SOCK' has-session" 2>/dev/null && echo "up" || echo "down (check app launch/permissions)")"
   # approve path (skill + hook) — the key to clearing GUI approval dialogs on a headless host. Both are installed by install.sh --role host.
   printf '%-22s %s\n' "host approve skill" "$(ssh -o BatchMode=yes "$REMOTE_HOST" '[ -f ~/.claude/skills/approve/SKILL.md ]' 2>/dev/null && echo OK || { echo "missing — install.sh --role host"; fail=1; })"
