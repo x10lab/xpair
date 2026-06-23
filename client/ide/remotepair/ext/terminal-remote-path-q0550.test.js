@@ -51,7 +51,7 @@ test("Q0550 cmd+v multiline paste is delivered to the existing active terminal",
 test("Q0550 cmd+c and close controls remain usable on remote terminal sessions", () => {
   assert.match(patch, /if \(key === 'c'\) \{/);
   assert.match(patch, /instance\.hasSelection\(\)/);
-  assert.match(patch, /instance\.copySelection\(\)/);
+  assert.match(patch, /instance\.(?:xterm\?\.)?copySelection\(\)/);
   assert.match(patch, /addDisposableListener\(close, EventType\.MOUSE_DOWN, \(e\) => \{/);
   assert.match(patch, /e\.preventDefault\(\);\n\+\s*e\.stopPropagation\(\);/);
   assert.match(patch, /addDisposableListener\(close, EventType\.CLICK, \(e\) => \{/);

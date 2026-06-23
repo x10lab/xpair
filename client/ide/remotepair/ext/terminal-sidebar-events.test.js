@@ -37,7 +37,7 @@ check("embedded terminal sidebar handles local macOS copy and paste", () => {
   assert.match(patch, /private handleTerminalShortcut\(e: KeyboardEvent\): void/);
   assert.match(patch, /e\.metaKey/);
   assert.match(patch, /instance\.hasSelection\(\)/);
-  assert.match(patch, /instance\.copySelection\(\)/);
+  assert.match(patch, /instance\.(?:xterm\?\.)?copySelection\(\)/);
   assert.match(patch, /this\.clipboardService\.readText\(\)/);
   assert.match(patch, /instance\.sendText\(text, false, true\)/);
 });

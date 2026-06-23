@@ -23,7 +23,7 @@ function test(name, fn) {
 
 test("remote terminal copy/paste/close stay on the attached tmux path (Q0550/Q0551)", () => {
   assert.match(patch, /private handleTerminalShortcut\(e: KeyboardEvent\): void/);
-  assert.match(patch, /if \(key === 'c'\)[\s\S]*instance\.hasSelection\(\)[\s\S]*instance\.copySelection\(\)/);
+  assert.match(patch, /if \(key === 'c'\)[\s\S]*instance\.hasSelection\(\)[\s\S]*instance\.(?:xterm\?\.)?copySelection\(\)/);
   assert.match(patch, /if \(key === 'v'\)[\s\S]*this\.clipboardService\.readText\(\)[\s\S]*instance\.sendText\(text, false, true\)/);
   assert.match(patch, /close\.tabIndex = 0[\s\S]*EventType\.MOUSE_DOWN[\s\S]*e\.stopPropagation\(\);[\s\S]*EventType\.CLICK[\s\S]*onClose\(\);/);
   assert.match(patch, /close: \(id\) => \{[\s\S]*v\.instance\.dispose\(\);/);
