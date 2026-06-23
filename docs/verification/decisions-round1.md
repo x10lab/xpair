@@ -29,3 +29,20 @@ Closes open-issue branches surfaced by the UNSPECIFIED-inference pass. requireme
 - pairing completion copy: connected-client-specific copy when a client is present, else generic.
 - manual host-name edit after discovery: remain editable in the selected-host auth step (no separate validation branch).
 - non-Xpair workbench surfaces during RD reconnect: hidden (per decisions 2 view-only + 3 sessions-only).
+
+## Round 3 (2026-06-23) — REVERSAL of decision 2
+
+| # | Area | Decision |
+|---|------|----------|
+| 2-REV | §1.9/§0.3 Remote Desktop input | **REVERSED: RD supports remote INPUT (click/keyboard control), NOT view-only.** Per accelerator guidance. Re-enable the input pipeline that commit c5c5ae27 removed: client capture/forward (rp-ctl/rp-move DataChannels, pointer→t:c, keyboard→t:k/x) + host serve_webrtc spawns `rp-input-inject` and feeds rp-ctl/rp-move to its stdin. The host injector (`host/rd/rpmedia/rp-input-inject.swift`) already uses AX text insert (`kAXSelectedTextAttribute`), which is end-to-end verified for exact-Unicode (incl. Hangul) text landing (see host/rd/rpmedia/INPUT-FINDINGS.md). |
+
+### Caveats (from INPUT-FINDINGS.md) — remaining wiring/verification
+- Text input: AX insert — verified working end-to-end (incl. Hangul).
+- Mouse: CGEvent path — needs final landing verification.
+- Shortcuts (cmd+S etc.): need System Events keystroke+modifier (CGEvent keys do NOT reach Cocoa apps).
+- Full verification requires a real 2-machine host/client setup (not the unsigned dev build).
+
+### Restore references
+- Host input wiring: `c5c5ae27~1:host/rd/screen/src/serve_webrtc.rs` (reconcile into current, which has keyframe + caffeinate since).
+- Client input forwarding: `fix/rg-integrate:client/ide/remotepair/ext/media/remote-desktop.js` (reconcile with current connect-loop-stale + singleton fixes).
+- rd tests revert from view-only assertions to input-forwarding assertions: remote-desktop-core-q0346, -core-surface, -operability.
