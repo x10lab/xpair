@@ -423,10 +423,12 @@ _local_next_n() {
   fi
 }
 
-# _remote_next_n REMOTE_PROJ_BASE [HOST_ATTACHED_SESSIONS] — echo "N state" (best-effort)
-# state: "new/reattach" (N==1, can't cheaply know remote detached state) | "fresh" (N>1)
+# _remote_next_n REMOTE_PROJ_BASE [HOST_ATTACHED_SESSIONS] [ALL_REMOTE_SESSIONS] — echo "N state"
+# state (N==1): "reattach" if _1 already exists detached on the host | "new" if it does not
+#   (decided from ALL_REMOTE_SESSIONS) | "new/reattach" only when the all-set is unknown.
+#   "fresh" when N>1 (a lower _N already has a live client).
 _remote_next_n() {
-  local base="$1" attached="${2:-}" n=1
+  local base="$1" attached="${2:-}" all="${3:-}" n=1
   # Skip any _N that already has a live client, whether visible as a local mosh tab
   # or as an attached client on the host tmux server.
   while pgrep -f "mosh-client.*attach -d -t =${base}_${n}( |\$)" >/dev/null 2>&1 ||
@@ -436,6 +438,10 @@ _remote_next_n() {
   done
   if [ "$n" -gt 1 ]; then
     printf '%s fresh' "$n"
+  elif [ -n "$all" ] && printf '%s\n' "$all" | grep -Fxq "${base}_1"; then
+    printf '1 reattach'
+  elif [ -n "$all" ]; then
+    printf '1 new'
   else
     printf '1 new/reattach'
   fi
@@ -567,11 +573,12 @@ HOST_DIR_Q="$(sh_quote "$HOST_DIR")"
 AQUA_SOCK_Q="$(sh_quote "$AQUA_SOCK")"
 REMOTE_PROJ_Q="$(sh_quote "$REMOTE_PROJ")"
 
-_remote_attached_sessions() {
+# Raw "<session> <attached?>" lines for every remote session (one SSH round-trip).
+# Callers derive both the ATTACHED set (skip live _N) and the ALL set (new-vs-reattach).
+_remote_session_states() {
   [ -n "$REMOTE_HOST" ] || return 0
   { ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
-      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true" 2>/dev/null || true; } \
-    | awk '($2!="0"){print $1}'
+      "${REMOTE_BIN}/tmux-aqua -S ${AQUA_SOCK_Q} list-sessions -F '#S #{session_attached}' 2>/dev/null || true" 2>/dev/null || true; }
 }
 
 # Ask this before the machine/target prompt so users choose the agent first.
@@ -589,8 +596,10 @@ elif [ "$RP_YES" = 1 ]; then
   TARGET=remote
 else
   # Compute prospective session annotations from local mosh plus a best-effort host tmux probe.
-  _rn_att="$(_remote_attached_sessions)"
-  _rn_out="$(_remote_next_n "$REMOTE_PROJ" "$_rn_att")"
+  _rn_raw="$(_remote_session_states)"
+  _rn_att="$(printf '%s\n' "$_rn_raw" | awk '($2!="0"){print $1}')"
+  _rn_all="$(printf '%s\n' "$_rn_raw" | awk 'NF{print $1}')"
+  _rn_out="$(_remote_next_n "$REMOTE_PROJ" "$_rn_att" "$_rn_all")"
   _rn="${_rn_out%% *}"; _rs="${_rn_out#* }"
   _ln_out="$(_local_next_n "$LOCAL_PROJ")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
