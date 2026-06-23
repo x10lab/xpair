@@ -5,12 +5,12 @@ diff --git a/src/main.ts b/src/main.ts
  	app.commandLine.appendSwitch('disable-gpu-sandbox');
  }
 
-+// RemotePair: LOCAL-IDENTITY builds use a self-signed cert, so Electron safeStorage
-+// re-prompts for macOS Keychain access ("RemotePairLocal needs to access safe storage")
-+// on every launch. Force the basic (plaintext-file) password store for local dev only so
-+// no Keychain prompt appears. Prod/CI keep the Keychain. Onboarding/pairing secrets go via
-+// askpass/CLI (not safeStorage), so basic store is safe here. Must run before app 'ready'.
-+if (product.nameShort && product.nameShort.endsWith('Local')) {
++// Xpair ships SELF-SIGNED (no Apple notarization yet), so Electron safeStorage re-prompts for
++// macOS Keychain access ("Xpair Safe Storage") on EVERY launch — the "Always Allow" ACL never
++// sticks for a self-signed binary. This hit local dev AND the self-signed prod build. Force the
++// basic (plaintext-file) password store on ALL builds so no Keychain prompt appears. Xpair's real
++// secrets go via askpass/CLI (not safeStorage), so basic store is safe. Revisit once Apple-notarized.
++if (product.nameShort) {
 +	app.commandLine.appendSwitch('password-store', 'basic'); // Linux secret-store backend
 +	app.commandLine.appendSwitch('use-mock-keychain'); // macOS: os_crypt bypasses the real Keychain (password-store is Linux-only)
 +}
