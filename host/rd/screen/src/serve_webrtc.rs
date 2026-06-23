@@ -35,6 +35,8 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 
 /// Locate a helper binary that sits **next to this executable** (the bundle
 /// `Contents/Helpers/` layout). `current_exe()` is `canonicalize()`d first so a
@@ -49,6 +51,24 @@ fn sibling_helper(name: &str) -> Option<String> {
         return sibling.to_str().map(|s| s.to_string());
     }
     None
+}
+
+/// Resolve the remote-input injector helper (`rp-input-inject`).
+/// Order: `$RP_INPUT_INJECT` → bundle sibling (`current_exe` dir) →
+/// `~/.xpair/host/bin` → PATH.
+fn input_helper_path() -> String {
+    if let Ok(p) = std::env::var("RP_INPUT_INJECT") {
+        return p;
+    }
+    if let Some(p) = sibling_helper("rp-input-inject") {
+        return p;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let deployed = format!("{home}/.xpair/host/bin/rp-input-inject");
+    if std::path::Path::new(&deployed).exists() {
+        return deployed;
+    }
+    "rp-input-inject".to_string()
 }
 
 /// Resolve the SCK capture+encode helper (`rp-screencap`). It self-captures via
@@ -270,6 +290,74 @@ async fn handle_session(
             }
         }
     });
+
+    // --- remote input: spawn injector helper + TWO DataChannels BEFORE the offer ---
+    // host creates both channels so the m=application (SCTP) section is in the
+    // first offer (no renegotiation); the client only uses `ondatachannel` (B3).
+    // rp-ctl = reliable/ordered (text/keys/clicks); rp-move = unreliable/unordered
+    // (mousemove — stale positions are worthless, dropping is correct) (B4).
+    let mut _input_dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>> = Vec::new();
+    {
+        let bin = input_helper_path();
+        match Command::new(&bin)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    // writer thread: frame [4B BE len | json] -> helper stdin (blocking)
+                    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                    std::thread::Builder::new()
+                        .name("rp-input-writer".into())
+                        .spawn(move || {
+                            while let Ok(json) = in_rx.recv() {
+                                let len = (json.len() as u32).to_be_bytes();
+                                if stdin.write_all(&len).is_err() || stdin.write_all(&json).is_err() {
+                                    break;
+                                }
+                            }
+                            let _ = child.kill();
+                        })
+                        .ok();
+
+                    let ctl = pc
+                        .create_data_channel("rp-ctl", None)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mv_init = RTCDataChannelInit {
+                        ordered: Some(false),
+                        max_retransmits: Some(0),
+                        ..Default::default()
+                    };
+                    let mv = pc
+                        .create_data_channel("rp-move", Some(mv_init))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for dc in [&ctl, &mv] {
+                        let label = dc.label().to_string();
+                        dc.on_open(Box::new(move || {
+                            tracing::info!("serve-webrtc: input DataChannel '{label}' open");
+                            Box::pin(async {})
+                        }));
+                        let tx = in_tx.clone();
+                        dc.on_message(Box::new(move |msg: DataChannelMessage| {
+                            let tx = tx.clone();
+                            Box::pin(async move {
+                                let _ = tx.send(msg.data.to_vec());
+                            })
+                        }));
+                    }
+                    // keep channels alive for the session (dropped when handle_session returns)
+                    _input_dcs.push(ctl);
+                    _input_dcs.push(mv);
+                }
+            }
+            Err(e) => tracing::warn!(
+                "serve-webrtc: input helper '{bin}' spawn failed (remote input disabled): {e}"
+            ),
+        }
+    }
 
     // --- create offer, send to browser ---
     let offer = pc.create_offer(None).await.map_err(|e| e.to_string())?;

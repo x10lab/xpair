@@ -7,10 +7,13 @@ high-performance path that replaces the v0 `ssh` + InputServer screenshot pollin
 > `serve-webrtc` captures the primary display via `rp-screencap` (ScreenCaptureKit
 > + VideoToolbox **hardware** H.264, one process, IOSurface zero-copy, GPU-scaled,
 > on-change), streams it over **webrtc-rs** (DTLS/SRTP, UDP/ICE host candidates —
-> loopback/LAN/VPN) into the IDE's `<video>`. Remote Desktop is view-only and
-> does not open `rp-ctl` or `rp-move`; the IDE closes/ignores any host-created
-> DataChannel and never forwards pointer, wheel, text, or keyboard input.
-> Verified end-to-end from the real IDE (RD panel → peer "connected" → 30fps H.264).
+> loopback/LAN/VPN) into the IDE's `<video>`. Remote Desktop also forwards host
+> input: the IDE captures pointer/wheel/keyboard/text and sends it over the WebRTC
+> DataChannels (`rp-ctl` reliable/ordered for keys & clicks, `rp-move` lossy for
+> pointer moves) into `rp-input-inject` (AX text insert + CGEvent), so the viewer
+> can click and type on the remote screen.
+> Verified end-to-end from the real IDE (RD panel → peer "connected" → 30fps H.264
+> → input channels open).
 >
 > `serve` (v1a: WS + JPEG continuous capture) remains as a license-clean fallback
 > and capture-foundation proof, but the shipping Remote Desktop is **v2**.
@@ -27,7 +30,7 @@ high-performance path that replaces the v0 `ssh` + InputServer screenshot pollin
 | Lives in | the IDE extension | this Rust sidecar (`screen serve`) | this sidecar (`screen serve-webrtc`, `webrtc` feature) |
 | Encode | per-frame PNG | per-frame JPEG (software, quality knob) | **VideoToolbox H.264 (hardware), `rp-screencap`** |
 | Transport | poll over `ssh` | WS binary frames over `ssh -L` tunnel | **WebRTC (SRTP/DTLS, UDP/ICE); signaling WS over `ssh -L`** |
-| Input | InputServer (legacy only) | — | **None — view-only; no remote input DataChannels** |
+| Input | InputServer (legacy only) | — | **`rp-ctl`/`rp-move` DataChannels → `rp-input-inject` (AX)** |
 | Latency | high (poll + PNG per frame) | medium (~10fps continuous stream) | **low (HW codec, continuous, ~30fps)** |
 | Client renders | polled PNGs | JPEG frames into a `<canvas>`/`<img>` | **a live `<video>` element (native H.264 decode)** |
 | Status | superseded | **done** (fallback) | **done — shipping in 0.5.0** |

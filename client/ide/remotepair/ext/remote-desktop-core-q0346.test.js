@@ -19,18 +19,16 @@ function test(name, fn) {
   }
 }
 
-test("Remote Desktop is view-only and can request a fresh frame (Q0346)", () => {
+test("Remote Desktop forwards click and keyboard input and can request a fresh frame (Q0346)", () => {
   assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.openRemoteDesktop"/);
   assert.match(extension, /panel\.reveal\(\)[\s\S]*setupLayout/);
   assert.match(extension, /msg\.type === "refresh"[\s\S]*this\._stopAll\(\);[\s\S]*this\._startStream\(\);/);
 
-  assert.match(hostReadme, /Remote Desktop is view-only[\s\S]*does not open `rp-ctl` or `rp-move`/);
-  assert.match(webview, /PERMANENTLY view-only/);
-  assert.match(webview, /pc\.addTransceiver\("video", \{ direction: "recvonly" \}\)/);
-  assert.match(webview, /pc\.ondatachannel = function[\s\S]*channel\.close\(\)/);
-  assert.doesNotMatch(webview, /createDataChannel\(["']rp-(?:ctl|move)["']/);
-  assert.doesNotMatch(webview, /addEventListener\(["'](?:pointerdown|pointermove|pointerup|mousedown|mousemove|mouseup|click|wheel|keydown|keyup|beforeinput|input|compositionend)["']/);
-  assert.doesNotMatch(webview, /\bt:\s*["'](?:c|m|k|x)["']/);
+  assert.match(hostReadme, /rp-ctl[\s\S]*rp-move[\s\S]*rp-input-inject/);
+  assert.match(webview, /createDataChannel\(["']rp-ctl["']/);
+  assert.match(webview, /createDataChannel\(["']rp-move["']/);
+  assert.match(webview, /addEventListener\(["'](?:pointerdown|mousedown|click)["'][\s\S]*\bt:\s*["']c["']/);
+  assert.match(webview, /addEventListener\(["'](?:keydown|beforeinput|input|compositionend)["'][\s\S]*\bt:\s*["'](?:k|x)["']/);
 });
 
 if (failed > 0) {
