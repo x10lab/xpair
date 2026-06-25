@@ -868,7 +868,7 @@ cmd_attach() {
   printf '\033]2;%s\007' "$session"
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
-    exec mosh --server="${MOSH_SERVER:-/opt/homebrew/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
+    exec mosh --server="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
   fi
   printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
   exec ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")"

@@ -90,20 +90,25 @@ install_file "$CLIENT_DIR/xpair" "$LOCAL_BIN/xpair" 755
 case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN is not in PATH — add it to your shell rc" ;; esac
 mk_dir "$LOG_DIR"
 
-# ── Common: ensure mosh (resilient UDP attach on both host + client; ssh fallback if absent) ──
-# The mosh package provides both mosh-client (client) and mosh-server (host), so this one step
-# covers either role. Untracked by the manifest (like cliclick) — uninstall.sh leaves mosh in place.
+# ── Common: ensure mosh (resilient UDP attach; ssh fallback if absent) ──
+# Split by role. The CLIENT runs `mosh`/`mosh-client` to connect and always has Homebrew (it installed
+# Xpair via cask), so install the mosh package there if missing. The HOST needs only mosh-server, which
+# ships INSIDE XpairHost.app — built static against protobuf 3.21.12 (pre-abseil → 0 Homebrew dylib deps;
+# see host/build-mosh.sh) and symlinked to ~/.local/bin/mosh-server by the app's self-installer. So a
+# host-only install never touches brew. Untracked by the manifest (like cliclick) — uninstall leaves it.
 if command -v mosh >/dev/null 2>&1; then
   say "mosh present ($(command -v mosh))"
-else
+elif is_client; then
   BREW="$(command -v brew 2>/dev/null || true)"
   for _b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -n "$BREW" ] && break; [ -x "$_b" ] && BREW="$_b"; done
   if [ -n "$BREW" ]; then
-    say "mosh not found — installing via Homebrew"
+    say "mosh not found — installing via Homebrew (client attach)"
     "$BREW" install mosh || warn "mosh install failed — manual: brew install mosh (attach falls back to ssh)"
   else
     warn "mosh not found and Homebrew unavailable — attach falls back to ssh. Install Homebrew, then: brew install mosh"
   fi
+else
+  say "mosh-server provided by XpairHost.app bundle (host needs no Homebrew mosh)"
 fi
 
 # ── HOST: app + approve (skill/rules) + watchdog + LaunchAgent ──
