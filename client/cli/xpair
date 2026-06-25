@@ -1710,6 +1710,9 @@ cmd_desktop() {
 cmd_mount() {
   local tool; tool="$(_resolve_client_tool xpair-mount)" \
     || { echo "xpair-mount not found (install client, or run from the repo)" >&2; return 1; }
+  case "${1:-}" in
+    /*) set -- mount "$@" ;;
+  esac
   exec "$tool" "$@"
 }
 

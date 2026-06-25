@@ -160,7 +160,6 @@ engine_label() {
     codex) printf 'Codex' ;;
     shell) printf 'Shell' ;;
     opencode) printf 'OpenCode' ;;
-    shell) printf 'Shell' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -274,7 +273,6 @@ respawn_body() {
     codex)    respawn_body_codex ;;
     shell)    respawn_body_shell ;;
     opencode) respawn_body_opencode ;;
-    shell)    respawn_body_shell ;;
     *)        respawn_body_claude ;;
   esac
 }
@@ -399,13 +397,6 @@ while :; do
   printf '\n[opencode crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
 done
-RESPAWN
-}
-
-respawn_body_shell() {
-  cat <<'RESPAWN'
-# Plain shell session; no agent binary or auth is required.
-exec "${SHELL:-/bin/zsh}" -l
 RESPAWN
 }
 

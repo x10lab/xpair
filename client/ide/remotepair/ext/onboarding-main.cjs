@@ -69,6 +69,7 @@ function shouldOnboard(argv = process.argv) {
 }
 
 let _ipcWired = false
+let _completed = false
 function wireIpc(ipcMain, onComplete) {
   if (_ipcWired) return
   _ipcWired = true
@@ -90,6 +91,7 @@ function wireIpc(ipcMain, onComplete) {
   // Completion → close the onboarding window and hand control back to electron-main to open the
   // workbench (SAME process; no second app, no app.quit). onComplete() is provided by the hook.
   ipcMain.handle('onboarding:complete', () => {
+    _completed = true
     try {
       if (telemetry && telemetry.EVENTS) {
         const wowBase = telemetry.installTs && telemetry.installTs()
@@ -116,6 +118,7 @@ let _win = null
  */
 function openOnboardingWindow({ electron, onComplete }) {
   const { app, BrowserWindow, ipcMain, shell } = electron
+  _completed = false
   // Onboarding is actually opening now, so consume the one-shot force sentinel (if any). This
   // guarantees exactly one forced run — a later normal launch won't re-trigger onboarding.
   clearForceOnboardingSentinel()

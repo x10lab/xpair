@@ -2954,10 +2954,10 @@ index 0000000..6e5d586
 +			const k = new StandardKeyboardEvent(e as KeyboardEvent);
 +			if (k.equals(KeyCode.Enter) || k.equals(KeyCode.Space)) { k.preventDefault(); onClick(); }
 +		}));
-+		if (opts?.onClose) {
-+			const onClose = opts.onClose;
++		const onClose = this.cardCloseHandler(text, opts);
++		if (onClose) {
 +			const close = append(card, $('.remotepair-session-card-close.codicon.codicon-close'));
-+			close.title = localize('remotepairCloseSession', "Close Session");
++			close.title = this.cardCloseTitle();
 +			close.setAttribute('role', 'button');
 +			close.tabIndex = 0;
 +			this.cardDisposables.add(addDisposableListener(close, EventType.MOUSE_DOWN, (e) => {

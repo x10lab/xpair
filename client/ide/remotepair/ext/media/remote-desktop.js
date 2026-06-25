@@ -16,6 +16,58 @@
   const V2_FIRST_FRAME_TIMEOUT_MS = 15000;
 
   let haveFrame = false;
+  let inputArmed = false;
+  let inputSeq = 0;
+  let ctlDC = null;
+  let moveDC = null;
+  let lastMoveTs = 0;
+  const MOVE_MIN_MS = 1000 / 60;
+  const BUFFER_LIMIT = 65536;
+  const MAC_VK = {
+    KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyH: 4, KeyG: 5, KeyZ: 6, KeyX: 7,
+    KeyC: 8, KeyV: 9, KeyB: 11, KeyQ: 12, KeyW: 13, KeyE: 14, KeyR: 15,
+    KeyY: 16, KeyT: 17, Digit1: 18, Digit2: 19, Digit3: 20, Digit4: 21,
+    Digit6: 22, Digit5: 23, Equal: 24, Digit9: 25, Digit7: 26, Minus: 27,
+    Digit8: 28, Digit0: 29, BracketRight: 30, KeyO: 31, KeyU: 32,
+    BracketLeft: 33, KeyI: 34, KeyP: 35, Enter: 36, KeyL: 37, KeyJ: 38,
+    Quote: 39, KeyK: 40, Semicolon: 41, Backslash: 42, Comma: 43, Slash: 44,
+    KeyN: 45, KeyM: 46, Period: 47, Tab: 48, Space: 49, Backquote: 50,
+    Backspace: 51, Escape: 53, MetaLeft: 55, ShiftLeft: 56, CapsLock: 57,
+    AltLeft: 58, ControlLeft: 59, ShiftRight: 60, AltRight: 61, ControlRight: 62,
+    NumpadDecimal: 65, NumpadMultiply: 67, NumpadAdd: 69, NumpadDivide: 75,
+    NumpadEnter: 76, NumpadSubtract: 78, NumpadEqual: 81, Numpad0: 82,
+    Numpad1: 83, Numpad2: 84, Numpad3: 85, Numpad4: 86, Numpad5: 87,
+    Numpad6: 88, Numpad7: 89, Numpad8: 91, Numpad9: 92, F5: 96, F6: 97,
+    F7: 98, F3: 99, F8: 100, F9: 101, F11: 103, F13: 105, F16: 106,
+    F14: 107, F10: 109, F12: 111, F15: 113, Home: 115, PageUp: 116,
+    Delete: 117, F4: 118, End: 119, F2: 120, PageDown: 121, F1: 122,
+    ArrowLeft: 123, ArrowRight: 124, ArrowDown: 125, ArrowUp: 126,
+  };
+
+  const textCapture = typeof document.createElement === "function"
+    ? document.createElement("div")
+    : {
+        contentEditable: "",
+        style: {},
+        textContent: "",
+        setAttribute() {},
+        addEventListener() {},
+        focus() {},
+      };
+  textCapture.contentEditable = "true";
+  textCapture.setAttribute("aria-hidden", "true");
+  textCapture.style.position = "absolute";
+  textCapture.style.left = "0";
+  textCapture.style.top = "0";
+  textCapture.style.width = "1px";
+  textCapture.style.height = "1px";
+  textCapture.style.opacity = "0";
+  textCapture.style.pointerEvents = "none";
+  textCapture.style.overflow = "hidden";
+  if (stage && typeof stage.appendChild === "function") {
+    stage.appendChild(textCapture);
+  }
+  video.tabIndex = 0;
 
   // --- remote input state ---
   let inputArmed = false;
@@ -141,6 +193,78 @@
       try { ws.close(); } catch (_e) {}
       ws = null;
     }
+  }
+
+  function resetInputChannels() {
+    ctlDC = null;
+    moveDC = null;
+    inputSeq = 0;
+    setBadge();
+  }
+
+  function wireInputChannel(channel) {
+    if (!channel || (channel.label !== "rp-ctl" && channel.label !== "rp-move")) return;
+    if (channel.label === "rp-ctl") ctlDC = channel;
+    else moveDC = channel;
+    if (typeof channel.addEventListener === "function") {
+      channel.addEventListener("open", setBadge);
+      channel.addEventListener("close", setBadge);
+      channel.addEventListener("error", setBadge);
+    }
+    setBadge();
+  }
+
+  function sendInput(channel, input) {
+    if (!channel || channel.readyState !== "open" || channel.bufferedAmount > BUFFER_LIMIT) return false;
+    input.seq = ++inputSeq;
+    try {
+      channel.send(JSON.stringify(input));
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function sendControlInput(input) {
+    return sendInput(ctlDC, input);
+  }
+
+  function sendMoveInput(input) {
+    return sendInput(moveDC, input);
+  }
+
+  function armInput() {
+    inputArmed = true;
+    try { textCapture.focus({ preventScroll: true }); } catch (_e) { textCapture.focus(); }
+  }
+
+  function relativePoint(ev) {
+    const r = video.getBoundingClientRect();
+    const rx = r.width ? (ev.clientX - r.left) / r.width : 0;
+    const ry = r.height ? (ev.clientY - r.top) / r.height : 0;
+    return {
+      rx: Math.max(0, Math.min(1, rx)),
+      ry: Math.max(0, Math.min(1, ry)),
+    };
+  }
+
+  function macFlags(ev) {
+    let flags = 0;
+    if (ev.metaKey) flags |= 0x100000;
+    if (ev.shiftKey) flags |= 0x020000;
+    if (ev.ctrlKey) flags |= 0x040000;
+    if (ev.altKey) flags |= 0x080000;
+    return flags;
+  }
+
+  function shouldHandleKeyboard(_ev) {
+    if (!inputArmed) return false;
+    const active = document.activeElement;
+    return active === textCapture || active === video || active === document.body;
+  }
+
+  function clearCapturedText() {
+    textCapture.textContent = "";
   }
 
   // -------------------------------------------------------------------------
@@ -298,6 +422,11 @@
       v2ErrorReported = true;
       clearV2FirstFrameTimer();
       vscode.postMessage({ type: "v2Error", detail });
+    };
+
+    pc.ondatachannel = function (ev) {
+      if (!isCurrent()) return;
+      wireInputChannel(ev.channel);
     };
 
     pc.ondatachannel = function (ev) {
