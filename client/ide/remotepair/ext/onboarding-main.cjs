@@ -90,7 +90,6 @@ function wireIpc(ipcMain, onComplete) {
   // Completion → close the onboarding window and hand control back to electron-main to open the
   // workbench (SAME process; no second app, no app.quit). onComplete() is provided by the hook.
   ipcMain.handle('onboarding:complete', () => {
-    _completed = true
     try {
       if (telemetry && telemetry.EVENTS) {
         const wowBase = telemetry.installTs && telemetry.installTs()
@@ -105,7 +104,6 @@ function wireIpc(ipcMain, onComplete) {
 }
 
 let _win = null
-let _completed = false
 
 /**
  * Open the pre-workbench onboarding BrowserWindow (loads the onboarding-webview UI). The IDE's
