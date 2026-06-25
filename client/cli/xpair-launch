@@ -61,7 +61,7 @@ AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
 MOSH_SERVER="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}"   # bundled in XpairHost.app (static, brew-free); see host/build-mosh.sh
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
-# Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
+# Engine selection (claude|shell|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
 # otherwise client.env ENGINE; default claude. Validated below — unknown values fall back to claude.
 RP_ENGINE="${RP_ENGINE:-${ENGINE:-claude}}"
 RP_ENGINE_EXPLICIT="${RP_ENGINE_EXPLICIT:-0}"
