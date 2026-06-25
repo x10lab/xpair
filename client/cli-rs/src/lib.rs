@@ -14,7 +14,9 @@
 //!   MOCKLOG argv-capture philosophy) so logic is testable without a real host.
 
 pub mod config;
+pub mod doctor;
 pub mod mapping;
 pub mod platform;
 pub mod remote_quote;
+pub mod session;
 pub mod transport;
