@@ -44,6 +44,9 @@ const STEP_TITLES = [
   "Done",
 ];
 
+// Warning copy only. Keep in sync with onboarding-bridge.js MIN_COMPATIBLE_HOST.
+const MIN_COMPATIBLE_HOST = "0.5.0a45";
+
 const S = {
   WELCOME: 0,
   CONSENT: 1,
@@ -216,30 +219,6 @@ export default function App() {
   // fetch the host fingerprint before Next starts the key-auth install.
   const [setupReady, setSetupReady] = useState(false);
   const [installState, setInstallState] = useState<InstallState>("idle");
-  // Install step mode. "install" = fresh setup-path install (peer-driven). "update" = the host app is
-  // already installed but below MIN_COMPATIBLE_HOST; we reuse StepInstalling with force:true to push
-  // the client-bundled host over it. Applies to manual/connect/reconnect (non-setup) paths.
-  const [installMode, setInstallMode] = useState<"install" | "update">("install");
-  // Where the update flow was launched from, so onDone routes back to the right gate and re-checks
-  // there. "connect" = the Connect-step host-app gate (non-setup); "final" = the Mappings final
-  // liveness gate (either path, incl. setup peers whose first install hit an existing host).
-  const [updateOrigin, setUpdateOrigin] = useState<"connect" | "final">("connect");
-  // Explicit "user backed out of the update" flag (Finding A). Set on Back/cancel from the update
-  // step; SUPPRESSES the Connect-step auto-route even when a fresh host-app probe STILL reports the
-  // host below-floor. Clearing the cached probe alone is not enough: a reachable, still-incompatible
-  // host re-reports below_floor on the Connect re-probe, which would immediately re-route the user
-  // back into the update they just abandoned — trapping them. With this flag set, the gate stays
-  // closed (warning still visible) but the auto-route holds, so the user can recover or pick another
-  // host. Reset when the user re-initiates the update or selects/targets a different host / re-discovers.
-  const [updateDismissed, setUpdateDismissed] = useState(false);
-  // Host-version context for the update warning copy (current host version vs the client version it
-  // must match), captured from the incompatible host-app probe that triggered the update.
-  const [updateCtx, setUpdateCtx] = useState<{ host: string; current: string; required: string }>({
-    host: "",
-    current: "",
-    required: "",
-  });
-  const [clientVer, setClientVer] = useState("");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
   // Reconnect reachability, lifted from the Reconnect step so Next gates until the host answers.
@@ -249,7 +228,6 @@ export default function App() {
   const stepRef = useRef(w.index);
   stepRef.current = w.index;
   const livenessCheckId = useRef(0);
-  const updateCompletionId = useRef(0);
   const cancelLivenessCheck = useCallback(() => {
     livenessCheckId.current += 1;
   }, []);
@@ -278,14 +256,6 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Client version (for the host-update warning's "needs version X or newer" copy).
-  useEffect(() => {
-    void window.remotepair
-      .clientVersion()
-      .then((v) => setClientVer(v || ""))
-      .catch(() => {});
-  }, []);
-
   // Reconnect: this client already authorized with the host (ssh-config entry) and the app is
   // installed, so there's nothing to install — just re-persist REMOTE_HOST and confirm reachability.
   const isReconnect = peer?.status === "reconnect";
@@ -305,14 +275,10 @@ export default function App() {
       setSetupReady(false);
       setConnState("idle");
       hostAppProbeId.current += 1;
-      updateCompletionId.current += 1;
       setHostApp(null);
       setHostAppChecking(false);
       setHostPerms(null);
       setInstallState("idle");
-      setInstallMode("install");
-      // New target → a prior back-out no longer applies; let the new host's probe drive routing.
-      setUpdateDismissed(false);
       setReconnectReady(false);
       setLive("idle");
       setLiveErr("");
@@ -327,72 +293,15 @@ export default function App() {
     setPeer(null);
     setSetupReady(false);
     hostAppProbeId.current += 1;
-    updateCompletionId.current += 1;
     setHostApp(null);
     setHostAppChecking(false);
     setHostPerms(null);
     setInstallState("idle");
-    setInstallMode("install");
-    // New manual target → a prior back-out no longer applies (Finding A).
-    setUpdateDismissed(false);
     setLive("idle");
     setLiveErr("");
     stepRef.current = S.CONNECT;
     w.goTo(S.CONNECT, "next");
   }, [w]);
-
-  // Route the wizard into StepInstalling in UPDATE mode: the host app is installed but below
-  // MIN_COMPATIBLE_HOST. Reused by the Connect-step host-app gate and the final liveness gate.
-  const routeToHostUpdate = useCallback(
-    (target: string, hostVersion: string, origin: "connect" | "final") => {
-      updateCompletionId.current += 1;
-      setInstallMode("update");
-      setUpdateOrigin(origin);
-      // User is (re-)initiating the update → clear any prior back-out so the post-update re-checks
-      // and the Connect-step auto-route behave normally again (Finding A).
-      setUpdateDismissed(false);
-      setUpdateCtx({ host: target, current: hostVersion, required: clientVer });
-      setInstallState("idle");
-      // The final-gate path already flipped live="checking" (runLivenessCheck). Clear it so that when
-      // the update finishes and returns, Next isn't stuck disabled by `live === "checking"`.
-      setLive("idle");
-      setLiveErr("");
-      stepRef.current = S.INSTALL;
-      w.goTo(S.INSTALL, "next");
-    },
-    [clientVer, w],
-  );
-
-  // After a successful `install-host --force`, the host's LaunchAgent is kickstarted but the OLD
-  // ~/.xpair/host/logs/status.json lingers until the host app rewrites it on its next tick. An
-  // immediate hostAppStatus read can therefore return the STALE pre-update version and look "still
-  // incompatible", bouncing the user back to the update screen even though the reinstall succeeded
-  // (Finding D). Poll until the reported version moves off `staleVersion` (or becomes compatible, or
-  // the app stops reporting a version), giving the host a few seconds to come up before re-checking.
-  const waitForFreshHostStatus = useCallback(
-    async (target: string, staleVersion: string, shouldContinue: () => boolean = () => true) => {
-      for (let i = 0; i < 8; i++) {
-        if (!shouldContinue()) return false;
-        try {
-          const app = await window.remotepair.hostAppStatus(target);
-          if (!shouldContinue()) return false;
-          // Fresh status: the version changed off the stale one, or it's now compatible, or it reset
-          // to unknown (status.json not yet re-stamped, treated as compatible downstream).
-          if (app.compatible || !app.version || app.version !== staleVersion) {
-            setHostApp({ target, ...app });
-            return true;
-          }
-        } catch {
-          /* transient SSH hiccup while the host restarts — keep polling */
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-      // Timed out waiting for a fresh stamp — fall through; the subsequent liveness check surfaces the
-      // current (possibly still-stale) state to the user as a re-checkable error rather than hanging.
-      return shouldContinue();
-    },
-    [],
-  );
 
   // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
   // setup, host-app, permission, and SSH liveness probes all pass.
@@ -422,17 +331,7 @@ export default function App() {
       const app = await window.remotepair.hostAppStatus(target);
       if (!stillCurrent()) return;
       setHostApp({ target, ...app });
-      if (app.installed && !app.compatible && app.incompatibleKind === "below_floor") {
-        // Installed-but-too-old (same major, below floor) at the final gate → route to the in-UI
-        // update flow (force reinstall the bundled host) rather than dead-ending. Same routing as the
-        // Connect-step gate. A different/NEWER major is NOT routed here (force = downgrade); it falls
-        // through to the blocking host-app error below.
-        routeToHostUpdate(target, app.version, "final");
-        return;
-      }
       if (app.installed && !app.compatible) {
-        // Different/NEWER major (major_mismatch) — force-reinstalling the bundled host would DOWNGRADE
-        // it, so block with the explicit incompatibility message instead of forcing an update.
         setLiveErr(app.err || "Host version is incompatible with this client.");
         setLive("host-app");
         return;
@@ -490,7 +389,7 @@ export default function App() {
       setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [isSetup, installState, w, routeToHostUpdate]);
+  }, [isSetup, installState, w]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
@@ -511,11 +410,9 @@ export default function App() {
   useEffect(() => {
     if (previousConnectTarget.current === connectTarget) return;
     previousConnectTarget.current = connectTarget;
-    updateCompletionId.current += 1;
     cancelLivenessCheck();
-    // Editing the manual host field means the prior explicit update back-out no longer applies.
-    if (updateDismissed) setUpdateDismissed(false);
-  }, [connectTarget, updateDismissed, cancelLivenessCheck]);
+    setInstallState("idle");
+  }, [connectTarget, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
   // reconnect, the host app must be installed AND compatible before Next.
   const requiresHostApp = w.index === S.CONNECT && !isSetup;
@@ -547,33 +444,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
 
-  // Host-app probe came back installed-but-incompatible on the Connect step (non-setup paths) → the
-  // host is below MIN_COMPATIBLE_HOST. Instead of dead-ending on a "update the host" message, route
-  // the wizard into StepInstalling in update mode (force-reinstall the bundled host). The not-installed
-  // sub-case keeps its existing behavior (manual/connect/reconnect have no fresh-install path, so it
-  // stays a blocking message via centerSlot). compatible hosts just open the gate (no routing).
-  useEffect(() => {
-    if (
-      requiresHostApp &&
-      !hostAppChecking &&
-      // The user explicitly backed out of the update for this host (Finding A). A reachable but still
-      // below-floor host re-reports below_floor on every Connect re-probe, so without this guard the
-      // auto-route would immediately bounce them back into the update they just abandoned. Hold the
-      // route; the gate stays closed (warning shown via centerSlot) so they can recover / pick another
-      // host. The flag is reset when they re-initiate the update or target a different host.
-      !updateDismissed &&
-      hostApp &&
-      hostApp.target === connectTarget &&
-      hostApp.installed &&
-      !hostApp.compatible &&
-      // Only the same-major-but-below-floor case is safe to force-update; a different/NEWER major
-      // (major_mismatch) would be a DOWNGRADE, so it stays a blocking error (handled in centerSlot).
-      hostApp.incompatibleKind === "below_floor"
-    ) {
-      routeToHostUpdate(connectTarget, hostApp.version, "connect");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requiresHostApp, hostAppChecking, hostApp, connectTarget, updateDismissed]);
+  // Same-major-but-below-floor is the only incompatible host state that can be repaired in-place.
+  // Different/newer-major hosts remain a blocking incompatibility because force reinstalling would
+  // downgrade them.
+  const canUpdateHost =
+    requiresHostApp &&
+    !hostAppChecking &&
+    !!hostApp &&
+    hostApp.target === connectTarget &&
+    hostApp.installed &&
+    !hostApp.compatible &&
+    hostApp.incompatibleKind === "below_floor";
+
+  const handleHostUpdateDone = useCallback(() => {
+    if (!connectTarget) return;
+    setInstallState("idle");
+    setHostApp(null);
+    setHostPerms(null);
+    void checkHostApp(connectTarget);
+  }, [checkHostApp, connectTarget]);
 
   // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
   // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
@@ -660,7 +549,6 @@ export default function App() {
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
       // Mappings always follows the Engine step.
-      updateCompletionId.current += 1;
       cancelLivenessCheck();
       setLive("idle");
       setLiveErr("");
@@ -673,31 +561,6 @@ export default function App() {
       const dest = isSetup && !manual ? S.GRANT : S.CONNECT;
       stepRef.current = dest;
       w.goTo(dest, "prev");
-      return;
-    }
-    if (w.index === S.INSTALL && installMode === "update") {
-      // Header Back from the update step without a successful install. Mirror the update onFail
-      // recovery: invalidate the stale incompatible probe (Finding B) so the auto-route doesn't bounce
-      // the user back, and preserve setup-done for the final-gate setup case (Finding C). Route back to
-      // wherever the update was launched from.
-      updateCompletionId.current += 1;
-      hostAppProbeId.current += 1;
-      setHostApp(null);
-      setHostAppChecking(false);
-      setLive("idle");
-      setLiveErr("");
-      // Mark the update explicitly dismissed so a still-below-floor Connect re-probe doesn't auto-route
-      // the user straight back into it (Finding A). Reset on re-initiate / different host.
-      setUpdateDismissed(true);
-      if (updateOrigin === "final" && isSetup) {
-        setInstallState("done");
-      } else {
-        setInstallState("idle");
-      }
-      const dest = updateOrigin === "final" ? S.MAPPINGS : S.CONNECT;
-      stepRef.current = dest;
-      w.goTo(dest, "prev");
-      setInstallMode("install");
       return;
     }
     if (w.index === S.GRANT || w.index === S.INSTALL) {
@@ -722,6 +585,22 @@ export default function App() {
       : w.index === S.MAPPINGS && mappings.length === 0
       ? "Skip for now"
       : "Next";
+
+  const hostUpdatePanel = canUpdateHost ? (
+    <div className="mt-4">
+      <StepInstalling
+        isUpdate
+        host={connectTarget}
+        hostName={manual ? connectTarget : peer?.name || connectTarget}
+        currentVersion={hostApp?.version || ""}
+        requiredVersion={MIN_COMPATIBLE_HOST}
+        state={installState}
+        setState={setInstallState}
+        onDone={handleHostUpdateDone}
+        onFail={() => setInstallState("idle")}
+      />
+    </div>
+  ) : null;
 
   return (
     <>
@@ -825,7 +704,6 @@ export default function App() {
             size="sm"
             variant="outline"
             onClick={() => {
-              updateCompletionId.current += 1;
               cancelLivenessCheck();
               setLive("idle");
               setLiveErr("");
@@ -846,147 +724,32 @@ export default function App() {
         )}
         {w.index === S.CONNECT &&
           (manual || isConnect || !peer ? (
-            <StepConnect
-              host={host}
-              setHost={setHost}
-              state={connState}
-              setState={setConnState}
-              cliBlocked={cliGateActive}
-              onBackToDiscovery={() => {
-                stepRef.current = S.DISCOVER;
-                w.goTo(S.DISCOVER, "prev");
-              }}
-            />
+            <>
+              <StepConnect
+                host={host}
+                setHost={setHost}
+                state={connState}
+                setState={setConnState}
+                cliBlocked={cliGateActive}
+                onBackToDiscovery={() => {
+                  stepRef.current = S.DISCOVER;
+                  w.goTo(S.DISCOVER, "prev");
+                }}
+              />
+              {hostUpdatePanel}
+            </>
           ) : isReconnect ? (
-            <StepReconnect peer={peer} onReady={setReconnectReady} />
+            <>
+              <StepReconnect peer={peer} onReady={setReconnectReady} />
+              {hostUpdatePanel}
+            </>
           ) : (
             <StepSetupPassword
               peer={peer}
               onReady={setSetupReady}
             />
           ))}
-        {w.index === S.INSTALL && installMode === "update" && (
-          <StepInstalling
-            isUpdate
-            host={updateCtx.host}
-            hostName={manual ? updateCtx.host : peer?.name || updateCtx.host}
-            currentVersion={updateCtx.current}
-            requiredVersion={updateCtx.required}
-            state={installState}
-            setState={setInstallState}
-            onDone={() => {
-              // Update finished → RE-CHECK that the host is now installed+compatible before letting
-              // the user past. Only a compatible re-check opens the gate; an incompatible one re-routes
-              // through update again.
-              const completionId = ++updateCompletionId.current;
-              hostAppProbeId.current += 1;
-              setHostApp(null);
-              if (updateOrigin === "final") {
-                // Triggered from the Mappings final gate (incl. setup peers, where the Connect step
-                // renders the fingerprint step and runs no host-app probe). The update force-installed
-                // the bundled host, so the host IS set up — keep installState "done" so the liveness
-                // check's setup guard passes. Return to Mappings and re-run the final liveness check;
-                // it performs the host-app re-check itself, so Next continues past the completed update
-                // instead of re-entering fresh-install.
-                setInstallState("done");
-                // Keep Next BLOCKED for the whole freshness-poll window (Finding C). Without this,
-                // `live` is "idle" on the Mappings return until runLivenessCheck flips it to "checking"
-                // seconds later, so a quick Next click would launch a second liveness check that reads
-                // the same stale status.json and bypasses the poll. live === "checking" disables Next
-                // globally (WizardShell nextDisabled). runLivenessCheck re-sets it on resolve.
-                setLive("checking");
-                setLiveErr("");
-                const staleVer = updateCtx.current;
-                const updTarget = updateCtx.host;
-                const stillOnMappingsForUpdate = () =>
-                  updateCompletionId.current === completionId &&
-                  stepRef.current === S.MAPPINGS &&
-                  currentTargetRef.current === updTarget;
-                stepRef.current = S.MAPPINGS;
-                w.goTo(S.MAPPINGS, "prev");
-                setInstallMode("install");
-                // The forced reinstall just kickstarted the host's LaunchAgent; status.json may still
-                // hold the STALE pre-update version for a moment (Finding D). Wait for a fresh/newer
-                // version before the liveness re-check so a lingering stale status.json doesn't read
-                // "still incompatible" and bounce the user back to update.
-                void (async () => {
-                  const fresh = await waitForFreshHostStatus(
-                    updTarget,
-                    staleVer,
-                    stillOnMappingsForUpdate,
-                  );
-                  if (!fresh || !stillOnMappingsForUpdate()) return;
-                  await runLivenessCheck();
-                })();
-              } else {
-                // Triggered from the Connect-step host-app gate (non-setup). Returning to Connect
-                // re-probes the host app itself (requiresHostApp is true there → the Connect effect
-                // runs checkHostApp on entry). But install-host --force only KICKSTARTS the host's
-                // LaunchAgent; status.json keeps the pre-update below-floor version until the host
-                // rewrites it on its next tick. If we navigate back immediately, the Connect re-probe
-                // reads that STALE status and the auto-route bounces the just-updated host right back
-                // into update (Finding B). So apply the SAME freshness wait as the final gate: poll
-                // until status.json refreshes/compatible BEFORE returning to Connect, and keep Next
-                // blocked (live === "checking") for the whole window so a quick click can't skip it
-                // (Finding C). Once fresh, drop live back to "idle" so Connect's own connectReady gate
-                // (re-probe + perms) takes over.
-                // Keep the update render path mounted while the freshness poll runs; switching to
-                // "install" on S.INSTALL would mount the fresh setup installer and auto-run a second
-                // installHost({ host }).
-                setInstallState("installing");
-                setLive("checking");
-                setLiveErr("");
-                const staleVer = updateCtx.current;
-                const updTarget = updateCtx.host;
-                const stillOnInstallUpdate = () =>
-                  updateCompletionId.current === completionId && stepRef.current === S.INSTALL;
-                void (async () => {
-                  const fresh = await waitForFreshHostStatus(
-                    updTarget,
-                    staleVer,
-                    stillOnInstallUpdate,
-                  );
-                  if (!fresh || !stillOnInstallUpdate()) return;
-                  setLive("idle");
-                  stepRef.current = S.CONNECT;
-                  w.goTo(S.CONNECT, "prev");
-                  setInstallMode("install");
-                  setInstallState("idle");
-                })();
-              }
-            }}
-            onFail={() => {
-              updateCompletionId.current += 1;
-              // Backing out of a failed update must NOT bounce the user straight back here. Invalidate
-              // the stale incompatible host-app probe so the Connect-step auto-route doesn't re-fire
-              // before a fresh probe runs (Finding B). The cleared probe also lets the user pick
-              // another host / return to Discovery to recover.
-              hostAppProbeId.current += 1;
-              setHostApp(null);
-              setHostAppChecking(false);
-              setLive("idle");
-              setLiveErr("");
-              // Explicit back-out from a failed update: suppress the Connect-step auto-route so a host
-              // that is still below-floor doesn't bounce the user right back here (Finding A).
-              setUpdateDismissed(true);
-              if (updateOrigin === "final" && isSetup) {
-                // Setup peer whose already-completed setup (installState "done") routed into the final
-                // gate because the existing host was incompatible. The forced update FAILED, but setup
-                // itself is still done — keep installState "done" so the Mappings re-check re-probes the
-                // host instead of tripping the `isSetup && installState !== "done"` setup guard and
-                // trapping the user in the fresh-install loop (Finding C).
-                setInstallState("done");
-              } else {
-                setInstallState("idle");
-              }
-              const dest = updateOrigin === "final" ? S.MAPPINGS : S.CONNECT;
-              stepRef.current = dest;
-              w.goTo(dest, "prev");
-              setInstallMode("install");
-            }}
-          />
-        )}
-        {w.index === S.INSTALL && installMode === "install" && peer && (
+        {w.index === S.INSTALL && peer && (
           <StepInstalling
             peer={peer}
             state={installState}

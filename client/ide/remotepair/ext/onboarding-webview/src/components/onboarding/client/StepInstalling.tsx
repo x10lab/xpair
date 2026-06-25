@@ -149,6 +149,8 @@ export function StepInstalling({
               ? `Couldn't update XpairHost on ${name}.`
               : state === "done"
               ? `XpairHost is updated on ${name}.`
+              : state === "idle"
+              ? `XpairHost on ${name} needs an update.`
               : `Updating XpairHost on ${name} over SSH.`
             : state === "failed"
             ? `Couldn't finish setting up ${name}.`
@@ -169,7 +171,9 @@ export function StepInstalling({
               <p className="font-semibold">
                 XpairHost is already installed
                 {currentVersion ? ` (version ${currentVersion})` : ""} but too old
-                {requiredVersion ? `; this client needs ${requiredVersion} or newer` : ""}.
+                {requiredVersion
+                  ? `; the minimum compatible host version is ${requiredVersion} or newer`
+                  : ""}.
               </p>
               <p>
                 Updating will restart XpairHost and{" "}
