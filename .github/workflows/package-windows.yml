@@ -35,8 +35,11 @@ jobs:
         run: cargo build --release --locked
 
       - name: Install WiX
+        # Pin WiX v5 — the last major before v6/v7's Open Source Maintenance Fee (OSMF)
+        # EULA gate (WIX7015), which otherwise fails the build. v5 uses the same v4 schema
+        # namespace as xpair.wxs.
         run: |
-          dotnet tool install --global wix
+          dotnet tool install --global wix --version 5.0.2
           "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
         shell: pwsh
 
