@@ -67,6 +67,19 @@ const RD_SESSION_TOKEN_RE = /^[A-Za-z0-9._-]{24,128}$/;
 // argv-safe: prevents an attacker-controlled env from injecting ssh options).
 const HOST_RE = /^[A-Za-z0-9._-]+$/;
 const { spawnEnv, sshFailureKind, sshFailureMessage, SSH_STATE } = onboardingBridge;
+const RD_TRANSIENT_SSH_RE = /agent refused operation|signing failed|Permission denied \(publickey|Connection refused|Connection reset|kex_exchange|Operation timed out|Could not resolve|Host is down/i;
+const RD_MAX_TRANSIENT_ATTEMPTS = 4;
+
+function isTransientRdSshFailure(failureKind, detail) {
+  return (
+    failureKind !== SSH_STATE.HOST_KEY_MISMATCH &&
+    (failureKind === SSH_STATE.KEY_AUTH_BLOCKED || RD_TRANSIENT_SSH_RE.test(String(detail || "")))
+  );
+}
+
+function rdTransientRetryDelayMs(attempt) {
+  return 1200 + attempt * 1200; // 1.2s -> 2.4s -> 3.6s -> 4.8s
+}
 
 // --- logging (US-006) ------------------------------------------------------
 // Conforms to docs/logging.md: line format `[<ISO>] [<LEVEL>] [ide] [<session>] <msg>`,
@@ -511,6 +524,7 @@ function spawnTunnel(host, localPort, remotePort) {
     "-o", "ControlMaster=auto",
     "-o", `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
     "-o", "ControlPersist=300",
+    "-o", "ExitOnForwardFailure=yes",
     "-N",
     "-L", `${localPort}:127.0.0.1:${rport}`,
     host, // validated HOST_RE element
@@ -768,11 +782,28 @@ class RemoteDesktopPanel {
     try {
       hostSessionToken = await readRdSessionToken(host);
     } catch (e) {
+      const detail = e && e.message ? e.message : String(e || "could not read host RD token");
+      const failureKind = e && e.failureKind ? e.failureKind : sshFailureKind(detail);
+      if (
+        this._v2Generation === generation &&
+        attempt < RD_MAX_TRANSIENT_ATTEMPTS &&
+        isTransientRdSshFailure(failureKind, detail)
+      ) {
+        this._tunnelPort = null;
+        const delay = rdTransientRetryDelayMs(attempt);
+        log(`v2: RD token read transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS} in ${delay}ms`);
+        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS})` });
+        const retryTimer = setTimeout(() => {
+          if (this._v2RetryTimer === retryTimer) this._v2RetryTimer = null;
+          if (this._v2Generation !== generation) return;
+          this._startV2(host, attempt + 1, bindAttempt);
+        }, delay);
+        this._v2RetryTimer = retryTimer;
+        return;
+      }
       if (this._v2Generation === generation) {
         this._v2Active = false;
         this._tunnelPort = null;
-        const detail = e && e.message ? e.message : String(e || "could not read host RD token");
-        const failureKind = e && e.failureKind ? e.failureKind : sshFailureKind(detail);
         this.post({
           type: "status",
           state: "error",
@@ -801,8 +832,6 @@ class RemoteDesktopPanel {
     // on a retry once 1Password is unlocked/approved, so don't surface a hard error on the first blip.
     // Match only genuinely retryable auth/network transients — NOT a bare code=255 (that also covers
     // hard failures like "bind: Address already in use" which must surface immediately).
-    const TRANSIENT_RE = /agent refused operation|signing failed|Permission denied \(publickey|Connection refused|Connection reset|kex_exchange|Operation timed out|Could not resolve|Host is down/i;
-    const MAX_TUNNEL_ATTEMPTS = 4;
     const postTunnelFailure = (detail) => {
       if (!this._v2Active || this._tunnelChild !== child || this._v2Generation !== generation) return;
       if (isBindCollision(detail) && bindAttempt < RD_MAX_BIND_ATTEMPTS) {
@@ -822,15 +851,14 @@ class RemoteDesktopPanel {
       // Lazy connect: re-spawn with backoff instead of failing hard, giving 1Password time to
       // unlock/approve. Only surface the error after the retry window is exhausted.
       if (
-        attempt < MAX_TUNNEL_ATTEMPTS &&
-        failureKind !== SSH_STATE.HOST_KEY_MISMATCH &&
-        (failureKind === SSH_STATE.KEY_AUTH_BLOCKED || TRANSIENT_RE.test(detail))
+        attempt < RD_MAX_TRANSIENT_ATTEMPTS &&
+        isTransientRdSshFailure(failureKind, detail)
       ) {
         this._tunnelChild = null;
         this._tunnelPort = null;
-        const delay = 1200 + attempt * 1200; // 1.2s → 2.4s → 3.6s → 4.8s
-        log(`v2: tunnel transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${MAX_TUNNEL_ATTEMPTS} in ${delay}ms`);
-        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${MAX_TUNNEL_ATTEMPTS})` });
+        const delay = rdTransientRetryDelayMs(attempt);
+        log(`v2: tunnel transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS} in ${delay}ms`);
+        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS})` });
         const retryTimer = setTimeout(() => {
           if (this._v2RetryTimer === retryTimer) this._v2RetryTimer = null;
           if (this._v2Generation !== generation) return; // superseded by a stop/newer start

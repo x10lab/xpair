@@ -17,6 +17,7 @@ const tokenReadCommands = [];
 const scheduledTimers = [];
 let nextLocalPort = 31000;
 let failTokenRead = false;
+let transientTokenReadFailuresRemaining = 0;
 function fakeSpawn(cmd, args, opts) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -35,6 +36,13 @@ function fakeSpawn(cmd, args, opts) {
       if (failTokenRead) {
         child.stderr.emit("data", Buffer.from("cat: ~/.xpair/host/rd-session-token: Permission denied\n"));
         child.emit("close", 1);
+      } else if (transientTokenReadFailuresRemaining > 0) {
+        transientTokenReadFailuresRemaining -= 1;
+        child.stderr.emit(
+          "data",
+          Buffer.from("sign_and_send_pubkey: signing failed for ED25519 from agent: agent refused operation\n")
+        );
+        child.emit("close", 255);
       } else {
         child.stdout.emit("data", Buffer.from(`${TEST_RD_TOKEN}\n`));
         child.emit("close", 0);
@@ -191,6 +199,7 @@ function resetHarness() {
   scheduledTimers.length = 0;
   nextLocalPort = 31000;
   failTokenRead = false;
+  transientTokenReadFailuresRemaining = 0;
 }
 
 function makePanel() {
@@ -227,6 +236,7 @@ function runRemoteDesktopWebview() {
   const timers = [];
   const intervals = [];
   const windowListeners = [];
+  const documentListeners = new Map();
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) {
@@ -299,17 +309,28 @@ function runRemoteDesktopWebview() {
       this.ontrack = null;
       this.statsTimestamp = 1000;
       this.bytesReceived = 100000;
+      this.dataChannels = [];
       FakeRTCPeerConnection.instances.push(this);
     }
     addTransceiver() {}
     createDataChannel(label) {
-      return {
+      const channel = {
         label,
         readyState: "connecting",
         bufferedAmount: 0,
-        addEventListener() {},
-        send() {},
+        sent: [],
+        listeners: new Map(),
+        addEventListener(type, fn) {
+          const existing = this.listeners.get(type) || [];
+          existing.push(fn);
+          this.listeners.set(type, existing);
+        },
+        send(message) {
+          this.sent.push(message);
+        },
       };
+      this.dataChannels.push(channel);
+      return channel;
     }
     close() {
       this.closed = true;
@@ -354,7 +375,11 @@ function runRemoteDesktopWebview() {
       activeElement: element("body"),
       createElement: element,
       getElementById: element,
-      addEventListener() {},
+      addEventListener(type, fn) {
+        const existing = documentListeners.get(type) || [];
+        existing.push(fn);
+        documentListeners.set(type, existing);
+      },
     },
     window: { addEventListener(type, listener) { if (type === "message") windowListeners.push(listener); } },
     WebSocket: FakeWebSocket,
@@ -397,6 +422,11 @@ function runRemoteDesktopWebview() {
     sendWindowMessage(message) {
       for (const listener of windowListeners) {
         listener({ data: message });
+      }
+    },
+    emitDocument(type, event = {}) {
+      for (const listener of documentListeners.get(type) || []) {
+        listener(event);
       }
     },
   };
@@ -444,6 +474,10 @@ function runRemoteDesktopWebview() {
     resetHarness();
     const panel = makePanel();
     await panel._startV2("test-host");
+    assert.ok(
+      spawnedChildren[0].args.includes("ExitOnForwardFailure=yes"),
+      "tunnel ssh must exit when local forwarding fails so bind retries can observe the failure"
+    );
 
     spawnedChildren[0].stderr.emit("data", Buffer.from("bind: Address already in use\n"));
     spawnedChildren[0].emit("close", 255);
@@ -474,6 +508,47 @@ function runRemoteDesktopWebview() {
     scheduledTimers[scheduledTimers.length - 1]();
     await waitForAsync();
     assert.strictEqual(spawnedChildren.length, 2, "retry should spawn a fresh tunnel");
+  });
+
+  await check("transient RD token read retry participates in tunnel retry window", async () => {
+    resetHarness();
+    transientTokenReadFailuresRemaining = 1;
+    const panel = makePanel();
+    await panel._startV2("test-host");
+
+    assert.strictEqual(tokenReadCommands.length, 1, "first start should try to read the RD token");
+    assert.strictEqual(spawnedChildren.length, 0, "must not open a tunnel until the token read succeeds");
+    assert.strictEqual(errorPosts().length, 0, "transient token read failure must not be terminal immediately");
+    const retry = latestTimerByDelay(scheduledTimers, 1200);
+    assert.ok(retry, "transient token read should schedule the same initial retry backoff");
+
+    retry();
+    await waitForAsync();
+
+    assert.strictEqual(tokenReadCommands.length, 2, "token retry should read the host token again");
+    assert.strictEqual(spawnedChildren.length, 1, "successful token retry should continue into tunnel spawn");
+    assert.strictEqual(errorPosts().length, 0, "successful token retry must not leave an RD error");
+  });
+
+  await check("transient RD token read surfaces terminal error only after retry window", async () => {
+    resetHarness();
+    transientTokenReadFailuresRemaining = 5;
+    const panel = makePanel();
+    await panel._startV2("test-host");
+
+    for (let i = 0; i < 4; i += 1) {
+      assert.strictEqual(errorPosts().length, 0, "token transient should stay non-terminal inside retry window");
+      const retry = latestTimerByDelay(scheduledTimers, 1200 + i * 1200);
+      assert.ok(retry, `expected token retry timer ${i + 1}`);
+      retry();
+      await waitForAsync();
+    }
+
+    assert.strictEqual(tokenReadCommands.length, 5, "initial read plus four bounded retries should be attempted");
+    assert.strictEqual(spawnedChildren.length, 0, "must not open a signaling tunnel without the host token");
+    const errors = errorPosts();
+    assert.strictEqual(errors.length, 1, "exhausted token retry window should surface one RD error");
+    assert.strictEqual(errors[0].failureKind, "key-auth");
   });
 
   await check("intentional stop suppresses later tunnel close error", async () => {
@@ -659,6 +734,58 @@ function runRemoteDesktopWebview() {
     const errors = harness.posted.filter((message) => message.type === "v2Error");
     assert.strictEqual(errors.length, 1, "capture status should become a terminal v2Error");
     assert.strictEqual(errors[0].failureKind, "capture-failed");
+  });
+
+  await check("webview always sends pointerup and keyup releases under control-channel backpressure", () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:8/?token=888888888888888888888888" });
+    const ctl = harness.peers[0].dataChannels.find((channel) => channel.label === "rp-ctl");
+    assert.ok(ctl, "webview should create the reliable control DataChannel");
+    ctl.readyState = "open";
+    harness.sockets[0].emit("message", {
+      data: JSON.stringify({ type: "status", kind: "input-ready" }),
+    });
+
+    const video = harness.elements.get("screen-video");
+    const pointerEvent = (props) => ({
+      button: 0,
+      clientX: 10,
+      clientY: 20,
+      preventDefault() {},
+      ...props,
+    });
+    const keyEvent = (props) => ({
+      isComposing: false,
+      repeat: false,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+      ...props,
+    });
+    const sentMessages = () => ctl.sent.map((message) => JSON.parse(message));
+
+    ctl.bufferedAmount = 0;
+    video.emit("pointerdown", pointerEvent({ pointerId: 1, button: 0, clientX: 10, clientY: 20 }));
+    ctl.bufferedAmount = 65537;
+    video.emit("pointerup", pointerEvent({ pointerId: 1, button: 0, clientX: 30, clientY: 40 }));
+    assert.deepStrictEqual(
+      sentMessages().map((message) => message.t),
+      ["d", "u"],
+      "pointerup release must bypass BUFFER_LIMIT after a delivered pointerdown"
+    );
+
+    ctl.bufferedAmount = 0;
+    harness.emitDocument("keydown", keyEvent({ code: "ArrowLeft", key: "ArrowLeft", keyCode: 37 }));
+    ctl.bufferedAmount = 65537;
+    harness.emitDocument("keyup", keyEvent({ code: "ArrowLeft", key: "ArrowLeft", keyCode: 37 }));
+    const keyMessages = sentMessages().filter((message) => message.t === "k");
+    assert.deepStrictEqual(
+      keyMessages.map((message) => message.action),
+      ["down", "up"],
+      "keyup release must bypass BUFFER_LIMIT after a delivered keydown"
+    );
   });
 
   await check("webview samples WebRTC stats and clears sampler on cancel", async () => {

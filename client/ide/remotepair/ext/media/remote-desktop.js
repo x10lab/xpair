@@ -262,8 +262,21 @@
     setBadge();
   }
 
-  function sendInput(channel, input) {
-    if (!inputReady || !channel || channel.readyState !== "open" || channel.bufferedAmount > BUFFER_LIMIT) return false;
+  function isReleaseInput(input) {
+    return !!input && (
+      input.t === "u" ||
+      input.t === "all-up" ||
+      input.t === "reset" ||
+      (input.t === "k" && input.action === "up") ||
+      input.action === "all-up" ||
+      input.action === "reset"
+    );
+  }
+
+  function sendInput(channel, input, options) {
+    const bypassBufferLimit = !!(options && options.bypassBufferLimit);
+    if (!inputReady || !channel || channel.readyState !== "open") return false;
+    if (!bypassBufferLimit && channel.bufferedAmount > BUFFER_LIMIT) return false;
     input.seq = ++inputSeq;
     try {
       channel.send(JSON.stringify(input));
@@ -274,7 +287,7 @@
   }
 
   function sendControlInput(input) {
-    return sendInput(ctlDC, input);
+    return sendInput(ctlDC, input, { bypassBufferLimit: isReleaseInput(input) });
   }
 
   function sendMoveInput(input) {
