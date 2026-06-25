@@ -436,6 +436,12 @@
     }, V2_STATS_INTERVAL_MS);
   }
 
+  // The signaling URL carries the RD session token (?token=…). Never let it reach a
+  // log/diagnostic/overlay string — redact the token query param before surfacing.
+  function redactToken(url) {
+    return String(url == null ? "" : url).replace(/([?&]token=)[^&\s]*/gi, "$1<redacted>");
+  }
+
   function connectV2(signalUrl, reconnectAttempt) {
     const generation = ++v2Generation;
     clearV2ReconnectTimer();
@@ -678,7 +684,7 @@
     });
     sock.addEventListener("error", function () {
       if (!isCurrent()) return;
-      reconnectCurrent("signaling WebSocket error on " + signalUrl, "reach");
+      reconnectCurrent("signaling WebSocket error on " + redactToken(signalUrl), "reach");
     });
     sock.addEventListener("close", function (ev) {
       if (isCurrent() && v2Mode && !ev.wasClean) {
