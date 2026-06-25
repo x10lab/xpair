@@ -775,7 +775,7 @@ const bridge = {
   // the CLI's legacy askpass path never becomes a password/passphrase prompt. `password` remains in
   // the destructuring only for older preload/renderers; it is intentionally ignored. Returns
   // {ok,out,err,state,action}; `out` carries the redacted progress stream for StepInstalling.
-  async installHost({ host, user, password } = {}) {
+  async installHost({ host, user, password, force } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
     const h = String(host || "").trim();
     if (!validHost(h)) {
@@ -817,6 +817,10 @@ const bridge = {
     }
     const args = ["install-host", "--host", h];
     if (account) args.push("--account", account);
+    // force:true reinstalls the client-bundled XpairHost over an already-installed (but
+    // incompatible) host app — the CLI's --force flag overwrites the existing app and restarts the
+    // host (terminating any running tmux sessions). Used by the onboarding host-update flow.
+    if (force) args.push("--force");
     const r = await cli(args);
     if (r.code === 0) {
       return { ok: true, out: r.out, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };

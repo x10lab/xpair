@@ -207,6 +207,18 @@ export default function App() {
   // fetch the host fingerprint before Next starts the key-auth install.
   const [setupReady, setSetupReady] = useState(false);
   const [installState, setInstallState] = useState<InstallState>("idle");
+  // Install step mode. "install" = fresh setup-path install (peer-driven). "update" = the host app is
+  // already installed but below MIN_COMPATIBLE_HOST; we reuse StepInstalling with force:true to push
+  // the client-bundled host over it. Applies to manual/connect/reconnect (non-setup) paths.
+  const [installMode, setInstallMode] = useState<"install" | "update">("install");
+  // Host-version context for the update warning copy (current host version vs the client version it
+  // must match), captured from the incompatible host-app probe that triggered the update.
+  const [updateCtx, setUpdateCtx] = useState<{ host: string; current: string; required: string }>({
+    host: "",
+    current: "",
+    required: "",
+  });
+  const [clientVer, setClientVer] = useState("");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
   // Reconnect reachability, lifted from the Reconnect step so Next gates until the host answers.
@@ -235,6 +247,14 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Client version (for the host-update warning's "needs version X or newer" copy).
+  useEffect(() => {
+    void window.remotepair
+      .clientVersion()
+      .then((v) => setClientVer(v || ""))
+      .catch(() => {});
+  }, []);
+
   // Reconnect: this client already authorized with the host (ssh-config entry) and the app is
   // installed, so there's nothing to install — just re-persist REMOTE_HOST and confirm reachability.
   const isReconnect = peer?.status === "reconnect";
@@ -255,6 +275,7 @@ export default function App() {
       setHostAppChecking(false);
       setHostPerms(null);
       setInstallState("idle");
+      setInstallMode("install");
       setReconnectReady(false);
       setLive("idle");
       setLiveErr("");
@@ -271,10 +292,24 @@ export default function App() {
     setHostApp(null);
     setHostAppChecking(false);
     setHostPerms(null);
+    setInstallState("idle");
+    setInstallMode("install");
     setLive("idle");
     setLiveErr("");
     w.goTo(S.CONNECT, "next");
   }, [w]);
+
+  // Route the wizard into StepInstalling in UPDATE mode: the host app is installed but below
+  // MIN_COMPATIBLE_HOST. Reused by the Connect-step host-app gate and the final liveness gate.
+  const routeToHostUpdate = useCallback(
+    (target: string, hostVersion: string) => {
+      setInstallMode("update");
+      setUpdateCtx({ host: target, current: hostVersion, required: clientVer });
+      setInstallState("idle");
+      w.goTo(S.INSTALL, "next");
+    },
+    [clientVer, w],
+  );
 
   // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
   // setup, host-app, permission, and SSH liveness probes all pass.
@@ -297,12 +332,14 @@ export default function App() {
     try {
       const app = await window.remotepair.hostAppStatus(target);
       setHostApp({ target, ...app });
-      if (!app.installed || !app.compatible) {
-        setLiveErr(
-          !app.installed
-            ? "Host has no Xpair host app. Install it on the host before finishing."
-            : app.err || "Host version is incompatible with this client.",
-        );
+      if (app.installed && !app.compatible) {
+        // Installed-but-incompatible at the final gate → route to the in-UI update flow (force
+        // reinstall the bundled host) rather than dead-ending. Same routing as the Connect-step gate.
+        routeToHostUpdate(target, app.version);
+        return;
+      }
+      if (!app.installed) {
+        setLiveErr("Host has no Xpair host app. Install it on the host before finishing.");
         setLive("host-app");
         return;
       }
@@ -348,7 +385,7 @@ export default function App() {
       setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [manual, host, peer, isSetup, installState, w]);
+  }, [manual, host, peer, isSetup, installState, w, routeToHostUpdate]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
@@ -395,6 +432,25 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
+
+  // Host-app probe came back installed-but-incompatible on the Connect step (non-setup paths) → the
+  // host is below MIN_COMPATIBLE_HOST. Instead of dead-ending on a "update the host" message, route
+  // the wizard into StepInstalling in update mode (force-reinstall the bundled host). The not-installed
+  // sub-case keeps its existing behavior (manual/connect/reconnect have no fresh-install path, so it
+  // stays a blocking message via centerSlot). compatible hosts just open the gate (no routing).
+  useEffect(() => {
+    if (
+      requiresHostApp &&
+      !hostAppChecking &&
+      hostApp &&
+      hostApp.target === connectTarget &&
+      hostApp.installed &&
+      !hostApp.compatible
+    ) {
+      routeToHostUpdate(connectTarget, hostApp.version);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requiresHostApp, hostAppChecking, hostApp, connectTarget]);
 
   // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
   // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
@@ -638,7 +694,32 @@ export default function App() {
               onReady={setSetupReady}
             />
           ))}
-        {w.index === S.INSTALL && peer && (
+        {w.index === S.INSTALL && installMode === "update" && (
+          <StepInstalling
+            isUpdate
+            host={updateCtx.host}
+            hostName={manual ? updateCtx.host : peer?.name || updateCtx.host}
+            currentVersion={updateCtx.current}
+            requiredVersion={updateCtx.required}
+            state={installState}
+            setState={setInstallState}
+            onDone={() => {
+              // Update finished → RE-CHECK the host app. Only a compatible result opens the gate; an
+              // incompatible re-check keeps the user blocked (and re-routes through update again).
+              hostAppProbeId.current += 1;
+              setHostApp(null);
+              setInstallMode("install");
+              setInstallState("idle");
+              w.goTo(S.CONNECT, "prev");
+            }}
+            onFail={() => {
+              setInstallMode("install");
+              setInstallState("idle");
+              w.goTo(S.CONNECT, "prev");
+            }}
+          />
+        )}
+        {w.index === S.INSTALL && installMode === "install" && peer && (
           <StepInstalling
             peer={peer}
             state={installState}
