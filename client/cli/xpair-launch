@@ -46,7 +46,11 @@ BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.x10lab.xpair-host}"
 REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin}"          # path evaluated on the remote side (preserve quoting)
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 AQUA_SOCK="${AQUA_SOCK:-/tmp/aqua-tmux.sock}"
-MOSH_SERVER="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}"   # bundled in XpairHost.app (static, brew-free); see host/build-mosh.sh
+# MOSH_SERVER: bundled in XpairHost.app (static, brew-free); see host/build-mosh.sh.
+# An explicit env override always wins; otherwise the absolute path is resolved from the
+# REMOTE user's home (REMOTE_HOME, ssh-resolved below) so it is correct even when the remote
+# SSH account differs from the client user. Left empty here when no override was given.
+MOSH_SERVER="${MOSH_SERVER:-}"
 FOLDER_MAPS="${FOLDER_MAPS:-}"
 HROMANIZE="${HROMANIZE:-$RP_DIR/bin/hangul-romanize}"
 # Engine selection (claude|codex|opencode). RP_ENGINE (env, set by 'xpair launch --engine') wins;
@@ -820,6 +824,9 @@ else
   printf '%s SESSION: %s %s (client=%s)\n' "\$(date '+%FT%T%z')" "\$([ "\$NEED_CREATE" = 1 ] && echo created || echo attached)" "\$SESSION" "${LOCAL_HOST}" >> "\$RPLOG"
 fi
 printf '__SESSION__:%s\n' "\$SESSION"
+# Emit the REMOTE user's home (login shell expands \$HOME remotely) so the client can build
+# absolute mosh paths correct even when the remote SSH account differs from the client user.
+printf '__HOME__:%s\n' "\$HOME"
 EOF
 )
 
@@ -828,12 +835,18 @@ EOF
 SSH_RC=0
 SSH_OUT="$(ssh -o BatchMode=yes "$REMOTE_HOST" "$REMOTE_SCRIPT" 2>&1)" || SSH_RC=$?
 # Show setup output to user and persist it for `xpair logs --collect`; strip the session + recovery markers.
-SETUP_OUT="$(printf '%s\n' "$SSH_OUT" | grep -Ev '^(__SESSION__:|__XPAIR_HOST_RECOVERY__$)' || true)"
+SETUP_OUT="$(printf '%s\n' "$SSH_OUT" | grep -Ev '^(__SESSION__:|__HOME__:|__XPAIR_HOST_RECOVERY__$)' || true)"
 if [ -n "$SETUP_OUT" ]; then
   printf '%s\n' "$SETUP_OUT" | while IFS= read -r l; do printf '%s setup %s\n' "$(date '+%T')" "$l" >> "$LAUNCH_LOG"; done
   printf '%s\n' "$SETUP_OUT"
 fi
 ACTUAL_SESSION="$(printf '%s\n' "$SSH_OUT" | grep '^__SESSION__:' | tail -1 | sed 's/^__SESSION__://')"
+# Resolve the REMOTE user's home (absolute, remote-correct even when the SSH account differs
+# from the client user). Fall back to the client $HOME to preserve same-user behavior.
+REMOTE_HOME="$(printf '%s\n' "$SSH_OUT" | grep '^__HOME__:' | tail -1 | sed 's/^__HOME__://')"
+[ -z "$REMOTE_HOME" ] && REMOTE_HOME="$HOME"
+# Honor an explicit MOSH_SERVER override; otherwise build the bundled path from the remote home.
+[ -z "$MOSH_SERVER" ] && MOSH_SERVER="$REMOTE_HOME/.local/bin/mosh-server"
 if [ "$SSH_RC" -ne 0 ]; then
   if printf '%s\n' "$SSH_OUT" | grep -q '^__XPAIR_HOST_RECOVERY__$'; then
     exit "$SSH_RC"
@@ -945,9 +958,10 @@ while :; do
     printf 'attaching via mosh -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
     # Specify full paths for mosh-server and tmux-aqua (patched) — bypasses non-interactive PATH.
     # Commands after mosh '--' are execvp'd directly (no shell) → variables like '$HOME' are NOT expanded.
-    # → tmux-aqua must be an absolute path. Since host and client share the same user (same home path),
-    #   expand local $HOME to build the absolute path (remote home == local home). This also keeps
-    #   'attach -d -t =SESS' clean in the mosh-client argv so zombie/RN pgrep matching works correctly.
+    # → tmux-aqua must be an absolute path. Use REMOTE_HOME — the ssh-resolved remote user's home
+    #   (correct even when the remote SSH account differs from the client user) — to build the
+    #   absolute path. This also keeps 'attach -d -t =SESS' clean in the mosh-client argv so
+    #   zombie/RN pgrep matching works correctly.
     # Attach to the Xpair fixed socket — independent of client (mosh) context; claude is a server child.
     # No timeout intentionally — if the client sleeps for a long time, mosh restores the session on wake (roaming).
     #
@@ -965,7 +979,7 @@ while :; do
       exit 129
     }
     trap on_tab_close HUP TERM
-    mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION" || ATTACH_RC=$?
+    mosh --server="$MOSH_SERVER" "$REMOTE_HOST" -- "$REMOTE_HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$ACTUAL_SESSION" || ATTACH_RC=$?
     trap - HUP TERM
     [ "$ATTACH_RC" = 0 ] && exit 0
     choose_attach_recovery mosh "$ATTACH_RC" || exit $?
