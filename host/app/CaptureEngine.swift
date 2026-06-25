@@ -49,6 +49,11 @@ final class CaptureEngine {
     private var forceKeyframeFlag = false
     private var frameCount: UInt64 = 0
     private let periodicKeyframeInterval: UInt64 = 30 // ~1s @ 30fps
+    // SCK only emits `.complete` frames when the screen CHANGES; on a static screen it emits none,
+    // so a viewer joining a still screen would get zero frames → black. Force the FIRST frame after
+    // start to encode even if SCK marks it idle, so the initial keyframe (the current screen) is
+    // always delivered. Touched only on the sample queue (like frameCount).
+    private var firstFrameSubmitted = false
 
     /// Start capturing the first display and encoding to H.264. `sink` receives one
     /// `[4B BE len][Annex-B AU]` Data per encoded frame, on SCK's sample queue (the
@@ -63,6 +68,7 @@ final class CaptureEngine {
         frameCount = 0
         forceKeyframeFlag = false
         keyframeLock.unlock()
+        firstFrameSubmitted = false
 
         SCShareableContent.getWithCompletionHandler { [weak self] content, err in
             guard let self = self else { return }
@@ -221,11 +227,16 @@ final class CaptureEngine {
         func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
             guard type == .screen, CMSampleBufferIsValid(sample) else { return }
             // Skip frames SCK marks as idle/blank (no on-screen change) — frame-skip for free.
-            if let arr = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+            // EXCEPTION: never skip the FIRST frame after start. On a static screen SCK emits only
+            // idle frames, so skipping them would deliver zero frames and the viewer stays black;
+            // the first frame must always encode (as the initial keyframe = current screen).
+            if engine.firstFrameSubmitted,
+               let arr = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
                let info = arr.first, let raw = info[.status] as? Int, let st = SCFrameStatus(rawValue: raw), st != .complete {
                 return
             }
             guard let pb = CMSampleBufferGetImageBuffer(sample) else { return }
+            engine.firstFrameSubmitted = true
             let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
             engine.ensureEncoder(w, h)
             guard let sess = engine.session else { return }
