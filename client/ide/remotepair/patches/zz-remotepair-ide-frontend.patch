@@ -1608,8 +1608,9 @@ index 00000000..6887d7cb
 + *  The star reflects live favorite state from the C2 store (favoritesStore()): filled star when
 + *  favorited, outline star otherwise; clicking it dispatches remotepair.browser.toggleFavorite and
 + *  the store's onDidChangeFavorites repaints the icon. The '+' dispatches
-+ *  remotepair.browser.newSessionInFolder (single open contract). Both commands resolve the uri via
-+ *  getResourceForCommand(uri) and we pass the row uri explicitly.
++ *  remotepair.browser.newSessionInFolder (single open contract). Picking a non-root folder row
++ *  itself also dispatches newSessionInFolder so nested folder selection is not a no-op. Both
++ *  commands resolve the uri via getResourceForCommand(uri) and we pass the row uri explicitly.
 + *--------------------------------------------------------------------------------------------*/
 +class RemotePairFolderRowActions extends Disposable implements IExplorerFileContribution {
 +
@@ -1671,6 +1672,25 @@ index 00000000..6887d7cb
 +				this.commandService.executeCommand('remotepair.browser.newSessionInFolder', resource);
 +			}
 +		}));
++		// In the Sessions -> Browser picker flow, selecting a nested mapped folder must advance the
++		// flow instead of only leaving the native Explorer row selected. Treat a plain left-click on
++		// non-root folder content as choosing that folder; root rows still keep native expand/select.
++		this._register(addDisposableListener(container, EventType.MOUSE_DOWN, (e: MouseEvent) => {
++			if (e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) {
++				return;
++			}
++			if (e.target instanceof Node && this.actions.contains(e.target)) {
++				return;
++			}
++			const resource = this.currentResource;
++			if (!resource || !this.isNestedFolderResource(resource)) {
++				return;
++			}
++			e.stopPropagation();
++			e.preventDefault();
++			rpLog('debug', `nested folder row picked -> newSessionInFolder ${resource.toString()}`);
++			this.commandService.executeCommand('remotepair.browser.newSessionInFolder', resource);
++		}));
 +		// Also swallow the trailing CLICK so a stray click (e.g. synthetic, or if mousedown was
 +		// missed) never reaches the tree row and triggers open/expand. No command runs here.
 +		this._register(addDisposableListener(this.starEl, EventType.CLICK, (e: MouseEvent) => {
@@ -1726,6 +1746,11 @@ index 00000000..6887d7cb
 +		this.starEl.classList.toggle('codicon-' + Codicon.starFull.id, favorited);
 +		this.starEl.classList.toggle('codicon-' + Codicon.starEmpty.id, !favorited);
 +		this.starEl.classList.toggle('remotepair-folder-row-action-active', favorited);
++	}
++
++	private isNestedFolderResource(resource: URI): boolean {
++		const root = this.explorerService.findClosestRoot(resource);
++		return !!root && root.resource.toString() !== resource.toString();
 +	}
 +}
 +
