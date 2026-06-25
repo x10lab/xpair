@@ -18,7 +18,10 @@ jobs:
     runs-on: [self-hosted, Windows, X64, Win11]
     steps:
       - name: Inventory toolchain
-        shell: powershell   # Windows PowerShell 5.1 — always present; does not require pwsh 7
+        # Custom shell string overrides the default `powershell -command ". '{0}'"`, whose dot-source
+        # is blocked when the runner's execution policy is Restricted (the Windows default). Bypass is
+        # process-scoped (does not change the host policy). Still Windows PowerShell 5.1 — no pwsh 7.
+        shell: powershell -ExecutionPolicy Bypass -NoProfile -Command "& '{0}'"
         run: |
           $ErrorActionPreference = 'Continue'
 
