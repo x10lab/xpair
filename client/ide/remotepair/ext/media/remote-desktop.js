@@ -118,6 +118,24 @@
     try { video.srcObject = null; } catch (_e) {}
   }
 
+  function clearV2FirstFrameTimer() {
+    if (v2FirstFrameTimer && typeof clearTimeout === "function") {
+      try { clearTimeout(v2FirstFrameTimer); } catch (_e) {}
+    }
+    v2FirstFrameTimer = null;
+  }
+
+  function resetV2AttemptState() {
+    clearV2FirstFrameTimer();
+    haveFrame = false;
+    v2FirstFrameReported = false;
+    v2ErrorReported = false;
+  }
+
+  function clearVideo() {
+    try { video.srcObject = null; } catch (_e) {}
+  }
+
   function closeWs() {
     if (ws) {
       try { ws.close(); } catch (_e) {}
@@ -213,6 +231,16 @@
       pc2 = null;
     }
     resetInputChannels();
+  }
+
+  function cancelV2(showConnecting) {
+    v2Generation += 1;
+    v2Mode = false;
+    resetV2AttemptState();
+    closeWs();
+    closePc2();
+    clearVideo();
+    if (showConnecting) showOverlay("Connecting to host…");
   }
 
   function cancelV2(showConnecting) {
