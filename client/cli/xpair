@@ -149,6 +149,14 @@ app_pid() {
 }
 # Minimal flat-JSON value reader (no jq dep). _jget '<json>' key → value (string or bool/number).
 _jget() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p"; }
+# Emit a JSON-quoted, escaped string for "$1" (no jq dep). POSIX paths may contain a double quote,
+# backslash, or newline; emitting them raw produces invalid JSON that breaks the bridge's JSON.parse.
+_json_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
 _mark() { [ "$1" = true ] && printf '✓' || printf '✗'; }
 # Are we running INSIDE a Xpair host tmux session? (computer-use available here)
 in_host_session() { case "${TMUX:-}" in *aqua-tmux.sock*) return 0;; *) return 1;; esac; }
@@ -319,7 +327,7 @@ cmd_map() {
                # SSOT machine-readable form for the onboarding bridge (clean client::host, no shell escaping).
                local sep=''; printf '['
                for pair in $FOLDER_MAPS; do [ -n "$pair" ] || continue
-                 printf '%s{"client":"%s","host":"%s"}' "$sep" "$(map_client_of "$pair")" "$(map_host_of "$pair")"; sep=','
+                 printf '%s{"client":%s,"host":%s}' "$sep" "$(_json_str "$(map_client_of "$pair")")" "$(_json_str "$(map_host_of "$pair")")"; sep=','
                done
                printf ']\n'
              else
@@ -1532,6 +1540,13 @@ cmd_install_host() {
     *) echo "install-host [--host <addr>] [--account <user>] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
   esac; done
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
+  # Normalize a user-qualified --host (user@mac): split the user into the account so the persisted
+  # REMOTE_HOST and the managed ssh-config alias are the BARE hostname. Left as-is, "user@mac" gets
+  # written as the Host alias / HostName (invalid) and breaks later key-auth connections. An explicit
+  # --account wins; otherwise the embedded user becomes the account.
+  case "$host" in
+    *@*) [ -n "$account" ] || account="${host%@*}"; host="${host##*@}" ;;
+  esac
   local target="$host"; [ -n "$account" ] && target="$account@$host"
 
   # SSH with NO controlling TTY (stdin </dev/null). The onboarding's primary path is key-auth only:
@@ -1587,7 +1602,12 @@ cmd_install_host() {
         err "SHA256 mismatch — aborting before any host exec (expected $sha, got $got)"; rm -f "$btmp"; return 1
       fi
       ok "checksum verified — running pinned bootstrap on $target"
-      _rp_ssh "$target" "ROLE=host BRANCH=$ref bash -s" < "$btmp" || { rm -f "$btmp"; err "remote bootstrap failed"; return 1; }
+      # Pipe the verified script into the remote `bash -s` over the SAME setup connection.
+      # We do NOT use _rp_ssh here: it hardcodes </dev/null (see the key-authorize note below),
+      # which would discard "$btmp" and run an EMPTY bootstrap that "succeeds" while installing
+      # nothing. Call ssh directly so the script reaches the remote bash's stdin.
+      "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$target" "ROLE=host BRANCH=$ref bash -s" < "$btmp" \
+        || { rm -f "$btmp"; err "remote bootstrap failed"; return 1; }
       rm -f "$btmp"
     else
       # Default: scp the locally-built SIGNED .app + install.sh; integrity = signature.
@@ -1831,10 +1851,24 @@ cmd_update() {
   # Repo app version: host/build-host.sh RP_VERSION default, else Casks/*.rb, else unknown.
   local repo_ver=""
   if [ -n "$repo_root" ] && [ -f "$repo_root/host/build-host.sh" ]; then
-    repo_ver="$(sed -n 's/^VERSION="${RP_VERSION:-\([0-9.]*\)}".*/\1/p' "$repo_root/host/build-host.sh" | head -1)"
+    # build-host.sh no longer hardcodes a literal version: it computes
+    # VERSION="${RP_VERSION:-${RP_BUILD_BASE}${_rpn}}" where RP_BUILD_BASE defaults to e.g. 0.5.0a and
+    # _rpn is the shared/.build-counter marker (the last-built number). The old [0-9.]-only grep matched
+    # nothing on this computed form, leaving repo_ver empty so an out-of-date native app was never flagged.
+    # First honor a pinned RP_VERSION literal (allowing the alpha suffix), else mirror base+counter.
+    local _vbase _vcnt
+    repo_ver="$(sed -n 's/^VERSION="\${RP_VERSION:-\([0-9][0-9A-Za-z.]*\)}".*/\1/p' "$repo_root/host/build-host.sh" | head -1)"
+    if [ -z "$repo_ver" ]; then
+      _vbase="$(sed -n 's/^RP_BUILD_BASE="\${RP_BUILD_BASE:-\([0-9A-Za-z.]*\)}".*/\1/p' "$repo_root/host/build-host.sh" | head -1)"
+      _vcnt="$(tr -dc '0-9' < "$repo_root/shared/.build-counter" 2>/dev/null)"
+      [ -n "$_vbase" ] && [ -n "$_vcnt" ] && repo_ver="${_vbase}${_vcnt}"
+    fi
   fi
   if [ -z "$repo_ver" ] && [ -n "$repo_root" ]; then
-    repo_ver="$(sed -n 's/^[[:space:]]*version "\([0-9.]*\)".*/\1/p' "$repo_root"/Casks/*.rb 2>/dev/null | head -1)"
+    # Release fallback: the pinned Cask version (e.g. 0.5.0a38). Accept the alpha suffix, not just
+    # digits/dots, and prefer the host cask since running_ver is the host app's status.json version.
+    repo_ver="$(sed -n 's/^[[:space:]]*version "\([0-9][0-9A-Za-z.]*\)".*/\1/p' "$repo_root/Casks/xpair-host.rb" 2>/dev/null | head -1)"
+    [ -n "$repo_ver" ] || repo_ver="$(sed -n 's/^[[:space:]]*version "\([0-9][0-9A-Za-z.]*\)".*/\1/p' "$repo_root"/Casks/*.rb 2>/dev/null | head -1)"
   fi
 
   c "xpair update (M6 Level-1 glue hot-swap)"

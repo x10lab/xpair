@@ -32,8 +32,8 @@ test("client paths map to host paths before Browser roots and launches (Q0041)",
   );
   assert.match(
     cli,
-    /cmd_map\(\)[\s\S]*printf '%s\{"client":"%s","host":"%s"\}'[\s\S]*map_client_of "\$pair"[\s\S]*map_host_of "\$pair"/,
-    "map list --json must expose clean client and host path pairs as the mapping SSOT",
+    /cmd_map\(\)[\s\S]*\{"client":%s,"host":%s\}[\s\S]*_json_str "\$\(map_client_of "\$pair"\)"[\s\S]*_json_str "\$\(map_host_of "\$pair"\)"/,
+    "map list --json must expose clean client and host path pairs (JSON-escaped via _json_str) as the mapping SSOT",
   );
   assert.match(
     launcher,
