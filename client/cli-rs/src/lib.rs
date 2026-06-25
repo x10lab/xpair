@@ -26,6 +26,7 @@ pub mod notify;
 pub mod open_gui;
 pub mod platform;
 pub mod remote_quote;
+pub mod respawn;
 pub mod session;
 pub mod status;
 pub mod tools;

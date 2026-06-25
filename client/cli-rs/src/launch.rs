@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::io;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +17,7 @@ use crate::config;
 use crate::mapping::{map_to_host, parse_maps};
 use crate::platform::Os;
 use crate::remote_quote;
+use crate::respawn::{self, Engine};
 use crate::session::{self, SshTransport};
 use crate::transport::Transport;
 
@@ -173,12 +173,31 @@ pub fn build_ensure_session_remote_cmd(
     host_dir: &str,
     fresh: bool,
 ) -> String {
+    build_ensure_session_remote_cmd_for_engine(
+        Engine::Claude,
+        aqua_sock,
+        session,
+        host_dir,
+        fresh,
+        !fresh,
+    )
+}
+
+/// Build the remote create-or-reuse command with a real respawn body.
+pub fn build_ensure_session_remote_cmd_for_engine(
+    engine: Engine,
+    aqua_sock: &str,
+    session: &str,
+    host_dir: &str,
+    fresh: bool,
+    cl_continue: bool,
+) -> String {
     let has = remote_has_session_cmd(aqua_sock, session);
-    let new = remote_new_session_cmd(aqua_sock, session, host_dir);
+    let new = remote_new_session_cmd(aqua_sock, session, host_dir, engine, cl_continue);
     if fresh {
         format!("{has} && exit 10; {new}")
     } else {
-        format!("{has} || {new}")
+        format!("{has} || {{ {new}; }}")
     }
 }
 
@@ -231,8 +250,11 @@ pub fn ensure_remote_session(
     session: &str,
     host_dir: &str,
     fresh: bool,
+    engine: Engine,
 ) -> Result<(), String> {
-    let remote_cmd = build_ensure_session_remote_cmd(aqua_sock, session, host_dir, fresh);
+    let remote_cmd = build_ensure_session_remote_cmd_for_engine(
+        engine, aqua_sock, session, host_dir, fresh, !fresh,
+    );
     let out = transport
         .ssh_exec(host, &remote_cmd)
         .map_err(|err| format!("remote launch setup failed: {err}"))?;
@@ -314,6 +336,13 @@ fn run_local_macos(path: &Path, host: &str, req: &LaunchReq) -> ExitCode {
         }
     };
     let aqua_sock = resolve_aqua_sock();
+    let engine = match resolve_engine(path, req) {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("xpair launch: {err}");
+            return ExitCode::from(2);
+        }
+    };
 
     // macOS-only runtime boundary: the bash launcher starts XpairHost via `open -a`,
     // waits for launchctl/tmux-aqua readiness, then performs the local tmux handoff.
@@ -327,7 +356,7 @@ fn run_local_macos(path: &Path, host: &str, req: &LaunchReq) -> ExitCode {
     let plan = pick_local_session(&proj, &existing, req.fresh);
 
     if plan.create {
-        let respawn_path = match write_local_respawn_stub(&plan.session, plan.cont) {
+        let respawn_path = match write_local_respawn_script(engine, &plan.session, plan.cont) {
             Ok(path) => path,
             Err(err) => {
                 eprintln!("xpair launch: could not write local respawn script: {err}");
@@ -390,10 +419,17 @@ fn run_remote(path: &Path, host: &str, local_mode: bool, req: &LaunchReq) -> Exi
 
     let aqua_sock = resolve_aqua_sock();
     let session = remote_session_name_for(host, &host_dir);
+    let engine = match resolve_engine(path, req) {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("xpair launch: {err}");
+            return ExitCode::from(2);
+        }
+    };
     let transport = SshTransport;
-    if let Err(err) =
-        ensure_remote_session(&transport, host, &aqua_sock, &session, &host_dir, req.fresh)
-    {
+    if let Err(err) = ensure_remote_session(
+        &transport, host, &aqua_sock, &session, &host_dir, req.fresh, engine,
+    ) {
         eprintln!("xpair launch: {err}");
         return ExitCode::from(1);
     }
@@ -416,11 +452,31 @@ fn remote_has_session_cmd(aqua_sock: &str, session: &str) -> String {
     format!("{REMOTE_BIN}/{TMUX_AQUA} -S {sock} has-session -t {target} 2>/dev/null")
 }
 
-fn remote_new_session_cmd(aqua_sock: &str, session: &str, host_dir: &str) -> String {
+fn remote_new_session_cmd(
+    aqua_sock: &str,
+    session: &str,
+    host_dir: &str,
+    engine: Engine,
+    cl_continue: bool,
+) -> String {
     let sock = remote_quote::posix_single_quote(aqua_sock);
-    let session = remote_quote::posix_single_quote(session);
+    let session_q = remote_quote::posix_single_quote(session);
     let host_dir = remote_quote::posix_single_quote(host_dir);
-    format!("{REMOTE_BIN}/{TMUX_AQUA} -S {sock} new-session -d -s {session} -c {host_dir}")
+    let script = respawn::build_respawn_script(engine, session, cl_continue);
+    let script = remote_quote::posix_single_quote(&script);
+    format!(
+        "T=$(mktemp -t claude-respawn.XXXXXX) && printf %s {script} > \"$T\" && {REMOTE_BIN}/{TMUX_AQUA} -S {sock} new-session -d -s {session_q} -c {host_dir} \"bash $T\""
+    )
+}
+
+fn resolve_engine(path: &Path, req: &LaunchReq) -> Result<Engine, String> {
+    let raw = match &req.engine {
+        Some(engine) => engine.clone(),
+        None => config::get_cli(path, "engine").map_err(|err| err.to_string())?,
+    };
+    canonical_engine(&raw)
+        .map(|engine| Engine::from_canonical(&engine))
+        .ok_or_else(|| format!("unknown engine: {raw} (use {ENGINE_USAGE})"))
 }
 
 fn local_session_exists(existing: &[(String, bool)], proj: &str, n: usize) -> bool {
@@ -788,25 +844,14 @@ fn list_local_sessions(tmux_aqua_bin: &str, aqua_sock: &str) -> Vec<(String, boo
     }
 }
 
-fn write_local_respawn_stub(session: &str, cont: bool) -> io::Result<PathBuf> {
+fn write_local_respawn_script(engine: Engine, session: &str, cont: bool) -> io::Result<PathBuf> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     let path =
         std::env::temp_dir().join(format!("xpair-respawn-{}-{stamp}.sh", std::process::id()));
-    let mut file = fs::File::create(&path)?;
-    writeln!(
-        file,
-        "export CLAUDE_WARP_RC={}",
-        remote_quote::posix_single_quote(session)
-    )?;
-    writeln!(file, "export CL_CONTINUE={}", u8::from(cont))?;
-    writeln!(
-        file,
-        "printf '%s\\n' 'xpair local launch engine runtime is deferred in the Rust port.'"
-    )?;
-    writeln!(file, "exec \"${{SHELL:-/bin/bash}}\" -l")?;
+    fs::write(&path, respawn::build_respawn_script(engine, session, cont))?;
     Ok(path)
 }
 
@@ -888,6 +933,46 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<LaunchReq, (String, u8)> {
         parse_launch_args(&strings(args))
+    }
+
+    fn expected_remote_new_session_cmd(
+        engine: Engine,
+        aqua_sock: &str,
+        session: &str,
+        host_dir: &str,
+        cl_continue: bool,
+    ) -> String {
+        let sock = remote_quote::posix_single_quote(aqua_sock);
+        let session_q = remote_quote::posix_single_quote(session);
+        let host_dir_q = remote_quote::posix_single_quote(host_dir);
+        let script = remote_quote::posix_single_quote(&respawn::build_respawn_script(
+            engine,
+            session,
+            cl_continue,
+        ));
+        format!(
+            "T=$(mktemp -t claude-respawn.XXXXXX) && printf %s {script} > \"$T\" && {REMOTE_BIN}/{TMUX_AQUA} -S {sock} new-session -d -s {session_q} -c {host_dir_q} \"bash $T\""
+        )
+    }
+
+    fn expected_ensure_remote_session_cmd(
+        engine: Engine,
+        aqua_sock: &str,
+        session: &str,
+        host_dir: &str,
+        fresh: bool,
+        cl_continue: bool,
+    ) -> String {
+        let sock = remote_quote::posix_single_quote(aqua_sock);
+        let target = remote_quote::posix_single_quote(&format!("={session}"));
+        let has = format!("{REMOTE_BIN}/{TMUX_AQUA} -S {sock} has-session -t {target} 2>/dev/null");
+        let new =
+            expected_remote_new_session_cmd(engine, aqua_sock, session, host_dir, cl_continue);
+        if fresh {
+            format!("{has} && exit 10; {new}")
+        } else {
+            format!("{has} || {{ {new}; }}")
+        }
     }
 
     #[test]
@@ -1093,7 +1178,14 @@ mod tests {
                 "/Users/me/project",
                 false,
             ),
-            "$HOME/.local/bin/tmux-aqua -S '/tmp/aqua sock'\\''s.sock' has-session -t '=mac_project_8779b_1' 2>/dev/null || $HOME/.local/bin/tmux-aqua -S '/tmp/aqua sock'\\''s.sock' new-session -d -s 'mac_project_8779b_1' -c '/Users/me/project'"
+            expected_ensure_remote_session_cmd(
+                Engine::Claude,
+                "/tmp/aqua sock's.sock",
+                "mac_project_8779b_1",
+                "/Users/me/project",
+                false,
+                true,
+            )
         );
     }
 
@@ -1106,7 +1198,36 @@ mod tests {
                 "/Users/me/project",
                 true,
             ),
-            "$HOME/.local/bin/tmux-aqua -S '/tmp/aqua-tmux.sock' has-session -t '=mac_project_8779b_1' 2>/dev/null && exit 10; $HOME/.local/bin/tmux-aqua -S '/tmp/aqua-tmux.sock' new-session -d -s 'mac_project_8779b_1' -c '/Users/me/project'"
+            expected_ensure_remote_session_cmd(
+                Engine::Claude,
+                "/tmp/aqua-tmux.sock",
+                "mac_project_8779b_1",
+                "/Users/me/project",
+                true,
+                false,
+            )
+        );
+    }
+
+    #[test]
+    fn builds_remote_create_command_with_selected_engine_respawn_body() {
+        assert_eq!(
+            build_ensure_session_remote_cmd_for_engine(
+                Engine::Opencode,
+                "/tmp/aqua-tmux.sock",
+                "mac_project_8779b_1",
+                "/Users/me/project",
+                false,
+                true,
+            ),
+            expected_ensure_remote_session_cmd(
+                Engine::Opencode,
+                "/tmp/aqua-tmux.sock",
+                "mac_project_8779b_1",
+                "/Users/me/project",
+                false,
+                true,
+            )
         );
     }
 
@@ -1221,6 +1342,7 @@ mod tests {
                 "mac_project_8779b_1",
                 "/Users/me/project",
                 false,
+                Engine::Codex,
             ),
             Ok(())
         );
@@ -1232,6 +1354,7 @@ mod tests {
                 "mac_project_8779b_1",
                 "/Users/me/project",
                 false,
+                Engine::Codex,
             ),
             Err("remote launch setup failed (exit=12)".to_string())
         );
@@ -1241,7 +1364,14 @@ mod tests {
         assert_eq!(calls[0].host, "mac.local");
         assert_eq!(
             calls[0].remote_cmd,
-            "$HOME/.local/bin/tmux-aqua -S '/tmp/aqua-tmux.sock' has-session -t '=mac_project_8779b_1' 2>/dev/null || $HOME/.local/bin/tmux-aqua -S '/tmp/aqua-tmux.sock' new-session -d -s 'mac_project_8779b_1' -c '/Users/me/project'"
+            expected_ensure_remote_session_cmd(
+                Engine::Codex,
+                "/tmp/aqua-tmux.sock",
+                "mac_project_8779b_1",
+                "/Users/me/project",
+                false,
+                true,
+            )
         );
         assert_eq!(calls[1], calls[0]);
     }
