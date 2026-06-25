@@ -285,6 +285,25 @@ function runRemoteDesktopWebview() {
     assert.match(errors[0].detail, /Address already in use/);
   });
 
+  await check("transient tunnel close (1Password agent refused) lazily retries, no hard error", async () => {
+    resetHarness();
+    const panel = makePanel();
+    await panel._startV2("test-host");
+    // 1Password momentarily locked → ssh-agent refuses to sign → tunnel exits 255.
+    spawnedChildren[0].stderr.emit(
+      "data",
+      Buffer.from("sign_and_send_pubkey: signing failed for ED25519 from agent: agent refused operation\n")
+    );
+    spawnedChildren[0].emit("close", 255);
+    assert.strictEqual(errorPosts().length, 0, "transient close must not surface a hard error");
+    const connecting = postedMessages.filter((m) => m.type === "status" && m.state === "connecting");
+    assert.ok(connecting.length >= 1, "transient close should post a reconnecting status");
+    // firing the scheduled retry re-spawns the tunnel (lazy reconnect)
+    scheduledTimers[scheduledTimers.length - 1]();
+    await waitForAsync();
+    assert.strictEqual(spawnedChildren.length, 2, "retry should spawn a fresh tunnel");
+  });
+
   await check("intentional stop suppresses later tunnel close error", async () => {
     resetHarness();
     const panel = makePanel();

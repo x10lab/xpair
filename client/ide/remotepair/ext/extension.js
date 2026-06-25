@@ -644,7 +644,7 @@ class RemoteDesktopPanel {
 
   // --- v2 WebRTC (UDP/RTP H.264) -------------------------------------------
 
-  async _startV2(host) {
+  async _startV2(host, attempt = 0) {
     this._stopV2();
     const generation = ++this._v2Generation;
     this._v2Active = true;
@@ -670,8 +670,32 @@ class RemoteDesktopPanel {
       });
     }
 
+    // Transient failures: a momentarily-locked 1Password / ssh-agent that refuses to sign exits the
+    // tunnel with code 255 ("agent refused operation" / "signing failed … from agent" / publickey
+    // permission denied) — and a stale ControlPath or a host still coming up also blip. These resolve
+    // on a retry once 1Password is unlocked/approved, so don't surface a hard error on the first blip.
+    // Match only genuinely retryable auth/network transients — NOT a bare code=255 (that also covers
+    // hard failures like "bind: Address already in use" which must surface immediately).
+    const TRANSIENT_RE = /agent refused operation|signing failed|Permission denied \(publickey|Connection refused|Connection reset|kex_exchange|Operation timed out|Could not resolve|Host is down/i;
+    const MAX_TUNNEL_ATTEMPTS = 4;
     const postTunnelFailure = (detail) => {
       if (!this._v2Active || this._tunnelChild !== child || this._v2Generation !== generation) return;
+      // Lazy connect: re-spawn with backoff instead of failing hard, giving 1Password time to
+      // unlock/approve. Only surface the error after the retry window is exhausted.
+      if (attempt < MAX_TUNNEL_ATTEMPTS && TRANSIENT_RE.test(detail)) {
+        this._tunnelChild = null;
+        this._tunnelPort = null;
+        const delay = 1200 + attempt * 1200; // 1.2s → 2.4s → 3.6s → 4.8s
+        log(`v2: tunnel transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${MAX_TUNNEL_ATTEMPTS} in ${delay}ms`);
+        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${MAX_TUNNEL_ATTEMPTS})` });
+        const retryTimer = setTimeout(() => {
+          if (this._v2RetryTimer === retryTimer) this._v2RetryTimer = null;
+          if (this._v2Generation !== generation) return; // superseded by a stop/newer start
+          this._startV2(host, attempt + 1);
+        }, delay);
+        this._v2RetryTimer = retryTimer;
+        return;
+      }
       this._v2Active = false;
       this._tunnelChild = null;
       this._tunnelPort = null;
@@ -713,6 +737,10 @@ class RemoteDesktopPanel {
     if (this._v2SettleTimer) {
       try { clearTimeout(this._v2SettleTimer); } catch (_e) {}
       this._v2SettleTimer = null;
+    }
+    if (this._v2RetryTimer) {
+      try { clearTimeout(this._v2RetryTimer); } catch (_e) {}
+      this._v2RetryTimer = null;
     }
     if (this._tunnelChild) {
       try { this._tunnelChild.kill("SIGTERM"); } catch (_e) {}
