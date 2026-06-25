@@ -53,21 +53,49 @@ export function StepInstalling({
   // Update mode passes host/hostName directly (no setup Peer); setup mode derives them from peer.
   const host = hostProp || peer?.target || peer?.addrs?.[0] || peer?.name || "";
   const name = hostName || peer?.name || host;
+  const mounted = useRef(false);
+  const installRunId = useRef(0);
+  const phaseTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      installRunId.current += 1;
+      if (phaseTimer.current !== null) {
+        window.clearInterval(phaseTimer.current);
+        phaseTimer.current = null;
+      }
+    };
+  }, []);
 
   // Run the install. Cosmetic phase advance while the single blocking CLI call runs; the real result
   // overrides it. In update mode we pass force:true so the CLI overwrites the already-installed (but
   // incompatible) host app and restarts the host.
   const runInstall = useCallback(() => {
+    const runId = ++installRunId.current;
+    const isCurrent = () => mounted.current && installRunId.current === runId;
+    if (phaseTimer.current !== null) {
+      window.clearInterval(phaseTimer.current);
+      phaseTimer.current = null;
+    }
     setErr("");
     setPhase(0);
     setState("installing");
-    const adv = setInterval(() => {
+    const adv = window.setInterval(() => {
+      if (!isCurrent()) return;
       setPhase((p) => Math.min(PHASES.length - 2, p + 1));
     }, 1200);
+    phaseTimer.current = adv;
+    const clearAdv = () => {
+      if (phaseTimer.current === adv) phaseTimer.current = null;
+      window.clearInterval(adv);
+    };
     window.remotepair
       .installHost(isUpdate ? { host, force: true } : { host })
       .then((r) => {
-        clearInterval(adv);
+        clearAdv();
+        if (!isCurrent()) return;
         if (r.ok) {
           setPhase(PHASES.length);
           setState("done");
@@ -77,7 +105,8 @@ export function StepInstalling({
         }
       })
       .catch((e) => {
-        clearInterval(adv);
+        clearAdv();
+        if (!isCurrent()) return;
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });

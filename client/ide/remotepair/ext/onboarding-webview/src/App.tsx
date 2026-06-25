@@ -246,6 +246,16 @@ export default function App() {
   const [reconnectReady, setReconnectReady] = useState(false);
   const [live, setLive] = useState<LiveState>("idle");
   const [liveErr, setLiveErr] = useState("");
+  const stepRef = useRef(w.index);
+  stepRef.current = w.index;
+  const livenessCheckId = useRef(0);
+  const updateCompletionId = useRef(0);
+  const cancelLivenessCheck = useCallback(() => {
+    livenessCheckId.current += 1;
+  }, []);
+  useEffect(() => {
+    if (w.index !== S.MAPPINGS) cancelLivenessCheck();
+  }, [w.index, cancelLivenessCheck]);
 
   // Manual-entry fallback reuses the existing StepConnect machine.
   const [manual, setManual] = useState(false);
@@ -281,6 +291,9 @@ export default function App() {
   const isReconnect = peer?.status === "reconnect";
   const isConnect = peer?.status === "connect";
   const isSetup = !!peer && !isReconnect && !isConnect;
+  const currentTarget = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+  const currentTargetRef = useRef(currentTarget);
+  currentTargetRef.current = currentTarget;
 
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
@@ -292,6 +305,7 @@ export default function App() {
       setSetupReady(false);
       setConnState("idle");
       hostAppProbeId.current += 1;
+      updateCompletionId.current += 1;
       setHostApp(null);
       setHostAppChecking(false);
       setHostPerms(null);
@@ -302,6 +316,7 @@ export default function App() {
       setReconnectReady(false);
       setLive("idle");
       setLiveErr("");
+      stepRef.current = S.CONNECT;
       w.goTo(S.CONNECT, "next");
     },
     [cliReady, w],
@@ -312,6 +327,7 @@ export default function App() {
     setPeer(null);
     setSetupReady(false);
     hostAppProbeId.current += 1;
+    updateCompletionId.current += 1;
     setHostApp(null);
     setHostAppChecking(false);
     setHostPerms(null);
@@ -321,6 +337,7 @@ export default function App() {
     setUpdateDismissed(false);
     setLive("idle");
     setLiveErr("");
+    stepRef.current = S.CONNECT;
     w.goTo(S.CONNECT, "next");
   }, [w]);
 
@@ -328,6 +345,7 @@ export default function App() {
   // MIN_COMPATIBLE_HOST. Reused by the Connect-step host-app gate and the final liveness gate.
   const routeToHostUpdate = useCallback(
     (target: string, hostVersion: string, origin: "connect" | "final") => {
+      updateCompletionId.current += 1;
       setInstallMode("update");
       setUpdateOrigin(origin);
       // User is (re-)initiating the update → clear any prior back-out so the post-update re-checks
@@ -339,6 +357,7 @@ export default function App() {
       // the update finishes and returns, Next isn't stuck disabled by `live === "checking"`.
       setLive("idle");
       setLiveErr("");
+      stepRef.current = S.INSTALL;
       w.goTo(S.INSTALL, "next");
     },
     [clientVer, w],
@@ -350,29 +369,41 @@ export default function App() {
   // incompatible", bouncing the user back to the update screen even though the reinstall succeeded
   // (Finding D). Poll until the reported version moves off `staleVersion` (or becomes compatible, or
   // the app stops reporting a version), giving the host a few seconds to come up before re-checking.
-  const waitForFreshHostStatus = useCallback(async (target: string, staleVersion: string) => {
-    for (let i = 0; i < 8; i++) {
-      try {
-        const app = await window.remotepair.hostAppStatus(target);
-        // Fresh status: the version changed off the stale one, or it's now compatible, or it reset
-        // to unknown (status.json not yet re-stamped, treated as compatible downstream).
-        if (app.compatible || !app.version || app.version !== staleVersion) {
-          setHostApp({ target, ...app });
-          return;
+  const waitForFreshHostStatus = useCallback(
+    async (target: string, staleVersion: string, shouldContinue: () => boolean = () => true) => {
+      for (let i = 0; i < 8; i++) {
+        if (!shouldContinue()) return false;
+        try {
+          const app = await window.remotepair.hostAppStatus(target);
+          if (!shouldContinue()) return false;
+          // Fresh status: the version changed off the stale one, or it's now compatible, or it reset
+          // to unknown (status.json not yet re-stamped, treated as compatible downstream).
+          if (app.compatible || !app.version || app.version !== staleVersion) {
+            setHostApp({ target, ...app });
+            return true;
+          }
+        } catch {
+          /* transient SSH hiccup while the host restarts — keep polling */
         }
-      } catch {
-        /* transient SSH hiccup while the host restarts — keep polling */
+        await new Promise((r) => setTimeout(r, 1000));
       }
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    // Timed out waiting for a fresh stamp — fall through; the subsequent liveness check surfaces the
-    // current (possibly still-stale) state to the user as a re-checkable error rather than hanging.
-  }, []);
+      // Timed out waiting for a fresh stamp — fall through; the subsequent liveness check surfaces the
+      // current (possibly still-stale) state to the user as a re-checkable error rather than hanging.
+      return shouldContinue();
+    },
+    [],
+  );
 
   // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
   // setup, host-app, permission, and SSH liveness probes all pass.
   const runLivenessCheck = useCallback(async () => {
-    const target = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+    const target = currentTargetRef.current;
+    const checkId = ++livenessCheckId.current;
+    const stillCurrent = () =>
+      livenessCheckId.current === checkId &&
+      stepRef.current === S.MAPPINGS &&
+      currentTargetRef.current === target;
+    if (stepRef.current !== S.MAPPINGS) return;
     if (!target) {
       setLiveErr("No host selected.");
       setLive("offline");
@@ -389,6 +420,7 @@ export default function App() {
 
     try {
       const app = await window.remotepair.hostAppStatus(target);
+      if (!stillCurrent()) return;
       setHostApp({ target, ...app });
       if (app.installed && !app.compatible && app.incompatibleKind === "below_floor") {
         // Installed-but-too-old (same major, below floor) at the final gate → route to the in-UI
@@ -411,6 +443,7 @@ export default function App() {
         return;
       }
     } catch (e) {
+      if (!stillCurrent()) return;
       setLiveErr(`Host app check failed: ${String(e)}`);
       setLive("host-app");
       return;
@@ -418,6 +451,7 @@ export default function App() {
 
     try {
       const perms = await window.remotepair.hostPermissions({ host: target });
+      if (!stillCurrent()) return;
       const ready = perms.alive && perms.ax && perms.sr;
       setGrantReady(ready);
       if (!ready) {
@@ -431,6 +465,7 @@ export default function App() {
         return;
       }
     } catch (e) {
+      if (!stillCurrent()) return;
       setGrantReady(false);
       setLiveErr(`Permission check failed: ${String(e)}`);
       setLive("permissions");
@@ -439,8 +474,10 @@ export default function App() {
 
     try {
       const r = await window.remotepair.sshReachable(target);
+      if (!stillCurrent()) return;
       if (r.reachable) {
         setLive("reachable");
+        stepRef.current = S.DONE;
         w.goTo(S.DONE, "next");
         return;
       }
@@ -449,10 +486,11 @@ export default function App() {
       setLiveErr(r.err || "Host did not respond.");
       setLive(/host key|REMOTE HOST IDENTIFICATION/i.test(r.err || "") ? "rekeyed" : "offline");
     } catch (e) {
+      if (!stillCurrent()) return;
       setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [manual, host, peer, isSetup, installState, w, routeToHostUpdate]);
+  }, [isSetup, installState, w, routeToHostUpdate]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
@@ -469,6 +507,15 @@ export default function App() {
   const connectTarget = manual || isConnect
     ? host.trim()
     : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+  const previousConnectTarget = useRef(connectTarget);
+  useEffect(() => {
+    if (previousConnectTarget.current === connectTarget) return;
+    previousConnectTarget.current = connectTarget;
+    updateCompletionId.current += 1;
+    cancelLivenessCheck();
+    // Editing the manual host field means the prior explicit update back-out no longer applies.
+    if (updateDismissed) setUpdateDismissed(false);
+  }, [connectTarget, updateDismissed, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
   // reconnect, the host app must be installed AND compatible before Next.
   const requiresHostApp = w.index === S.CONNECT && !isSetup;
@@ -597,6 +644,7 @@ export default function App() {
   const onNext = () => {
     if (w.index === S.CONNECT && !isSetup) {
       // Reconnect path and manual path both skip the Installing + Grant steps → straight to Engine.
+      stepRef.current = S.ENGINE;
       w.goTo(S.ENGINE, "next");
       return;
     }
@@ -612,12 +660,19 @@ export default function App() {
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
       // Mappings always follows the Engine step.
+      updateCompletionId.current += 1;
+      cancelLivenessCheck();
+      setLive("idle");
+      setLiveErr("");
+      stepRef.current = S.ENGINE;
       w.goTo(S.ENGINE, "prev");
       return;
     }
     if (w.index === S.ENGINE) {
       // Engine follows Grant on the setup path, Connect on the reconnect/manual paths.
-      w.goTo(isSetup && !manual ? S.GRANT : S.CONNECT, "prev");
+      const dest = isSetup && !manual ? S.GRANT : S.CONNECT;
+      stepRef.current = dest;
+      w.goTo(dest, "prev");
       return;
     }
     if (w.index === S.INSTALL && installMode === "update") {
@@ -625,10 +680,12 @@ export default function App() {
       // recovery: invalidate the stale incompatible probe (Finding B) so the auto-route doesn't bounce
       // the user back, and preserve setup-done for the final-gate setup case (Finding C). Route back to
       // wherever the update was launched from.
-      setInstallMode("install");
+      updateCompletionId.current += 1;
       hostAppProbeId.current += 1;
       setHostApp(null);
       setHostAppChecking(false);
+      setLive("idle");
+      setLiveErr("");
       // Mark the update explicitly dismissed so a still-below-floor Connect re-probe doesn't auto-route
       // the user straight back into it (Finding A). Reset on re-initiate / different host.
       setUpdateDismissed(true);
@@ -637,10 +694,14 @@ export default function App() {
       } else {
         setInstallState("idle");
       }
-      w.goTo(updateOrigin === "final" ? S.MAPPINGS : S.CONNECT, "prev");
+      const dest = updateOrigin === "final" ? S.MAPPINGS : S.CONNECT;
+      stepRef.current = dest;
+      w.goTo(dest, "prev");
+      setInstallMode("install");
       return;
     }
     if (w.index === S.GRANT || w.index === S.INSTALL) {
+      stepRef.current = S.CONNECT;
       w.goTo(S.CONNECT, "prev");
       return;
     }
@@ -760,7 +821,18 @@ export default function App() {
         ) : w.index === S.MAPPINGS && live === "checking" ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         ) : (live === "offline" || live === "rekeyed") && w.index === S.MAPPINGS ? (
-          <Button size="sm" variant="outline" onClick={() => w.goTo(S.DISCOVER, "prev")}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              updateCompletionId.current += 1;
+              cancelLivenessCheck();
+              setLive("idle");
+              setLiveErr("");
+              stepRef.current = S.DISCOVER;
+              w.goTo(S.DISCOVER, "prev");
+            }}
+          >
             Re-discover
           </Button>
         ) : null
@@ -780,7 +852,10 @@ export default function App() {
               state={connState}
               setState={setConnState}
               cliBlocked={cliGateActive}
-              onBackToDiscovery={() => w.goTo(S.DISCOVER, "prev")}
+              onBackToDiscovery={() => {
+                stepRef.current = S.DISCOVER;
+                w.goTo(S.DISCOVER, "prev");
+              }}
             />
           ) : isReconnect ? (
             <StepReconnect peer={peer} onReady={setReconnectReady} />
@@ -803,9 +878,9 @@ export default function App() {
               // Update finished → RE-CHECK that the host is now installed+compatible before letting
               // the user past. Only a compatible re-check opens the gate; an incompatible one re-routes
               // through update again.
+              const completionId = ++updateCompletionId.current;
               hostAppProbeId.current += 1;
               setHostApp(null);
-              setInstallMode("install");
               if (updateOrigin === "final") {
                 // Triggered from the Mappings final gate (incl. setup peers, where the Connect step
                 // renders the fingerprint step and runs no host-app probe). The update force-installed
@@ -821,15 +896,26 @@ export default function App() {
                 // globally (WizardShell nextDisabled). runLivenessCheck re-sets it on resolve.
                 setLive("checking");
                 setLiveErr("");
+                const staleVer = updateCtx.current;
+                const updTarget = updateCtx.host;
+                const stillOnMappingsForUpdate = () =>
+                  updateCompletionId.current === completionId &&
+                  stepRef.current === S.MAPPINGS &&
+                  currentTargetRef.current === updTarget;
+                stepRef.current = S.MAPPINGS;
                 w.goTo(S.MAPPINGS, "prev");
+                setInstallMode("install");
                 // The forced reinstall just kickstarted the host's LaunchAgent; status.json may still
                 // hold the STALE pre-update version for a moment (Finding D). Wait for a fresh/newer
                 // version before the liveness re-check so a lingering stale status.json doesn't read
                 // "still incompatible" and bounce the user back to update.
-                const staleVer = updateCtx.current;
-                const updTarget = updateCtx.host;
                 void (async () => {
-                  await waitForFreshHostStatus(updTarget, staleVer);
+                  const fresh = await waitForFreshHostStatus(
+                    updTarget,
+                    staleVer,
+                    stillOnMappingsForUpdate,
+                  );
+                  if (!fresh || !stillOnMappingsForUpdate()) return;
                   await runLivenessCheck();
                 })();
               } else {
@@ -844,20 +930,33 @@ export default function App() {
                 // blocked (live === "checking") for the whole window so a quick click can't skip it
                 // (Finding C). Once fresh, drop live back to "idle" so Connect's own connectReady gate
                 // (re-probe + perms) takes over.
-                setInstallState("idle");
+                // Keep the update render path mounted while the freshness poll runs; switching to
+                // "install" on S.INSTALL would mount the fresh setup installer and auto-run a second
+                // installHost({ host }).
+                setInstallState("installing");
                 setLive("checking");
                 setLiveErr("");
                 const staleVer = updateCtx.current;
                 const updTarget = updateCtx.host;
+                const stillOnInstallUpdate = () =>
+                  updateCompletionId.current === completionId && stepRef.current === S.INSTALL;
                 void (async () => {
-                  await waitForFreshHostStatus(updTarget, staleVer);
+                  const fresh = await waitForFreshHostStatus(
+                    updTarget,
+                    staleVer,
+                    stillOnInstallUpdate,
+                  );
+                  if (!fresh || !stillOnInstallUpdate()) return;
                   setLive("idle");
+                  stepRef.current = S.CONNECT;
                   w.goTo(S.CONNECT, "prev");
+                  setInstallMode("install");
+                  setInstallState("idle");
                 })();
               }
             }}
             onFail={() => {
-              setInstallMode("install");
+              updateCompletionId.current += 1;
               // Backing out of a failed update must NOT bounce the user straight back here. Invalidate
               // the stale incompatible host-app probe so the Connect-step auto-route doesn't re-fire
               // before a fresh probe runs (Finding B). The cleared probe also lets the user pick
@@ -865,6 +964,8 @@ export default function App() {
               hostAppProbeId.current += 1;
               setHostApp(null);
               setHostAppChecking(false);
+              setLive("idle");
+              setLiveErr("");
               // Explicit back-out from a failed update: suppress the Connect-step auto-route so a host
               // that is still below-floor doesn't bounce the user right back here (Finding A).
               setUpdateDismissed(true);
@@ -878,7 +979,10 @@ export default function App() {
               } else {
                 setInstallState("idle");
               }
-              w.goTo(updateOrigin === "final" ? S.MAPPINGS : S.CONNECT, "prev");
+              const dest = updateOrigin === "final" ? S.MAPPINGS : S.CONNECT;
+              stepRef.current = dest;
+              w.goTo(dest, "prev");
+              setInstallMode("install");
             }}
           />
         )}
@@ -889,9 +993,13 @@ export default function App() {
             setState={setInstallState}
             onDone={() => {
               setGrantReady(false);
+              stepRef.current = S.GRANT;
               w.goTo(S.GRANT, "next");
             }}
-            onFail={() => w.goTo(S.CONNECT, "prev")}
+            onFail={() => {
+              stepRef.current = S.CONNECT;
+              w.goTo(S.CONNECT, "prev");
+            }}
           />
         )}
         {w.index === S.GRANT && peer && (

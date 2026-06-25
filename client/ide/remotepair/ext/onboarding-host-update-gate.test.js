@@ -52,6 +52,16 @@ test("StepInstalling does NOT auto-run the forced update on mount (explicit clic
   assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*Update host/);
 });
 
+test("StepInstalling ignores installHost completions after unmount", () => {
+  // The component records mount state and invalidates the active install run on cleanup.
+  assert.match(stepInstalling, /const mounted = useRef\(false\)/);
+  assert.match(stepInstalling, /return \(\) => \{[\s\S]*mounted\.current = false;[\s\S]*installRunId\.current \+= 1/);
+  // Promise continuations bail out before writing parent state after unmount/cancel.
+  assert.match(stepInstalling, /const isCurrent = \(\) => mounted\.current && installRunId\.current === runId/);
+  assert.match(stepInstalling, /\.then\(\(r\) => \{[\s\S]*if \(!isCurrent\(\)\) return;[\s\S]*setState\("done"\)/);
+  assert.match(stepInstalling, /\.catch\(\(e\) => \{[\s\S]*if \(!isCurrent\(\)\) return;[\s\S]*setState\("failed"\)/);
+});
+
 test("App clears live=checking when routing into the host update (Next not stuck after return)", () => {
   // routeToHostUpdate resets live so a final-gate-triggered update doesn't leave Next disabled.
   assert.match(
@@ -129,7 +139,7 @@ test("B — backing out of an update clears the stale host-app probe (onFail + h
   // Update onFail invalidates the stale probe so the auto-route doesn't bounce the user back.
   assert.match(
     app,
-    /onFail=\{\(\) => \{\s*setInstallMode\("install"\);[\s\S]*hostAppProbeId\.current \+= 1;\s*setHostApp\(null\)/,
+    /onFail=\{\(\) => \{\s*updateCompletionId\.current \+= 1;[\s\S]*hostAppProbeId\.current \+= 1;\s*setHostApp\(null\)/,
   );
   // Header Back (onPrev) from the update step does the same.
   assert.match(
@@ -157,7 +167,7 @@ test("D — successful final-gate update waits for fresh host status before re-c
   // onDone (final origin) awaits the fresh-status poll BEFORE runLivenessCheck.
   assert.match(
     app,
-    /await waitForFreshHostStatus\(updTarget, staleVer\);\s*await runLivenessCheck\(\)/,
+    /const fresh = await waitForFreshHostStatus\(\s*updTarget,\s*staleVer,\s*stillOnMappingsForUpdate,\s*\);[\s\S]*if \(!fresh \|\| !stillOnMappingsForUpdate\(\)\) return;\s*await runLivenessCheck\(\)/,
   );
 });
 
@@ -187,6 +197,11 @@ test("A3 — explicit back-out sets updateDismissed and suppresses the Connect a
     app,
     /setInstallMode\("install"\);\s*\n\s*\/\/[^\n]*\n\s*setUpdateDismissed\(false\);\s*\n\s*setReconnectReady/,
   );
+  // Editing the manual host/target after dismissing resets the suppression for the new target.
+  assert.match(
+    app,
+    /const previousConnectTarget = useRef\(connectTarget\);[\s\S]*previousConnectTarget\.current = connectTarget;[\s\S]*if \(updateDismissed\) setUpdateDismissed\(false\)/,
+  );
 });
 
 test("B3 — connect-path update success waits for fresh host status before returning to Connect", () => {
@@ -194,7 +209,7 @@ test("B3 — connect-path update success waits for fresh host status before retu
   // navigating back to Connect, so the Connect re-probe doesn't read the stale status.json.
   assert.match(
     app,
-    /setInstallState\("idle"\);\s*\n\s*setLive\("checking"\);[\s\S]*await waitForFreshHostStatus\(updTarget, staleVer\);\s*\n\s*setLive\("idle"\);\s*\n\s*w\.goTo\(S\.CONNECT, "prev"\)/,
+    /setInstallState\("installing"\);\s*\n\s*setLive\("checking"\);[\s\S]*const fresh = await waitForFreshHostStatus\(\s*updTarget,\s*staleVer,\s*stillOnInstallUpdate,\s*\);[\s\S]*if \(!fresh \|\| !stillOnInstallUpdate\(\)\) return;\s*setLive\("idle"\);\s*stepRef\.current = S\.CONNECT;\s*w\.goTo\(S\.CONNECT, "prev"\)/,
   );
 });
 
@@ -207,10 +222,48 @@ test("C3 — Next stays blocked during the freshness-poll window on both origins
   // Connect-path return likewise sets live="checking" during the poll.
   assert.match(
     app,
-    /setLive\("checking"\);[\s\S]*await waitForFreshHostStatus\(updTarget, staleVer\);\s*\n\s*setLive\("idle"\)/,
+    /setLive\("checking"\);[\s\S]*waitForFreshHostStatus\(\s*updTarget,\s*staleVer,\s*stillOnInstallUpdate,\s*\);[\s\S]*setLive\("idle"\)/,
   );
   // live === "checking" disables Next globally (WizardShell), gating it during the whole window.
   assert.match(app, /nextDisabled=\{nextDisabled \|\| live === "checking"\}/);
+});
+
+test("D3 — update mode stays mounted on S.INSTALL until the connect freshness poll leaves", () => {
+  // The connect success path keeps installMode="update" while still on S.INSTALL, preventing the
+  // fresh-install StepInstalling branch from mounting and auto-running installHost({ host }).
+  assert.match(
+    app,
+    /setInstallState\("installing"\);[\s\S]*setLive\("checking"\);[\s\S]*w\.goTo\(S\.CONNECT, "prev"\);\s*setInstallMode\("install"\)/,
+  );
+  assert.doesNotMatch(
+    app,
+    /setHostApp\(null\);\s*setInstallMode\("install"\);[\s\S]*await waitForFreshHostStatus\(\s*updTarget,\s*staleVer,\s*stillOnInstallUpdate/,
+  );
+});
+
+test("E3 — delayed final-gate recheck is canceled when Mappings is left or target changes", () => {
+  // Leaving Mappings cancels in-flight liveness/update completions and clears the global checking gate.
+  assert.match(app, /if \(w\.index === S\.MAPPINGS\) \{[\s\S]*updateCompletionId\.current \+= 1;[\s\S]*cancelLivenessCheck\(\);[\s\S]*setLive\("idle"\)/);
+  // runLivenessCheck commits only while the same Mappings target is still active.
+  assert.match(
+    app,
+    /const stillCurrent = \(\) =>\s*livenessCheckId\.current === checkId &&\s*stepRef\.current === S\.MAPPINGS &&\s*currentTargetRef\.current === target/,
+  );
+  assert.match(app, /if \(stepRef\.current !== S\.MAPPINGS\) return;/);
+  // The delayed post-update final recheck uses the same target/step guard before re-running liveness.
+  assert.match(
+    app,
+    /const stillOnMappingsForUpdate = \(\) =>\s*updateCompletionId\.current === completionId &&\s*stepRef\.current === S\.MAPPINGS &&\s*currentTargetRef\.current === updTarget/,
+  );
+  assert.match(
+    app,
+    /if \(!fresh \|\| !stillOnMappingsForUpdate\(\)\) return;\s*await runLivenessCheck\(\)/,
+  );
+  // Changing the host target also invalidates pending completions.
+  assert.match(
+    app,
+    /previousConnectTarget\.current = connectTarget;[\s\S]*updateCompletionId\.current \+= 1;[\s\S]*cancelLivenessCheck\(\)/,
+  );
 });
 
 console.log(
