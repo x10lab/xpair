@@ -14,6 +14,7 @@ fs.mkdirSync(path.join(TMP_HOME, ".xpair/host"), { recursive: true });
 const spawnedChildren = [];
 const postedMessages = [];
 const scheduledTimers = [];
+let nextLocalPort = 32000;
 
 function fakeSpawn(cmd, args) {
   const child = new EventEmitter();
@@ -29,6 +30,25 @@ function fakeSpawn(cmd, args) {
   spawnedChildren.push(child);
   return child;
 }
+
+const fakeNet = {
+  createServer() {
+    return {
+      _port: 0,
+      listen(_port, _host, cb) {
+        this._port = nextLocalPort++;
+        if (typeof cb === "function") cb();
+      },
+      address() {
+        return { port: this._port };
+      },
+      close(cb) {
+        if (typeof cb === "function") cb();
+      },
+      on() {},
+    };
+  },
+};
 
 const fakeWebview = {
   html: "",
@@ -109,6 +129,7 @@ const realLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "vscode") return fakeVscode;
   if (request === "child_process") return { spawn: fakeSpawn };
+  if (request === "net") return fakeNet;
   return realLoad.call(this, request, parent, isMain);
 };
 
@@ -116,9 +137,18 @@ const extension = require("./extension.js");
 Module._load = realLoad;
 
 const realSetTimeout = global.setTimeout;
-global.setTimeout = function fakeSetTimeout(fn) {
-  scheduledTimers.push(fn);
-  return { fakeTimer: scheduledTimers.length };
+const realClearTimeout = global.clearTimeout;
+global.setTimeout = function fakeSetTimeout(fn, delay, ...args) {
+  function timer() {
+    if (!timer.cleared) fn(...args);
+  }
+  timer.delay = delay;
+  timer.cleared = false;
+  scheduledTimers.push(timer);
+  return timer;
+};
+global.clearTimeout = function fakeClearTimeout(timer) {
+  if (timer) timer.cleared = true;
 };
 
 function waitForAsync() {
@@ -159,6 +189,7 @@ function v2ConnectPosts() {
 
     scheduledTimers[0]();
     assert.equal(v2ConnectPosts().length, 1, "restored RD should tell the webview to connect after tunnel settle");
+    assert.match(v2ConnectPosts()[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}$/);
 
     const firstChild = spawnedChildren[0];
     panel.onMessage({ type: "v2Error", detail: "peer connection failed" });
@@ -173,9 +204,11 @@ function v2ConnectPosts() {
 
     scheduledTimers[scheduledTimers.length - 1]();
     assert.equal(v2ConnectPosts().length, 2, "fresh retry tunnel should reconnect the webview");
+    assert.match(v2ConnectPosts()[1].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}$/);
   });
 
   global.setTimeout = realSetTimeout;
+  global.clearTimeout = realClearTimeout;
   try {
     fs.rmSync(TMP_HOME, { recursive: true, force: true });
   } catch (_error) {

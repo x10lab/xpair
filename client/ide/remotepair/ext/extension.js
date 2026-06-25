@@ -11,6 +11,7 @@
 
 const vscode = require("vscode");
 const cp = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -60,6 +61,7 @@ const TUNNEL_SETTLE_MS = 1200; // wait for ssh -N tunnel to establish before the
 // it ever reaches a spawned process (defense in depth even though spawn is
 // argv-safe: prevents an attacker-controlled env from injecting ssh options).
 const HOST_RE = /^[A-Za-z0-9._-]+$/;
+const RD_SESSION_TOKEN_BYTES = 32;
 
 // --- logging (US-006) ------------------------------------------------------
 // Conforms to docs/logging.md: line format `[<ISO>] [<LEVEL>] [ide] [<session>] <msg>`,
@@ -370,6 +372,10 @@ function shSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
+function makeRdSessionToken() {
+  return crypto.randomBytes(RD_SESSION_TOKEN_BYTES).toString("hex");
+}
+
 // --- tunnel helpers ----------------------------------------------------------
 
 /**
@@ -447,6 +453,8 @@ class RemoteDesktopPanel {
     this._v2Active = false;     // true while the v2 signaling tunnel is up
     this._v2Generation = 0;
     this._v2SettleTimer = null;
+    this._v2RetryTimer = null;
+    this._v2SessionToken = null;
   }
 
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
@@ -642,6 +650,15 @@ class RemoteDesktopPanel {
     this._stopV2();
   }
 
+  dispose() {
+    this._stopAll();
+    const panel = this.panel;
+    this.panel = null;
+    if (panel && typeof panel.dispose === "function") {
+      try { panel.dispose(); } catch (_e) {}
+    }
+  }
+
   // --- v2 WebRTC (UDP/RTP H.264) -------------------------------------------
 
   async _startV2(host, attempt = 0) {
@@ -659,6 +676,7 @@ class RemoteDesktopPanel {
     }
     if (!this._v2Active || this._v2Generation !== generation) return;
     this._tunnelPort = localPort;
+    this._v2SessionToken = makeRdSessionToken();
     // Tunnel forwards the SIGNALING port only (TCP). Media flows over UDP/ICE.
     const child = spawnTunnel(host, localPort, SIGNAL_REMOTE_PORT);
     this._tunnelChild = child;
@@ -723,9 +741,10 @@ class RemoteDesktopPanel {
         self._v2SettleTimer = null;
       }
       if (!self._v2Active || self._v2Generation !== generation || self._tunnelChild !== child || self._tunnelPort !== localPort || !self.panel) return;
-      const signalUrl = `ws://127.0.0.1:${localPort}`;
-      log(`v2: telling webview to connect signaling ${signalUrl}`);
-      self.post({ type: "v2Connect", signalUrl });
+      const sessionToken = self._v2SessionToken;
+      const signalUrl = `ws://127.0.0.1:${localPort}/?token=${encodeURIComponent(sessionToken)}`;
+      log(`v2: telling webview to connect signaling ws://127.0.0.1:${localPort}/?token=<redacted>`);
+      self.post({ type: "v2Connect", signalUrl, sessionToken });
     }, TUNNEL_SETTLE_MS);
     this._v2SettleTimer = settleTimer;
   }
@@ -747,6 +766,7 @@ class RemoteDesktopPanel {
       this._tunnelChild = null;
     }
     this._tunnelPort = null;
+    this._v2SessionToken = null;
   }
 
   onMessage(msg) {
@@ -761,8 +781,8 @@ class RemoteDesktopPanel {
       this._startStream();
       return;
     }
-    // v2 (WebRTC) feedback from webview. This view is view-only (no input
-    // forwarding), so the extension only handles status/first-frame events.
+    // v2 (WebRTC) feedback from webview. Reconnect is handled inside the webview
+    // over the current tunnel; v2Error is terminal for that bounded retry window.
     if (msg.type === "v2FirstFrame") {
       log(`v2: media track rendering`);
       return;
@@ -1673,6 +1693,7 @@ function activate(context) {
   // 2) Remote Desktop = a pinned editor tab ("RD") in the main editor area
   //    (NOT a left activity-bar view).
   const panel = new RemoteDesktopPanel(context.extensionUri);
+  context.subscriptions.push(panel);
 
   // Auto-open the Remote Desktop on launch so it is the default surface (v2 RD). This regressed
   // when the onboarding / session-picker UX changed the startup view: the panel was created but

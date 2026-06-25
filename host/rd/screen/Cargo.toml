@@ -73,10 +73,12 @@ sentry = { version = "0.48", default-features = false, features = ["backtrace", 
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"], optional = true }
 webrtc = { version = "0.17.1", optional = true }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time"], optional = true }
+tokio-util = { version = "0.7.18", features = ["rt"], optional = true }
 tokio-tungstenite = { version = "0.29.0", optional = true }
 futures-util = { version = "0.3.32", optional = true }
 bytes = { version = "1.11.1", optional = true }
 serde_json = { version = "1.0.150", optional = true }
+thiserror = { version = "2.0.18", optional = true }
 
 [features]
 # Crash reporting via Sentry. ON by default so a shipped sidecar reports panics
@@ -93,7 +95,7 @@ crash-report = ["dep:sentry", "dep:regex", "dep:serde_json"]
 # UDP is mandatory — TCP/WebSocket head-of-line blocking stalls a screen stream
 # on any lost packet. Enabling this pulls webrtc + a tokio runtime (the v1a
 # `serve` path stays sync and unaffected).
-webrtc = ["dep:webrtc", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:bytes", "dep:serde_json"]
+webrtc = ["dep:webrtc", "dep:tokio", "dep:tokio-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:bytes", "dep:serde_json", "dep:thiserror"]
 tokio-tungstenite = ["dep:tokio-tungstenite"]
 futures-util = ["dep:futures-util"]
 bytes = ["dep:bytes"]

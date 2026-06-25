@@ -13,6 +13,7 @@ fs.mkdirSync(path.join(TMP_HOME, ".xpair/host"), { recursive: true });
 
 const spawnedChildren = [];
 const scheduledTimers = [];
+let nextLocalPort = 31000;
 function fakeSpawn() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -25,6 +26,26 @@ function fakeSpawn() {
   spawnedChildren.push(child);
   return child;
 }
+
+const fakeNet = {
+  createServer() {
+    const server = {
+      _port: 0,
+      listen(_port, _host, cb) {
+        this._port = nextLocalPort++;
+        if (typeof cb === "function") cb();
+      },
+      address() {
+        return { port: this._port };
+      },
+      close(cb) {
+        if (typeof cb === "function") cb();
+      },
+      on() {},
+    };
+    return server;
+  },
+};
 
 const postedMessages = [];
 const fakeWebview = {
@@ -106,6 +127,7 @@ const realLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "vscode") return fakeVscode;
   if (request === "child_process") return { spawn: fakeSpawn };
+  if (request === "net") return fakeNet;
   return realLoad.call(this, request, parent, isMain);
 };
 
@@ -114,9 +136,18 @@ const extension = require("./extension.js");
 Module._load = realLoad;
 
 const realSetTimeout = global.setTimeout;
-global.setTimeout = function fakeSetTimeout(fn) {
-  scheduledTimers.push(fn);
-  return { dispose() {} };
+const realClearTimeout = global.clearTimeout;
+global.setTimeout = function fakeSetTimeout(fn, delay, ...args) {
+  function timer() {
+    if (!timer.cleared) fn(...args);
+  }
+  timer.delay = delay;
+  timer.cleared = false;
+  scheduledTimers.push(timer);
+  return timer;
+};
+global.clearTimeout = function fakeClearTimeout(timer) {
+  if (timer) timer.cleared = true;
 };
 
 function waitForAsync() {
@@ -138,6 +169,7 @@ function resetHarness() {
   spawnedChildren.length = 0;
   postedMessages.length = 0;
   scheduledTimers.length = 0;
+  nextLocalPort = 31000;
 }
 
 function makePanel() {
@@ -154,22 +186,48 @@ function v2ConnectPosts() {
   return postedMessages.filter((message) => message.type === "v2Connect");
 }
 
+function latestTimerByDelay(timers, delay) {
+  for (let i = timers.length - 1; i >= 0; i -= 1) {
+    if (timers[i].delay === delay && !timers[i].cleared) return timers[i];
+  }
+  return null;
+}
+
 function runRemoteDesktopWebview() {
   const script = fs.readFileSync(path.join(__dirname, "media", "remote-desktop.js"), "utf8");
   const posted = [];
+  const timers = [];
   const windowListeners = [];
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) {
+      const listeners = new Map();
       elements.set(id, {
         id,
         textContent: "",
         style: {},
         srcObject: null,
         className: "",
+        readyState: 0,
         classList: {
           add() {},
           remove() {},
+        },
+        setAttribute() {},
+        appendChild() {},
+        focus() {},
+        addEventListener(type, fn) {
+          const existing = listeners.get(type) || [];
+          existing.push(fn);
+          listeners.set(type, existing);
+        },
+        emit(type, event = {}) {
+          for (const listener of listeners.get(type) || []) {
+            listener(event);
+          }
+        },
+        getBoundingClientRect() {
+          return { left: 0, top: 0, width: 100, height: 100 };
         },
       });
     }
@@ -205,14 +263,26 @@ function runRemoteDesktopWebview() {
     static instances = [];
     constructor() {
       this.connectionState = "new";
+      this.iceConnectionState = "new";
       this.onconnectionstatechange = null;
+      this.oniceconnectionstatechange = null;
       this.onicecandidate = null;
       this.ontrack = null;
       FakeRTCPeerConnection.instances.push(this);
     }
     addTransceiver() {}
+    createDataChannel(label) {
+      return {
+        label,
+        readyState: "connecting",
+        bufferedAmount: 0,
+        addEventListener() {},
+        send() {},
+      };
+    }
     close() {
       this.closed = true;
+      this.connectionState = "closed";
     }
     setRemoteDescription() {
       return Promise.resolve();
@@ -231,10 +301,28 @@ function runRemoteDesktopWebview() {
     acquireVsCodeApi() {
       return { postMessage(message) { posted.push(message); } };
     },
-    document: { getElementById: element },
+    document: {
+      body: element("body"),
+      activeElement: element("body"),
+      createElement: element,
+      getElementById: element,
+      addEventListener() {},
+    },
     window: { addEventListener(type, listener) { if (type === "message") windowListeners.push(listener); } },
     WebSocket: FakeWebSocket,
     RTCPeerConnection: FakeRTCPeerConnection,
+    setTimeout(fn, delay, ...args) {
+      function timer() {
+        if (!timer.cleared) fn(...args);
+      }
+      timer.delay = delay;
+      timer.cleared = false;
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      if (timer) timer.cleared = true;
+    },
     console,
   };
   vm.runInNewContext(script, sandbox, { filename: "remote-desktop.js" });
@@ -242,6 +330,8 @@ function runRemoteDesktopWebview() {
     posted,
     sockets: FakeWebSocket.instances,
     peers: FakeRTCPeerConnection.instances,
+    timers,
+    elements,
     sendWindowMessage(message) {
       for (const listener of windowListeners) {
         listener({ data: message });
@@ -255,6 +345,8 @@ function runRemoteDesktopWebview() {
     assert.strictEqual(typeof extension.activate, "function");
     assert.strictEqual(typeof extension.deactivate, "function");
     assert.strictEqual(typeof extension.RemoteDesktopPanel, "function");
+    const source = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
+    assert.match(source, /context\.subscriptions\.push\(panel\)/, "RD panel must be disposed on extension deactivate");
   });
 
   await check("active tunnel child error posts RD overlay error", async () => {
@@ -355,7 +447,21 @@ function runRemoteDesktopWebview() {
     firstTimer();
     assert.strictEqual(v2ConnectPosts().length, 0, "old timer should not post a stale v2Connect");
     scheduledTimers[1]();
-    assert.strictEqual(v2ConnectPosts().length, 1, "current timer should still post v2Connect");
+    const posts = v2ConnectPosts();
+    assert.strictEqual(posts.length, 1, "current timer should still post v2Connect");
+    assert.match(posts[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}$/);
+    assert.match(posts[0].sessionToken, /^[0-9a-f]{64}$/);
+  });
+
+  await check("RemoteDesktopPanel dispose tears down active RD tunnel", async () => {
+    resetHarness();
+    const panel = makePanel();
+    await panel._startV2("test-host");
+    assert.strictEqual(spawnedChildren.length, 1, "expected one active tunnel");
+
+    panel.dispose();
+
+    assert.strictEqual(spawnedChildren[0].killed, true, "dispose should stop the active tunnel");
   });
 
   await check("webview ignores stale v2 events from previous connections", async () => {
@@ -374,8 +480,50 @@ function runRemoteDesktopWebview() {
     assert.strictEqual(staleErrors.length, 0, "old connection events should not report v2Error");
 
     harness.sockets[1].emit("error");
+    assert.strictEqual(
+      harness.posted.filter((message) => message.type === "v2Error").length,
+      0,
+      "current transient signaling errors should enter reconnect before terminal v2Error"
+    );
+    const reconnect = latestTimerByDelay(harness.timers, 500);
+    assert.ok(reconnect, "current signaling error should schedule bounded reconnect");
+    reconnect();
+    assert.strictEqual(harness.sockets.length, 3, "bounded reconnect should open a fresh signaling socket");
+  });
+
+  await check("webview reconnects on media drop, disconnected grace, 1006, and first-frame timeout", async () => {
+    let harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:1/?token=aaaaaaaaaaaaaaaaaaaaaaaa" });
+    harness.peers[0].connectionState = "failed";
+    harness.peers[0].onconnectionstatechange();
+    assert.strictEqual(harness.posted.filter((message) => message.type === "v2Error").length, 0);
+    latestTimerByDelay(harness.timers, 500)();
+    assert.strictEqual(harness.sockets.length, 2, "failed peer should reconnect with a new WebSocket");
+
+    harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:2/?token=bbbbbbbbbbbbbbbbbbbbbbbb" });
+    harness.peers[0].connectionState = "disconnected";
+    harness.peers[0].onconnectionstatechange();
+    const grace = latestTimerByDelay(harness.timers, 3000);
+    assert.ok(grace, "disconnected should arm a grace timer");
+    grace();
+    latestTimerByDelay(harness.timers, 500)();
+    assert.strictEqual(harness.sockets.length, 2, "disconnected grace expiry should reconnect");
+
+    harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:3/?token=cccccccccccccccccccccccc" });
+    harness.sockets[0].emit("close", { wasClean: false, code: 1006 });
+    latestTimerByDelay(harness.timers, 500)();
+    assert.strictEqual(harness.sockets.length, 2, "abnormal signaling close should reconnect");
+
+    harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:4/?token=dddddddddddddddddddddddd" });
+    latestTimerByDelay(harness.timers, 15000)();
+    latestTimerByDelay(harness.timers, 500)();
+    assert.strictEqual(harness.sockets.length, 2, "first-frame timeout should reconnect");
+
     const currentErrors = harness.posted.filter((message) => message.type === "v2Error");
-    assert.strictEqual(currentErrors.length, 1, "current connection errors should still report v2Error");
+    assert.strictEqual(currentErrors.length, 0, "reconnectable media drops should not be terminal immediately");
   });
 
   await check("webview status errors stay visible after first frame", () => {
@@ -385,6 +533,7 @@ function runRemoteDesktopWebview() {
   });
 
   global.setTimeout = realSetTimeout;
+  global.clearTimeout = realClearTimeout;
 
   try {
     fs.rmSync(TMP_HOME, { recursive: true, force: true });

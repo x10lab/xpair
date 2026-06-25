@@ -15,14 +15,22 @@
 //! H.264 on macOS/Windows/Linux → cross-platform) rendering into a `<video>`.
 
 use std::io::{Read, Write};
+use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    ErrorResponse, Request, Response,
+};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
+use tokio_util::sync::CancellationToken;
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
@@ -37,6 +45,148 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 use webrtc::track::track_local::TrackLocal;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+
+const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
+const SESSION_TOKEN_MIN_LEN: usize = 24;
+const SESSION_TOKEN_MAX_LEN: usize = 128;
+
+type SignalingWs = WebSocketStream<tokio::net::TcpStream>;
+type WsTx = SplitSink<SignalingWs, Message>;
+type WsRx = SplitStream<SignalingWs>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct SessionToken(String);
+
+impl SessionToken {
+    fn parse(raw: &str) -> Result<Self, SessionError> {
+        let token = raw.trim();
+        if token.len() < SESSION_TOKEN_MIN_LEN || token.len() > SESSION_TOKEN_MAX_LEN {
+            return Err(SessionError::InvalidToken);
+        }
+        if !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(SessionError::InvalidToken);
+        }
+        Ok(Self(token.to_owned()))
+    }
+
+    fn redacted(&self) -> String {
+        let head: String = self.0.chars().take(6).collect();
+        format!("{head}…")
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SessionError {
+    #[error("missing signaling session token")]
+    MissingToken,
+    #[error("invalid signaling session token")]
+    InvalidToken,
+    #[error("signaling session token mismatch")]
+    TokenMismatch,
+    #[error("connect deadline exceeded")]
+    ConnectDeadlineExceeded,
+    #[error("session superseded")]
+    Superseded,
+    #[error("peer failed: {0}")]
+    PeerFailed(String),
+    #[error("signaling closed")]
+    SignalingClosed,
+    #[error("websocket handshake: {0}")]
+    WsHandshake(String),
+    #[error("webrtc: {0}")]
+    WebRtc(String),
+    #[error("capture: {0}")]
+    Capture(String),
+}
+
+impl From<webrtc::Error> for SessionError {
+    fn from(value: webrtc::Error) -> Self {
+        SessionError::WebRtc(value.to_string())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CaptureConfig {
+    fps: u32,
+    bitrate: u32,
+    scale: f32,
+}
+
+struct AcceptedSignaling {
+    token: SessionToken,
+    ws: SignalingWs,
+}
+
+struct ActiveSession {
+    seq: u64,
+    token: SessionToken,
+    cancel: CancellationToken,
+}
+
+struct SessionDone {
+    seq: u64,
+    token: SessionToken,
+    result: Result<(), SessionError>,
+}
+
+enum SignalingAcceptResult {
+    Accepted {
+        seq: u64,
+        peer: SocketAddr,
+        signaling: AcceptedSignaling,
+    },
+    Rejected {
+        seq: u64,
+        peer: SocketAddr,
+        error: SessionError,
+    },
+}
+
+enum PeerEvent {
+    Connected,
+    Terminal(&'static str),
+}
+
+struct SignalingIo {
+    ws_tx: WsTx,
+    ws_rx: WsRx,
+    sig_rx: mpsc::UnboundedReceiver<String>,
+}
+
+struct PeerResources {
+    pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
+    _input_dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>>,
+}
+
+struct NegotiatingSession {
+    token: SessionToken,
+    started: Instant,
+    io: SignalingIo,
+    peer: PeerResources,
+    state_rx: mpsc::UnboundedReceiver<PeerEvent>,
+    au_tx: mpsc::Sender<Vec<u8>>,
+    capture_config: CaptureConfig,
+    cancel: CancellationToken,
+}
+
+struct ConnectedSession {
+    token: SessionToken,
+    started: Instant,
+    io: SignalingIo,
+    peer: PeerResources,
+    state_rx: mpsc::UnboundedReceiver<PeerEvent>,
+    _capture: CaptureSource,
+    _caffeinate: CaffeinateGuard,
+    cancel: CancellationToken,
+}
+
+enum Session {
+    Negotiating(NegotiatingSession),
+    Connected(ConnectedSession),
+}
 
 /// Locate a helper binary that sits **next to this executable** (the bundle
 /// `Contents/Helpers/` layout). `current_exe()` is `canonicalize()`d first so a
@@ -90,17 +240,39 @@ fn screencap_path() -> String {
     "rp-screencap".to_string()
 }
 
-pub fn run(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), String> {
+pub fn run(
+    port: u16,
+    fps: u32,
+    bitrate: u32,
+    scale: f32,
+    token: Option<String>,
+) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
-    rt.block_on(async move { run_async(port, fps, bitrate, scale).await })
+    rt.block_on(async move { run_async(port, fps, bitrate, scale, token).await })
 }
 
-async fn run_async(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), String> {
+async fn run_async(
+    port: u16,
+    fps: u32,
+    bitrate: u32,
+    scale: f32,
+    token: Option<String>,
+) -> Result<(), String> {
     let fps = fps.clamp(1, 120);
     let scale = scale.clamp(0.1, 1.0);
+    let capture_config = CaptureConfig {
+        fps,
+        bitrate,
+        scale,
+    };
+    let expected_token = token
+        .as_deref()
+        .map(SessionToken::parse)
+        .transpose()
+        .map_err(|e| e.to_string())?;
 
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -109,42 +281,189 @@ async fn run_async(port: u16, fps: u32, bitrate: u32, scale: f32) -> Result<(), 
     tracing::info!("screen serve-webrtc: signaling ws://{addr} (H.264/WebRTC UDP)");
     tracing::info!("  reach signaling over:  ssh -L {port}:127.0.0.1:{port} <host>");
     tracing::info!("  media flows P2P over UDP/ICE (host-candidate, loopback/LAN/VPN)");
+    if expected_token.is_some() {
+        tracing::info!("  signaling token: required");
+    } else {
+        tracing::info!("  signaling token: required by WS, no fixed launch token configured");
+    }
 
-    // One browser (pair session is 1:1). Each signaling connection gets a fresh
-    // PeerConnection + encoder pipeline; teardown on disconnect.
+    let (ready_tx, mut ready_rx) = mpsc::unbounded_channel::<SignalingAcceptResult>();
+    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<SessionDone>();
+    let mut active: Option<ActiveSession> = None;
+    let mut next_session_seq: u64 = 0;
+
+    // One browser (pair session is 1:1). The accept loop is the arbiter: it owns
+    // the active session identity, and a new valid signaling connection cancels
+    // the prior one before installing itself.
     loop {
         crate::log::rotate_guard(); // §7 long-lived guard: also rotate between signaling sessions
-        let (stream, peer) = match listener.accept().await {
-            Ok(x) => x,
-            Err(e) => {
-                tracing::warn!("serve-webrtc: accept error: {e}");
-                continue;
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, peer) = match accepted {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::warn!("serve-webrtc: accept error: {e}");
+                        continue;
+                    }
+                };
+                tracing::info!("serve-webrtc: tcp client {peer} connected");
+                next_session_seq = next_session_seq.wrapping_add(1);
+                let seq = next_session_seq;
+                let ready_tx = ready_tx.clone();
+                let expected_token = expected_token.clone();
+                tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        CONNECT_DEADLINE,
+                        accept_signaling(stream, expected_token.as_ref()),
+                    )
+                    .await
+                    .map_err(|_| SessionError::ConnectDeadlineExceeded)
+                    .and_then(|x| x);
+                    let message = match result {
+                        Ok(signaling) => SignalingAcceptResult::Accepted { seq, peer, signaling },
+                        Err(error) => SignalingAcceptResult::Rejected { seq, peer, error },
+                    };
+                    let _ = ready_tx.send(message);
+                });
             }
-        };
-        tracing::info!("serve-webrtc: signaling client {peer} connected");
-        if let Err(e) = handle_session(stream, fps, bitrate, scale).await {
-            tracing::warn!("serve-webrtc: session ended: {e}");
+            Some(ready) = ready_rx.recv() => {
+                let (seq, peer, accepted) = match ready {
+                    SignalingAcceptResult::Accepted { seq, peer, signaling } => (seq, peer, signaling),
+                    SignalingAcceptResult::Rejected { seq, peer, error } => {
+                        tracing::warn!("serve-webrtc: rejected signaling client {peer} seq={seq}: {error}");
+                        continue;
+                    }
+                };
+                if active.as_ref().is_some_and(|s| seq < s.seq) {
+                    tracing::info!(
+                        "serve-webrtc: dropping late accepted session {} seq={seq}",
+                        accepted.token.redacted()
+                    );
+                    continue;
+                }
+                tracing::info!(
+                    "serve-webrtc: signaling client {peer} accepted as session {} seq={seq}",
+                    accepted.token.redacted(),
+                );
+                if let Some(old) = active.take() {
+                    tracing::info!(
+                        "serve-webrtc: replacing active session {} with {}",
+                        old.token.redacted(),
+                        accepted.token.redacted()
+                    );
+                    old.cancel.cancel();
+                }
+                let token = accepted.token.clone();
+                let cancel = CancellationToken::new();
+                active = Some(ActiveSession {
+                    seq,
+                    token: token.clone(),
+                    cancel: cancel.clone(),
+                });
+                let done_tx = done_tx.clone();
+                tokio::spawn(async move {
+                    let result = serve_session(accepted, capture_config, cancel).await;
+                    let _ = done_tx.send(SessionDone { seq, token, result });
+                });
+            }
+            Some(done) = done_rx.recv() => {
+                match &done.result {
+                    Ok(()) => tracing::info!(
+                        "serve-webrtc: session {} seq={} ended cleanly",
+                        done.token.redacted(),
+                        done.seq
+                    ),
+                    Err(SessionError::Superseded) => tracing::info!(
+                        "serve-webrtc: session {} seq={} superseded",
+                        done.token.redacted(),
+                        done.seq
+                    ),
+                    Err(e) => tracing::warn!(
+                        "serve-webrtc: session {} seq={} ended: {e}",
+                        done.token.redacted(),
+                        done.seq
+                    ),
+                }
+                if active
+                    .as_ref()
+                    .is_some_and(|s| s.seq == done.seq && s.token == done.token)
+                {
+                    active = None;
+                }
+            }
         }
-        tracing::info!("serve-webrtc: signaling client {peer} done");
     }
 }
 
-async fn handle_session(
+async fn accept_signaling(
     stream: tokio::net::TcpStream,
-    fps: u32,
-    bitrate: u32,
-    scale: f32,
-) -> Result<(), String> {
-    let ws = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|e| format!("ws handshake: {e}"))?;
+    expected_token: Option<&SessionToken>,
+) -> Result<AcceptedSignaling, SessionError> {
+    let mut parsed_token: Option<SessionToken> = None;
+    let ws = tokio_tungstenite::accept_hdr_async(stream, |req: &Request, response: Response| {
+        let token = match parse_request_token(req, expected_token) {
+            Ok(token) => token,
+            Err(e) => return Err(session_rejection(&e)),
+        };
+        parsed_token = Some(token);
+        Ok(response)
+    })
+    .await
+    .map_err(|e| SessionError::WsHandshake(e.to_string()))?;
+    let token = parsed_token.ok_or(SessionError::MissingToken)?;
+    Ok(AcceptedSignaling { token, ws })
+}
+
+fn parse_request_token(
+    req: &Request,
+    expected_token: Option<&SessionToken>,
+) -> Result<SessionToken, SessionError> {
+    let raw = req
+        .uri()
+        .query()
+        .and_then(token_from_query)
+        .ok_or(SessionError::MissingToken)?;
+    let token = SessionToken::parse(raw)?;
+    if let Some(expected) = expected_token {
+        if expected != &token {
+            return Err(SessionError::TokenMismatch);
+        }
+    }
+    Ok(token)
+}
+
+fn token_from_query(query: &str) -> Option<&str> {
+    query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "token").then_some(value)
+    })
+}
+
+fn session_rejection(error: &SessionError) -> ErrorResponse {
+    let status = match error {
+        SessionError::MissingToken | SessionError::InvalidToken => StatusCode::UNAUTHORIZED,
+        SessionError::TokenMismatch => StatusCode::FORBIDDEN,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    let mut response = ErrorResponse::new(Some(error.to_string()));
+    *response.status_mut() = status;
+    response
+}
+
+async fn serve_session(
+    accepted: AcceptedSignaling,
+    capture_config: CaptureConfig,
+    cancel: CancellationToken,
+) -> Result<(), SessionError> {
+    let token = accepted.token;
+    let ws = accepted.ws;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     // --- build webrtc API with H264 ---
     let mut m = MediaEngine::default();
-    m.register_default_codecs().map_err(|e| e.to_string())?;
+    m.register_default_codecs()?;
     let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut m).map_err(|e| e.to_string())?;
+    registry = register_default_interceptors(registry, &mut m)?;
     let api = APIBuilder::new()
         .with_media_engine(m)
         .with_interceptor_registry(registry)
@@ -152,7 +471,7 @@ async fn handle_session(
     let pc = Arc::new(
         api.new_peer_connection(RTCConfiguration::default())
             .await
-            .map_err(|e| e.to_string())?,
+            .map_err(SessionError::from)?,
     );
 
     let track = Arc::new(TrackLocalStaticSample::new(
@@ -169,7 +488,7 @@ async fn handle_session(
     let rtp_sender = pc
         .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(SessionError::from)?;
 
     // RTCP reader: the client sends PictureLossIndication / FullIntraRequest when it
     // loses a keyframe (e.g. a packet of the 76KB IDR dropped on a lossy link). Forward
@@ -198,7 +517,7 @@ async fn handle_session(
     }
 
     // --- ICE candidate trickle: PC -> browser (via an mpsc to the WS writer) ---
-    let (sig_tx, mut sig_rx) = mpsc::unbounded_channel::<String>();
+    let (sig_tx, sig_rx) = mpsc::unbounded_channel::<String>();
     {
         let sig_tx = sig_tx.clone();
         pc.on_ice_candidate(Box::new(move |cand| {
@@ -218,54 +537,33 @@ async fn handle_session(
             })
         }));
     }
-    // RD keep-awake: hold a `caffeinate -d` child while the peer is connected so the
-    // remote display never sleeps / shows the screensaver / idle-locks — RD always
-    // mirrors a live screen. Released on disconnect/teardown. Pair is 1:1, so a single
-    // child tracks the one active viewer.
-    let caffeinate: Arc<std::sync::Mutex<Option<std::process::Child>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let caffeinate_cb = Arc::clone(&caffeinate);
+    // Peer-state callback is a gate, not a shared flag: Connected is delivered
+    // over a channel, and only that transition can construct ConnectedSession.
+    let (state_tx, state_rx) = mpsc::unbounded_channel::<PeerEvent>();
     pc.on_peer_connection_state_change(Box::new(move |s| {
         use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
         tracing::info!("serve-webrtc: peer connection state: {s}");
-        if let Ok(mut guard) = caffeinate_cb.lock() {
-            match s {
-                RTCPeerConnectionState::Connected => {
-                    if guard.is_none() {
-                        *guard = Command::new("caffeinate").arg("-d").spawn().ok();
-                    }
-                }
-                RTCPeerConnectionState::Disconnected
-                | RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed => {
-                    if let Some(mut c) = guard.take() {
-                        let _ = c.kill();
-                        let _ = c.wait();
-                    }
-                }
-                _ => {}
+        match s {
+            RTCPeerConnectionState::Connected => {
+                let _ = state_tx.send(PeerEvent::Connected);
             }
+            RTCPeerConnectionState::Disconnected => {}
+            RTCPeerConnectionState::Failed => {
+                let _ = state_tx.send(PeerEvent::Terminal("failed"));
+            }
+            RTCPeerConnectionState::Closed => {
+                let _ = state_tx.send(PeerEvent::Terminal("closed"));
+            }
+            _ => {}
         }
         Box::pin(async {})
     }));
 
-    // --- encoder pipeline ---
-    // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
-    // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
-    // stdin. We then ONLY do WebRTC transport — no rp-screencap spawn. stdout is
-    // the control channel back to the app ({"capture":"start"|"stop"}\n).
-    // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
     let (au_tx, mut au_rx) = mpsc::channel::<Vec<u8>>(16);
-    let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
-    let cap_handle: CaptureSource = if au_stdin_mode {
-        CaptureSource::Stdin(spawn_au_stdin_reader(au_tx))
-    } else {
-        CaptureSource::Child(spawn_screencap(fps, bitrate, scale, au_tx)?)
-    };
 
     // rtp task: forward access units to the track as H264 samples
     let track_w = track.clone();
-    let frame_dur = Duration::from_secs_f64(1.0 / fps as f64);
+    let frame_dur = Duration::from_secs_f64(1.0 / capture_config.fps as f64);
     tokio::spawn(async move {
         let mut frames: u64 = 0;
         while let Some(au) = au_rx.recv().await {
@@ -324,7 +622,7 @@ async fn handle_session(
                     let ctl = pc
                         .create_data_channel("rp-ctl", None)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(SessionError::from)?;
                     let mv_init = RTCDataChannelInit {
                         ordered: Some(false),
                         max_retransmits: Some(0),
@@ -333,7 +631,7 @@ async fn handle_session(
                     let mv = pc
                         .create_data_channel("rp-move", Some(mv_init))
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(SessionError::from)?;
                     for dc in [&ctl, &mv] {
                         let label = dc.label().to_string();
                         dc.on_open(Box::new(move || {
@@ -348,7 +646,7 @@ async fn handle_session(
                             })
                         }));
                     }
-                    // keep channels alive for the session (dropped when handle_session returns)
+                    // keep channels alive for the session (dropped when the session returns)
                     _input_dcs.push(ctl);
                     _input_dcs.push(mv);
                 }
@@ -360,58 +658,237 @@ async fn handle_session(
     }
 
     // --- create offer, send to browser ---
-    let offer = pc.create_offer(None).await.map_err(|e| e.to_string())?;
-    pc.set_local_description(offer.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let offer = pc.create_offer(None).await.map_err(SessionError::from)?;
+    pc.set_local_description(offer.clone()).await?;
     let offer_msg = serde_json::json!({ "type": "offer", "sdp": offer.sdp }).to_string();
     ws_tx
         .send(Message::Text(offer_msg.into()))
         .await
-        .map_err(|e| format!("send offer: {e}"))?;
+        .map_err(|e| SessionError::WsHandshake(format!("send offer: {e}")))?;
 
-    // --- signaling loop: pump PC->browser candidates and browser->PC messages ---
-    loop {
-        tokio::select! {
-            Some(out) = sig_rx.recv() => {
-                if ws_tx.send(Message::Text(out.into())).await.is_err() { break; }
-            }
-            msg = ws_rx.next() => {
-                let msg = match msg { Some(Ok(m)) => m, _ => break };
-                let text = match msg {
-                    Message::Text(t) => t.to_string(),
-                    Message::Close(_) => break,
-                    _ => continue,
-                };
-                let v: serde_json::Value = match serde_json::from_str(&text) { Ok(v) => v, Err(_) => continue };
-                match v.get("type").and_then(|t| t.as_str()) {
-                    Some("answer") => {
-                        if let Some(sdp) = v.get("sdp").and_then(|s| s.as_str()) {
-                            let ans = RTCSessionDescription::answer(sdp.to_owned()).map_err(|e| e.to_string())?;
-                            pc.set_remote_description(ans).await.map_err(|e| e.to_string())?;
+    let io = SignalingIo {
+        ws_tx,
+        ws_rx,
+        sig_rx,
+    };
+    let peer = PeerResources {
+        pc,
+        _input_dcs,
+    };
+    let session = Session::Negotiating(NegotiatingSession {
+        token,
+        started: Instant::now(),
+        io,
+        peer,
+        state_rx,
+        au_tx,
+        capture_config,
+        cancel,
+    });
+    let session = match session {
+        Session::Negotiating(negotiating) => {
+            Session::Connected(negotiating.run_until_connected().await?)
+        }
+        connected @ Session::Connected(_) => connected,
+    };
+    match session {
+        Session::Connected(connected) => connected.run().await,
+        Session::Negotiating(_) => Ok(()),
+    }
+}
+
+impl NegotiatingSession {
+    async fn run_until_connected(mut self) -> Result<ConnectedSession, SessionError> {
+        let deadline = tokio::time::sleep(CONNECT_DEADLINE);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    let _ = self.peer.pc.close().await;
+                    return Err(SessionError::Superseded);
+                }
+                _ = &mut deadline => {
+                    let _ = self.peer.pc.close().await;
+                    return Err(SessionError::ConnectDeadlineExceeded);
+                }
+                Some(event) = self.state_rx.recv() => {
+                    match event {
+                        PeerEvent::Connected => {
+                            tracing::info!(
+                                "serve-webrtc: session {} connected in {:?}",
+                                self.token.redacted(),
+                                self.started.elapsed()
+                            );
+                            return self.into_connected();
+                        }
+                        PeerEvent::Terminal(state) => {
+                            let _ = self.peer.pc.close().await;
+                            return Err(SessionError::PeerFailed(state.to_owned()));
                         }
                     }
-                    Some("candidate") => {
-                        if let Some(c) = v.get("candidate").and_then(|s| s.as_str()) {
-                            let init = RTCIceCandidateInit {
-                                candidate: c.to_owned(),
-                                sdp_mid: v.get("sdpMid").and_then(|x| x.as_str()).map(|s| s.to_owned()),
-                                sdp_mline_index: v.get("sdpMLineIndex").and_then(|x| x.as_u64()).map(|n| n as u16),
-                                ..Default::default()
-                            };
-                            let _ = pc.add_ice_candidate(init).await;
+                }
+                Some(out) = self.io.sig_rx.recv() => {
+                    self.send_signaling(out).await?;
+                }
+                msg = self.io.ws_rx.next() => {
+                    let Some(msg) = msg else {
+                        let _ = self.peer.pc.close().await;
+                        return Err(SessionError::SignalingClosed);
+                    };
+                    let msg = match msg {
+                        Ok(m) => m,
+                        Err(e) => {
+                            let _ = self.peer.pc.close().await;
+                            return Err(SessionError::WsHandshake(e.to_string()));
                         }
+                    };
+                    if self.apply_ws_message(msg).await? {
+                        let _ = self.peer.pc.close().await;
+                        return Err(SessionError::SignalingClosed);
                     }
-                    _ => {}
                 }
             }
-            else => break,
         }
     }
 
-    cap_handle.stop();
-    let _ = pc.close().await;
+    fn into_connected(self) -> Result<ConnectedSession, SessionError> {
+        let capture = CaptureSource::start(self.capture_config, self.au_tx)?;
+        Ok(ConnectedSession {
+            token: self.token,
+            started: self.started,
+            io: self.io,
+            peer: self.peer,
+            state_rx: self.state_rx,
+            _capture: capture,
+            _caffeinate: CaffeinateGuard::start(),
+            cancel: self.cancel,
+        })
+    }
+
+    async fn send_signaling(&mut self, out: String) -> Result<(), SessionError> {
+        self.io
+            .ws_tx
+            .send(Message::Text(out.into()))
+            .await
+            .map_err(|e| SessionError::WsHandshake(format!("send signaling: {e}")))
+    }
+
+    async fn apply_ws_message(&mut self, msg: Message) -> Result<bool, SessionError> {
+        let text = match msg {
+            Message::Text(t) => t.to_string(),
+            Message::Close(_) => return Ok(true),
+            _ => return Ok(false),
+        };
+        apply_signaling_message(&self.peer.pc, &text).await?;
+        Ok(false)
+    }
+}
+
+impl ConnectedSession {
+    async fn run(mut self) -> Result<(), SessionError> {
+        let result = self.run_inner().await;
+        let _ = self.peer.pc.close().await;
+        tracing::info!(
+            "serve-webrtc: session {} closed after {:?}",
+            self.token.redacted(),
+            self.started.elapsed()
+        );
+        result
+    }
+
+    async fn run_inner(&mut self) -> Result<(), SessionError> {
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    return Err(SessionError::Superseded);
+                }
+                Some(event) = self.state_rx.recv() => {
+                    match event {
+                        PeerEvent::Connected => {}
+                        PeerEvent::Terminal("closed") => return Ok(()),
+                        PeerEvent::Terminal(state) => {
+                            return Err(SessionError::PeerFailed(state.to_owned()));
+                        }
+                    }
+                }
+                Some(out) = self.io.sig_rx.recv() => {
+                    self.io
+                        .ws_tx
+                        .send(Message::Text(out.into()))
+                        .await
+                        .map_err(|e| SessionError::WsHandshake(format!("send signaling: {e}")))?;
+                }
+                msg = self.io.ws_rx.next() => {
+                    let Some(msg) = msg else {
+                        return Ok(());
+                    };
+                    let msg = msg.map_err(|e| SessionError::WsHandshake(e.to_string()))?;
+                    match msg {
+                        Message::Close(_) => return Ok(()),
+                        Message::Text(t) => apply_signaling_message(&self.peer.pc, &t.to_string()).await?,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn apply_signaling_message(
+    pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
+    text: &str,
+) -> Result<(), SessionError> {
+    let v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("answer") => {
+            if let Some(sdp) = v.get("sdp").and_then(|s| s.as_str()) {
+                let ans = RTCSessionDescription::answer(sdp.to_owned())?;
+                pc.set_remote_description(ans).await?;
+            }
+        }
+        Some("candidate") => {
+            if let Some(c) = v.get("candidate").and_then(|s| s.as_str()) {
+                let init = RTCIceCandidateInit {
+                    candidate: c.to_owned(),
+                    sdp_mid: v
+                        .get("sdpMid")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_owned()),
+                    sdp_mline_index: v
+                        .get("sdpMLineIndex")
+                        .and_then(|x| x.as_u64())
+                        .map(|n| n as u16),
+                    ..Default::default()
+                };
+                let _ = pc.add_ice_candidate(init).await;
+            }
+        }
+        _ => {}
+    }
     Ok(())
+}
+
+struct CaffeinateGuard {
+    child: Option<std::process::Child>,
+}
+
+impl CaffeinateGuard {
+    fn start() -> Self {
+        let child = Command::new("caffeinate").arg("-d").spawn().ok();
+        Self { child }
+    }
+}
+
+impl Drop for CaffeinateGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// Per-session capture source: either a spawned `rp-screencap` child (default
@@ -422,11 +899,33 @@ enum CaptureSource {
     Stdin(StdinReaderHandle),
 }
 impl CaptureSource {
+    fn start(config: CaptureConfig, au_tx: mpsc::Sender<Vec<u8>>) -> Result<Self, SessionError> {
+        // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
+        // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
+        // stdin. We then ONLY do WebRTC transport — no rp-screencap spawn. stdout is
+        // the control channel back to the app ({"capture":"start"|"stop"}\n).
+        // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
+        let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
+        if au_stdin_mode {
+            Ok(CaptureSource::Stdin(spawn_au_stdin_reader(au_tx)))
+        } else {
+            spawn_screencap(config.fps, config.bitrate, config.scale, au_tx)
+                .map(CaptureSource::Child)
+                .map_err(SessionError::Capture)
+        }
+    }
+
     fn stop(&self) {
         match self {
             CaptureSource::Child(h) => h.stop(),
             CaptureSource::Stdin(h) => h.stop(),
         }
+    }
+}
+
+impl Drop for CaptureSource {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -454,9 +953,12 @@ struct StdinReaderHandle {
 }
 impl StdinReaderHandle {
     fn stop(&self) {
-        self.stopped
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        write_control("{\"capture\":\"stop\"}\n");
+        if !self
+            .stopped
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            write_control("{\"capture\":\"stop\"}\n");
+        }
     }
 }
 
@@ -510,6 +1012,12 @@ impl CaptureHandle {
         if let Ok(mut c) = self.child.lock() {
             let _ = c.kill();
         }
+    }
+}
+
+impl Drop for CaptureHandle {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

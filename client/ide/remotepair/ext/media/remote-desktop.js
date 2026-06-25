@@ -14,6 +14,10 @@
   const badge = document.getElementById("badge");
 
   const V2_FIRST_FRAME_TIMEOUT_MS = 15000;
+  const V2_DISCONNECTED_GRACE_MS = 3000;
+  const V2_RECONNECT_BASE_MS = 500;
+  const V2_RECONNECT_MAX_MS = 4000;
+  const V2_RECONNECT_MAX_ATTEMPTS = 5;
 
   let haveFrame = false;
 
@@ -80,6 +84,10 @@
   let v2FirstFrameReported = false;
   let v2ErrorReported = false;
   let v2FirstFrameTimer = null;
+  let v2DisconnectedTimer = null;
+  let v2ReconnectTimer = null;
+  let v2SignalUrl = null;
+  let v2ReconnectAttempt = 0;
   let v2Generation = 0;
 
   // -------------------------------------------------------------------------
@@ -107,8 +115,27 @@
     v2FirstFrameTimer = null;
   }
 
-  function resetV2AttemptState() {
+  function clearV2DisconnectedTimer() {
+    if (v2DisconnectedTimer && typeof clearTimeout === "function") {
+      try { clearTimeout(v2DisconnectedTimer); } catch (_e) {}
+    }
+    v2DisconnectedTimer = null;
+  }
+
+  function clearV2ReconnectTimer() {
+    if (v2ReconnectTimer && typeof clearTimeout === "function") {
+      try { clearTimeout(v2ReconnectTimer); } catch (_e) {}
+    }
+    v2ReconnectTimer = null;
+  }
+
+  function clearV2AttemptTimers() {
     clearV2FirstFrameTimer();
+    clearV2DisconnectedTimer();
+  }
+
+  function resetV2AttemptState() {
+    clearV2AttemptTimers();
     haveFrame = false;
     v2FirstFrameReported = false;
     v2ErrorReported = false;
@@ -218,6 +245,9 @@
   function cancelV2(showConnecting) {
     v2Generation += 1;
     v2Mode = false;
+    v2SignalUrl = null;
+    v2ReconnectAttempt = 0;
+    clearV2ReconnectTimer();
     resetV2AttemptState();
     closeWs();
     closePc2();
@@ -225,16 +255,19 @@
     if (showConnecting) showOverlay("Connecting to host…");
   }
 
-  function connectV2(signalUrl) {
+  function connectV2(signalUrl, reconnectAttempt) {
     const generation = ++v2Generation;
+    clearV2ReconnectTimer();
     closeWs();
     closePc2();
     clearVideo();
     resetV2AttemptState();
     v2Mode = true;
+    v2SignalUrl = signalUrl;
+    v2ReconnectAttempt = reconnectAttempt || 0;
 
     video.style.display = "block";
-    showOverlay("connecting (WebRTC)…");
+    showOverlay(v2ReconnectAttempt ? "reconnecting (WebRTC)…" : "connecting (WebRTC)…");
 
     let pc;
     try {
@@ -260,7 +293,8 @@
       if (!isCurrent()) return;
       v2Generation += 1;
       v2Mode = false;
-      clearV2FirstFrameTimer();
+      clearV2AttemptTimers();
+      clearV2ReconnectTimer();
       closeWs();
       closePc2();
     };
@@ -268,8 +302,82 @@
     const reportCurrentError = (detail) => {
       if (!isCurrent() || v2ErrorReported) return;
       v2ErrorReported = true;
-      clearV2FirstFrameTimer();
+      clearV2AttemptTimers();
       vscode.postMessage({ type: "v2Error", detail });
+    };
+
+    let reconnectScheduled = false;
+    const reconnectCurrent = (reason) => {
+      if (!isCurrent() || reconnectScheduled) return;
+      reconnectScheduled = true;
+      clearV2AttemptTimers();
+      if (v2ReconnectAttempt >= V2_RECONNECT_MAX_ATTEMPTS || !v2SignalUrl) {
+        reportCurrentError(reason + " after reconnect window");
+        cancelCurrent();
+        return;
+      }
+      const nextAttempt = v2ReconnectAttempt + 1;
+      const delay = Math.min(
+        V2_RECONNECT_BASE_MS * Math.pow(2, nextAttempt - 1),
+        V2_RECONNECT_MAX_MS
+      );
+      if (typeof setTimeout !== "function") {
+        reportCurrentError(reason + " (reconnect timer unavailable)");
+        cancelCurrent();
+        return;
+      }
+      showOverlay("reconnecting (WebRTC)…");
+      v2Generation += 1;
+      closeWs();
+      closePc2();
+      clearVideo();
+      v2ReconnectTimer = setTimeout(function () {
+        v2ReconnectTimer = null;
+        if (!v2Mode || v2SignalUrl !== signalUrl) return;
+        connectV2(signalUrl, nextAttempt);
+      }, delay);
+    };
+
+    const armDisconnectedGrace = (reason) => {
+      if (!isCurrent() || v2DisconnectedTimer || reconnectScheduled) return;
+      if (typeof setTimeout !== "function") {
+        reconnectCurrent(reason);
+        return;
+      }
+      v2DisconnectedTimer = setTimeout(function () {
+        v2DisconnectedTimer = null;
+        reconnectCurrent(reason);
+      }, V2_DISCONNECTED_GRACE_MS);
+    };
+
+    const clearPeerRecoveryGrace = () => {
+      clearV2DisconnectedTimer();
+    };
+
+    const handlePeerState = (state, reason) => {
+      if (!isCurrent()) return;
+      if (state === "connected" || state === "completed") {
+        clearPeerRecoveryGrace();
+        return;
+      }
+      if (state === "disconnected") {
+        armDisconnectedGrace(reason);
+        return;
+      }
+      if (state === "failed") {
+        reconnectCurrent(reason);
+      }
+    };
+
+    const markFirstFrame = () => {
+      if (!isCurrent() || haveFrame) return;
+      haveFrame = true;
+      clearV2FirstFrameTimer();
+      hideOverlay();
+      if (!v2FirstFrameReported) {
+        v2FirstFrameReported = true;
+        vscode.postMessage({ type: "v2FirstFrame" });
+      }
     };
 
     pc.ondatachannel = function (ev) {
@@ -280,21 +388,20 @@
     pc.ontrack = function (ev) {
       if (!isCurrent()) return;
       video.srcObject = ev.streams[0];
-      if (!haveFrame) {
-        haveFrame = true;
-        clearV2FirstFrameTimer();
-        hideOverlay();
-      }
-      if (!v2FirstFrameReported) {
-        v2FirstFrameReported = true;
-        vscode.postMessage({ type: "v2FirstFrame" });
+      if (video.readyState >= 2) {
+        markFirstFrame();
+      } else if (typeof video.requestVideoFrameCallback === "function") {
+        try { video.requestVideoFrameCallback(markFirstFrame); } catch (_e) {}
+      } else if (typeof video.addEventListener === "function") {
+        video.addEventListener("loadeddata", markFirstFrame, { once: true });
+        video.addEventListener("playing", markFirstFrame, { once: true });
       }
     };
     pc.onconnectionstatechange = function () {
-      if (isCurrent() && pc.connectionState === "failed") {
-        reportCurrentError("peer connection failed");
-        cancelCurrent();
-      }
+      handlePeerState(pc.connectionState, "peer connection " + pc.connectionState);
+    };
+    pc.oniceconnectionstatechange = function () {
+      handlePeerState(pc.iceConnectionState, "ICE connection " + pc.iceConnectionState);
     };
 
     try {
@@ -310,8 +417,7 @@
       v2FirstFrameTimer = setTimeout(function () {
         v2FirstFrameTimer = null;
         if (!isCurrent() || haveFrame) return;
-        reportCurrentError("timed out waiting for first WebRTC frame");
-        cancelCurrent();
+        reconnectCurrent("timed out waiting for first WebRTC frame");
       }, V2_FIRST_FRAME_TIMEOUT_MS);
     }
 
@@ -358,13 +464,11 @@
     });
     sock.addEventListener("error", function () {
       if (!isCurrent()) return;
-      reportCurrentError("signaling WebSocket error on " + signalUrl);
-      cancelCurrent();
+      reconnectCurrent("signaling WebSocket error on " + signalUrl);
     });
     sock.addEventListener("close", function (ev) {
       if (isCurrent() && v2Mode && !ev.wasClean) {
-        reportCurrentError("signaling closed (code=" + ev.code + ")");
-        cancelCurrent();
+        reconnectCurrent("signaling closed (code=" + ev.code + ")");
       }
     });
   }
