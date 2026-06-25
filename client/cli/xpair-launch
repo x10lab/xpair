@@ -369,7 +369,11 @@ command -v opencode >/dev/null 2>&1 || {
 # Auto-approve via inline config merge (TUI has no skip-permissions flag). Merges with existing config.
 export OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"allow","bash":"allow","webfetch":"allow"}}'
 while :; do
-  opencode
+  if [ "${CL_CONTINUE:-0}" = 1 ]; then
+    { opencode --continue; } || opencode
+  else
+    opencode
+  fi
   [ $? -eq 0 ] && break
   printf '\n[opencode crashed — restarting in 3s, Ctrl+C to abort]\n'
   sleep 3 || break
@@ -549,10 +553,10 @@ launch_local() {
     # exec cannot call functions → invoke the binary directly (instead of tm_local).
     exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$SESS"   # -d: drop stale clients (take-over)
   fi
-  if local_host_role_expected; then
-    host_setup_recovery_local "XpairHost tmux-aqua server is not ready on $AQUA_SOCK"
-  fi
-  # Fallback: plain tmux (no computer-use — machine without XpairHost)
+  # Fallback: plain tmux (no computer-use — machine without XpairHost or tmux-aqua server not up).
+  # We deliberately do NOT block here on local_host_role_expected: a host/both machine whose
+  # tmux-aqua server is not running must still get a usable (non-computer-use) plain-tmux session
+  # rather than a hard exit. The labeled non-computer-use notice below makes the downgrade explicit.
   plain_local_non_computer_use_notice
   command -v tmux >/dev/null 2>&1 || die "tmux not found on $LOCAL_HOST. Install it: brew install tmux" 10
   # Skip any _N that already has a client (tab) attached
@@ -640,6 +644,7 @@ remote_disconnect_diag() {
   local reason="$1" rc="${2:-20}"
   printf 'remote launch stopped: %s\n' "$reason" >&2
   printf 'please connect/reconnect to %s (LAN, VPN, or Tailscale), then rerun xpair launch.\n' "$REMOTE_HOST" >&2
+  printf '  (tailscale exit-node is not auto-configured by Xpair — bring the link up yourself)\n' >&2
   printf 'Xpair will not change Tailscale exit-node settings or fall back to local automatically.\n' >&2
   printf 'For a local session, rerun explicitly: xpair launch --local %s\n' "$(sh_quote "$PROJECT_DIR")" >&2
   exit "$rc"
