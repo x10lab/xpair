@@ -79,15 +79,14 @@ function versionMajor(v) {
 }
 
 /** The OLDEST host version this client can talk to. **BUMP THIS** whenever a host↔client
- *  protocol/interface changes incompatibly. A same-major host that is OLDER than this connects
- *  today but fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with
- *  a clear "update the host" message is far better than a silent breakage. A host >= this is accepted.
- *  CRITICAL: this floor must be <= the version the host cask actually ships (Casks/xpair-host.rb),
- *  or it rejects every real install. It was previously set to an unreachable a45 (nothing has
- *  shipped past the build counter at 12 / host cask 0.5.0a12), which told a cask-installed host it
- *  was "older than minimum compatible" and dead-ended the install. Pinned to the current shipped
- *  host release so the cask-install flow is unblocked while still rejecting genuinely older hosts. */
-const MIN_COMPATIBLE_HOST = "0.5.0a12";
+ *  protocol/interface changes incompatibly — e.g. the a45 RD remote-input restore changed
+ *  serve_webrtc's data channels. A same-major host that is OLDER than this connects today but
+ *  fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with a clear
+ *  "update the host" message is far better than a silent breakage. A host >= this is accepted.
+ *  INVARIANT: the host cask (Casks/xpair-host.rb) must ship a version >= this floor, or a
+ *  cask-installed host is (correctly) rejected as too old. The published pre-releases reach
+ *  v0.5.0a47+, so the cask is bumped to a current release rather than lowering this baseline. */
+const MIN_COMPATIBLE_HOST = "0.5.0a45";
 
 /** Compare two "X.Y.Z" or "X.Y.ZaN" version strings → -1 | 0 | 1 (a<b | a==b | a>b).
  *  The alpha suffix sorts BELOW the same release: 0.5.0a44 < 0.5.0a45 < 0.5.0 (a released X.Y.Z
