@@ -10,9 +10,11 @@ use std::process::ExitCode;
 use xpair::attach;
 use xpair::config;
 use xpair::doctor;
+use xpair::launch;
 use xpair::logs;
 use xpair::mapping::{map_to_host, parse_maps};
 use xpair::mode;
+use xpair::notify;
 use xpair::session::{self, SshTransport};
 use xpair::status;
 
@@ -58,10 +60,12 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "doctor" => doctor::run(&args[1..]),
+        "launch" => launch::run(&args[1..]),
         "attach" => attach::run(&args[1..]),
         "ls" => cmd_ls(&args[1..]),
         "status" => cmd_status(&args[1..]),
         "logs" => logs::run(&args[1..]),
+        "notify" => notify::run(&args[1..]),
         "map" => cmd_map(&args[1..]),
         "mode" => cmd_mode(&args[1..]),
         "config" => run_config(&args[1..]),
@@ -92,7 +96,7 @@ fn print_help() {
     }
     println!();
     println!(
-        "(native Rust client — port in progress; `map`/`config`/`ls`/`mode`/`status`/`logs`/`attach`/`doctor` work today)"
+        "(native Rust client — port in progress; `launch`(remote)/`attach`/`ls`/`map`/`config`/`mode`/`status`/`logs`/`notify`/`doctor` work today)"
     );
 }
 

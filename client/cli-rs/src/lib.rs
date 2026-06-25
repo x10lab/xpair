@@ -16,9 +16,11 @@
 pub mod attach;
 pub mod config;
 pub mod doctor;
+pub mod launch;
 pub mod logs;
 pub mod mapping;
 pub mod mode;
+pub mod notify;
 pub mod platform;
 pub mod remote_quote;
 pub mod session;
