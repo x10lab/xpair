@@ -1309,7 +1309,7 @@ new file mode 100644
 index 00000000..6887d7cb
 --- /dev/null
 +++ b/src/vs/workbench/contrib/files/browser/remotePairBrowserActions.ts
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,451 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair (G005): top-of-Browser actions and per-folder session creation.
 + *
