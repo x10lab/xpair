@@ -627,7 +627,7 @@ else
   _rn_all="$(printf '%s\n' "$_rn_raw" | awk 'NF{print $1}')"
   _rn_out="$(_remote_next_n "$REMOTE_PROJ" "$_rn_att" "$_rn_all")"
   _rn="${_rn_out%% *}"; _rs="${_rn_out#* }"
-  _ln_out="$(_local_next_n "$LOCAL_PROJ")"
+  _ln_out="$(_local_next_n "$LOCAL_PROJ" "$FRESH")"
   _ln="${_ln_out%% *}"; _ls="${_ln_out#* }"
   printf 'Launch %s for "%s":\n  [1] %s (remote, default)  → session _%s  (%s)\n  [2] %s (local)            → session _%s  (%s)\n' \
     "$(engine_label "$RP_ENGINE")" "$LOCAL_PROJ" "$REMOTE_HOST" "$_rn" "$_rs" "$LOCAL_HOST" "$_ln" "$_ls"
