@@ -18,6 +18,18 @@
   const V2_RECONNECT_BASE_MS = 500;
   const V2_RECONNECT_MAX_MS = 4000;
   const V2_RECONNECT_MAX_ATTEMPTS = 5;
+  const V2_STATS_INTERVAL_MS = 5000;
+  const V2_STATS_MAX_SAMPLES = 120;
+
+  const FAILURE_MESSAGES = Object.freeze({
+    reach: "Remote desktop cannot reach the host. Check that XpairHost.app is running, the host is reachable over SSH, and the tunnel can connect.",
+    "key-auth": "SSH key authentication is blocked. Unlock or approve your SSH agent or key passphrase, then retry.",
+    "host-key": "The host identity changed. Re-confirm the host fingerprint, remove the stale known_hosts entry if this is your Mac, then retry.",
+    "capture-failed": "The host could not start screen capture. Grant Screen Recording permission to XpairHost.app on the host, then retry.",
+    "peer-failed": "The WebRTC media connection failed. Check LAN/VPN reachability between the client and host, then retry.",
+    "no-first-frame": "The media connection opened, but no decoded video frame arrived. Check Screen Recording permission and network reachability, then retry.",
+    superseded: "This remote desktop session was replaced by a newer connection. Use the current RD tab or refresh this one.",
+  });
 
   let haveFrame = false;
 
@@ -89,6 +101,9 @@
   let v2SignalUrl = null;
   let v2ReconnectAttempt = 0;
   let v2Generation = 0;
+  let v2StatsTimer = null;
+  let v2StatsSamples = 0;
+  let v2LastStats = null;
 
   // -------------------------------------------------------------------------
   // Overlay helpers
@@ -100,6 +115,29 @@
   }
   function hideOverlay() {
     overlay.classList.add("hidden");
+  }
+
+  function normalizeFailureKind(kind) {
+    const raw = String(kind || "").toLowerCase().replace(/_/g, "-");
+    if (raw === "host-key-mismatch" || raw === "hostkey") return "host-key";
+    if (raw === "key-auth-blocked" || raw === "auth" || raw === "publickey") return "key-auth";
+    if (raw === "unreachable" || raw === "ssh" || raw === "signaling" || raw === "connection") return "reach";
+    if (raw === "capture-error" || raw === "capture") return "capture-failed";
+    if (raw === "session-superseded" || raw === "replaced") return "superseded";
+    if (Object.prototype.hasOwnProperty.call(FAILURE_MESSAGES, raw)) return raw;
+    return "reach";
+  }
+
+  function failureOverlayMessage(kind, detail) {
+    const normalized = normalizeFailureKind(kind);
+    const base = FAILURE_MESSAGES[normalized] || FAILURE_MESSAGES.reach;
+    const text = detail ? String(detail).trim() : "";
+    if (!text) return base;
+    return base + "\n\nDetails: " + text;
+  }
+
+  function showFailureOverlay(kind, detail) {
+    showOverlay(failureOverlayMessage(kind, detail));
   }
 
   function setBadge() {
@@ -129,9 +167,19 @@
     v2ReconnectTimer = null;
   }
 
+  function clearV2StatsTimer() {
+    if (v2StatsTimer && typeof clearInterval === "function") {
+      try { clearInterval(v2StatsTimer); } catch (_e) {}
+    }
+    v2StatsTimer = null;
+    v2StatsSamples = 0;
+    v2LastStats = null;
+  }
+
   function clearV2AttemptTimers() {
     clearV2FirstFrameTimer();
     clearV2DisconnectedTimer();
+    clearV2StatsTimer();
   }
 
   function resetV2AttemptState() {
@@ -255,6 +303,61 @@
     if (showConnecting) showOverlay("Connecting to host…");
   }
 
+  function numberOrNull(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function collectVideoStats(report) {
+    let inbound = null;
+    if (report && typeof report.forEach === "function") {
+      report.forEach(function (stat) {
+        if (!stat || stat.type !== "inbound-rtp") return;
+        if (stat.kind === "video" || stat.mediaType === "video") inbound = stat;
+      });
+    }
+    if (!inbound) return null;
+    const now = numberOrNull(inbound.timestamp);
+    const bytes = numberOrNull(inbound.bytesReceived);
+    let bitrateKbps = 0;
+    if (v2LastStats && now !== null && bytes !== null && now > v2LastStats.timestamp) {
+      bitrateKbps = Math.max(0, Math.round(((bytes - v2LastStats.bytesReceived) * 8) / (now - v2LastStats.timestamp)));
+    }
+    if (now !== null && bytes !== null) {
+      v2LastStats = { timestamp: now, bytesReceived: bytes };
+    }
+    const jitter = numberOrNull(inbound.jitter);
+    return {
+      decoded: numberOrNull(inbound.framesDecoded),
+      dropped: numberOrNull(inbound.framesDropped),
+      fps: numberOrNull(inbound.framesPerSecond),
+      jitterMs: jitter === null ? null : Math.round(jitter * 1000),
+      bitrateKbps,
+    };
+  }
+
+  function startStatsSampler(pc, isCurrent) {
+    clearV2StatsTimer();
+    if (!pc || typeof pc.getStats !== "function" || typeof setInterval !== "function") return;
+    v2StatsTimer = setInterval(async function () {
+      if (!isCurrent()) {
+        clearV2StatsTimer();
+        return;
+      }
+      if (v2StatsSamples >= V2_STATS_MAX_SAMPLES) {
+        clearV2StatsTimer();
+        return;
+      }
+      v2StatsSamples += 1;
+      try {
+        const stats = collectVideoStats(await pc.getStats());
+        if (stats) vscode.postMessage({ type: "v2Stats", ...stats });
+      } catch (_e) {
+        clearV2StatsTimer();
+      }
+    }, V2_STATS_INTERVAL_MS);
+  }
+
   function connectV2(signalUrl, reconnectAttempt) {
     const generation = ++v2Generation;
     clearV2ReconnectTimer();
@@ -273,7 +376,11 @@
     try {
       pc = new RTCPeerConnection({ iceServers: [] }); // host candidates (loopback/LAN/VPN)
     } catch (e) {
-      vscode.postMessage({ type: "v2Error", detail: "RTCPeerConnection ctor threw: " + String(e) });
+      vscode.postMessage({
+        type: "v2Error",
+        detail: "RTCPeerConnection ctor threw: " + String(e),
+        failureKind: "peer-failed",
+      });
       cancelV2();
       return;
     }
@@ -299,20 +406,20 @@
       closePc2();
     };
 
-    const reportCurrentError = (detail) => {
+    const reportCurrentError = (detail, failureKind) => {
       if (!isCurrent() || v2ErrorReported) return;
       v2ErrorReported = true;
       clearV2AttemptTimers();
-      vscode.postMessage({ type: "v2Error", detail });
+      vscode.postMessage({ type: "v2Error", detail, failureKind: normalizeFailureKind(failureKind) });
     };
 
     let reconnectScheduled = false;
-    const reconnectCurrent = (reason) => {
+    const reconnectCurrent = (reason, failureKind) => {
       if (!isCurrent() || reconnectScheduled) return;
       reconnectScheduled = true;
       clearV2AttemptTimers();
       if (v2ReconnectAttempt >= V2_RECONNECT_MAX_ATTEMPTS || !v2SignalUrl) {
-        reportCurrentError(reason + " after reconnect window");
+        reportCurrentError(reason + " after reconnect window", failureKind);
         cancelCurrent();
         return;
       }
@@ -322,7 +429,7 @@
         V2_RECONNECT_MAX_MS
       );
       if (typeof setTimeout !== "function") {
-        reportCurrentError(reason + " (reconnect timer unavailable)");
+        reportCurrentError(reason + " (reconnect timer unavailable)", failureKind);
         cancelCurrent();
         return;
       }
@@ -338,15 +445,15 @@
       }, delay);
     };
 
-    const armDisconnectedGrace = (reason) => {
+    const armDisconnectedGrace = (reason, failureKind) => {
       if (!isCurrent() || v2DisconnectedTimer || reconnectScheduled) return;
       if (typeof setTimeout !== "function") {
-        reconnectCurrent(reason);
+        reconnectCurrent(reason, failureKind);
         return;
       }
       v2DisconnectedTimer = setTimeout(function () {
         v2DisconnectedTimer = null;
-        reconnectCurrent(reason);
+        reconnectCurrent(reason, failureKind);
       }, V2_DISCONNECTED_GRACE_MS);
     };
 
@@ -361,11 +468,11 @@
         return;
       }
       if (state === "disconnected") {
-        armDisconnectedGrace(reason);
+        armDisconnectedGrace(reason, "peer-failed");
         return;
       }
       if (state === "failed") {
-        reconnectCurrent(reason);
+        reconnectCurrent(reason, "peer-failed");
       }
     };
 
@@ -417,17 +524,18 @@
     try {
       sock = new WebSocket(signalUrl);
     } catch (e) {
-      reportCurrentError("WebSocket ctor threw: " + String(e));
+      reportCurrentError("WebSocket ctor threw: " + String(e), "reach");
       cancelCurrent();
       return;
     }
     ws = sock;
+    startStatsSampler(pc, isCurrent);
 
     if (typeof setTimeout === "function") {
       v2FirstFrameTimer = setTimeout(function () {
         v2FirstFrameTimer = null;
         if (!isCurrent() || haveFrame) return;
-        reconnectCurrent("timed out waiting for first WebRTC frame");
+        reconnectCurrent("timed out waiting for first WebRTC frame", "no-first-frame");
       }, V2_FIRST_FRAME_TIMEOUT_MS);
     }
 
@@ -450,6 +558,16 @@
       if (!isCurrent()) return;
       let m;
       try { m = JSON.parse(ev.data); } catch (_e) { return; }
+      if (m.type === "status") {
+        const kind = normalizeFailureKind(m.kind);
+        const parts = [];
+        if (m.reason || m.detail) parts.push(String(m.reason || m.detail));
+        if (m.captureKind) parts.push("capture kind: " + String(m.captureKind));
+        const detail = parts.join("\n");
+        showFailureOverlay(kind, detail);
+        reportCurrentError(detail || "remote desktop status: " + kind, kind);
+        return;
+      }
       if (m.type === "offer") {
         try {
           await pc.setRemoteDescription({ type: "offer", sdp: m.sdp });
@@ -461,7 +579,7 @@
           ws.send(JSON.stringify({ type: "answer", sdp: ans.sdp }));
         } catch (e) {
           if (!isCurrent()) return;
-          reportCurrentError("WebRTC negotiation failed: " + String(e));
+          reportCurrentError("WebRTC negotiation failed: " + String(e), "peer-failed");
           cancelCurrent();
         }
       } else if (m.type === "candidate") {
@@ -474,11 +592,11 @@
     });
     sock.addEventListener("error", function () {
       if (!isCurrent()) return;
-      reconnectCurrent("signaling WebSocket error on " + signalUrl);
+      reconnectCurrent("signaling WebSocket error on " + signalUrl, "reach");
     });
     sock.addEventListener("close", function (ev) {
       if (isCurrent() && v2Mode && !ev.wasClean) {
-        reconnectCurrent("signaling closed (code=" + ev.code + ")");
+        reconnectCurrent("signaling closed (code=" + ev.code + ")", "reach");
       }
     });
   }
@@ -571,8 +689,7 @@
       if (m.state === "no-host") {
         msg = "REMOTE_HOST is not set in ~/.xpair/host/client.env";
       } else if (m.state === "error") {
-        msg = "Error: " + (m.detail || "unknown") +
-          "\nIs XpairHost.app running on the host (screen serve-webrtc)?";
+        msg = failureOverlayMessage(m.failureKind || m.kind || "reach", m.detail || "unknown");
       }
       if (m.state === "error" || m.state === "no-host") cancelV2(false);
       if (m.state === "error") showOverlay(msg);

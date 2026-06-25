@@ -196,10 +196,18 @@ function latestTimerByDelay(timers, delay) {
   return null;
 }
 
+function latestIntervalByDelay(intervals, delay) {
+  for (let i = intervals.length - 1; i >= 0; i -= 1) {
+    if (intervals[i].delay === delay && !intervals[i].cleared) return intervals[i];
+  }
+  return null;
+}
+
 function runRemoteDesktopWebview() {
   const script = fs.readFileSync(path.join(__dirname, "media", "remote-desktop.js"), "utf8");
   const posted = [];
   const timers = [];
+  const intervals = [];
   const windowListeners = [];
   const elements = new Map();
   function element(id) {
@@ -271,6 +279,8 @@ function runRemoteDesktopWebview() {
       this.oniceconnectionstatechange = null;
       this.onicecandidate = null;
       this.ontrack = null;
+      this.statsTimestamp = 1000;
+      this.bytesReceived = 100000;
       FakeRTCPeerConnection.instances.push(this);
     }
     addTransceiver() {}
@@ -299,6 +309,23 @@ function runRemoteDesktopWebview() {
     addIceCandidate() {
       return Promise.resolve();
     }
+    getStats() {
+      this.statsTimestamp += 5000;
+      this.bytesReceived += 250000;
+      return Promise.resolve(new Map([[
+        "inbound-video",
+        {
+          type: "inbound-rtp",
+          kind: "video",
+          timestamp: this.statsTimestamp,
+          bytesReceived: this.bytesReceived,
+          framesDecoded: 120,
+          framesDropped: 3,
+          framesPerSecond: 29.7,
+          jitter: 0.012,
+        },
+      ]]));
+    }
   }
   const sandbox = {
     acquireVsCodeApi() {
@@ -326,6 +353,19 @@ function runRemoteDesktopWebview() {
     clearTimeout(timer) {
       if (timer) timer.cleared = true;
     },
+    setInterval(fn, delay, ...args) {
+      async function interval() {
+        if (!interval.cleared) return fn(...args);
+        return undefined;
+      }
+      interval.delay = delay;
+      interval.cleared = false;
+      intervals.push(interval);
+      return interval;
+    },
+    clearInterval(interval) {
+      if (interval) interval.cleared = true;
+    },
     console,
   };
   vm.runInNewContext(script, sandbox, { filename: "remote-desktop.js" });
@@ -334,6 +374,7 @@ function runRemoteDesktopWebview() {
     sockets: FakeWebSocket.instances,
     peers: FakeRTCPeerConnection.instances,
     timers,
+    intervals,
     elements,
     sendWindowMessage(message) {
       for (const listener of windowListeners) {
@@ -364,6 +405,21 @@ function runRemoteDesktopWebview() {
     assert.strictEqual(errors.length, 1, "expected one status:error post");
     assert.match(errors[0].detail, /SSH tunnel failed/);
     assert.match(errors[0].detail, /ssh ENOENT/);
+    assert.strictEqual(errors[0].failureKind, "reach");
+  });
+
+  await check("host-key tunnel failure posts host-key taxonomy", async () => {
+    resetHarness();
+    const panel = makePanel();
+    await panel._startV2("test-host");
+
+    spawnedChildren[0].stderr.emit("data", Buffer.from("REMOTE HOST IDENTIFICATION HAS CHANGED!\n"));
+    spawnedChildren[0].emit("close", 255);
+
+    const errors = errorPosts();
+    assert.strictEqual(errors.length, 1, "expected one status:error post");
+    assert.strictEqual(errors[0].failureKind, "host-key");
+    assert.match(errors[0].detail, /host key mismatch/i);
   });
 
   await check("local bind collision picks a fresh port instead of hard-failing", async () => {
@@ -549,8 +605,47 @@ function runRemoteDesktopWebview() {
     );
   });
 
+  await check("webview maps capture status to actionable overlay taxonomy", () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:6/?token=ffffffffffffffffffffffff" });
+    harness.sockets[0].emit("message", {
+      data: JSON.stringify({
+        type: "status",
+        kind: "capture-failed",
+        captureKind: "start-failed",
+        reason: "Screen Recording denied",
+      }),
+    });
+
+    const overlay = harness.elements.get("overlay-msg").textContent;
+    assert.match(overlay, /could not start screen capture/i);
+    assert.match(overlay, /Screen Recording denied/);
+    const errors = harness.posted.filter((message) => message.type === "v2Error");
+    assert.strictEqual(errors.length, 1, "capture status should become a terminal v2Error");
+    assert.strictEqual(errors[0].failureKind, "capture-failed");
+  });
+
+  await check("webview samples WebRTC stats and clears sampler on cancel", async () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:7/?token=999999999999999999999999" });
+    const sampler = latestIntervalByDelay(harness.intervals, 5000);
+    assert.ok(sampler, "stats sampler should be armed at a bounded interval");
+
+    await sampler();
+    const stats = harness.posted.filter((message) => message.type === "v2Stats");
+    assert.strictEqual(stats.length, 1, "expected one v2Stats post");
+    assert.strictEqual(stats[0].decoded, 120);
+    assert.strictEqual(stats[0].dropped, 3);
+    assert.strictEqual(stats[0].jitterMs, 12);
+    assert.ok(Object.prototype.hasOwnProperty.call(stats[0], "bitrateKbps"));
+
+    harness.sendWindowMessage({ type: "v2Cancel" });
+    assert.strictEqual(sampler.cleared, true, "cancel should stop the stats sampler");
+  });
+
   await check("webview status errors stay visible after first frame", () => {
     const script = fs.readFileSync(path.join(__dirname, "media", "remote-desktop.js"), "utf8");
+    assert.match(script, /failureOverlayMessage\(m\.failureKind \|\| m\.kind \|\| "reach"/);
     assert.match(script, /if \(m\.state === "error"\) showOverlay\(msg\);/);
     assert.match(script, /else if \(!haveFrame\) showOverlay\(msg\);/);
   });

@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
@@ -98,6 +99,8 @@ enum SessionError {
     WebRtc(String),
     #[error("capture: {0}")]
     Capture(String),
+    #[error("status serialization: {0}")]
+    StatusSerialize(String),
 }
 
 impl From<webrtc::Error> for SessionError {
@@ -135,7 +138,7 @@ enum SignalingAcceptResult {
     Accepted {
         seq: u64,
         peer: SocketAddr,
-        signaling: AcceptedSignaling,
+        signaling: Box<AcceptedSignaling>,
     },
     Rejected {
         seq: u64,
@@ -146,7 +149,84 @@ enum SignalingAcceptResult {
 
 enum PeerEvent {
     Connected,
-    Terminal(&'static str),
+    Terminal(PeerFailureKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PeerFailureKind {
+    Failed,
+    Closed,
+}
+
+impl std::fmt::Display for PeerFailureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            PeerFailureKind::Failed => "failed",
+            PeerFailureKind::Closed => "closed",
+        };
+        f.write_str(label)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum CaptureErrorKind {
+    NoDisplay,
+    StartFailed,
+    AddOutputFailed,
+    EncoderFailed,
+    EncodeFailed,
+    HelperFailed,
+    Unknown,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum RdStatus {
+    CaptureFailed {
+        #[serde(rename = "captureKind")]
+        capture_kind: CaptureErrorKind,
+        reason: String,
+    },
+    PeerFailed {
+        peer: PeerFailureKind,
+        reason: String,
+    },
+    Superseded {
+        reason: String,
+    },
+}
+
+#[derive(Serialize)]
+struct SignalingStatus<'a> {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    #[serde(flatten)]
+    status: &'a RdStatus,
+}
+
+impl RdStatus {
+    fn to_signaling_text(&self) -> Result<String, SessionError> {
+        serde_json::to_string(&SignalingStatus {
+            message_type: "status",
+            status: self,
+        })
+        .map_err(|e| SessionError::StatusSerialize(e.to_string()))
+    }
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum AppCaptureEvent {
+    Error,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCaptureControl {
+    capture: Option<AppCaptureEvent>,
+    kind: Option<CaptureErrorKind>,
+    reason: Option<String>,
 }
 
 struct SignalingIo {
@@ -164,6 +244,7 @@ struct NegotiatingSession {
     token: SessionToken,
     started: Instant,
     io: SignalingIo,
+    sig_tx: mpsc::UnboundedSender<String>,
     peer: PeerResources,
     state_rx: mpsc::UnboundedReceiver<PeerEvent>,
     au_tx: mpsc::Sender<Vec<u8>>,
@@ -319,7 +400,11 @@ async fn run_async(
                     .map_err(|_| SessionError::ConnectDeadlineExceeded)
                     .and_then(|x| x);
                     let message = match result {
-                        Ok(signaling) => SignalingAcceptResult::Accepted { seq, peer, signaling },
+                        Ok(signaling) => SignalingAcceptResult::Accepted {
+                            seq,
+                            peer,
+                            signaling: Box::new(signaling),
+                        },
                         Err(error) => SignalingAcceptResult::Rejected { seq, peer, error },
                     };
                     let _ = ready_tx.send(message);
@@ -327,7 +412,7 @@ async fn run_async(
             }
             Some(ready) = ready_rx.recv() => {
                 let (seq, peer, accepted) = match ready {
-                    SignalingAcceptResult::Accepted { seq, peer, signaling } => (seq, peer, signaling),
+                    SignalingAcceptResult::Accepted { seq, peer, signaling } => (seq, peer, *signaling),
                     SignalingAcceptResult::Rejected { seq, peer, error } => {
                         tracing::warn!("serve-webrtc: rejected signaling client {peer} seq={seq}: {error}");
                         continue;
@@ -394,6 +479,7 @@ async fn run_async(
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn accept_signaling(
     stream: tokio::net::TcpStream,
     expected_token: Option<&SessionToken>,
@@ -529,6 +615,52 @@ fn forward_au_latest(
     }
 }
 
+fn bounded_reason(raw: impl Into<String>) -> String {
+    const MAX_REASON: usize = 800;
+    let reason = raw.into();
+    if reason.chars().count() <= MAX_REASON {
+        return reason;
+    }
+    let mut shortened: String = reason.chars().take(MAX_REASON).collect();
+    shortened.push_str("...");
+    shortened
+}
+
+fn status_from_app_control_frame(frame: &[u8]) -> Option<RdStatus> {
+    if frame.first().is_none_or(|b| *b != b'{') {
+        return None;
+    }
+    let control: AppCaptureControl = serde_json::from_slice(frame).ok()?;
+    if control.capture != Some(AppCaptureEvent::Error) {
+        return None;
+    }
+    Some(RdStatus::CaptureFailed {
+        capture_kind: control.kind.unwrap_or(CaptureErrorKind::Unknown),
+        reason: bounded_reason(
+            control
+                .reason
+                .unwrap_or_else(|| "host capture failed".to_string()),
+        ),
+    })
+}
+
+fn queue_status(sig_tx: &mpsc::UnboundedSender<String>, status: RdStatus) {
+    match status.to_signaling_text() {
+        Ok(text) => {
+            let _ = sig_tx.send(text);
+        }
+        Err(e) => tracing::warn!("serve-webrtc: could not serialize status: {e}"),
+    }
+}
+
+async fn send_status_ws(ws_tx: &mut WsTx, status: RdStatus) -> Result<(), SessionError> {
+    let text = status.to_signaling_text()?;
+    ws_tx
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(|e| SessionError::WsHandshake(format!("send status: {e}")))
+}
+
 fn session_rejection(error: &SessionError) -> ErrorResponse {
     let status = match error {
         SessionError::MissingToken | SessionError::InvalidToken => StatusCode::UNAUTHORIZED,
@@ -547,7 +679,7 @@ async fn serve_session(
     let token = accepted.token;
     let capture_config = accepted.capture_config;
     let ws = accepted.ws;
-    let (mut ws_tx, mut ws_rx) = ws.split();
+    let (mut ws_tx, ws_rx) = ws.split();
 
     // --- build webrtc API with H264 ---
     let mut m = MediaEngine::default();
@@ -639,10 +771,10 @@ async fn serve_session(
             }
             RTCPeerConnectionState::Disconnected => {}
             RTCPeerConnectionState::Failed => {
-                let _ = state_tx.send(PeerEvent::Terminal("failed"));
+                let _ = state_tx.send(PeerEvent::Terminal(PeerFailureKind::Failed));
             }
             RTCPeerConnectionState::Closed => {
-                let _ = state_tx.send(PeerEvent::Terminal("closed"));
+                let _ = state_tx.send(PeerEvent::Terminal(PeerFailureKind::Closed));
             }
             _ => {}
         }
@@ -802,6 +934,7 @@ async fn serve_session(
         token,
         started: Instant::now(),
         io,
+        sig_tx,
         peer,
         state_rx,
         au_tx,
@@ -827,6 +960,11 @@ impl NegotiatingSession {
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    let _ = self
+                        .send_status(RdStatus::Superseded {
+                            reason: "remote desktop session was replaced by a newer connection".to_string(),
+                        })
+                        .await;
                     let _ = self.peer.pc.close().await;
                     return Err(SessionError::Superseded);
                 }
@@ -842,11 +980,17 @@ impl NegotiatingSession {
                                 self.token.redacted(),
                                 self.started.elapsed()
                             );
-                            return self.into_connected();
+                            return self.into_connected().await;
                         }
-                        PeerEvent::Terminal(state) => {
+                        PeerEvent::Terminal(peer) => {
+                            let _ = self
+                                .send_status(RdStatus::PeerFailed {
+                                    peer,
+                                    reason: format!("peer connection {peer} before capture started"),
+                                })
+                                .await;
                             let _ = self.peer.pc.close().await;
-                            return Err(SessionError::PeerFailed(state.to_owned()));
+                            return Err(SessionError::PeerFailed(peer.to_string()));
                         }
                     }
                 }
@@ -874,8 +1018,20 @@ impl NegotiatingSession {
         }
     }
 
-    fn into_connected(self) -> Result<ConnectedSession, SessionError> {
-        let capture = CaptureSource::start(self.capture_config, self.au_tx)?;
+    async fn into_connected(mut self) -> Result<ConnectedSession, SessionError> {
+        let capture =
+            match CaptureSource::start(self.capture_config, self.au_tx.clone(), self.sig_tx.clone()) {
+                Ok(capture) => capture,
+                Err(e) => {
+                    let _ = self
+                        .send_status(RdStatus::CaptureFailed {
+                            capture_kind: CaptureErrorKind::HelperFailed,
+                            reason: e.to_string(),
+                        })
+                        .await;
+                    return Err(e);
+                }
+            };
         Ok(ConnectedSession {
             token: self.token,
             started: self.started,
@@ -886,6 +1042,10 @@ impl NegotiatingSession {
             _caffeinate: CaffeinateGuard::start(),
             cancel: self.cancel,
         })
+    }
+
+    async fn send_status(&mut self, status: RdStatus) -> Result<(), SessionError> {
+        send_status_ws(&mut self.io.ws_tx, status).await
     }
 
     async fn send_signaling(&mut self, out: String) -> Result<(), SessionError> {
@@ -923,14 +1083,25 @@ impl ConnectedSession {
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    let _ = self
+                        .send_status(RdStatus::Superseded {
+                            reason: "remote desktop session was replaced by a newer connection".to_string(),
+                        })
+                        .await;
                     return Err(SessionError::Superseded);
                 }
                 Some(event) = self.state_rx.recv() => {
                     match event {
                         PeerEvent::Connected => {}
-                        PeerEvent::Terminal("closed") => return Ok(()),
-                        PeerEvent::Terminal(state) => {
-                            return Err(SessionError::PeerFailed(state.to_owned()));
+                        PeerEvent::Terminal(PeerFailureKind::Closed) => return Ok(()),
+                        PeerEvent::Terminal(peer) => {
+                            let _ = self
+                                .send_status(RdStatus::PeerFailed {
+                                    peer,
+                                    reason: format!("peer connection {peer}"),
+                                })
+                                .await;
+                            return Err(SessionError::PeerFailed(peer.to_string()));
                         }
                     }
                 }
@@ -948,12 +1119,16 @@ impl ConnectedSession {
                     let msg = msg.map_err(|e| SessionError::WsHandshake(e.to_string()))?;
                     match msg {
                         Message::Close(_) => return Ok(()),
-                        Message::Text(t) => apply_signaling_message(&self.peer.pc, &t.to_string()).await?,
+                        Message::Text(t) => apply_signaling_message(&self.peer.pc, t.as_ref()).await?,
                         _ => {}
                     }
                 }
             }
         }
+    }
+
+    async fn send_status(&mut self, status: RdStatus) -> Result<(), SessionError> {
+        send_status_ws(&mut self.io.ws_tx, status).await
     }
 }
 
@@ -1022,7 +1197,11 @@ enum CaptureSource {
     Stdin(StdinReaderHandle),
 }
 impl CaptureSource {
-    fn start(config: CaptureConfig, au_tx: mpsc::Sender<Vec<u8>>) -> Result<Self, SessionError> {
+    fn start(
+        config: CaptureConfig,
+        au_tx: mpsc::Sender<Vec<u8>>,
+        sig_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<Self, SessionError> {
         // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
         // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
         // stdin. We then ONLY do WebRTC transport — no rp-screencap spawn. stdout is
@@ -1030,7 +1209,9 @@ impl CaptureSource {
         // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
         let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
         if au_stdin_mode {
-            Ok(CaptureSource::Stdin(spawn_au_stdin_reader(config, au_tx)))
+            Ok(CaptureSource::Stdin(spawn_au_stdin_reader(
+                config, au_tx, sig_tx,
+            )))
         } else {
             spawn_screencap(config.fps, config.bitrate, config.scale, au_tx)
                 .map(CaptureSource::Child)
@@ -1087,7 +1268,11 @@ impl StdinReaderHandle {
 /// then reads `[4B BE len][Annex-B AU]` frames from stdin and forwards each AU
 /// into `au_tx` with the same bounded drop-delta policy as `spawn_screencap`'s
 /// reader thread. The thread returns on EOF/error or when `stop()` is called.
-fn spawn_au_stdin_reader(config: CaptureConfig, au_tx: mpsc::Sender<Vec<u8>>) -> StdinReaderHandle {
+fn spawn_au_stdin_reader(
+    config: CaptureConfig,
+    au_tx: mpsc::Sender<Vec<u8>>,
+    sig_tx: mpsc::UnboundedSender<String>,
+) -> StdinReaderHandle {
     tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); requesting capture start");
     write_control(&format!(
         "{{\"capture\":\"start\",\"fps\":{},\"bitrate\":{},\"scale\":{}}}\n",
@@ -1116,6 +1301,11 @@ fn spawn_au_stdin_reader(config: CaptureConfig, au_tx: mpsc::Sender<Vec<u8>>) ->
                 let mut au = vec![0u8; len];
                 if stdin.read_exact(&mut au).is_err() {
                     break;
+                }
+                if let Some(status) = status_from_app_control_frame(&au) {
+                    tracing::warn!("serve-webrtc: relaying host capture status: {status:?}");
+                    queue_status(&sig_tx, status);
+                    continue;
                 }
                 if !forward_au_latest(&au_tx, au, &mut dropped_delta_frames) {
                     break;

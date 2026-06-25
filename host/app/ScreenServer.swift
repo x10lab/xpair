@@ -195,9 +195,17 @@ final class ScreenServer {
 
         if control.capture == "start" {
             log("SCREEN: control start -> begin in-app capture fps=\(control.fps) bitrate=\(control.bitrate) scale=\(control.scale)")
-            captureEngine.start(fps: control.fps, bitrate: control.bitrate, scale: control.scale) { [weak self] data in
-                self?.writeAU(data)
-            }
+            captureEngine.start(
+                fps: control.fps,
+                bitrate: control.bitrate,
+                scale: control.scale,
+                eventSink: { [weak self] event in
+                    self?.handleCaptureEvent(event)
+                },
+                sink: { [weak self] data in
+                    self?.writeAU(data)
+                }
+            )
         } else if control.capture == "stop" {
             log("SCREEN: control stop -> stop in-app capture")
             captureEngine.stop()
@@ -209,6 +217,14 @@ final class ScreenServer {
             captureEngine.requestKeyframe()
         } else {
             log(.warn, "SCREEN: unknown control line: \(line)")
+        }
+    }
+
+    private func handleCaptureEvent(_ event: CaptureEngine.CaptureEvent) {
+        switch event {
+        case let .error(kind, reason):
+            log(.error, "SCREEN: forwarding capture error kind=\(kind.rawValue): \(reason)")
+            writeSidecarControl(["capture": "error", "kind": kind.rawValue, "reason": reason])
         }
     }
 
@@ -318,6 +334,24 @@ final class ScreenServer {
         if shouldSchedule {
             auWriteQueue.async { [weak self] in
                 self?.drainAUWrites()
+            }
+        }
+    }
+
+    private func writeSidecarControl(_ json: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(json),
+              let payload = try? JSONSerialization.data(withJSONObject: json, options: []) else {
+            log(.warn, "SCREEN: could not encode sidecar control message")
+            return
+        }
+        var len = UInt32(payload.count).bigEndian
+        var framed = Data(bytes: &len, count: 4)
+        framed.append(payload)
+        auWriteQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard self.auWriteFD >= 0 else { return }
+            if !self.writeAUToPipe(framed) {
+                log(.warn, "SCREEN: sidecar control write failed (child gone?)")
             }
         }
     }

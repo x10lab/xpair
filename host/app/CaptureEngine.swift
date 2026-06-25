@@ -24,6 +24,18 @@ import CoreVideo
 import QuartzCore
 
 final class CaptureEngine {
+    enum CaptureFailureKind: String {
+        case noDisplay = "no-display"
+        case startFailed = "start-failed"
+        case addOutputFailed = "add-output-failed"
+        case encoderFailed = "encoder-failed"
+        case encodeFailed = "encode-failed"
+    }
+
+    enum CaptureEvent {
+        case error(kind: CaptureFailureKind, reason: String)
+    }
+
     private let startCode = Data([0, 0, 0, 1])
 
     // VT/SCK state (all touched on the SCK sample queue once capture is running).
@@ -34,7 +46,10 @@ final class CaptureEngine {
     private var fps = 30
     private var bitrate = 4_000_000
     private var sink: ((Data) -> Void)?
+    private var eventSink: ((CaptureEvent) -> Void)?
     private let sampleQueue = DispatchQueue(label: "rp.sck")
+    private let errorLock = NSLock()
+    private var reportedErrorKinds = Set<CaptureFailureKind>()
 
     /// Advisory: true while capture is running (a viewer is connected → the sidecar sent capture:start).
     /// Read cross-thread only for the menu-bar status line, so a one-tick-stale value is acceptable.
@@ -61,7 +76,13 @@ final class CaptureEngine {
     /// Start capturing the first display and encoding to H.264. `sink` receives one
     /// `[4B BE len][Annex-B AU]` Data per encoded frame, on SCK's sample queue (the
     /// caller must serialize any shared writes). Idempotent: a no-op if already running.
-    func start(fps: Int = 30, bitrate: Int = 4_000_000, scale: Double = 1.0, sink: @escaping (Data) -> Void) {
+    func start(
+        fps: Int = 30,
+        bitrate: Int = 4_000_000,
+        scale: Double = 1.0,
+        eventSink: ((CaptureEvent) -> Void)? = nil,
+        sink: @escaping (Data) -> Void
+    ) {
         if stream != nil { return } // already running
         let safeFps = max(1, min(120, fps))
         let safeBitrate = max(100_000, bitrate)
@@ -69,6 +90,10 @@ final class CaptureEngine {
         self.fps = safeFps
         self.bitrate = safeBitrate
         self.sink = sink
+        self.eventSink = eventSink
+        errorLock.lock()
+        reportedErrorKinds.removeAll(keepingCapacity: true)
+        errorLock.unlock()
         // Fresh per-session keyframe state: force a keyframe on the first encoded frame.
         sampleQueue.sync {
             encodedFrameIndex = 0
@@ -82,7 +107,10 @@ final class CaptureEngine {
         SCShareableContent.getWithCompletionHandler { [weak self] content, err in
             guard let self = self else { return }
             guard let content = content, let display = content.displays.first else {
-                log(.error, "CAPTURE: no display from SCShareableContent: \(String(describing: err))")
+                self.reportCaptureError(
+                    kind: .noDisplay,
+                    reason: "no display from SCShareableContent: \(String(describing: err))"
+                )
                 self.stop()
                 return
             }
@@ -101,14 +129,20 @@ final class CaptureEngine {
                 try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: self.sampleQueue)
                 s.startCapture { e in
                     if let e = e {
-                        log(.error, "CAPTURE: startCapture failed (Screen Recording grant?): \(e)")
+                        self.reportCaptureError(
+                            kind: .startFailed,
+                            reason: "startCapture failed (Screen Recording grant?): \(e)"
+                        )
                         self.stop()
                         return
                     }
                     log("CAPTURE: SCK \(cfg.width)x\(cfg.height) @\(safeFps)fps capturing")
                 }
             } catch {
-                log(.error, "CAPTURE: addStreamOutput/start failed: \(error)")
+                self.reportCaptureError(
+                    kind: .addOutputFailed,
+                    reason: "addStreamOutput/start failed: \(error)"
+                )
                 self.stop()
                 return
             }
@@ -155,10 +189,14 @@ final class CaptureEngine {
         session = nil
         au.removeAll(keepingCapacity: false)
         sink = nil
+        eventSink = nil
         stopKeyframeTimer()
         sampleQueue.sync {
             resetSampleState()
         }
+        errorLock.lock()
+        reportedErrorKinds.removeAll(keepingCapacity: true)
+        errorLock.unlock()
     }
 
     /// Request that the next encoded frame be a keyframe (IDR). Called from another
@@ -190,7 +228,10 @@ final class CaptureEngine {
             refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &s)
         guard st == noErr, let sess = s else {
-            log(.error, "CAPTURE: VTCompressionSessionCreate failed: \(st)")
+            reportCaptureError(
+                kind: .encoderFailed,
+                reason: "VTCompressionSessionCreate failed: \(st)"
+            )
             return
         }
         VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
@@ -276,6 +317,23 @@ final class CaptureEngine {
             lastKeyframeTime = now
         } else if status != noErr {
             log(.warn, "CAPTURE: VTCompressionSessionEncodeFrame failed: \(status)")
+            reportCaptureError(
+                kind: .encodeFailed,
+                reason: "VTCompressionSessionEncodeFrame failed: \(status)"
+            )
+        }
+    }
+
+    private func reportCaptureError(kind: CaptureFailureKind, reason: String) {
+        errorLock.lock()
+        let shouldEmit = !reportedErrorKinds.contains(kind)
+        if shouldEmit {
+            reportedErrorKinds.insert(kind)
+        }
+        errorLock.unlock()
+        log(.error, "CAPTURE: \(reason)")
+        if shouldEmit {
+            eventSink?(.error(kind: kind, reason: reason))
         }
     }
 

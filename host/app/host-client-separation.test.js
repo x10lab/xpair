@@ -7,6 +7,7 @@ const appDelegate = fs.readFileSync(path.join(__dirname, "AppDelegate.swift"), "
 const config = fs.readFileSync(path.join(__dirname, "Config.swift"), "utf8");
 const onboardingWindow = fs.readFileSync(path.join(__dirname, "OnboardingWindow.swift"), "utf8");
 const screenServer = fs.readFileSync(path.join(__dirname, "ScreenServer.swift"), "utf8");
+const captureEngine = fs.readFileSync(path.join(__dirname, "CaptureEngine.swift"), "utf8");
 const bonjourAdvertiser = fs.readFileSync(path.join(__dirname, "BonjourAdvertiser.swift"), "utf8");
 const stepWaiting = fs.readFileSync(
   path.join(root, "host/onboarding/src/components/onboarding/host/StepWaiting.tsx"),
@@ -91,6 +92,16 @@ test("Q0343 host onboarding does not install, open, or operate the client workbe
   // the client extension must NOT contain vscode.openFolder.
   assert.match(clientExtension, /vscode\.workspace\.updateWorkspaceFolders/);
   assert.doesNotMatch(clientExtension, /vscode\.openFolder/);
+});
+
+test("RD capture failures are forwarded as structured sidecar diagnostics", () => {
+  assert.match(captureEngine, /enum CaptureFailureKind/);
+  assert.match(captureEngine, /case startFailed = "start-failed"/);
+  assert.match(captureEngine, /case encoderFailed = "encoder-failed"/);
+  assert.match(captureEngine, /eventSink: \(\(CaptureEvent\) -> Void\)\? = nil/);
+  assert.match(captureEngine, /reportCaptureError\(\s*kind: \.startFailed/);
+  assert.match(screenServer, /handleCaptureEvent\(_ event: CaptureEngine\.CaptureEvent\)/);
+  assert.match(screenServer, /writeSidecarControl\(\["capture": "error", "kind": kind\.rawValue, "reason": reason\]\)/);
 });
 
 console.log(`${__filename}`);

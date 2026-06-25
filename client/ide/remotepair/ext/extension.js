@@ -423,6 +423,30 @@ function classifiedSshFailureMessage(detail) {
   return sshFailureMessage(state, detail);
 }
 
+function rdFailureKindForSshState(state) {
+  if (state === SSH_STATE.HOST_KEY_MISMATCH) return "host-key";
+  if (state === SSH_STATE.KEY_AUTH_BLOCKED) return "key-auth";
+  return "reach";
+}
+
+function normalizeRdFailureKind(kind, fallback = "reach") {
+  const raw = String(kind || "").toLowerCase().replace(/_/g, "-");
+  if (raw === "host-key-mismatch") return "host-key";
+  if (raw === "key-auth-blocked") return "key-auth";
+  if (
+    raw === "reach" ||
+    raw === "key-auth" ||
+    raw === "host-key" ||
+    raw === "capture-failed" ||
+    raw === "peer-failed" ||
+    raw === "no-first-frame" ||
+    raw === "superseded"
+  ) {
+    return raw;
+  }
+  return fallback;
+}
+
 // --- tunnel helpers ----------------------------------------------------------
 
 /**
@@ -718,7 +742,7 @@ class RemoteDesktopPanel {
     } catch (e) {
       log(`v2: getFreePort error: ${e.message}`);
       if (this._v2Generation === generation) this._v2Active = false;
-      this.post({ type: "status", state: "error", detail: String(e.message) });
+      this.post({ type: "status", state: "error", detail: String(e.message), failureKind: "reach" });
       return;
     }
     if (!this._v2Active || this._v2Generation !== generation) return;
@@ -782,7 +806,12 @@ class RemoteDesktopPanel {
       this._v2Active = false;
       this._tunnelChild = null;
       this._tunnelPort = null;
-      this.post({ type: "status", state: "error", detail: classifiedSshFailureMessage(detail) });
+      this.post({
+        type: "status",
+        state: "error",
+        detail: classifiedSshFailureMessage(detail),
+        failureKind: rdFailureKindForSshState(failureKind),
+      });
     };
 
     if (child && typeof child.on === "function") {
@@ -856,10 +885,23 @@ class RemoteDesktopPanel {
       log(`v2: media track rendering`);
       return;
     }
+    if (msg.type === "v2Stats") {
+      log(
+        `v2 stats: decoded=${msg.decoded ?? "-"} dropped=${msg.dropped ?? "-"} ` +
+        `fps=${msg.fps ?? "-"} jitterMs=${msg.jitterMs ?? "-"} bitrateKbps=${msg.bitrateKbps ?? "-"}`
+      );
+      return;
+    }
     if (msg.type === "v2Error") {
-      log(`v2: webview reported error: ${msg.detail || "unknown"}`);
+      const failureKind = normalizeRdFailureKind(msg.failureKind, "peer-failed");
+      log(`v2: webview reported error (${failureKind}): ${msg.detail || "unknown"}`);
       this._stopAll();
-      this.post({ type: "status", state: "error", detail: String(msg.detail || "webrtc error") });
+      this.post({
+        type: "status",
+        state: "error",
+        detail: String(msg.detail || "webrtc error"),
+        failureKind,
+      });
       return;
     }
   }
