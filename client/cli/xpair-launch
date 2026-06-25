@@ -19,6 +19,20 @@
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# ── platform portability (single codebase; the mac branch is byte-identical to prior behavior) ──
+# Branch only where the platform forces it (stat flavor); everything else is identical on every OS.
+# Realistic Windows client is WSL2 (full Linux: GNU stat) — only `stat` truly differs. $RP_OS overrides.
+_xpair_os() {
+  case "${RP_OS:-$(uname -s 2>/dev/null)}" in
+    mac|Darwin)                    echo mac ;;
+    windows|MINGW*|MSYS*|CYGWIN*)  echo windows ;;
+    *)                             echo linux ;;
+  esac
+}
+XPAIR_OS="$(_xpair_os)"
+# stat: BSD (mac) uses -f, GNU (linux/WSL/Git-Bash coreutils) uses -c. Keep callers OS-agnostic.
+_stat_size() { if [ "$XPAIR_OS" = mac ]; then stat -f %z "$1" 2>/dev/null; else stat -c %s "$1" 2>/dev/null; fi; }
+
 # ── config (single source of truth: ~/.xpair/host) ──
 RP_DIR="${RP_DIR:-$HOME/.xpair/host}"
 for _f in common host client; do
@@ -108,7 +122,7 @@ fi
 LAUNCH_LOG="$RP_DIR/logs/claude-launch.err.log"
 mkdir -p "$RP_DIR/logs"
 # size-cap rotation (5MB → .1) — unbounded otherwise on a long-lived client
-_rotate_log() { local f="$1" max="${2:-5000000}" sz; sz="$(stat -f %z "$f" 2>/dev/null || echo 0)"; [ "$sz" -gt "$max" ] && mv -f "$f" "$f.1" 2>/dev/null || true; }
+_rotate_log() { local f="$1" max="${2:-5000000}" sz; sz="$(_stat_size "$f" || echo 0)"; [ "$sz" -gt "$max" ] && mv -f "$f" "$f.1" 2>/dev/null || true; }
 _rotate_log "$LAUNCH_LOG"
 printf '\n===== %s launch %s (%s) =====\n' "$(date '+%F %T')" "${DIR_ARG:-$PWD}" "$(hostname -s)" >> "$LAUNCH_LOG"
 exec 2> >(while IFS= read -r l; do printf '%s %s\n' "$(date '+%T')" "$l" >> "$LAUNCH_LOG"; printf '%s\n' "$l" >&2; done)
