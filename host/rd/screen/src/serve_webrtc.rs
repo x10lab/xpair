@@ -24,9 +24,7 @@ use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::handshake::server::{
-    ErrorResponse, Request, Response,
-};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -35,6 +33,8 @@ use tokio_util::sync::CancellationToken;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::APIBuilder;
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
@@ -43,8 +43,6 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
 
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 const SESSION_TOKEN_MIN_LEN: usize = 24;
@@ -117,6 +115,7 @@ struct CaptureConfig {
 
 struct AcceptedSignaling {
     token: SessionToken,
+    capture_config: CaptureConfig,
     ws: SignalingWs,
 }
 
@@ -314,7 +313,7 @@ async fn run_async(
                 tokio::spawn(async move {
                     let result = tokio::time::timeout(
                         CONNECT_DEADLINE,
-                        accept_signaling(stream, expected_token.as_ref()),
+                        accept_signaling(stream, expected_token.as_ref(), capture_config),
                     )
                     .await
                     .map_err(|_| SessionError::ConnectDeadlineExceeded)
@@ -362,7 +361,7 @@ async fn run_async(
                 });
                 let done_tx = done_tx.clone();
                 tokio::spawn(async move {
-                    let result = serve_session(accepted, capture_config, cancel).await;
+                    let result = serve_session(accepted, cancel).await;
                     let _ = done_tx.send(SessionDone { seq, token, result });
                 });
             }
@@ -398,20 +397,27 @@ async fn run_async(
 async fn accept_signaling(
     stream: tokio::net::TcpStream,
     expected_token: Option<&SessionToken>,
+    default_capture_config: CaptureConfig,
 ) -> Result<AcceptedSignaling, SessionError> {
     let mut parsed_token: Option<SessionToken> = None;
+    let mut parsed_capture_config = default_capture_config;
     let ws = tokio_tungstenite::accept_hdr_async(stream, |req: &Request, response: Response| {
         let token = match parse_request_token(req, expected_token) {
             Ok(token) => token,
             Err(e) => return Err(session_rejection(&e)),
         };
+        parsed_capture_config = capture_config_from_request(req, default_capture_config);
         parsed_token = Some(token);
         Ok(response)
     })
     .await
     .map_err(|e| SessionError::WsHandshake(e.to_string()))?;
     let token = parsed_token.ok_or(SessionError::MissingToken)?;
-    Ok(AcceptedSignaling { token, ws })
+    Ok(AcceptedSignaling {
+        token,
+        capture_config: parsed_capture_config,
+        ws,
+    })
 }
 
 fn parse_request_token(
@@ -439,6 +445,90 @@ fn token_from_query(query: &str) -> Option<&str> {
     })
 }
 
+fn query_value<'a>(query: &'a str, needle: &str) -> Option<&'a str> {
+    query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == needle).then_some(value)
+    })
+}
+
+fn capture_config_from_request(req: &Request, default: CaptureConfig) -> CaptureConfig {
+    let Some(query) = req.uri().query() else {
+        return default;
+    };
+    let fps = query_value(query, "fps")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default.fps)
+        .clamp(1, 120);
+    let bitrate = query_value(query, "bitrate")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default.bitrate)
+        .max(100_000);
+    let scale = query_value(query, "scale")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default.scale)
+        .clamp(0.1, 1.0);
+    CaptureConfig {
+        fps,
+        bitrate,
+        scale,
+    }
+}
+
+fn is_h264_keyframe_au(au: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i + 3 < au.len() {
+        let start_code_len = if i + 4 <= au.len()
+            && au[i] == 0
+            && au[i + 1] == 0
+            && au[i + 2] == 0
+            && au[i + 3] == 1
+        {
+            4
+        } else if au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1 {
+            3
+        } else {
+            i += 1;
+            continue;
+        };
+        let nal_index = i + start_code_len;
+        if nal_index < au.len() {
+            let nal_type = au[nal_index] & 0x1f;
+            if nal_type == 5 {
+                return true;
+            }
+        }
+        i = nal_index.saturating_add(1);
+    }
+    false
+}
+
+fn forward_au_latest(
+    au_tx: &mpsc::Sender<Vec<u8>>,
+    au: Vec<u8>,
+    dropped_delta_frames: &mut u64,
+) -> bool {
+    match au_tx.try_send(au) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+        Err(mpsc::error::TrySendError::Full(au)) => {
+            if is_h264_keyframe_au(&au) {
+                au_tx.blocking_send(au).is_ok()
+            } else {
+                *dropped_delta_frames = dropped_delta_frames.wrapping_add(1);
+                if *dropped_delta_frames == 1 || (*dropped_delta_frames).is_multiple_of(300) {
+                    tracing::warn!(
+                        "serve-webrtc: dropped {} stale delta AU(s) before RTP",
+                        *dropped_delta_frames
+                    );
+                }
+                true
+            }
+        }
+    }
+}
+
 fn session_rejection(error: &SessionError) -> ErrorResponse {
     let status = match error {
         SessionError::MissingToken | SessionError::InvalidToken => StatusCode::UNAUTHORIZED,
@@ -452,10 +542,10 @@ fn session_rejection(error: &SessionError) -> ErrorResponse {
 
 async fn serve_session(
     accepted: AcceptedSignaling,
-    capture_config: CaptureConfig,
     cancel: CancellationToken,
 ) -> Result<(), SessionError> {
     let token = accepted.token;
+    let capture_config = accepted.capture_config;
     let ws = accepted.ws;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -478,8 +568,8 @@ async fn serve_session(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
             clock_rate: 90000,
-            sdp_fmtp_line:
-                "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                .to_owned(),
             ..Default::default()
         },
         "video".to_owned(),
@@ -566,7 +656,42 @@ async fn serve_session(
     let frame_dur = Duration::from_secs_f64(1.0 / capture_config.fps as f64);
     tokio::spawn(async move {
         let mut frames: u64 = 0;
-        while let Some(au) = au_rx.recv().await {
+        let mut deferred_after_keyframe: Option<Vec<u8>> = None;
+        loop {
+            let first_au = if let Some(deferred) = deferred_after_keyframe.take() {
+                deferred
+            } else {
+                match au_rx.recv().await {
+                    Some(au) => au,
+                    None => break,
+                }
+            };
+            let (mut latest_keyframe, mut latest_delta) = if is_h264_keyframe_au(&first_au) {
+                (Some(first_au), None)
+            } else {
+                (None, Some(first_au))
+            };
+            let mut dropped_queued = 0u64;
+            while let Ok(newer) = au_rx.try_recv() {
+                dropped_queued = dropped_queued.wrapping_add(1);
+                if is_h264_keyframe_au(&newer) {
+                    latest_keyframe = Some(newer);
+                    latest_delta = None;
+                } else {
+                    latest_delta = Some(newer);
+                }
+            }
+            if dropped_queued > 0 {
+                tracing::debug!("serve-webrtc: dropped {dropped_queued} queued stale AU(s)");
+            }
+            let au = if let Some(keyframe) = latest_keyframe {
+                deferred_after_keyframe = latest_delta;
+                keyframe
+            } else if let Some(delta) = latest_delta {
+                delta
+            } else {
+                continue;
+            };
             // §7 long-lived guard: this is the ACTIVE media path (serve-webrtc), so rust.log must be
             // rotated mid-session, not only at init. Cheap stat every ~300 frames (~10s @ 30fps).
             frames = frames.wrapping_add(1);
@@ -611,7 +736,8 @@ async fn serve_session(
                         .spawn(move || {
                             while let Ok(json) = in_rx.recv() {
                                 let len = (json.len() as u32).to_be_bytes();
-                                if stdin.write_all(&len).is_err() || stdin.write_all(&json).is_err() {
+                                if stdin.write_all(&len).is_err() || stdin.write_all(&json).is_err()
+                                {
                                     break;
                                 }
                             }
@@ -671,10 +797,7 @@ async fn serve_session(
         ws_rx,
         sig_rx,
     };
-    let peer = PeerResources {
-        pc,
-        _input_dcs,
-    };
+    let peer = PeerResources { pc, _input_dcs };
     let session = Session::Negotiating(NegotiatingSession {
         token,
         started: Instant::now(),
@@ -907,7 +1030,7 @@ impl CaptureSource {
         // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
         let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
         if au_stdin_mode {
-            Ok(CaptureSource::Stdin(spawn_au_stdin_reader(au_tx)))
+            Ok(CaptureSource::Stdin(spawn_au_stdin_reader(config, au_tx)))
         } else {
             spawn_screencap(config.fps, config.bitrate, config.scale, au_tx)
                 .map(CaptureSource::Child)
@@ -953,10 +1076,7 @@ struct StdinReaderHandle {
 }
 impl StdinReaderHandle {
     fn stop(&self) {
-        if !self
-            .stopped
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
+        if !self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
             write_control("{\"capture\":\"stop\"}\n");
         }
     }
@@ -965,11 +1085,14 @@ impl StdinReaderHandle {
 /// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. Emits
 /// `{"capture":"start"}` to stdout (the parent app then begins in-app capture),
 /// then reads `[4B BE len][Annex-B AU]` frames from stdin and forwards each AU
-/// into `au_tx` — the SAME framing/guard/`blocking_send` as `spawn_screencap`'s
+/// into `au_tx` with the same bounded drop-delta policy as `spawn_screencap`'s
 /// reader thread. The thread returns on EOF/error or when `stop()` is called.
-fn spawn_au_stdin_reader(au_tx: mpsc::Sender<Vec<u8>>) -> StdinReaderHandle {
+fn spawn_au_stdin_reader(config: CaptureConfig, au_tx: mpsc::Sender<Vec<u8>>) -> StdinReaderHandle {
     tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); requesting capture start");
-    write_control("{\"capture\":\"start\"}\n");
+    write_control(&format!(
+        "{{\"capture\":\"start\",\"fps\":{},\"bitrate\":{},\"scale\":{}}}\n",
+        config.fps, config.bitrate, config.scale
+    ));
 
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped_thread = stopped.clone();
@@ -978,6 +1101,7 @@ fn spawn_au_stdin_reader(au_tx: mpsc::Sender<Vec<u8>>) -> StdinReaderHandle {
         .spawn(move || {
             let mut stdin = std::io::stdin();
             let mut len_buf = [0u8; 4];
+            let mut dropped_delta_frames = 0u64;
             loop {
                 if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
@@ -993,7 +1117,7 @@ fn spawn_au_stdin_reader(au_tx: mpsc::Sender<Vec<u8>>) -> StdinReaderHandle {
                 if stdin.read_exact(&mut au).is_err() {
                     break;
                 }
-                if au_tx.blocking_send(au).is_err() {
+                if !forward_au_latest(&au_tx, au, &mut dropped_delta_frames) {
                     break;
                 }
             }
@@ -1047,6 +1171,7 @@ fn spawn_screencap(
         .name("rtp-reader".into())
         .spawn(move || {
             let mut len_buf = [0u8; 4];
+            let mut dropped_delta_frames = 0u64;
             loop {
                 if stdout.read_exact(&mut len_buf).is_err() {
                     break;
@@ -1059,7 +1184,7 @@ fn spawn_screencap(
                 if stdout.read_exact(&mut au).is_err() {
                     break;
                 }
-                if au_tx.blocking_send(au).is_err() {
+                if !forward_au_latest(&au_tx, au, &mut dropped_delta_frames) {
                     break;
                 }
             }

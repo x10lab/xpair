@@ -21,6 +21,7 @@ import ScreenCaptureKit
 import VideoToolbox
 import CoreMedia
 import CoreVideo
+import QuartzCore
 
 final class CaptureEngine {
     private let startCode = Data([0, 0, 0, 1])
@@ -33,22 +34,24 @@ final class CaptureEngine {
     private var fps = 30
     private var bitrate = 4_000_000
     private var sink: ((Data) -> Void)?
+    private let sampleQueue = DispatchQueue(label: "rp.sck")
 
     /// Advisory: true while capture is running (a viewer is connected → the sidecar sent capture:start).
     /// Read cross-thread only for the menu-bar status line, so a one-tick-stale value is acceptable.
     var isCapturing: Bool { stream != nil }
 
-    // Keyframe forcing. A 76KB IDR can lose a packet on a lossy link → undecodable;
-    // with no further keyframe the remote viewer stays BLACK forever. We force a
-    // keyframe: (1) on the first frame after start, (2) periodically (~every 1s), and
-    // (3) on demand when the client signals PictureLossIndication/FIR via the sidecar.
-    // `forceKeyframeFlag` is set from ScreenServer's control-reader thread but consumed
-    // on SCK's sample queue, so it is guarded by `keyframeLock`. `frameCount` is only
-    // touched on the sample queue (and reset under the lock in start()/stop()).
-    private let keyframeLock = NSLock()
+    // Keyframe forcing. A 76KB IDR can lose a packet on a lossy link -> undecodable;
+    // with no further keyframe the remote viewer stays black forever. SCK is change-driven,
+    // so static screens do not necessarily emit more `.complete` samples. Keep the last
+    // pixel buffer and re-encode it as an IDR on wall-clock cadence or PLI/FIR demand.
+    // These fields are touched only on sampleQueue.
     private var forceKeyframeFlag = false
-    private var frameCount: UInt64 = 0
-    private let periodicKeyframeInterval: UInt64 = 30 // ~1s @ 30fps
+    private var lastPixelBuffer: CVPixelBuffer?
+    private var encodedFrameIndex: Int64 = 0
+    private var lastKeyframeTime: CFTimeInterval = 0
+    private let periodicKeyframeSeconds: CFTimeInterval = 1.0
+    private let periodicKeyframeInterval: DispatchTimeInterval = .seconds(1)
+    private var keyframeTimer: DispatchSourceTimer?
     // SCK only emits `.complete` frames when the screen CHANGES; on a static screen it emits none,
     // so a viewer joining a still screen would get zero frames → black. Force the FIRST frame after
     // start to encode even if SCK marks it idle, so the initial keyframe (the current screen) is
@@ -60,27 +63,34 @@ final class CaptureEngine {
     /// caller must serialize any shared writes). Idempotent: a no-op if already running.
     func start(fps: Int = 30, bitrate: Int = 4_000_000, scale: Double = 1.0, sink: @escaping (Data) -> Void) {
         if stream != nil { return } // already running
-        self.fps = fps
-        self.bitrate = bitrate
+        let safeFps = max(1, min(120, fps))
+        let safeBitrate = max(100_000, bitrate)
+        let safeScale = max(0.1, min(1.0, scale))
+        self.fps = safeFps
+        self.bitrate = safeBitrate
         self.sink = sink
         // Fresh per-session keyframe state: force a keyframe on the first encoded frame.
-        keyframeLock.lock()
-        frameCount = 0
-        forceKeyframeFlag = false
-        keyframeLock.unlock()
-        firstFrameSubmitted = false
+        sampleQueue.sync {
+            encodedFrameIndex = 0
+            lastKeyframeTime = 0
+            lastPixelBuffer = nil
+            firstFrameSubmitted = false
+            forceKeyframeFlag = false
+        }
+        startKeyframeTimer()
 
         SCShareableContent.getWithCompletionHandler { [weak self] content, err in
             guard let self = self else { return }
             guard let content = content, let display = content.displays.first else {
                 log(.error, "CAPTURE: no display from SCShareableContent: \(String(describing: err))")
+                self.stop()
                 return
             }
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let cfg = SCStreamConfiguration()
-            cfg.width = max(2, Int(Double(display.width) * scale)) & ~1
-            cfg.height = max(2, Int(Double(display.height) * scale)) & ~1
-            cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+            cfg.width = max(2, Int(Double(display.width) * safeScale)) & ~1
+            cfg.height = max(2, Int(Double(display.height) * safeScale)) & ~1
+            cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(safeFps))
             cfg.pixelFormat = kCVPixelFormatType_32BGRA
             cfg.queueDepth = 5
             cfg.showsCursor = true
@@ -88,21 +98,47 @@ final class CaptureEngine {
             let out = StreamOutput(engine: self)
             let s = SCStream(filter: filter, configuration: cfg, delegate: nil)
             do {
-                try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: DispatchQueue(label: "rp.sck"))
+                try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: self.sampleQueue)
                 s.startCapture { e in
                     if let e = e {
                         log(.error, "CAPTURE: startCapture failed (Screen Recording grant?): \(e)")
+                        self.stop()
                         return
                     }
-                    log("CAPTURE: SCK \(cfg.width)x\(cfg.height) @\(fps)fps capturing")
+                    log("CAPTURE: SCK \(cfg.width)x\(cfg.height) @\(safeFps)fps capturing")
                 }
             } catch {
                 log(.error, "CAPTURE: addStreamOutput/start failed: \(error)")
+                self.stop()
                 return
             }
             self.output = out
             self.stream = s
         }
+    }
+
+    private func startKeyframeTimer() {
+        keyframeTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
+        timer.schedule(deadline: .now() + periodicKeyframeInterval, repeating: periodicKeyframeInterval, leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            self?.encodeRetainedKeyframeIfDue()
+        }
+        keyframeTimer = timer
+        timer.resume()
+    }
+
+    private func stopKeyframeTimer() {
+        keyframeTimer?.cancel()
+        keyframeTimer = nil
+    }
+
+    private func resetSampleState() {
+        encodedFrameIndex = 0
+        lastKeyframeTime = 0
+        lastPixelBuffer = nil
+        firstFrameSubmitted = false
+        forceKeyframeFlag = false
     }
 
     /// Stop capture, invalidate the VT session, and release state so start() can be
@@ -119,20 +155,22 @@ final class CaptureEngine {
         session = nil
         au.removeAll(keepingCapacity: false)
         sink = nil
-        keyframeLock.lock()
-        frameCount = 0
-        forceKeyframeFlag = false
-        keyframeLock.unlock()
+        stopKeyframeTimer()
+        sampleQueue.sync {
+            resetSampleState()
+        }
     }
 
     /// Request that the next encoded frame be a keyframe (IDR). Called from another
     /// thread (ScreenServer's control reader) when the client signals picture loss
-    /// (RTCP PLI/FIR). Thread-safe: guarded by `keyframeLock`. The flag is consumed
-    /// and cleared on the SCK sample queue in the encode path.
+    /// (RTCP PLI/FIR). The actual state mutation and retained-buffer encode run on
+    /// the SCK sample queue.
     func requestKeyframe() {
-        keyframeLock.lock()
-        forceKeyframeFlag = true
-        keyframeLock.unlock()
+        sampleQueue.async { [weak self] in
+            guard let self = self, self.stream != nil else { return }
+            self.forceKeyframeFlag = true
+            self.encodeRetainedKeyframe(reason: "on-demand")
+        }
     }
 
     // ---- VT encoder (created once we know dimensions) ----
@@ -190,18 +228,55 @@ final class CaptureEngine {
         }
     }
 
-    /// Decide whether the frame about to be encoded should be forced to a keyframe,
-    /// and advance/consume the per-session keyframe state atomically. Runs on the SCK
-    /// sample queue; `forceKeyframeFlag` may be set concurrently by requestKeyframe().
-    private func shouldForceKeyframe() -> Bool {
-        keyframeLock.lock()
-        defer { keyframeLock.unlock() }
-        let isFirst = frameCount == 0
-        let periodic = frameCount % periodicKeyframeInterval == 0
+    private func nextPresentationTime() -> CMTime {
+        let pts = CMTime(value: encodedFrameIndex, timescale: CMTimeScale(max(1, fps)))
+        encodedFrameIndex &+= 1
+        return pts
+    }
+
+    private func shouldForceKeyframe(now: CFTimeInterval, isFirst: Bool) -> Bool {
+        let periodic = lastKeyframeTime == 0 || now - lastKeyframeTime >= periodicKeyframeSeconds
         let onDemand = forceKeyframeFlag
-        forceKeyframeFlag = false // consume the on-demand request
-        frameCount &+= 1
+        forceKeyframeFlag = false
         return isFirst || periodic || onDemand
+    }
+
+    private func encodeRetainedKeyframeIfDue() {
+        guard stream != nil, firstFrameSubmitted else { return }
+        let now = CACurrentMediaTime()
+        guard lastKeyframeTime == 0 || now - lastKeyframeTime >= periodicKeyframeSeconds else { return }
+        encodeRetainedKeyframe(reason: "periodic")
+    }
+
+    private func encodeRetainedKeyframe(reason: String) {
+        guard let pb = lastPixelBuffer else { return }
+        log("CAPTURE: forcing retained IDR (\(reason))")
+        encodePixelBuffer(pb, forceKeyframe: true, now: CACurrentMediaTime())
+        forceKeyframeFlag = false
+    }
+
+    private func encodePixelBuffer(_ pb: CVPixelBuffer, forceKeyframe: Bool, now: CFTimeInterval) {
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        ensureEncoder(w, h)
+        guard let sess = session else { return }
+        let frameProps: CFDictionary? = forceKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
+            : nil
+        let pts = nextPresentationTime()
+        let status = VTCompressionSessionEncodeFrame(
+            sess,
+            imageBuffer: pb,
+            presentationTimeStamp: pts,
+            duration: .invalid,
+            frameProperties: frameProps,
+            sourceFrameRefcon: nil,
+            infoFlagsOut: nil
+        )
+        if status == noErr && forceKeyframe {
+            lastKeyframeTime = now
+        } else if status != noErr {
+            log(.warn, "CAPTURE: VTCompressionSessionEncodeFrame failed: \(status)")
+        }
     }
 
     private func encOutput(_ status: OSStatus, _ sample: CMSampleBuffer?) {
@@ -236,17 +311,12 @@ final class CaptureEngine {
                 return
             }
             guard let pb = CMSampleBufferGetImageBuffer(sample) else { return }
+            let isFirst = !engine.firstFrameSubmitted
             engine.firstFrameSubmitted = true
-            let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
-            engine.ensureEncoder(w, h)
-            guard let sess = engine.session else { return }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            // Force a keyframe on the first/periodic/on-demand (PLI/FIR) frame so a lost
-            // IDR packet on a lossy link can recover instead of leaving the viewer black.
-            let frameProps: CFDictionary? = engine.shouldForceKeyframe()
-                ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
-                : nil
-            VTCompressionSessionEncodeFrame(sess, imageBuffer: pb, presentationTimeStamp: pts, duration: .invalid, frameProperties: frameProps, sourceFrameRefcon: nil, infoFlagsOut: nil)
+            engine.lastPixelBuffer = pb
+            let now = CACurrentMediaTime()
+            let force = engine.shouldForceKeyframe(now: now, isFirst: isFirst)
+            engine.encodePixelBuffer(pb, forceKeyframe: force, now: now)
         }
     }
 }

@@ -136,6 +136,33 @@
             "usesOnlineServices"
           ],
           "description": "Opt in to Xpair product analytics and crash reports for this client."
+        },
+        "xpair.remoteDesktop.fps": {
+          "type": "number",
+          "scope": "application",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 120,
+          "order": 60,
+          "description": "Remote Desktop capture frame rate."
+        },
+        "xpair.remoteDesktop.bitrate": {
+          "type": "number",
+          "scope": "application",
+          "default": 4000000,
+          "minimum": 100000,
+          "maximum": 50000000,
+          "order": 70,
+          "description": "Remote Desktop H.264 target bitrate in bits per second."
+        },
+        "xpair.remoteDesktop.scale": {
+          "type": "number",
+          "scope": "application",
+          "default": 1.0,
+          "minimum": 0.1,
+          "maximum": 1.0,
+          "order": 80,
+          "description": "Remote Desktop capture scale factor."
         }
       }
     },

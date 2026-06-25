@@ -8,7 +8,7 @@
 //
 // Wiring (per session):
 //   pipe A (app -> child stdin): the AU stream — CaptureEngine sink writes [4B len][AU] here.
-//   pipe B (child stdout -> app): control lines — {"capture":"start"} / {"capture":"stop"}.
+//   pipe B (child stdout -> app): control lines — {"capture":"start","fps":30,...} / {"capture":"stop"}.
 //   child stderr (fd2): LOG_DIR/screen-serve.log (as before).
 // On {"capture":"start"} we start CaptureEngine (in-app SCK+VT capture); on {"capture":"stop"}
 // we stop it. Capture is thus per-connection — no capture (privacy/power cost) while idle.
@@ -36,6 +36,17 @@ final class ScreenServer {
     private var ctlReadFD: Int32 = -1
     // Serialize writes to pipe A: SCK's sample callback runs on its own queue.
     private let auWriteQueue = DispatchQueue(label: "rp.screenserver.au-write")
+    private let auStateLock = NSLock()
+    private var pendingKeyframeAU: Data?
+    private var pendingDeltaAU: Data?
+    private var auWriterScheduled = false
+    private var droppedAUFrames: UInt64 = 0
+
+    var droppedFrameCount: UInt64 {
+        auStateLock.lock()
+        defer { auStateLock.unlock() }
+        return droppedAUFrames
+    }
 
     init() {
         // Kill the sidecar when the app terminates (no AppDelegate wiring needed).
@@ -68,6 +79,7 @@ final class ScreenServer {
         auWriteQueue.sync {
             if auWriteFD >= 0 { close(auWriteFD); auWriteFD = -1 }
         }
+        clearPendingAUs()
         if ctlReadFD >= 0 { close(ctlReadFD); ctlReadFD = -1 }
     }
 
@@ -152,7 +164,7 @@ final class ScreenServer {
     }
 
     /// Background reader for pipe B (child stdout): newline-delimited control lines.
-    /// {"capture":"start"} -> start in-app CaptureEngine (sink writes AUs to pipe A);
+    /// {"capture":"start","fps":30,"bitrate":4000000,"scale":1.0} -> start in-app CaptureEngine;
     /// {"capture":"stop"}  -> stop it. Exits on EOF (child gone).
     private func startControlReader(fd: Int32) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -176,15 +188,21 @@ final class ScreenServer {
 
     private func handleControlLine(_ line: String) {
         if line.isEmpty { return }
-        if line.contains("\"capture\":\"start\"") || line.contains("\"capture\": \"start\"") {
-            log("SCREEN: control start -> begin in-app capture")
-            captureEngine.start { [weak self] data in
+        guard let control = parseControlLine(line) else {
+            log(.warn, "SCREEN: unknown control line: \(line)")
+            return
+        }
+
+        if control.capture == "start" {
+            log("SCREEN: control start -> begin in-app capture fps=\(control.fps) bitrate=\(control.bitrate) scale=\(control.scale)")
+            captureEngine.start(fps: control.fps, bitrate: control.bitrate, scale: control.scale) { [weak self] data in
                 self?.writeAU(data)
             }
-        } else if line.contains("\"capture\":\"stop\"") || line.contains("\"capture\": \"stop\"") {
+        } else if control.capture == "stop" {
             log("SCREEN: control stop -> stop in-app capture")
             captureEngine.stop()
-        } else if line.contains("\"keyframe\":true") || line.contains("\"keyframe\": true") {
+            clearPendingAUs()
+        } else if control.keyframe {
             // Client signalled picture loss (RTCP PLI/FIR) via the sidecar — force an IDR
             // so a viewer that lost the original keyframe can recover from a black frame.
             log("SCREEN: control keyframe -> force keyframe")
@@ -194,30 +212,166 @@ final class ScreenServer {
         }
     }
 
-    /// Write one framed AU ([4B len][AU]) to pipe A, serialized. On EPIPE/short write
-    /// (child died) stop the engine so we don't spin writing into a dead pipe.
-    private func writeAU(_ data: Data) {
-        auWriteQueue.async { [weak self] in
-            guard let self = self, self.auWriteFD >= 0 else { return }
-            let fd = self.auWriteFD
-            var ok = true
-            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                guard let base = raw.baseAddress else { return }
-                var off = 0
-                let total = raw.count
-                while off < total {
-                    let w = write(fd, base + off, total - off)
-                    if w > 0 { off += w; continue }
-                    if w == -1 && errno == EINTR { continue }
-                    ok = false // EPIPE or other error: child gone
-                    break
+    private struct ControlMessage {
+        var capture: String?
+        var fps: Int = 30
+        var bitrate: Int = 4_000_000
+        var scale: Double = 1.0
+        var keyframe = false
+    }
+
+    private func parseControlLine(_ line: String) -> ControlMessage? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let json = object as? [String: Any] else {
+            return nil
+        }
+        var control = ControlMessage()
+        control.capture = json["capture"] as? String
+        if let keyframe = json["keyframe"] as? Bool {
+            control.keyframe = keyframe
+        }
+        if let fps = json["fps"] as? Int {
+            control.fps = max(1, min(120, fps))
+        } else if let fps = json["fps"] as? Double {
+            control.fps = max(1, min(120, Int(fps.rounded())))
+        }
+        if let bitrate = json["bitrate"] as? Int {
+            control.bitrate = max(100_000, bitrate)
+        } else if let bitrate = json["bitrate"] as? Double {
+            control.bitrate = max(100_000, Int(bitrate.rounded()))
+        }
+        if let scale = json["scale"] as? Double, scale.isFinite {
+            control.scale = max(0.1, min(1.0, scale))
+        } else if let scale = json["scale"] as? Int {
+            control.scale = max(0.1, min(1.0, Double(scale)))
+        }
+        return control
+    }
+
+    private func isKeyframeAU(_ data: Data) -> Bool {
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return false }
+            let count = raw.count
+            if count <= 5 { return false }
+            var i = 4 // skip the outer AU length prefix
+            while i + 4 < count {
+                let startCodeBytes: Int
+                if i + 4 < count && base[i] == 0 && base[i + 1] == 0 && base[i + 2] == 0 && base[i + 3] == 1 {
+                    startCodeBytes = 4
+                } else if i + 3 < count && base[i] == 0 && base[i + 1] == 0 && base[i + 2] == 1 {
+                    startCodeBytes = 3
+                } else {
+                    i += 1
+                    continue
                 }
+                let nalIndex = i + startCodeBytes
+                if nalIndex < count {
+                    let nalType = base[nalIndex] & 0x1F
+                    if nalType == 5 { return true }
+                }
+                i = nalIndex + 1
             }
-            if !ok {
-                log(.warn, "SCREEN: AU pipe write failed (child gone?) — stopping capture")
-                self.captureEngine.stop()
-                if self.auWriteFD >= 0 { close(self.auWriteFD); self.auWriteFD = -1 }
+            return false
+        }
+    }
+
+    private func noteDroppedAULocked() {
+        droppedAUFrames &+= 1
+        if droppedAUFrames == 1 || droppedAUFrames.isMultiple(of: 30) {
+            log(.warn, "SCREEN: AU backpressure dropped \(droppedAUFrames) stale frame(s)")
+        }
+    }
+
+    private func clearPendingAUs() {
+        auStateLock.lock()
+        pendingKeyframeAU = nil
+        pendingDeltaAU = nil
+        auWriterScheduled = false
+        auStateLock.unlock()
+    }
+
+    /// Queue one framed AU ([4B len][AU]) for pipe A using bounded latest-frame semantics.
+    /// Stale delta frames are replaced; the newest keyframe is preserved ahead of deltas.
+    private func writeAU(_ data: Data) {
+        let isKeyframe = isKeyframeAU(data)
+        var shouldSchedule = false
+        auStateLock.lock()
+        if auWriteFD >= 0 {
+            if isKeyframe {
+                if pendingKeyframeAU != nil { noteDroppedAULocked() }
+                if pendingDeltaAU != nil {
+                    pendingDeltaAU = nil
+                    noteDroppedAULocked()
+                }
+                pendingKeyframeAU = data
+            } else {
+                if pendingDeltaAU != nil { noteDroppedAULocked() }
+                pendingDeltaAU = data
+            }
+            if !auWriterScheduled {
+                auWriterScheduled = true
+                shouldSchedule = true
             }
         }
+        auStateLock.unlock()
+        if shouldSchedule {
+            auWriteQueue.async { [weak self] in
+                self?.drainAUWrites()
+            }
+        }
+    }
+
+    private func takeNextPendingAU() -> Data? {
+        auStateLock.lock()
+        defer { auStateLock.unlock() }
+        if let keyframe = pendingKeyframeAU {
+            pendingKeyframeAU = nil
+            return keyframe
+        }
+        if let delta = pendingDeltaAU {
+            pendingDeltaAU = nil
+            return delta
+        }
+        auWriterScheduled = false
+        return nil
+    }
+
+    private func drainAUWrites() {
+        while let data = takeNextPendingAU() {
+            guard auWriteFD >= 0 else {
+                clearPendingAUs()
+                return
+            }
+            if !writeAUToPipe(data) {
+                log(.warn, "SCREEN: AU pipe write failed (child gone?) — stopping capture")
+                captureEngine.stop()
+                clearPendingAUs()
+                if auWriteFD >= 0 { close(auWriteFD); auWriteFD = -1 }
+                return
+            }
+        }
+    }
+
+    private func writeAUToPipe(_ data: Data) -> Bool {
+        let fd = auWriteFD
+        if fd < 0 { return false }
+        var ok = true
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var off = 0
+            let total = raw.count
+            while off < total {
+                let w = write(fd, base + off, total - off)
+                if w > 0 {
+                    off += w
+                    continue
+                }
+                if w == -1 && errno == EINTR { continue }
+                ok = false // EPIPE or other error: child gone
+                break
+            }
+        }
+        return ok
     }
 }

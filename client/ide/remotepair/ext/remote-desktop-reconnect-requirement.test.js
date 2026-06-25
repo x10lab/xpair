@@ -111,8 +111,8 @@ const fakeVscode = {
   workspace: {
     getConfiguration() {
       return {
-        get() {
-          return false;
+        get(_key, fallback) {
+          return fallback;
         },
         update() {
           return Promise.resolve();
@@ -189,7 +189,7 @@ function v2ConnectPosts() {
 
     scheduledTimers[0]();
     assert.equal(v2ConnectPosts().length, 1, "restored RD should tell the webview to connect after tunnel settle");
-    assert.match(v2ConnectPosts()[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}$/);
+    assert.match(v2ConnectPosts()[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}&fps=30&bitrate=4000000&scale=1$/);
 
     const firstChild = spawnedChildren[0];
     panel.onMessage({ type: "v2Error", detail: "peer connection failed" });
@@ -204,7 +204,7 @@ function v2ConnectPosts() {
 
     scheduledTimers[scheduledTimers.length - 1]();
     assert.equal(v2ConnectPosts().length, 2, "fresh retry tunnel should reconnect the webview");
-    assert.match(v2ConnectPosts()[1].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}$/);
+    assert.match(v2ConnectPosts()[1].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}&fps=30&bitrate=4000000&scale=1$/);
   });
 
   global.setTimeout = realSetTimeout;

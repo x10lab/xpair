@@ -997,6 +997,15 @@ const bridge = {
   tSetConsent(telemetryOn, crashReportOn) {
     return telemetry.setConsent(!!telemetryOn, !!crashReportOn);
   },
+
+  // Shared by the Remote Desktop tunnel path so every ssh child gets the same
+  // GUI-app PATH enrichment, SSH_AUTH_SOCK recovery, and failure taxonomy.
+  spawnEnv,
+  sshFailureKind,
+  sshFailureMessage,
+  sshActionForState,
+  SSH_STATE,
+  SSH_ACTION,
 };
 
 module.exports = bridge;

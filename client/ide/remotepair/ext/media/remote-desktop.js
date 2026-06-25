@@ -380,6 +380,23 @@
       }
     };
 
+    const waitForDecodedFrame = () => {
+      if (video.readyState >= 2) {
+        markFirstFrame();
+        return;
+      }
+      if (typeof video.requestVideoFrameCallback === "function") {
+        try {
+          video.requestVideoFrameCallback(markFirstFrame);
+        } catch (_e) {}
+      }
+      if (typeof video.addEventListener === "function") {
+        video.addEventListener("loadeddata", markFirstFrame, { once: true });
+        video.addEventListener("timeupdate", markFirstFrame, { once: true });
+        video.addEventListener("playing", markFirstFrame, { once: true });
+      }
+    };
+
     pc.ondatachannel = function (ev) {
       if (!isCurrent()) return;
       wireInputChannel(ev.channel);
@@ -388,14 +405,7 @@
     pc.ontrack = function (ev) {
       if (!isCurrent()) return;
       video.srcObject = ev.streams[0];
-      if (video.readyState >= 2) {
-        markFirstFrame();
-      } else if (typeof video.requestVideoFrameCallback === "function") {
-        try { video.requestVideoFrameCallback(markFirstFrame); } catch (_e) {}
-      } else if (typeof video.addEventListener === "function") {
-        video.addEventListener("loadeddata", markFirstFrame, { once: true });
-        video.addEventListener("playing", markFirstFrame, { once: true });
-      }
+      waitForDecodedFrame();
     };
     pc.onconnectionstatechange = function () {
       handlePeerState(pc.connectionState, "peer connection " + pc.connectionState);

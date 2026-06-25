@@ -14,10 +14,13 @@ fs.mkdirSync(path.join(TMP_HOME, ".xpair/host"), { recursive: true });
 const spawnedChildren = [];
 const scheduledTimers = [];
 let nextLocalPort = 31000;
-function fakeSpawn() {
+function fakeSpawn(cmd, args, opts) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  child.cmd = cmd;
+  child.args = args;
+  child.opts = opts || {};
   child.killed = false;
   child.kill = () => {
     child.killed = true;
@@ -109,8 +112,8 @@ const fakeVscode = {
   workspace: {
     getConfiguration() {
       return {
-        get() {
-          return false;
+        get(_key, fallback) {
+          return fallback;
         },
         update() {
           return Promise.resolve();
@@ -363,7 +366,7 @@ function runRemoteDesktopWebview() {
     assert.match(errors[0].detail, /ssh ENOENT/);
   });
 
-  await check("active tunnel child close posts code and stderr", async () => {
+  await check("local bind collision picks a fresh port instead of hard-failing", async () => {
     resetHarness();
     const panel = makePanel();
     await panel._startV2("test-host");
@@ -371,10 +374,13 @@ function runRemoteDesktopWebview() {
     spawnedChildren[0].stderr.emit("data", Buffer.from("bind: Address already in use\n"));
     spawnedChildren[0].emit("close", 255);
 
-    const errors = errorPosts();
-    assert.strictEqual(errors.length, 1, "expected one status:error post");
-    assert.match(errors[0].detail, /code=255/);
-    assert.match(errors[0].detail, /Address already in use/);
+    assert.strictEqual(errorPosts().length, 0, "bind collision must not surface a hard error");
+    const retry = latestTimerByDelay(scheduledTimers, 150);
+    assert.ok(retry, "bind collision should schedule a short fresh-port retry");
+    retry();
+    await waitForAsync();
+    assert.strictEqual(spawnedChildren.length, 2, "retry should spawn a fresh ssh tunnel");
+    assert.notDeepStrictEqual(spawnedChildren[0].args, spawnedChildren[1].args, "retry should use a new local port");
   });
 
   await check("transient tunnel close (1Password agent refused) lazily retries, no hard error", async () => {
@@ -449,7 +455,7 @@ function runRemoteDesktopWebview() {
     scheduledTimers[1]();
     const posts = v2ConnectPosts();
     assert.strictEqual(posts.length, 1, "current timer should still post v2Connect");
-    assert.match(posts[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}$/);
+    assert.match(posts[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}&fps=30&bitrate=4000000&scale=1$/);
     assert.match(posts[0].sessionToken, /^[0-9a-f]{64}$/);
   });
 
@@ -524,6 +530,23 @@ function runRemoteDesktopWebview() {
 
     const currentErrors = harness.posted.filter((message) => message.type === "v2Error");
     assert.strictEqual(currentErrors.length, 0, "reconnectable media drops should not be terminal immediately");
+  });
+
+  await check("webview reports first frame only after decoded video, not on track negotiation", () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:5/?token=eeeeeeeeeeeeeeeeeeeeeeee" });
+    harness.peers[0].ontrack({ streams: [{ id: "media" }] });
+    assert.strictEqual(
+      harness.posted.filter((message) => message.type === "v2FirstFrame").length,
+      0,
+      "ontrack alone must not report first frame"
+    );
+    harness.elements.get("screen-video").emit("timeupdate");
+    assert.strictEqual(
+      harness.posted.filter((message) => message.type === "v2FirstFrame").length,
+      1,
+      "decoded-frame fallback should report first frame"
+    );
   });
 
   await check("webview status errors stay visible after first frame", () => {

@@ -60,6 +60,8 @@ test("Q0474 Remote Desktop is a core Client IDE surface that starts when visible
   assert.match(webview, /new RTCPeerConnection\(\{ iceServers: \[\] \}\)/);
   assert.match(webview, /pc\.addTransceiver\("video", \{ direction: "recvonly" \}\)/);
   assert.match(webview, /pc\.ontrack[\s\S]*video\.srcObject = ev\.streams\[0\]/);
+  assert.match(webview, /requestVideoFrameCallback\(markFirstFrame\)/);
+  assert.match(webview, /addEventListener\("timeupdate", markFirstFrame, \{ once: true \}\)/);
   assert.match(webview, /vscode\.postMessage\(\{ type: "v2FirstFrame" \}\)/);
   assert.match(css, /#screen-video[\s\S]*object-fit: contain/);
 });
