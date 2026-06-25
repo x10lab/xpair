@@ -36,6 +36,11 @@ declare global {
         installed: boolean
         version: string
         compatible: boolean
+        // WHY compatible is false (surfaced by the bridge so the UI doesn't re-parse versions):
+        //   "below_floor"    — same major but older than the protocol floor → safe to force-update.
+        //   "major_mismatch" — different/NEWER major → force-reinstall would DOWNGRADE; do NOT update.
+        //   ""               — compatible.
+        incompatibleKind: "below_floor" | "major_mismatch" | ""
         err: string
       }>
       // Client version (0.5.0a{N} lockstep stamp) for incompatibility messaging.

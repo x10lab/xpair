@@ -73,20 +73,92 @@ test("App routes installed-but-incompatible hosts into StepInstalling update mod
   // A dedicated route helper that sends the wizard to the INSTALL step in update mode.
   assert.match(app, /const routeToHostUpdate = useCallback/);
   assert.match(app, /setInstallMode\("update"\)[\s\S]*w\.goTo\(S\.INSTALL, "next"\)/);
-  // Connect-step gate: installed && !compatible triggers the update route (origin "connect").
+  // Connect-step gate: installed && !compatible (below_floor) triggers the update route (origin
+  // "connect"). The incompatibleKind guard sits between the predicate and the route (Finding A).
   assert.match(
     app,
-    /hostApp\.installed &&\s*!hostApp\.compatible\s*\)\s*\{\s*routeToHostUpdate\(connectTarget, hostApp\.version, "connect"\)/,
+    /hostApp\.installed &&\s*!hostApp\.compatible &&[\s\S]*?hostApp\.incompatibleKind === "below_floor"\s*\)\s*\{\s*routeToHostUpdate\(connectTarget, hostApp\.version, "connect"\)/,
   );
-  // Final liveness gate: installed-but-incompatible also routes to update (origin "final").
+  // Final liveness gate: installed-but-too-old (below_floor) also routes to update (origin "final").
   assert.match(
     app,
-    /if \(app\.installed && !app\.compatible\) \{[\s\S]*routeToHostUpdate\(target, app\.version, "final"\)/,
+    /if \(app\.installed && !app\.compatible && app\.incompatibleKind === "below_floor"\) \{[\s\S]*routeToHostUpdate\(target, app\.version, "final"\)/,
   );
   // StepInstalling rendered in update mode with isUpdate + force re-check on done.
   assert.match(app, /installMode === "update"[\s\S]*<StepInstalling\s*isUpdate/);
   // After update, the host app is re-checked before the gate can open (hostApp cleared + re-probe).
   assert.match(app, /onDone=\{\(\) => \{[\s\S]*setHostApp\(null\)/);
+});
+
+// --- Round 2: edge-case findings -------------------------------------------------------------
+
+test("A — bridge surfaces incompatibleKind distinguishing below_floor from major_mismatch", () => {
+  // Different/newer major is tagged major_mismatch (must NOT force-update → downgrade).
+  assert.match(bridge, /incompatibleKind = "major_mismatch"/);
+  // Same-major-but-too-old is tagged below_floor (safe to force-update).
+  assert.match(bridge, /incompatibleKind = "below_floor"/);
+  // hostAppStatus returns the field.
+  assert.match(bridge, /return \{\s*installed: true,\s*version,\s*compatible,\s*incompatibleKind,/);
+});
+
+test("A — global.d.ts types incompatibleKind on hostAppStatus", () => {
+  assert.match(globals, /incompatibleKind: "below_floor" \| "major_mismatch" \| ""/);
+});
+
+test("A — Connect-step auto-route only fires for below_floor (not major_mismatch/downgrade)", () => {
+  assert.match(
+    app,
+    /!hostApp\.compatible &&[\s\S]*hostApp\.incompatibleKind === "below_floor"\s*\)\s*\{\s*routeToHostUpdate\(connectTarget/,
+  );
+});
+
+test("A — final liveness gate routes below_floor to update but blocks major_mismatch as error", () => {
+  // Only below_floor routes into the update flow at the final gate.
+  assert.match(
+    app,
+    /if \(app\.installed && !app\.compatible && app\.incompatibleKind === "below_floor"\) \{[\s\S]*routeToHostUpdate\(target, app\.version, "final"\)/,
+  );
+  // A different/newer major falls through to a blocking host-app error (no forced reinstall).
+  assert.match(
+    app,
+    /if \(app\.installed && !app\.compatible\) \{[\s\S]*setLive\("host-app"\)/,
+  );
+});
+
+test("B — backing out of an update clears the stale host-app probe (onFail + header Back)", () => {
+  // Update onFail invalidates the stale probe so the auto-route doesn't bounce the user back.
+  assert.match(
+    app,
+    /onFail=\{\(\) => \{\s*setInstallMode\("install"\);[\s\S]*hostAppProbeId\.current \+= 1;\s*setHostApp\(null\)/,
+  );
+  // Header Back (onPrev) from the update step does the same.
+  assert.match(
+    app,
+    /w\.index === S\.INSTALL && installMode === "update"\) \{[\s\S]*setHostApp\(null\)/,
+  );
+});
+
+test("C — failed final-gate update preserves setup-done so the setup guard isn't re-tripped", () => {
+  // Both onFail and header-Back keep installState "done" for the final-origin setup case.
+  assert.match(
+    app,
+    /onFail=\{\(\) => \{[\s\S]*if \(updateOrigin === "final" && isSetup\) \{[\s\S]*setInstallState\("done"\)/,
+  );
+  assert.match(
+    app,
+    /w\.index === S\.INSTALL && installMode === "update"\) \{[\s\S]*if \(updateOrigin === "final" && isSetup\) \{[\s\S]*setInstallState\("done"\)/,
+  );
+});
+
+test("D — successful final-gate update waits for fresh host status before re-checking", () => {
+  // A polling helper retries hostAppStatus until the version moves off the stale one / becomes compatible.
+  assert.match(app, /const waitForFreshHostStatus = useCallback/);
+  assert.match(app, /app\.compatible \|\| !app\.version \|\| app\.version !== staleVersion/);
+  // onDone (final origin) awaits the fresh-status poll BEFORE runLivenessCheck.
+  assert.match(
+    app,
+    /await waitForFreshHostStatus\(updTarget, staleVer\);\s*await runLivenessCheck\(\)/,
+  );
 });
 
 console.log(

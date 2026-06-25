@@ -83,7 +83,16 @@ const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([
 ]);
 // Per-host app readiness, checked on the Connect/Reconnect step. null = not yet checked.
 type HostAppState =
-  | { target: string; installed: boolean; version: string; compatible: boolean; err: string }
+  | {
+      target: string;
+      installed: boolean;
+      version: string;
+      compatible: boolean;
+      // WHY incompatible — only "below_floor" (same major, too old) is safe to force-update.
+      // "major_mismatch" (different/newer major) must stay a blocking error (force = downgrade).
+      incompatibleKind: "below_floor" | "major_mismatch" | "";
+      err: string;
+    }
   | null;
 type HostPermState =
   | { target: string; alive: boolean; ax: boolean; sr: boolean; fda: boolean; err: string }
@@ -184,7 +193,7 @@ export default function App() {
     const probeId = ++hostAppProbeId.current;
     if (!target) {
       setHostAppChecking(false);
-      setHostApp({ target, installed: false, version: "", compatible: false, err: "no host" });
+      setHostApp({ target, installed: false, version: "", compatible: false, incompatibleKind: "", err: "no host" });
       return;
     }
     setHostAppChecking(true);
@@ -193,7 +202,7 @@ export default function App() {
       if (hostAppProbeId.current === probeId) setHostApp({ target, ...r });
     } catch (e) {
       if (hostAppProbeId.current === probeId) {
-        setHostApp({ target, installed: false, version: "", compatible: false, err: String(e) });
+        setHostApp({ target, installed: false, version: "", compatible: false, incompatibleKind: "", err: String(e) });
       }
     } finally {
       if (hostAppProbeId.current === probeId) setHostAppChecking(false);
@@ -320,6 +329,31 @@ export default function App() {
     [clientVer, w],
   );
 
+  // After a successful `install-host --force`, the host's LaunchAgent is kickstarted but the OLD
+  // ~/.xpair/host/logs/status.json lingers until the host app rewrites it on its next tick. An
+  // immediate hostAppStatus read can therefore return the STALE pre-update version and look "still
+  // incompatible", bouncing the user back to the update screen even though the reinstall succeeded
+  // (Finding D). Poll until the reported version moves off `staleVersion` (or becomes compatible, or
+  // the app stops reporting a version), giving the host a few seconds to come up before re-checking.
+  const waitForFreshHostStatus = useCallback(async (target: string, staleVersion: string) => {
+    for (let i = 0; i < 8; i++) {
+      try {
+        const app = await window.remotepair.hostAppStatus(target);
+        // Fresh status: the version changed off the stale one, or it's now compatible, or it reset
+        // to unknown (status.json not yet re-stamped, treated as compatible downstream).
+        if (app.compatible || !app.version || app.version !== staleVersion) {
+          setHostApp({ target, ...app });
+          return;
+        }
+      } catch {
+        /* transient SSH hiccup while the host restarts — keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    // Timed out waiting for a fresh stamp — fall through; the subsequent liveness check surfaces the
+    // current (possibly still-stale) state to the user as a re-checkable error rather than hanging.
+  }, []);
+
   // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
   // setup, host-app, permission, and SSH liveness probes all pass.
   const runLivenessCheck = useCallback(async () => {
@@ -341,10 +375,19 @@ export default function App() {
     try {
       const app = await window.remotepair.hostAppStatus(target);
       setHostApp({ target, ...app });
-      if (app.installed && !app.compatible) {
-        // Installed-but-incompatible at the final gate → route to the in-UI update flow (force
-        // reinstall the bundled host) rather than dead-ending. Same routing as the Connect-step gate.
+      if (app.installed && !app.compatible && app.incompatibleKind === "below_floor") {
+        // Installed-but-too-old (same major, below floor) at the final gate → route to the in-UI
+        // update flow (force reinstall the bundled host) rather than dead-ending. Same routing as the
+        // Connect-step gate. A different/NEWER major is NOT routed here (force = downgrade); it falls
+        // through to the blocking host-app error below.
         routeToHostUpdate(target, app.version, "final");
+        return;
+      }
+      if (app.installed && !app.compatible) {
+        // Different/NEWER major (major_mismatch) — force-reinstalling the bundled host would DOWNGRADE
+        // it, so block with the explicit incompatibility message instead of forcing an update.
+        setLiveErr(app.err || "Host version is incompatible with this client.");
+        setLive("host-app");
         return;
       }
       if (!app.installed) {
@@ -454,7 +497,10 @@ export default function App() {
       hostApp &&
       hostApp.target === connectTarget &&
       hostApp.installed &&
-      !hostApp.compatible
+      !hostApp.compatible &&
+      // Only the same-major-but-below-floor case is safe to force-update; a different/NEWER major
+      // (major_mismatch) would be a DOWNGRADE, so it stays a blocking error (handled in centerSlot).
+      hostApp.incompatibleKind === "below_floor"
     ) {
       routeToHostUpdate(connectTarget, hostApp.version, "connect");
     }
@@ -551,6 +597,23 @@ export default function App() {
     if (w.index === S.ENGINE) {
       // Engine follows Grant on the setup path, Connect on the reconnect/manual paths.
       w.goTo(isSetup && !manual ? S.GRANT : S.CONNECT, "prev");
+      return;
+    }
+    if (w.index === S.INSTALL && installMode === "update") {
+      // Header Back from the update step without a successful install. Mirror the update onFail
+      // recovery: invalidate the stale incompatible probe (Finding B) so the auto-route doesn't bounce
+      // the user back, and preserve setup-done for the final-gate setup case (Finding C). Route back to
+      // wherever the update was launched from.
+      setInstallMode("install");
+      hostAppProbeId.current += 1;
+      setHostApp(null);
+      setHostAppChecking(false);
+      if (updateOrigin === "final" && isSetup) {
+        setInstallState("done");
+      } else {
+        setInstallState("idle");
+      }
+      w.goTo(updateOrigin === "final" ? S.MAPPINGS : S.CONNECT, "prev");
       return;
     }
     if (w.index === S.GRANT || w.index === S.INSTALL) {
@@ -728,17 +791,45 @@ export default function App() {
                 // instead of re-entering fresh-install.
                 setInstallState("done");
                 w.goTo(S.MAPPINGS, "prev");
-                void runLivenessCheck();
+                // The forced reinstall just kickstarted the host's LaunchAgent; status.json may still
+                // hold the STALE pre-update version for a moment (Finding D). Wait for a fresh/newer
+                // version before the liveness re-check so a lingering stale status.json doesn't read
+                // "still incompatible" and bounce the user back to update.
+                const staleVer = updateCtx.current;
+                const updTarget = updateCtx.host;
+                void (async () => {
+                  await waitForFreshHostStatus(updTarget, staleVer);
+                  await runLivenessCheck();
+                })();
               } else {
                 // Triggered from the Connect-step host-app gate (non-setup). Returning to Connect
-                // re-probes the host app (requiresHostApp is true there) and re-opens the gate.
+                // re-probes the host app itself (requiresHostApp is true there → the Connect effect
+                // runs checkHostApp on entry). The auto-route effect only re-routes on the FRESH probe
+                // result, and only for the same-major below-floor case (Finding A), so a genuinely
+                // still-incompatible host re-enters update — which is correct for the connect path.
                 setInstallState("idle");
                 w.goTo(S.CONNECT, "prev");
               }
             }}
             onFail={() => {
               setInstallMode("install");
-              setInstallState("idle");
+              // Backing out of a failed update must NOT bounce the user straight back here. Invalidate
+              // the stale incompatible host-app probe so the Connect-step auto-route doesn't re-fire
+              // before a fresh probe runs (Finding B). The cleared probe also lets the user pick
+              // another host / return to Discovery to recover.
+              hostAppProbeId.current += 1;
+              setHostApp(null);
+              setHostAppChecking(false);
+              if (updateOrigin === "final" && isSetup) {
+                // Setup peer whose already-completed setup (installState "done") routed into the final
+                // gate because the existing host was incompatible. The forced update FAILED, but setup
+                // itself is still done — keep installState "done" so the Mappings re-check re-probes the
+                // host instead of tripping the `isSetup && installState !== "done"` setup guard and
+                // trapping the user in the fresh-install loop (Finding C).
+                setInstallState("done");
+              } else {
+                setInstallState("idle");
+              }
               w.goTo(updateOrigin === "final" ? S.MAPPINGS : S.CONNECT, "prev");
             }}
           />
