@@ -114,14 +114,25 @@ test("RD signaling token is host-generated, persisted 0600, and read by client o
   assert.match(clientExtension, /RD_SESSION_TOKEN_REMOTE_FILE = "~\/\.xpair\/host\/rd-session-token"/);
   assert.match(clientExtension, /async function readRdSessionToken\(host\)/);
   assert.match(clientExtension, /cat \$\{RD_SESSION_TOKEN_REMOTE_FILE\}/);
+  assert.match(clientExtension, /RD_TOKEN_FILE_NOT_READY_RE/);
+  assert.match(clientExtension, /isRetryableRdTokenReadFailure/);
+  assert.match(clientExtension, /error\.retryable = true/);
   assert.match(clientExtension, /readRdSessionToken\(host\)/);
   assert.doesNotMatch(clientExtension, /makeRdSessionToken/);
 });
 
-test("RD capture replacement uses generation so stale stops cannot cancel newer starts", () => {
+test("RD capture replacement uses generation so stale pending starts and stops cannot cancel newer starts", () => {
   assert.match(screenServer, /activeCaptureGeneration/);
+  assert.match(screenServer, /pendingCaptureStartGeneration/);
   assert.match(screenServer, /generation < active/);
+  assert.match(screenServer, /captureEngine\.isCapturing \|\| pendingCaptureStartGeneration != nil/);
+  assert.match(captureEngine, /private var startGeneration: UInt64 = 0/);
+  assert.match(captureEngine, /guard self\.startGeneration == generation else \{ return \}/);
   assert.match(screenServer, /ignoring stale capture stop generation/);
+  assert.match(
+    screenServer,
+    /guard activeCaptureGeneration == generation else \{[\s\S]*writeCaptureStopped\(generation: control\.generation\)[\s\S]*return[\s\S]*\}/,
+  );
   assert.match(screenServer, /writeCaptureStopped\(generation: control\.generation\)/);
   assert.match(screenServer, /"capture": "started"/);
   assert.match(screenServer, /json\["generation"\] = NSNumber\(value: generation\)/);

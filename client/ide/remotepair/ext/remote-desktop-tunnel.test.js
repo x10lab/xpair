@@ -18,6 +18,7 @@ const scheduledTimers = [];
 let nextLocalPort = 31000;
 let failTokenRead = false;
 let transientTokenReadFailuresRemaining = 0;
+const tokenReadResponses = [];
 function fakeSpawn(cmd, args, opts) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -33,7 +34,12 @@ function fakeSpawn(cmd, args, opts) {
   if (cmd === "ssh" && Array.isArray(args) && args[args.length - 1] === "cat ~/.xpair/host/rd-session-token") {
     tokenReadCommands.push(args);
     process.nextTick(() => {
-      if (failTokenRead) {
+      const queued = tokenReadResponses.shift();
+      if (queued) {
+        if (queued.stderr) child.stderr.emit("data", Buffer.from(queued.stderr));
+        if (queued.stdout) child.stdout.emit("data", Buffer.from(queued.stdout));
+        child.emit("close", queued.code == null ? 0 : queued.code);
+      } else if (failTokenRead) {
         child.stderr.emit("data", Buffer.from("cat: ~/.xpair/host/rd-session-token: Permission denied\n"));
         child.emit("close", 1);
       } else if (transientTokenReadFailuresRemaining > 0) {
@@ -200,6 +206,7 @@ function resetHarness() {
   nextLocalPort = 31000;
   failTokenRead = false;
   transientTokenReadFailuresRemaining = 0;
+  tokenReadResponses.length = 0;
 }
 
 function makePanel() {
@@ -528,6 +535,62 @@ function runRemoteDesktopWebview() {
     assert.strictEqual(tokenReadCommands.length, 2, "token retry should read the host token again");
     assert.strictEqual(spawnedChildren.length, 1, "successful token retry should continue into tunnel spawn");
     assert.strictEqual(errorPosts().length, 0, "successful token retry must not leave an RD error");
+  });
+
+  await check("RD token read retries while host token file is not ready at startup", async () => {
+    resetHarness();
+    tokenReadResponses.push(
+      { code: 1, stderr: "cat: ~/.xpair/host/rd-session-token: No such file or directory\n" },
+      { code: 0, stdout: `${TEST_RD_TOKEN}\n` }
+    );
+    const panel = makePanel();
+    await panel._startV2("test-host");
+
+    assert.strictEqual(tokenReadCommands.length, 1, "first start should try to read the RD token");
+    assert.strictEqual(spawnedChildren.length, 0, "must wait for the host token file before opening a tunnel");
+    assert.strictEqual(errorPosts().length, 0, "missing startup token file must not be terminal immediately");
+    const retry = latestTimerByDelay(scheduledTimers, 1200);
+    assert.ok(retry, "startup token file miss should schedule the bounded token retry");
+
+    retry();
+    await waitForAsync();
+
+    assert.strictEqual(tokenReadCommands.length, 2, "token retry should read the startup token file again");
+    assert.strictEqual(spawnedChildren.length, 1, "successful startup token retry should continue into tunnel spawn");
+    assert.strictEqual(errorPosts().length, 0, "successful startup token retry must not leave an RD error");
+  });
+
+  await check("RD token read retries empty and malformed startup token rewrites", async () => {
+    resetHarness();
+    tokenReadResponses.push(
+      { code: 0, stdout: "\n" },
+      { code: 0, stdout: "short-token\n" },
+      { code: 0, stdout: `${TEST_RD_TOKEN}\n` }
+    );
+    const panel = makePanel();
+    await panel._startV2("test-host");
+
+    assert.strictEqual(tokenReadCommands.length, 1, "empty token rewrite should be observed as a token read");
+    assert.strictEqual(spawnedChildren.length, 0, "must not open a tunnel for an empty token");
+    assert.strictEqual(errorPosts().length, 0, "empty token should retry inside the bounded startup window");
+    const emptyRetry = latestTimerByDelay(scheduledTimers, 1200);
+    assert.ok(emptyRetry, "empty token should schedule the initial retry");
+
+    emptyRetry();
+    await waitForAsync();
+
+    assert.strictEqual(tokenReadCommands.length, 2, "malformed token should be read on retry");
+    assert.strictEqual(spawnedChildren.length, 0, "must not open a tunnel for a malformed token");
+    assert.strictEqual(errorPosts().length, 0, "malformed token should retry inside the bounded startup window");
+    const malformedRetry = latestTimerByDelay(scheduledTimers, 2400);
+    assert.ok(malformedRetry, "malformed token should schedule the second bounded retry");
+
+    malformedRetry();
+    await waitForAsync();
+
+    assert.strictEqual(tokenReadCommands.length, 3, "token retry should continue until a valid token is observed");
+    assert.strictEqual(spawnedChildren.length, 1, "valid token after rewrite should continue into tunnel spawn");
+    assert.strictEqual(errorPosts().length, 0, "valid token after rewrite must not leave an RD error");
   });
 
   await check("transient RD token read surfaces terminal error only after retry window", async () => {

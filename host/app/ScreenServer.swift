@@ -44,6 +44,7 @@ final class ScreenServer {
     private var auWriterScheduled = false
     private var droppedAUFrames: UInt64 = 0
     private var activeCaptureGeneration: UInt64?
+    private var pendingCaptureStartGeneration: UInt64?
 
     var droppedFrameCount: UInt64 {
         auStateLock.lock()
@@ -137,6 +138,7 @@ final class ScreenServer {
 
     func stop() {
         activeCaptureGeneration = nil
+        pendingCaptureStartGeneration = nil
         captureEngine.stop()
         closePipes()
         if childPid != 0 { kill(childPid, SIGTERM); childPid = 0 }
@@ -279,16 +281,17 @@ final class ScreenServer {
             if let generation = control.generation,
                let active = activeCaptureGeneration,
                generation == active,
-               captureEngine.isCapturing {
+               (captureEngine.isCapturing || pendingCaptureStartGeneration == generation) {
                 log("SCREEN: duplicate capture start generation=\(generation) ignored")
                 return
             }
-            if captureEngine.isCapturing {
-                log("SCREEN: replacing active capture generation=\(String(describing: activeCaptureGeneration)) with generation=\(String(describing: control.generation))")
+            if captureEngine.isCapturing || pendingCaptureStartGeneration != nil {
+                log("SCREEN: replacing active/pending capture generation=\(String(describing: activeCaptureGeneration)) pending=\(String(describing: pendingCaptureStartGeneration)) with generation=\(String(describing: control.generation))")
                 captureEngine.stop()
                 clearPendingAUs()
             }
             activeCaptureGeneration = control.generation
+            pendingCaptureStartGeneration = control.generation
             log("SCREEN: control start -> begin in-app capture generation=\(String(describing: control.generation)) fps=\(control.fps) bitrate=\(control.bitrate) scale=\(control.scale)")
             captureEngine.start(
                 fps: control.fps,
@@ -298,13 +301,14 @@ final class ScreenServer {
                     self?.handleCaptureEvent(event, generation: control.generation)
                 },
                 sink: { [weak self] data in
-                    self?.writeAU(data)
+                    self?.writeCaptureAU(data, generation: control.generation)
                 }
             )
         } else if control.capture == "stop" {
             if let generation = control.generation {
                 guard activeCaptureGeneration == generation else {
                     log("SCREEN: ignoring stale capture stop generation=\(generation) active=\(String(describing: activeCaptureGeneration))")
+                    writeCaptureStopped(generation: control.generation)
                     return
                 }
             }
@@ -312,6 +316,7 @@ final class ScreenServer {
             captureEngine.stop()
             clearPendingAUs()
             activeCaptureGeneration = nil
+            pendingCaptureStartGeneration = nil
             writeCaptureStopped(generation: control.generation)
         } else if control.keyframe {
             // Client signalled picture loss (RTCP PLI/FIR) via the sidecar — force an IDR
@@ -324,8 +329,15 @@ final class ScreenServer {
     }
 
     private func handleCaptureEvent(_ event: CaptureEngine.CaptureEvent, generation: UInt64?) {
+        guard activeCaptureGeneration == generation else {
+            log("SCREEN: ignoring stale capture event generation=\(String(describing: generation)) active=\(String(describing: activeCaptureGeneration))")
+            return
+        }
         switch event {
         case let .started(displayID, width, height):
+            if pendingCaptureStartGeneration == generation {
+                pendingCaptureStartGeneration = nil
+            }
             var json: [String: Any] = [
                 "capture": "started",
                 "displayId": Int(displayID),
@@ -338,6 +350,9 @@ final class ScreenServer {
             log("SCREEN: forwarding capture started generation=\(String(describing: generation)) displayId=\(displayID)")
             writeSidecarControl(json)
         case let .error(kind, reason):
+            if pendingCaptureStartGeneration == generation {
+                pendingCaptureStartGeneration = nil
+            }
             log(.error, "SCREEN: forwarding capture error kind=\(kind.rawValue): \(reason)")
             var json: [String: Any] = ["capture": "error", "kind": kind.rawValue, "reason": reason]
             if let generation = generation {
@@ -345,6 +360,11 @@ final class ScreenServer {
             }
             writeSidecarControl(json)
         }
+    }
+
+    private func writeCaptureAU(_ data: Data, generation: UInt64?) {
+        guard activeCaptureGeneration == generation else { return }
+        writeAU(data)
     }
 
     private func writeCaptureStopped(generation: UInt64?) {

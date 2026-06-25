@@ -61,6 +61,7 @@ const RD_BIND_RETRY_DELAY_MS = 150;
 const RD_MAX_BIND_ATTEMPTS = 3;
 const RD_SESSION_TOKEN_REMOTE_FILE = "~/.xpair/host/rd-session-token";
 const RD_SESSION_TOKEN_RE = /^[A-Za-z0-9._-]{24,128}$/;
+const RD_TOKEN_FILE_NOT_READY_RE = /rd-session-token[\s\S]*(?:No such file|ENOENT)|(?:No such file|ENOENT)[\s\S]*rd-session-token/i;
 
 // REMOTE_HOST must be a bare ssh host alias / hostname. Validate hard before
 // it ever reaches a spawned process (defense in depth even though spawn is
@@ -74,6 +75,15 @@ function isTransientRdSshFailure(failureKind, detail) {
   return (
     failureKind !== SSH_STATE.HOST_KEY_MISMATCH &&
     (failureKind === SSH_STATE.KEY_AUTH_BLOCKED || RD_TRANSIENT_SSH_RE.test(String(detail || "")))
+  );
+}
+
+function isRetryableRdTokenReadFailure(error, failureKind, detail) {
+  return (
+    failureKind !== SSH_STATE.HOST_KEY_MISMATCH &&
+    ((error && error.retryable === true) ||
+      isTransientRdSshFailure(failureKind, detail) ||
+      RD_TOKEN_FILE_NOT_READY_RE.test(String(detail || "")))
   );
 }
 
@@ -403,11 +413,15 @@ async function readRdSessionToken(host) {
       : `Could not read host RD token: ssh exited ${res.code}`;
     const error = new Error(detail);
     error.failureKind = res.failureKind || sshFailureKind(detail);
+    error.retryable = RD_TOKEN_FILE_NOT_READY_RE.test(detail);
     throw error;
   }
   const token = String(res.stdout || "").trim();
   if (!RD_SESSION_TOKEN_RE.test(token)) {
-    throw new Error("Host RD token is missing or malformed");
+    const error = new Error("Host RD token is missing or malformed");
+    error.failureKind = SSH_STATE.UNREACHABLE;
+    error.retryable = true;
+    throw error;
   }
   return token;
 }
@@ -787,7 +801,7 @@ class RemoteDesktopPanel {
       if (
         this._v2Generation === generation &&
         attempt < RD_MAX_TRANSIENT_ATTEMPTS &&
-        isTransientRdSshFailure(failureKind, detail)
+        isRetryableRdTokenReadFailure(e, failureKind, detail)
       ) {
         this._tunnelPort = null;
         const delay = rdTransientRetryDelayMs(attempt);

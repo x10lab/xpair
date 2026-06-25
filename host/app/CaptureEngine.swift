@@ -51,6 +51,7 @@ final class CaptureEngine {
     private let sampleQueue = DispatchQueue(label: "rp.sck")
     private let errorLock = NSLock()
     private var reportedErrorKinds = Set<CaptureFailureKind>()
+    private var startGeneration: UInt64 = 0
 
     /// Advisory: true while capture is running (a viewer is connected → the sidecar sent capture:start).
     /// Read cross-thread only for the menu-bar status line, so a one-tick-stale value is acceptable.
@@ -85,6 +86,8 @@ final class CaptureEngine {
         sink: @escaping (Data) -> Void
     ) {
         if stream != nil { return } // already running
+        startGeneration &+= 1
+        let generation = startGeneration
         let safeFps = max(1, min(120, fps))
         let safeBitrate = max(100_000, bitrate)
         let safeScale = max(0.1, min(1.0, scale))
@@ -107,6 +110,7 @@ final class CaptureEngine {
 
         SCShareableContent.getWithCompletionHandler { [weak self] content, err in
             guard let self = self else { return }
+            guard self.startGeneration == generation else { return }
             guard let content = content, let display = content.displays.first else {
                 self.reportCaptureError(
                     kind: .noDisplay,
@@ -128,7 +132,11 @@ final class CaptureEngine {
             let s = SCStream(filter: filter, configuration: cfg, delegate: nil)
             do {
                 try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: self.sampleQueue)
+                guard self.startGeneration == generation else { return }
+                self.output = out
+                self.stream = s
                 s.startCapture { e in
+                    guard self.startGeneration == generation, self.stream === s else { return }
                     if let e = e {
                         self.reportCaptureError(
                             kind: .startFailed,
@@ -142,6 +150,7 @@ final class CaptureEngine {
                     self.eventSink?(.started(displayID: displayID, width: cfg.width, height: cfg.height))
                 }
             } catch {
+                guard self.startGeneration == generation else { return }
                 self.reportCaptureError(
                     kind: .addOutputFailed,
                     reason: "addStreamOutput/start failed: \(error)"
@@ -149,8 +158,6 @@ final class CaptureEngine {
                 self.stop()
                 return
             }
-            self.output = out
-            self.stream = s
         }
     }
 
@@ -181,6 +188,7 @@ final class CaptureEngine {
     /// Stop capture, invalidate the VT session, and release state so start() can be
     /// called again cleanly for the next session. Idempotent.
     func stop() {
+        startGeneration &+= 1
         if let s = stream {
             s.stopCapture { _ in }
         }
