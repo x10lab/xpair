@@ -15,6 +15,7 @@ use xpair::logs;
 use xpair::mapping::{map_to_host, parse_maps};
 use xpair::mode;
 use xpair::notify;
+use xpair::open_gui;
 use xpair::session::{self, SshTransport};
 use xpair::status;
 
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
         }
         "doctor" => doctor::run(&args[1..]),
         "launch" => launch::run(&args[1..]),
+        "open-gui" => open_gui::run(&args[1..]),
         "attach" => attach::run(&args[1..]),
         "ls" => cmd_ls(&args[1..]),
         "status" => cmd_status(&args[1..]),
@@ -96,7 +98,7 @@ fn print_help() {
     }
     println!();
     println!(
-        "(native Rust client — port in progress; `launch`(remote)/`attach`/`ls`/`map`/`config`/`mode`/`status`/`logs`/`notify`/`doctor` work today)"
+        "(native Rust client — port in progress; launch/attach/open-gui/ls/map/config/mode/status/logs/notify/doctor work today)"
     );
 }
 

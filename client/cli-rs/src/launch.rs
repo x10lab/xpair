@@ -2,12 +2,16 @@
 //!
 //! Ports the decision layer of `cmd_launch()` from `client/cli/xpair:747-824`
 //! plus the portable remote session construction from `client/cli/xpair-launch`.
-//! The host-probe onboarding branch (`client/cli/xpair:782-815`) and local
-//! macOS launch runtime are intentionally deferred.
+//! The host-probe onboarding branch (`client/cli/xpair:782-815`) remains deferred.
+//! Local launch keeps the macOS-only process boundary small while the naming and
+//! session-selection core stays pure and tested.
 
 use std::fs;
+use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use crate::attach::Target;
 use crate::config;
@@ -18,8 +22,6 @@ use crate::session::{self, SshTransport};
 use crate::transport::Transport;
 
 const ENGINE_USAGE: &str = "claude|claudecode|shell|codex|opencode";
-const LOCAL_LAUNCH_DEFERRED: &str =
-    "// deferred (P2): local launch runtime (macOS host) not yet ported";
 const REMOTE_BIN: &str = "$HOME/.local/bin";
 const TMUX_AQUA: &str = "tmux-aqua";
 
@@ -30,6 +32,13 @@ pub struct LaunchReq {
     pub yes: bool,
     pub engine: Option<String>,
     pub dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalLaunchPlan {
+    pub session: String,
+    pub create: bool,
+    pub cont: bool,
 }
 
 /// Parse `xpair launch` args with the bash exit-code contract.
@@ -121,6 +130,42 @@ pub fn remote_session_name_for(host: &str, host_dir: &str) -> String {
     )
 }
 
+/// Derive the local tmux session base from the local host and project dir.
+///
+/// Bash computes `LOCAL_PROJ="${LOCAL_HOST}_$(_proj_base "$PROJECT_DIR")"`
+/// and then normalizes `.`/`:` in `client/cli/xpair-launch:245-250`.
+pub fn local_session_base_for(local_host: &str, project_dir: &str) -> String {
+    normalize_session_name(&format!("{local_host}_{}", session_name_for(project_dir)))
+}
+
+/// Choose the local tmux-aqua session using the launcher's `_local_next_n` policy.
+///
+/// Non-fresh launches skip only attached sessions, then reattach a detached winner or create
+/// it. Fresh launches skip every existing session and create the first free `_N`.
+pub fn pick_local_session(proj: &str, existing: &[(String, bool)], fresh: bool) -> LocalLaunchPlan {
+    let mut n = 1usize;
+    if fresh {
+        while local_session_exists(existing, proj, n) {
+            n += 1;
+        }
+        return LocalLaunchPlan {
+            session: format!("{proj}_{n}"),
+            create: true,
+            cont: false,
+        };
+    }
+
+    while local_session_attached(existing, proj, n) {
+        n += 1;
+    }
+
+    LocalLaunchPlan {
+        session: format!("{proj}_{n}"),
+        create: !local_session_exists(existing, proj, n),
+        cont: n == 1,
+    }
+}
+
 /// Build the remote create-or-reuse command for a detached tmux-aqua session.
 pub fn build_ensure_session_remote_cmd(
     aqua_sock: &str,
@@ -145,6 +190,37 @@ pub fn build_remote_launch_attach_argv(
     session: &str,
 ) -> Vec<String> {
     crate::attach::build_remote_attach_argv(os, host, session, aqua_sock)
+}
+
+/// Build the local argv for the macOS tmux-aqua attach handoff.
+pub fn build_local_launch_attach_argv(
+    tmux_aqua_bin: &str,
+    aqua_sock: &str,
+    session: &str,
+) -> Vec<String> {
+    crate::attach::build_local_attach_argv(tmux_aqua_bin, aqua_sock, session)
+}
+
+/// Build the local tmux-aqua argv that creates a detached session with the respawn script.
+pub fn build_local_new_session_argv(
+    tmux_aqua_bin: &str,
+    aqua_sock: &str,
+    session: &str,
+    dir: &str,
+    respawn_path: &str,
+) -> Vec<String> {
+    vec![
+        tmux_aqua_bin.to_string(),
+        "-S".to_string(),
+        aqua_sock.to_string(),
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        session.to_string(),
+        "-c".to_string(),
+        dir.to_string(),
+        format!("bash {respawn_path}"),
+    ]
 }
 
 /// Ensure the remote session exists, preserving exact SSH payloads for MockTransport tests.
@@ -201,12 +277,83 @@ pub fn run(args: &[String]) -> ExitCode {
     };
 
     match resolve_target(req.target_pref, local_mode, &host) {
-        Target::Local => {
-            eprintln!("{LOCAL_LAUNCH_DEFERRED}");
-            ExitCode::from(2)
-        }
+        Target::Local => run_local(&path, &host, &req),
         Target::Remote => run_remote(&path, &host, local_mode, &req),
     }
+}
+
+fn run_local(path: &Path, host: &str, req: &LaunchReq) -> ExitCode {
+    if Os::current() != Os::Mac {
+        eprintln!("local launch is only available on a macOS host (use --remote)");
+        return ExitCode::from(2);
+    }
+    run_local_macos(path, host, req)
+}
+
+fn run_local_macos(path: &Path, host: &str, req: &LaunchReq) -> ExitCode {
+    let dir = match absolutize_existing_dir(&req.dir) {
+        Ok(dir) => dir,
+        Err(_) => {
+            eprintln!("folder not found");
+            return ExitCode::from(1);
+        }
+    };
+    let project_dir = dir.to_string_lossy().into_owned();
+    let local_host = match short_hostname() {
+        Ok(host) => host,
+        Err(err) => {
+            eprintln!("xpair launch: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let tmux_aqua_bin = match resolve_tmux_aqua_bin(path) {
+        Ok(tmux_aqua_bin) => tmux_aqua_bin,
+        Err(err) => {
+            eprintln!("xpair launch: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let aqua_sock = resolve_aqua_sock();
+
+    // macOS-only runtime boundary: the bash launcher starts XpairHost via `open -a`,
+    // waits for launchctl/tmux-aqua readiness, then performs the local tmux handoff.
+    if !ensure_local_host(path, host, &tmux_aqua_bin, &aqua_sock) {
+        eprintln!("XpairHost tmux-aqua server is not ready on {aqua_sock}");
+        return ExitCode::from(1);
+    }
+
+    let proj = local_session_base_for(&local_host, &project_dir);
+    let existing = list_local_sessions(&tmux_aqua_bin, &aqua_sock);
+    let plan = pick_local_session(&proj, &existing, req.fresh);
+
+    if plan.create {
+        let respawn_path = match write_local_respawn_stub(&plan.session, plan.cont) {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!("xpair launch: could not write local respawn script: {err}");
+                return ExitCode::from(1);
+            }
+        };
+        let respawn = respawn_path.to_string_lossy().into_owned();
+        let argv = build_local_new_session_argv(
+            &tmux_aqua_bin,
+            &aqua_sock,
+            &plan.session,
+            &project_dir,
+            &respawn,
+        );
+        if let Err(err) = run_noninteractive_argv(&argv) {
+            eprintln!("xpair launch: {err}");
+            return ExitCode::from(1);
+        }
+    }
+
+    emit_terminal_title(&plan.session);
+    spawn_and_wait(&build_local_launch_attach_argv(
+        &tmux_aqua_bin,
+        &aqua_sock,
+        &plan.session,
+    ))
 }
 
 fn run_remote(path: &Path, host: &str, local_mode: bool, req: &LaunchReq) -> ExitCode {
@@ -274,6 +421,18 @@ fn remote_new_session_cmd(aqua_sock: &str, session: &str, host_dir: &str) -> Str
     let session = remote_quote::posix_single_quote(session);
     let host_dir = remote_quote::posix_single_quote(host_dir);
     format!("{REMOTE_BIN}/{TMUX_AQUA} -S {sock} new-session -d -s {session} -c {host_dir}")
+}
+
+fn local_session_exists(existing: &[(String, bool)], proj: &str, n: usize) -> bool {
+    let session = format!("{proj}_{n}");
+    existing.iter().any(|(name, _)| name == &session)
+}
+
+fn local_session_attached(existing: &[(String, bool)], proj: &str, n: usize) -> bool {
+    let session = format!("{proj}_{n}");
+    existing
+        .iter()
+        .any(|(name, attached)| name == &session && *attached)
 }
 
 fn proj_base(host_dir: &str) -> String {
@@ -484,6 +643,212 @@ fn resolve_aqua_sock() -> String {
     non_empty_env("AQUA_SOCK").unwrap_or_else(|| session::DEFAULT_AQUA_SOCK.to_string())
 }
 
+fn resolve_tmux_aqua_bin(path: &Path) -> io::Result<String> {
+    if let Some(tmux_b) = non_empty_env("TMUXB") {
+        return Ok(normalize_windows_exe(PathBuf::from(tmux_b))
+            .to_string_lossy()
+            .into_owned());
+    }
+
+    let local_bin = if let Some(local_bin) = non_empty_env("LOCAL_BIN") {
+        PathBuf::from(local_bin)
+    } else if let Some(local_bin) =
+        config::get(path, "LOCAL_BIN")?.filter(|value| !value.is_empty())
+    {
+        PathBuf::from(local_bin)
+    } else {
+        home_dir()?.join(".local").join("bin")
+    };
+
+    Ok(normalize_windows_exe(local_bin.join(TMUX_AQUA))
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn normalize_windows_exe(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if !path.is_file() {
+            let exe = path.with_extension("exe");
+            if exe.is_file() {
+                return exe;
+            }
+        }
+    }
+    path
+}
+
+fn home_dir() -> io::Result<PathBuf> {
+    if let Some(home) = non_empty_env("HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    if let Some(home) = non_empty_env("USERPROFILE") {
+        return Ok(PathBuf::from(home));
+    }
+    match (non_empty_env("HOMEDRIVE"), non_empty_env("HOMEPATH")) {
+        (Some(drive), Some(path)) => {
+            let mut home = PathBuf::from(drive);
+            home.push(path);
+            Ok(home)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "HOME is not set; cannot resolve ~/.local/bin/tmux-aqua",
+        )),
+    }
+}
+
+fn short_hostname() -> io::Result<String> {
+    let out = Command::new("hostname")
+        .arg("-s")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other("hostname -s failed"));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn ensure_local_host(path: &Path, remote_host: &str, tmux_aqua_bin: &str, aqua_sock: &str) -> bool {
+    if !local_host_role_expected(path, remote_host) || !program_present(Path::new(tmux_aqua_bin)) {
+        return false;
+    }
+
+    let app_name = non_empty_env("APP_NAME").unwrap_or_else(|| "XpairHost".to_string());
+    let _ = Command::new("open")
+        .arg("-a")
+        .arg(app_name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if local_tmux_aqua_ready(tmux_aqua_bin, aqua_sock) {
+        return true;
+    }
+    for _ in 0..8 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if local_tmux_aqua_ready(tmux_aqua_bin, aqua_sock) {
+            return true;
+        }
+    }
+    false
+}
+
+fn local_host_role_expected(path: &Path, remote_host: &str) -> bool {
+    let Some(rp_dir) = path.parent() else {
+        return false;
+    };
+    let role = fs::read_to_string(rp_dir.join("role"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    match role.as_str() {
+        "host" | "both" => true,
+        "client" => false,
+        _ if rp_dir.join("host.env").is_file() => short_hostname()
+            .map(|host| remote_host.is_empty() || host == remote_host)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn local_tmux_aqua_ready(tmux_aqua_bin: &str, aqua_sock: &str) -> bool {
+    Command::new(tmux_aqua_bin)
+        .arg("-S")
+        .arg(aqua_sock)
+        .arg("has-session")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn list_local_sessions(tmux_aqua_bin: &str, aqua_sock: &str) -> Vec<(String, bool)> {
+    match Command::new(tmux_aqua_bin)
+        .arg("-S")
+        .arg(aqua_sock)
+        .arg("list-sessions")
+        .arg("-F")
+        .arg("#S\t#{session_attached}")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            session::parse_sessions(&String::from_utf8_lossy(&out.stdout))
+                .into_iter()
+                .map(|session| (session.name, session.attached))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn write_local_respawn_stub(session: &str, cont: bool) -> io::Result<PathBuf> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("xpair-respawn-{}-{stamp}.sh", std::process::id()));
+    let mut file = fs::File::create(&path)?;
+    writeln!(
+        file,
+        "export CLAUDE_WARP_RC={}",
+        remote_quote::posix_single_quote(session)
+    )?;
+    writeln!(file, "export CL_CONTINUE={}", u8::from(cont))?;
+    writeln!(
+        file,
+        "printf '%s\\n' 'xpair local launch engine runtime is deferred in the Rust port.'"
+    )?;
+    writeln!(file, "exec \"${{SHELL:-/bin/bash}}\" -l")?;
+    Ok(path)
+}
+
+fn run_noninteractive_argv(argv: &[String]) -> Result<(), String> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err("empty argv".to_string());
+    };
+    match Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!(
+            "{program} failed with exit {}",
+            status.code().unwrap_or(1)
+        )),
+        Err(err) => Err(format!("{program}: {err}")),
+    }
+}
+
+#[cfg(unix)]
+fn program_present(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn program_present(path: &Path) -> bool {
+    path.is_file() || path.with_extension("exe").is_file()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn program_present(path: &Path) -> bool {
+    path.is_file()
+}
+
 fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|value| !value.is_empty())
 }
@@ -512,6 +877,13 @@ mod tests {
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    fn local_existing(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
+        entries
+            .iter()
+            .map(|(name, attached)| ((*name).to_string(), *attached))
+            .collect()
     }
 
     fn parse(args: &[&str]) -> Result<LaunchReq, (String, u8)> {
@@ -622,6 +994,97 @@ mod tests {
     }
 
     #[test]
+    fn derives_local_session_base_with_host_prefix_without_number() {
+        assert_eq!(
+            local_session_base_for("mac.local", "/Users/me/project"),
+            "mac_local_project_8779b"
+        );
+    }
+
+    #[test]
+    fn picks_local_session_one_for_new_project_and_continues() {
+        assert_eq!(
+            pick_local_session("mac_project_8779b", &[], false),
+            LocalLaunchPlan {
+                session: "mac_project_8779b_1".to_string(),
+                create: true,
+                cont: true,
+            }
+        );
+    }
+
+    #[test]
+    fn picks_detached_local_session_one_for_reattach() {
+        assert_eq!(
+            pick_local_session(
+                "mac_project_8779b",
+                &local_existing(&[("mac_project_8779b_1", false)]),
+                false,
+            ),
+            LocalLaunchPlan {
+                session: "mac_project_8779b_1".to_string(),
+                create: false,
+                cont: true,
+            }
+        );
+    }
+
+    #[test]
+    fn picks_next_local_session_when_one_is_attached() {
+        assert_eq!(
+            pick_local_session(
+                "mac_project_8779b",
+                &local_existing(&[("mac_project_8779b_1", true)]),
+                false,
+            ),
+            LocalLaunchPlan {
+                session: "mac_project_8779b_2".to_string(),
+                create: true,
+                cont: false,
+            }
+        );
+    }
+
+    #[test]
+    fn picks_fresh_local_session_by_skipping_every_existing_session() {
+        assert_eq!(
+            pick_local_session(
+                "mac_project_8779b",
+                &local_existing(&[
+                    ("mac_project_8779b_1", false),
+                    ("mac_project_8779b_2", true),
+                    ("other_project_1", true),
+                ]),
+                true,
+            ),
+            LocalLaunchPlan {
+                session: "mac_project_8779b_3".to_string(),
+                create: true,
+                cont: false,
+            }
+        );
+    }
+
+    #[test]
+    fn nonfresh_local_selection_reuses_lowest_non_attached_session() {
+        assert_eq!(
+            pick_local_session(
+                "mac_project_8779b",
+                &local_existing(&[
+                    ("mac_project_8779b_1", true),
+                    ("mac_project_8779b_2", false),
+                ]),
+                false,
+            ),
+            LocalLaunchPlan {
+                session: "mac_project_8779b_2".to_string(),
+                create: false,
+                cont: false,
+            }
+        );
+    }
+
+    #[test]
     fn builds_reuse_remote_session_command_exactly() {
         assert_eq!(
             build_ensure_session_remote_cmd(
@@ -644,6 +1107,57 @@ mod tests {
                 true,
             ),
             "$HOME/.local/bin/tmux-aqua -S '/tmp/aqua-tmux.sock' has-session -t '=mac_project_8779b_1' 2>/dev/null && exit 10; $HOME/.local/bin/tmux-aqua -S '/tmp/aqua-tmux.sock' new-session -d -s 'mac_project_8779b_1' -c '/Users/me/project'"
+        );
+    }
+
+    #[test]
+    fn builds_local_new_session_argv_exactly() {
+        assert_eq!(
+            build_local_new_session_argv(
+                "/Users/me/.local/bin/tmux-aqua",
+                "/tmp/aqua-tmux.sock",
+                "mac_project_8779b_1",
+                "/Users/me/project",
+                "/var/tmp/xpair-respawn.123",
+            ),
+            vec![
+                "/Users/me/.local/bin/tmux-aqua",
+                "-S",
+                "/tmp/aqua-tmux.sock",
+                "new-session",
+                "-d",
+                "-s",
+                "mac_project_8779b_1",
+                "-c",
+                "/Users/me/project",
+                "bash /var/tmp/xpair-respawn.123",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn builds_local_launch_attach_argv_exactly() {
+        assert_eq!(
+            build_local_launch_attach_argv(
+                "/Users/me/.local/bin/tmux-aqua",
+                "/tmp/aqua-tmux.sock",
+                "mac_project_8779b_1",
+            ),
+            vec![
+                "/Users/me/.local/bin/tmux-aqua",
+                "-S",
+                "/tmp/aqua-tmux.sock",
+                "attach",
+                "-d",
+                "-t",
+                "=mac_project_8779b_1",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
         );
     }
 
