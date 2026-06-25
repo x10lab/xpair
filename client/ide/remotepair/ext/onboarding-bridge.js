@@ -924,7 +924,11 @@ const bridge = {
     } else if (hostMajor !== clientMajor) {
       compatible = false;
       reason = `Host version ${version} is a different major than client ${clientV}`;
-    } else if (compareVersions(version, MIN_COMPATIBLE_HOST) < 0) {
+    } else if (compareVersions(clientV, MIN_COMPATIBLE_HOST) >= 0 && compareVersions(version, MIN_COMPATIBLE_HOST) < 0) {
+      // The protocol floor only applies when THIS client is itself a release at/above the floor.
+      // A locally-built client derives its version from the untracked shared/.build-counter (low or
+      // absent on a fresh checkout), so it can sit below the floor; in that dev case a same-major
+      // host built from the same tree must NOT be rejected as "too old" — same major is enough.
       compatible = false;
       reason = `Host version ${version} is older than the minimum compatible ${MIN_COMPATIBLE_HOST} — update the host (xpair install-host --force)`;
     } else {

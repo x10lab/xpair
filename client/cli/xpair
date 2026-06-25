@@ -893,11 +893,18 @@ cmd_attach() {
   local rc=0
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
-    mosh --server="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
-    trap - HUP TERM
-    return "$rc"
+    if mosh --server="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"; then
+      trap - HUP TERM
+      return 0
+    fi
+    rc=$?
+    # mosh failed — e.g. the host was bundled WITHOUT a mosh-server (install treats that as the
+    # ssh-fallback case), so the remote mosh-server is absent. Degrade to the ssh attach path
+    # instead of giving up; the detach-on-close trap stays armed across the fallback.
+    printf 'mosh attach failed (rc=%s) → falling back to ssh -t ...\n' "$rc" >&2
+  else
+    printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
   fi
-  printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
   ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")" || rc=$?
   trap - HUP TERM
   return "$rc"
