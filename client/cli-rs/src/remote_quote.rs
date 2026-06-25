@@ -48,7 +48,10 @@ mod tests {
 
     #[test]
     fn spaces_and_shell_metachars_are_inert() {
-        assert_eq!(posix_single_quote("a b; rm -rf $HOME `x`"), "'a b; rm -rf $HOME `x`'");
+        assert_eq!(
+            posix_single_quote("a b; rm -rf $HOME `x`"),
+            "'a b; rm -rf $HOME `x`'"
+        );
     }
 
     #[test]
@@ -59,7 +62,15 @@ mod tests {
     #[test]
     fn join_quotes_each_arg() {
         assert_eq!(
-            posix_join(&["tmux-aqua", "-S", "/tmp/aqua-tmux.sock", "attach", "-d", "-t", "=my session"]),
+            posix_join(&[
+                "tmux-aqua",
+                "-S",
+                "/tmp/aqua-tmux.sock",
+                "attach",
+                "-d",
+                "-t",
+                "=my session"
+            ]),
             "'tmux-aqua' '-S' '/tmp/aqua-tmux.sock' 'attach' '-d' '-t' '=my session'"
         );
     }

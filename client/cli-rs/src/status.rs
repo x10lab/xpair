@@ -187,9 +187,7 @@ fn scalar_field(s: &str, key: &str) -> Option<String> {
 
     if let Some(rest) = value.strip_prefix('"') {
         value = rest;
-        let end = value
-            .find(|c| matches!(c, '"' | ',' | '}'))
-            .unwrap_or(value.len());
+        let end = value.find(['"', ',', '}']).unwrap_or(value.len());
         return Some(value[..end].trim().to_string());
     }
 

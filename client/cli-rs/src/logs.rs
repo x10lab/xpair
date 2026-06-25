@@ -110,12 +110,21 @@ pub fn build_host_tail_remote_cmd(n: u32, follow: bool) -> String {
 ///
 /// Windows includes the C1 multiplexing neutralizer args. Interactive follow forces a PTY
 /// with `-tt`.
-pub fn build_host_ssh_argv(os: platform::Os, host: &str, remote_cmd: &str, follow: bool) -> Vec<String> {
+pub fn build_host_ssh_argv(
+    os: platform::Os,
+    host: &str,
+    remote_cmd: &str,
+    follow: bool,
+) -> Vec<String> {
     let mut argv = vec!["ssh".to_string()];
     if follow {
         argv.push("-tt".to_string());
     }
-    argv.extend(os.ssh_mux_neutralizer_args().iter().map(|arg| arg.to_string()));
+    argv.extend(
+        os.ssh_mux_neutralizer_args()
+            .iter()
+            .map(|arg| arg.to_string()),
+    );
     argv.push(host.to_string());
     argv.push(remote_cmd.to_string());
     argv
@@ -185,7 +194,11 @@ pub fn run_with_transport<T: Transport + ?Sized, W: Write, E: Write>(
     }
 
     if req.host {
-        let Some(host) = settings.remote_host.as_deref().filter(|host| !host.is_empty()) else {
+        let Some(host) = settings
+            .remote_host
+            .as_deref()
+            .filter(|host| !host.is_empty())
+        else {
             let _ = writeln!(
                 err,
                 "no REMOTE_HOST configured — 'xpair config set host <ssh-host>'"

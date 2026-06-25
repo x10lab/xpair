@@ -80,8 +80,16 @@ mod tests {
     fn mock_records_calls_and_returns_canned_output() {
         let t = MockTransport::new();
         t.push_response(0, "session-exists");
-        let out = t.ssh_exec("host.local", "'tmux-aqua' 'has-session'").unwrap();
-        assert_eq!(out, Output { code: 0, stdout: "session-exists".into() });
+        let out = t
+            .ssh_exec("host.local", "'tmux-aqua' 'has-session'")
+            .unwrap();
+        assert_eq!(
+            out,
+            Output {
+                code: 0,
+                stdout: "session-exists".into()
+            }
+        );
         let calls = t.calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].host, "host.local");
@@ -92,6 +100,12 @@ mod tests {
     fn mock_defaults_to_zero_when_responses_exhausted() {
         let t = MockTransport::new();
         let out = t.ssh_exec("h", "echo hi").unwrap();
-        assert_eq!(out, Output { code: 0, stdout: String::new() });
+        assert_eq!(
+            out,
+            Output {
+                code: 0,
+                stdout: String::new()
+            }
+        );
     }
 }
