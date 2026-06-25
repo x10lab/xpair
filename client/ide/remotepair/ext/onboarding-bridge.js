@@ -288,6 +288,7 @@ const SESSION_ENGINES = new Set([...ENGINES, "shell"]);
 //   shell     — no auth; uses the host account's default login shell.
 //   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
 //   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
+//   shell     — first-class plain shell session; no agent binary or auth required.
 const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
 const ENGINE_PROBE = {
   claude:
@@ -315,6 +316,8 @@ const ENGINE_PROBE = {
     'KEY="$(bash -lc \'printf %s "${ANTHROPIC_API_KEY}${OPENAI_API_KEY}"\' 2>/dev/null)"; ' +
     'if [ -n "$KEY" ] || [ -f "$HOME/.local/share/opencode/auth.json" ]; then echo RP_ENGINE_AUTHED=1; fi; ' +
     'else echo RP_ENGINE_INSTALLED=0; fi',
+  shell:
+    'echo RP_ENGINE_INSTALLED=1; echo "RP_ENGINE_VERSION=${SHELL:-/bin/zsh}"; echo RP_ENGINE_AUTHED=1',
 };
 
 // Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
@@ -323,6 +326,7 @@ const ENGINE_INSTALL = {
   shell: 'true',
   codex: 'brew install --quiet codex',
   opencode: 'brew install --quiet opencode',
+  shell: ':',
 };
 
 // Per-engine host auth WRITER — a remote shell command that reads ONE secret line from STDIN

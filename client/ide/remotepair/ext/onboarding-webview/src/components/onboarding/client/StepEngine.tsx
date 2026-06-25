@@ -22,6 +22,7 @@ const ENGINES: { id: EngineId; label: string; blurb: string }[] = [
   { id: "shell", label: "Shell", blurb: "Plain host login shell." },
   { id: "codex", label: "Codex", blurb: "OpenAI — GPT models." },
   { id: "opencode", label: "opencode", blurb: "Open-source, multi-provider." },
+  { id: "shell" as EngineId, label: "Shell", blurb: "Plain login shell session." },
 ];
 
 const isReady = (s: EngineStatus | null | undefined) => !!s && s.installed && s.authed;
@@ -38,6 +39,7 @@ const missingText = (s: EngineStatus | null | undefined) => {
  * engine being available ON THE HOST (it runs there under `xpair launch`). Same
  * philosophy as the CLI / host-app guards: block → resolve action (install / set API key) → re-probe
  * → only pass when the host is actually ready.
+ *   shell              → first-class login shell session; no agent install/auth required.
  *   !installed         → "Install on host" (brew, non-interactive) → re-probe.
  *   installed, !authed → API key field → setHostEngineAuth (key over SSH stdin pipe) → re-probe.
  * Browser-OAuth engines (codex ChatGPT login, opencode `auth login`) can't be driven over SSH — for
