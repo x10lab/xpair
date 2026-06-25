@@ -85,10 +85,17 @@ it "mosh-line/no-literal-HOME"
 assert_absent "$mline" '$HOME' "mosh line has no literal \$HOME (guards against bug regression)"
 
 it "mosh-line/absolute-tmux-aqua"
-assert_contains "$mline" "/.local/bin/tmux-aqua" "mosh line contains absolute-path tmux-aqua"
+# tmux-aqua path must be the REMOTE home absolute path (resolved via ssh), not the client $HOME.
+assert_contains "$mline" "$SBX/remote-home/.local/bin/tmux-aqua" "mosh line contains absolute remote-home tmux-aqua"
 
 it "mosh-line/mosh-server-path"
-assert_contains "$mline" "--server=$HOME/.local/bin/mosh-server" "contains mosh --server bundled host path"
+# --server must resolve from the REMOTE user's home, not the client $HOME (option A: differing accounts).
+assert_contains "$mline" "--server=$SBX/remote-home/.local/bin/mosh-server" "contains mosh --server bundled remote-home path"
+
+it "mosh-line/no-client-HOME"
+# The remote home ($SBX/remote-home) differs from the client $HOME; the mosh line must use the
+# remote home only — proving the account-mismatch fix (client $HOME must not leak in).
+assert_absent "$mline" "$HOME/.local/bin/tmux-aqua" "mosh line does not use the client \$HOME path"
 
 it "mosh-line/attach-d"
 assert_contains "$mline" "attach" "mosh line contains attach"

@@ -106,7 +106,10 @@ case "$last" in
     esac ;;
   *__SESSION__*|*RESPAWN_B64*) # remote setup script
     printf '%s' "$last" > "$SSH_CAPTURE"
-    echo "__SESSION__:${MOCK_REMOTE_SESSION:-rp_remote_1}"; exit 0 ;;
+    echo "__SESSION__:${MOCK_REMOTE_SESSION:-rp_remote_1}"
+    # Emit the remote user's home (login shell would expand $HOME remotely). Default to a path
+    # distinct from the client $HOME so tests prove the differing-account fix (option A).
+    echo "__HOME__:${MOCK_REMOTE_HOME:-$SBX/remote-home}"; exit 0 ;;
   *detach-client*) exit 0 ;;
   *list-sessions*) printf '%s\n' "${MOCK_ATT:-}"; exit 0 ;;
   *mkdir*) exit 0 ;;
