@@ -19,7 +19,7 @@ function test(name, fn) {
   }
 }
 
-test("Q0438 Remote Desktop check keeps the RD screen operable after refresh", () => {
+test("Q0438 Remote Desktop check keeps the RD screen view-only after refresh", () => {
   const refreshCommand = pkg.contributes.commands.find(
     (entry) => entry.command === "remotepair.remoteDesktop.refresh",
   );
@@ -30,23 +30,23 @@ test("Q0438 Remote Desktop check keeps the RD screen operable after refresh", ()
 
   assert.match(
     webview,
-    /pc\.ondatachannel\s*=/,
-    "Q0438 requires a checked RD screen to remain operable; the webview must receive host input DataChannels",
+    /pc\.addTransceiver\("video", \{ direction: "recvonly" \}\)/,
+    "Q0438 requires a checked RD screen to render video receive-only",
   );
   assert.match(
     webview,
-    /addEventListener\("(?:pointerdown|pointermove|pointerup|mousedown|mousemove|mouseup|wheel|keydown|keyup|input|compositionend)"/,
-    "Q0438 requires pointer/keyboard events to be captured on the RD surface",
-  );
-  assert.match(
-    webview,
-    /\b(?:ctlDC|moveDC|dataChannel|channel)\.send\(/,
-    "Q0438 requires captured RD input to be forwarded to the host",
+    /pc\.ondatachannel = function[\s\S]*channel\.close\(\)/,
+    "RD must close/ignore host-created DataChannels such as legacy rp-ctl/rp-move",
   );
   assert.doesNotMatch(
     webview,
-    /PERMANENTLY view-only|never wire pc\.ondatachannel|never send anything/,
-    "Q0438 intended behavior is operable RD, not a permanently view-only screen",
+    /createDataChannel\(|addEventListener\("(?:pointerdown|pointermove|pointerup|mousedown|mousemove|mouseup|wheel|keydown|keyup|beforeinput|input|compositionend)"/,
+    "RD must not create input channels or capture pointer/keyboard/text/wheel events",
+  );
+  assert.doesNotMatch(
+    webview,
+    /\bt:\s*["'](?:c|m|k|x)["']/,
+    "RD must not serialize mouse, keyboard, or text input messages",
   );
 });
 
