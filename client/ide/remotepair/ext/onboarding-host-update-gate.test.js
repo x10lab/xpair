@@ -45,24 +45,48 @@ test("StepInstalling has an update mode that force-reinstalls and warns about tm
   assert.match(stepInstalling, /XpairHost is already installed/);
 });
 
+test("StepInstalling does NOT auto-run the forced update on mount (explicit click is the consent)", () => {
+  // The mount effect bails out in update mode so the tmux-kill warning is read first.
+  assert.match(stepInstalling, /if \(isUpdate\) return;\s*\n\s*if \(started\.current\) return;/);
+  // An explicit "Update host" button starts the forced install only when idle.
+  assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*Update host/);
+});
+
+test("App clears live=checking when routing into the host update (Next not stuck after return)", () => {
+  // routeToHostUpdate resets live so a final-gate-triggered update doesn't leave Next disabled.
+  assert.match(
+    app,
+    /const routeToHostUpdate = useCallback\(\s*\(target: string, hostVersion: string, origin: "connect" \| "final"\) => \{[\s\S]*setLive\("idle"\)/,
+  );
+});
+
+test("App re-checks setup-path updates via the final liveness gate before returning to Connect", () => {
+  // Update launched from the final (Mappings) gate returns to Mappings and re-runs the liveness
+  // check (which performs the host-app re-check) instead of dropping setup peers back into Connect.
+  assert.match(
+    app,
+    /updateOrigin === "final"[\s\S]*w\.goTo\(S\.MAPPINGS, "prev"\)[\s\S]*runLivenessCheck\(\)/,
+  );
+});
+
 test("App routes installed-but-incompatible hosts into StepInstalling update mode (not a dead-end)", () => {
   // A dedicated route helper that sends the wizard to the INSTALL step in update mode.
   assert.match(app, /const routeToHostUpdate = useCallback/);
   assert.match(app, /setInstallMode\("update"\)[\s\S]*w\.goTo\(S\.INSTALL, "next"\)/);
-  // Connect-step gate: installed && !compatible triggers the update route.
+  // Connect-step gate: installed && !compatible triggers the update route (origin "connect").
   assert.match(
     app,
-    /hostApp\.installed &&\s*!hostApp\.compatible\s*\)\s*\{\s*routeToHostUpdate\(connectTarget, hostApp\.version\)/,
+    /hostApp\.installed &&\s*!hostApp\.compatible\s*\)\s*\{\s*routeToHostUpdate\(connectTarget, hostApp\.version, "connect"\)/,
   );
-  // Final liveness gate: installed-but-incompatible also routes to update.
+  // Final liveness gate: installed-but-incompatible also routes to update (origin "final").
   assert.match(
     app,
-    /if \(app\.installed && !app\.compatible\) \{[\s\S]*routeToHostUpdate\(target, app\.version\)/,
+    /if \(app\.installed && !app\.compatible\) \{[\s\S]*routeToHostUpdate\(target, app\.version, "final"\)/,
   );
   // StepInstalling rendered in update mode with isUpdate + force re-check on done.
   assert.match(app, /installMode === "update"[\s\S]*<StepInstalling\s*isUpdate/);
   // After update, the host app is re-checked before the gate can open (hostApp cleared + re-probe).
-  assert.match(app, /onDone=\{\(\) => \{[\s\S]*setHostApp\(null\)[\s\S]*w\.goTo\(S\.CONNECT, "prev"\)/);
+  assert.match(app, /onDone=\{\(\) => \{[\s\S]*setHostApp\(null\)/);
 });
 
 console.log(

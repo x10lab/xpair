@@ -83,13 +83,17 @@ export function StepInstalling({
       });
   }, [host, isUpdate, setState]);
 
-  // Kick off once on mount (also re-runs when the user returns to this step and proceeds again).
+  // Fresh-install (setup) mode auto-starts on mount — there's nothing on the host to destroy. Update
+  // mode does NOT: forcing the reinstall restarts XpairHost and kills any running tmux sessions on
+  // the host, so the user must read the warning and click "Update host" first. Their click IS the
+  // consent.
   const started = useRef(false);
   useEffect(() => {
+    if (isUpdate) return;
     if (started.current) return;
     started.current = true;
     runInstall();
-  }, [runInstall]);
+  }, [isUpdate, runInstall]);
 
   // Success → advance to Grant. Failure stays here with explicit key-auth recovery actions.
   useEffect(() => {
@@ -142,6 +146,16 @@ export function StepInstalling({
                 Updating will restart XpairHost and{" "}
                 <span className="font-semibold">terminate any running tmux sessions on the host.</span>
               </p>
+              {state === "idle" && (
+                <button
+                  type="button"
+                  onClick={runInstall}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 font-semibold text-amber-700 transition-colors hover:bg-amber-500/25 dark:text-amber-300"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Update host
+                </button>
+              )}
             </div>
           </div>
         </div>

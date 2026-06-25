@@ -211,6 +211,10 @@ export default function App() {
   // already installed but below MIN_COMPATIBLE_HOST; we reuse StepInstalling with force:true to push
   // the client-bundled host over it. Applies to manual/connect/reconnect (non-setup) paths.
   const [installMode, setInstallMode] = useState<"install" | "update">("install");
+  // Where the update flow was launched from, so onDone routes back to the right gate and re-checks
+  // there. "connect" = the Connect-step host-app gate (non-setup); "final" = the Mappings final
+  // liveness gate (either path, incl. setup peers whose first install hit an existing host).
+  const [updateOrigin, setUpdateOrigin] = useState<"connect" | "final">("connect");
   // Host-version context for the update warning copy (current host version vs the client version it
   // must match), captured from the incompatible host-app probe that triggered the update.
   const [updateCtx, setUpdateCtx] = useState<{ host: string; current: string; required: string }>({
@@ -302,10 +306,15 @@ export default function App() {
   // Route the wizard into StepInstalling in UPDATE mode: the host app is installed but below
   // MIN_COMPATIBLE_HOST. Reused by the Connect-step host-app gate and the final liveness gate.
   const routeToHostUpdate = useCallback(
-    (target: string, hostVersion: string) => {
+    (target: string, hostVersion: string, origin: "connect" | "final") => {
       setInstallMode("update");
+      setUpdateOrigin(origin);
       setUpdateCtx({ host: target, current: hostVersion, required: clientVer });
       setInstallState("idle");
+      // The final-gate path already flipped live="checking" (runLivenessCheck). Clear it so that when
+      // the update finishes and returns, Next isn't stuck disabled by `live === "checking"`.
+      setLive("idle");
+      setLiveErr("");
       w.goTo(S.INSTALL, "next");
     },
     [clientVer, w],
@@ -335,7 +344,7 @@ export default function App() {
       if (app.installed && !app.compatible) {
         // Installed-but-incompatible at the final gate → route to the in-UI update flow (force
         // reinstall the bundled host) rather than dead-ending. Same routing as the Connect-step gate.
-        routeToHostUpdate(target, app.version);
+        routeToHostUpdate(target, app.version, "final");
         return;
       }
       if (!app.installed) {
@@ -447,7 +456,7 @@ export default function App() {
       hostApp.installed &&
       !hostApp.compatible
     ) {
-      routeToHostUpdate(connectTarget, hostApp.version);
+      routeToHostUpdate(connectTarget, hostApp.version, "connect");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, hostAppChecking, hostApp, connectTarget]);
@@ -704,18 +713,33 @@ export default function App() {
             state={installState}
             setState={setInstallState}
             onDone={() => {
-              // Update finished → RE-CHECK the host app. Only a compatible result opens the gate; an
-              // incompatible re-check keeps the user blocked (and re-routes through update again).
+              // Update finished → RE-CHECK that the host is now installed+compatible before letting
+              // the user past. Only a compatible re-check opens the gate; an incompatible one re-routes
+              // through update again.
               hostAppProbeId.current += 1;
               setHostApp(null);
               setInstallMode("install");
-              setInstallState("idle");
-              w.goTo(S.CONNECT, "prev");
+              if (updateOrigin === "final") {
+                // Triggered from the Mappings final gate (incl. setup peers, where the Connect step
+                // renders the fingerprint step and runs no host-app probe). The update force-installed
+                // the bundled host, so the host IS set up — keep installState "done" so the liveness
+                // check's setup guard passes. Return to Mappings and re-run the final liveness check;
+                // it performs the host-app re-check itself, so Next continues past the completed update
+                // instead of re-entering fresh-install.
+                setInstallState("done");
+                w.goTo(S.MAPPINGS, "prev");
+                void runLivenessCheck();
+              } else {
+                // Triggered from the Connect-step host-app gate (non-setup). Returning to Connect
+                // re-probes the host app (requiresHostApp is true there) and re-opens the gate.
+                setInstallState("idle");
+                w.goTo(S.CONNECT, "prev");
+              }
             }}
             onFail={() => {
               setInstallMode("install");
               setInstallState("idle");
-              w.goTo(S.CONNECT, "prev");
+              w.goTo(updateOrigin === "final" ? S.MAPPINGS : S.CONNECT, "prev");
             }}
           />
         )}
