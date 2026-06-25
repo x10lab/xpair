@@ -264,6 +264,7 @@ export default function App() {
   );
 
   const onManual = useCallback(() => {
+    if (!cliReady) return;
     setManual(true);
     setPeer(null);
     setSetupReady(false);
@@ -274,7 +275,7 @@ export default function App() {
     setLive("idle");
     setLiveErr("");
     w.goTo(S.CONNECT, "next");
-  }, [w]);
+  }, [cliReady, w]);
 
   // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
   // setup, host-app, permission, and SSH liveness probes all pass.
@@ -618,7 +619,11 @@ export default function App() {
         {w.index === S.WELCOME && <StepWelcome />}
         {w.index === S.CONSENT && <StepConsent />}
         {w.index === S.DISCOVER && (
-          <StepDiscover onSelect={onSelectPeer} onManual={onManual} />
+          <StepDiscover
+            onSelect={onSelectPeer}
+            onManual={onManual}
+            cliBlocked={cliGateActive}
+          />
         )}
         {w.index === S.CONNECT &&
           (manual || isConnect || !peer ? (

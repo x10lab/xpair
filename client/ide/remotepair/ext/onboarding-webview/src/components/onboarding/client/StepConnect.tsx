@@ -238,7 +238,7 @@ export function StepConnect({ host, setHost, state, setState, cliBlocked = false
           <Button
             size="sm"
             onClick={check}
-            disabled={state === "checking" || !host.trim()}
+            disabled={cliBlocked || state === "checking" || !host.trim()}
           >
             {state === "checking" ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
