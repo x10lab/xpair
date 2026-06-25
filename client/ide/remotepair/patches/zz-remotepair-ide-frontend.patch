@@ -889,7 +889,7 @@ index d276b5c9..2ed4089c 100644
 +		rpButton.title = nls.localize('remotepairAddRootTooltip', "Mount a host folder and add it as a Browser root");
 +		const rpIcon = DOM.append(rpButton, DOM.$('span.rp-add-root-icon'));
 +		rpIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.rootFolderOpened));
-+		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Root");
++		DOM.append(rpButton, DOM.$('span.rp-add-root-label')).textContent = nls.localize('remotepairAddRoot', "Add Mapping");
 +		const rpRun = () => this.commandService.executeCommand('remotepair.browser.addRoot');
 +		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.CLICK, rpRun));
 +		this._register(DOM.addDisposableListener(rpButton, DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
@@ -1583,7 +1583,7 @@ index 00000000..6887d7cb
 +Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeContent(EmptyView.ID, {
 +	content: localize(
 +		{ key: 'remotepairAddRootWelcome', comment: ['Please do not translate the word "command", it is part of our internal syntax which must not change'] },
-+		"No mapped folders yet.\n[$(rocket) Add Root](command:remotepair.browser.addRoot)\nMounts a host folder and adds it as a Browser root."
++		"No mapped folders yet.\n[$(rocket) Add Mapping](command:remotepair.browser.addRoot)\nMounts a host folder and registers it as a Browser mapping."
 +	),
 +	when: WorkbenchStateContext.isEqualTo('empty'),
 +	group: ViewContentGroups.Open,
