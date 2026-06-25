@@ -32,6 +32,24 @@ pub fn default_client_env_path() -> io::Result<PathBuf> {
     Ok(home_dir()?.join(".xpair").join("host").join("client.env"))
 }
 
+/// The bash SSOT `RP_DIR="${RP_DIR:-$HOME/.xpair/host}"` (the client/host state dir).
+pub fn default_rp_dir() -> io::Result<PathBuf> {
+    if let Some(rp_dir) = non_empty_env("RP_DIR") {
+        return Ok(PathBuf::from(rp_dir));
+    }
+
+    Ok(home_dir()?.join(".xpair").join("host"))
+}
+
+/// The bash SSOT `LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"` (installed client tools).
+pub fn default_local_bin() -> io::Result<PathBuf> {
+    if let Some(local_bin) = non_empty_env("LOCAL_BIN") {
+        return Ok(PathBuf::from(local_bin));
+    }
+
+    Ok(home_dir()?.join(".local").join("bin"))
+}
+
 /// Read one config key from `path`.
 ///
 /// Missing files behave like an empty config, matching the bash startup path that sources

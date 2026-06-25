@@ -10,6 +10,8 @@ use std::process::ExitCode;
 use xpair::attach;
 use xpair::config;
 use xpair::doctor;
+use xpair::host_permissions;
+use xpair::install_host;
 use xpair::launch;
 use xpair::logs;
 use xpair::mapping::{map_to_host, parse_maps};
@@ -18,6 +20,7 @@ use xpair::notify;
 use xpair::open_gui;
 use xpair::session::{self, SshTransport};
 use xpair::status;
+use xpair::tools;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -68,6 +71,11 @@ fn main() -> ExitCode {
         "status" => cmd_status(&args[1..]),
         "logs" => logs::run(&args[1..]),
         "notify" => notify::run(&args[1..]),
+        "install-host" => install_host::run(&args[1..]),
+        "host-permissions" => host_permissions::run(&args[1..]),
+        "editor" => tools::run_passthrough("xpair-editor", &args[1..]),
+        "desktop" => tools::run_passthrough("xpair-desktop", &args[1..]),
+        "mount" => tools::run_passthrough("xpair-mount", &args[1..]),
         "map" => cmd_map(&args[1..]),
         "mode" => cmd_mode(&args[1..]),
         "config" => run_config(&args[1..]),
@@ -98,7 +106,7 @@ fn print_help() {
     }
     println!();
     println!(
-        "(native Rust client — port in progress; launch/attach/open-gui/ls/map/config/mode/status/logs/notify/doctor work today)"
+        "(native Rust client — port in progress; most verbs work today; onboard/discover/approve/self-update remaining)"
     );
 }
 

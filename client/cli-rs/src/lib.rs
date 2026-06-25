@@ -16,6 +16,8 @@
 pub mod attach;
 pub mod config;
 pub mod doctor;
+pub mod host_permissions;
+pub mod install_host;
 pub mod launch;
 pub mod logs;
 pub mod mapping;
@@ -26,4 +28,5 @@ pub mod platform;
 pub mod remote_quote;
 pub mod session;
 pub mod status;
+pub mod tools;
 pub mod transport;
