@@ -4,12 +4,15 @@
 //! ported it returns exit 2 with a clear "not yet implemented" message. The canonical command
 //! set mirrors the bash dispatch at `client/cli/xpair:1869-1893`.
 
+use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use xpair::config;
 use xpair::doctor;
 use xpair::mapping::{map_to_host, parse_maps};
+use xpair::mode;
 use xpair::session::{self, SshTransport};
+use xpair::status;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -54,7 +57,9 @@ fn main() -> ExitCode {
         }
         "doctor" => doctor::run(&args[1..]),
         "ls" => cmd_ls(&args[1..]),
+        "status" => cmd_status(&args[1..]),
         "map" => cmd_map(&args[1..]),
+        "mode" => cmd_mode(&args[1..]),
         "config" => run_config(&args[1..]),
         // `roots` is a legacy alias of `map` (client/cli/xpair:1873).
         "roots" => cmd_map(&args[1..]),
@@ -82,7 +87,74 @@ fn print_help() {
         println!("  {c}");
     }
     println!();
-    println!("(native Rust client — port in progress; `map`/`config`/`ls`/`doctor` work today)");
+    println!(
+        "(native Rust client — port in progress; `map`/`config`/`ls`/`mode`/`status`/`doctor` work today)"
+    );
+}
+
+fn cmd_mode(args: &[String]) -> ExitCode {
+    let path = match config::default_client_env_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("xpair mode: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    mode::run(args, &path)
+}
+
+fn cmd_status(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("usage: xpair status");
+        return ExitCode::from(2);
+    }
+
+    let path = match config::default_client_env_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("xpair status: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let host = match resolve_host(&path) {
+        Ok(host) => host,
+        Err(err) => {
+            eprintln!("xpair status: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let local_mode = match resolve_local_mode(&path) {
+        Ok(local_mode) => local_mode,
+        Err(err) => {
+            eprintln!("xpair status: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let aqua_sock = resolve_aqua_sock();
+    let status_json = match fs::read_to_string(status::status_file_path(&path)) {
+        Ok(status_json) => Some(status_json),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            eprintln!("xpair status: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let transport = SshTransport;
+
+    print!(
+        "{}",
+        status::render_status(
+            &transport,
+            &host,
+            local_mode,
+            &aqua_sock,
+            status_json.as_deref(),
+            status::now_ts()
+        )
+    );
+    ExitCode::SUCCESS
 }
 
 fn cmd_map(args: &[String]) -> ExitCode {

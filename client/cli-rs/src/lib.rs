@@ -16,7 +16,9 @@
 pub mod config;
 pub mod doctor;
 pub mod mapping;
+pub mod mode;
 pub mod platform;
 pub mod remote_quote;
 pub mod session;
+pub mod status;
 pub mod transport;
