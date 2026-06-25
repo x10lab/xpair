@@ -14,7 +14,7 @@
 //! Client = browser/webview `RTCPeerConnection` (Chromium native WebRTC, decodes
 //! H.264 on macOS/Windows/Linux → cross-platform) rendering into a `<video>`.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -36,6 +36,7 @@ use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
@@ -196,6 +197,18 @@ enum RdStatus {
     Superseded {
         reason: String,
     },
+    InputReady {
+        helper: String,
+        #[serde(rename = "axTrusted")]
+        ax_trusted: bool,
+        #[serde(rename = "displayId")]
+        display_id: Option<u32>,
+        width: Option<f64>,
+        height: Option<f64>,
+    },
+    InputFailed {
+        reason: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -227,6 +240,18 @@ struct AppCaptureControl {
     capture: Option<AppCaptureEvent>,
     kind: Option<CaptureErrorKind>,
     reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputHelperStatus {
+    kind: String,
+    reason: Option<String>,
+    #[serde(rename = "axTrusted")]
+    ax_trusted: Option<bool>,
+    #[serde(rename = "displayId")]
+    display_id: Option<u32>,
+    width: Option<f64>,
+    height: Option<f64>,
 }
 
 struct SignalingIo {
@@ -285,20 +310,27 @@ fn sibling_helper(name: &str) -> Option<String> {
 
 /// Resolve the remote-input injector helper (`rp-input-inject`).
 /// Order: `$RP_INPUT_INJECT` → bundle sibling (`current_exe` dir) →
-/// `~/.xpair/host/bin` → PATH.
-fn input_helper_path() -> String {
+/// `~/.xpair/host/bin`. No bare PATH fallback: clean installs must use the
+/// signed helper bundled with XpairHost.app, and development can set
+/// `RP_INPUT_INJECT` explicitly.
+fn input_helper_path() -> Result<String, String> {
     if let Ok(p) = std::env::var("RP_INPUT_INJECT") {
-        return p;
+        let p = p.trim();
+        if !p.is_empty() {
+            return Ok(p.to_string());
+        }
     }
     if let Some(p) = sibling_helper("rp-input-inject") {
-        return p;
+        return Ok(p);
     }
     let home = std::env::var("HOME").unwrap_or_default();
     let deployed = format!("{home}/.xpair/host/bin/rp-input-inject");
     if std::path::Path::new(&deployed).exists() {
-        return deployed;
+        return Ok(deployed);
     }
-    "rp-input-inject".to_string()
+    Err(format!(
+        "rp-input-inject not found (expected bundle sibling or {deployed}; set RP_INPUT_INJECT for development)"
+    ))
 }
 
 /// Resolve the SCK capture+encode helper (`rp-screencap`). It self-captures via
@@ -644,6 +676,42 @@ fn status_from_app_control_frame(frame: &[u8]) -> Option<RdStatus> {
     })
 }
 
+fn status_from_input_helper_line(line: &str, helper: &str) -> Option<RdStatus> {
+    let payload = line.strip_prefix("RPINPUT ")?;
+    let status: InputHelperStatus = serde_json::from_str(payload).ok()?;
+    match status.kind.as_str() {
+        "ready" => Some(RdStatus::InputReady {
+            helper: helper.to_string(),
+            ax_trusted: status.ax_trusted.unwrap_or(true),
+            display_id: status.display_id,
+            width: status.width,
+            height: status.height,
+        }),
+        "error" => Some(RdStatus::InputFailed {
+            reason: bounded_reason(
+                status
+                    .reason
+                    .unwrap_or_else(|| "remote input helper failed".to_string()),
+            ),
+        }),
+        _ => None,
+    }
+}
+
+fn wire_input_data_channel(dc: &Arc<RTCDataChannel>, in_tx: std::sync::mpsc::Sender<Vec<u8>>) {
+    let label = dc.label().to_string();
+    dc.on_open(Box::new(move || {
+        tracing::info!("serve-webrtc: input DataChannel '{label}' open");
+        Box::pin(async {})
+    }));
+    dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let tx = in_tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(msg.data.to_vec());
+        })
+    }));
+}
+
 fn queue_status(sig_tx: &mpsc::UnboundedSender<String>, status: RdStatus) {
     match status.to_signaling_text() {
         Ok(text) => {
@@ -853,65 +921,106 @@ async fn serve_session(
     // (mousemove — stale positions are worthless, dropping is correct) (B4).
     let mut _input_dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>> = Vec::new();
     {
-        let bin = input_helper_path();
-        match Command::new(&bin)
-            .stdin(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    // writer thread: frame [4B BE len | json] -> helper stdin (blocking)
-                    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-                    std::thread::Builder::new()
-                        .name("rp-input-writer".into())
-                        .spawn(move || {
-                            while let Ok(json) = in_rx.recv() {
-                                let len = (json.len() as u32).to_be_bytes();
-                                if stdin.write_all(&len).is_err() || stdin.write_all(&json).is_err()
-                                {
-                                    break;
+        match input_helper_path() {
+            Ok(bin) => match Command::new(&bin)
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    if let Some(stderr) = child.stderr.take() {
+                        let sig_tx = sig_tx.clone();
+                        let helper = bin.clone();
+                        std::thread::Builder::new()
+                            .name("rp-input-stderr".into())
+                            .spawn(move || {
+                                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                                    if let Some(status) =
+                                        status_from_input_helper_line(&line, &helper)
+                                    {
+                                        queue_status(&sig_tx, status);
+                                    } else if line.starts_with("RPIN ") {
+                                        tracing::debug!("serve-webrtc input: {line}");
+                                    } else {
+                                        tracing::info!("serve-webrtc input: {line}");
+                                    }
                                 }
-                            }
-                            let _ = child.kill();
-                        })
-                        .ok();
+                            })
+                            .ok();
+                    }
+                    if let Some(mut stdin) = child.stdin.take() {
+                        // writer thread: frame [4B BE len | json] -> helper stdin (blocking)
+                        let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                        std::thread::Builder::new()
+                            .name("rp-input-writer".into())
+                            .spawn(move || {
+                                while let Ok(json) = in_rx.recv() {
+                                    let len = (json.len() as u32).to_be_bytes();
+                                    if stdin.write_all(&len).is_err()
+                                        || stdin.write_all(&json).is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                let _ = child.kill();
+                            })
+                            .ok();
 
-                    let ctl = pc
-                        .create_data_channel("rp-ctl", None)
-                        .await
-                        .map_err(SessionError::from)?;
-                    let mv_init = RTCDataChannelInit {
-                        ordered: Some(false),
-                        max_retransmits: Some(0),
-                        ..Default::default()
-                    };
-                    let mv = pc
-                        .create_data_channel("rp-move", Some(mv_init))
-                        .await
-                        .map_err(SessionError::from)?;
-                    for dc in [&ctl, &mv] {
-                        let label = dc.label().to_string();
-                        dc.on_open(Box::new(move || {
-                            tracing::info!("serve-webrtc: input DataChannel '{label}' open");
-                            Box::pin(async {})
-                        }));
-                        let tx = in_tx.clone();
-                        dc.on_message(Box::new(move |msg: DataChannelMessage| {
-                            let tx = tx.clone();
+                        let incoming_tx = in_tx.clone();
+                        pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+                            let tx = incoming_tx.clone();
                             Box::pin(async move {
-                                let _ = tx.send(msg.data.to_vec());
+                                let label = dc.label().to_string();
+                                if label == "rp-ctl" || label == "rp-move" {
+                                    wire_input_data_channel(&dc, tx);
+                                } else {
+                                    tracing::debug!(
+                                        "serve-webrtc: ignoring unexpected input DataChannel '{label}'"
+                                    );
+                                }
                             })
                         }));
+
+                        let ctl = pc
+                            .create_data_channel("rp-ctl", None)
+                            .await
+                            .map_err(SessionError::from)?;
+                        let mv_init = RTCDataChannelInit {
+                            ordered: Some(false),
+                            max_retransmits: Some(0),
+                            ..Default::default()
+                        };
+                        let mv = pc
+                            .create_data_channel("rp-move", Some(mv_init))
+                            .await
+                            .map_err(SessionError::from)?;
+                        for dc in [&ctl, &mv] {
+                            wire_input_data_channel(dc, in_tx.clone());
+                        }
+                        // keep channels alive for the session (dropped when the session returns)
+                        _input_dcs.push(ctl);
+                        _input_dcs.push(mv);
+                    } else {
+                        queue_status(
+                            &sig_tx,
+                            RdStatus::InputFailed {
+                                reason: format!("input helper '{bin}' did not expose stdin"),
+                            },
+                        );
+                        let _ = child.kill();
                     }
-                    // keep channels alive for the session (dropped when the session returns)
-                    _input_dcs.push(ctl);
-                    _input_dcs.push(mv);
                 }
+                Err(e) => {
+                    let reason =
+                        format!("input helper '{bin}' spawn failed (remote input disabled): {e}");
+                    tracing::warn!("serve-webrtc: {reason}");
+                    queue_status(&sig_tx, RdStatus::InputFailed { reason });
+                }
+            },
+            Err(reason) => {
+                tracing::warn!("serve-webrtc: {reason}");
+                queue_status(&sig_tx, RdStatus::InputFailed { reason });
             }
-            Err(e) => tracing::warn!(
-                "serve-webrtc: input helper '{bin}' spawn failed (remote input disabled): {e}"
-            ),
         }
     }
 
@@ -1019,19 +1128,22 @@ impl NegotiatingSession {
     }
 
     async fn into_connected(mut self) -> Result<ConnectedSession, SessionError> {
-        let capture =
-            match CaptureSource::start(self.capture_config, self.au_tx.clone(), self.sig_tx.clone()) {
-                Ok(capture) => capture,
-                Err(e) => {
-                    let _ = self
-                        .send_status(RdStatus::CaptureFailed {
-                            capture_kind: CaptureErrorKind::HelperFailed,
-                            reason: e.to_string(),
-                        })
-                        .await;
-                    return Err(e);
-                }
-            };
+        let capture = match CaptureSource::start(
+            self.capture_config,
+            self.au_tx.clone(),
+            self.sig_tx.clone(),
+        ) {
+            Ok(capture) => capture,
+            Err(e) => {
+                let _ = self
+                    .send_status(RdStatus::CaptureFailed {
+                        capture_kind: CaptureErrorKind::HelperFailed,
+                        reason: e.to_string(),
+                    })
+                    .await;
+                return Err(e);
+            }
+        };
         Ok(ConnectedSession {
             token: self.token,
             started: self.started,

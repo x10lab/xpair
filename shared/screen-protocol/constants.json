@@ -22,9 +22,9 @@
     "scale": { "min": 0.1, "max": 1.0 }
   },
   "remoteInput": {
-    "supported": false,
-    "policy": "Remote Desktop is view-only. The IDE must not capture or forward pointer, wheel, text, or keyboard input.",
-    "webrtcDataChannels": "No client-created DataChannels; host-created channels, including legacy rp-ctl/rp-move, are closed or ignored."
+    "supported": true,
+    "policy": "Remote Desktop supports authenticated remote input. The IDE may capture pointer, wheel, text, and keyboard input only inside the RD webview and forward it over the active WebRTC session.",
+    "webrtcDataChannels": "The RD session uses rp-ctl (reliable ordered control input) and rp-move (unreliable pointer motion) WebRTC DataChannels, gated by host-side input helper readiness."
   },
   "webviewToExtMessages": ["ready", "v2Error", "v2FirstFrame"]
 }

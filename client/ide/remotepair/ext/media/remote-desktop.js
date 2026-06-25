@@ -38,6 +38,12 @@
   let inputSeq = 0;
   let ctlDC = null;
   let moveDC = null;
+  let inputReady = false;
+  let inputError = "";
+  let activePointerId = null;
+  let activePointerButton = null;
+  let activePointerPoint = null;
+  const pressedKeys = new Map();
   let lastMoveTs = 0;
   const MOVE_MIN_MS = 1000 / 60;
   const BUFFER_LIMIT = 65536;
@@ -141,9 +147,21 @@
   }
 
   function setBadge() {
-    const inputOn = ctlDC && ctlDC.readyState === "open";
-    badge.textContent = inputOn ? "input on" : "input pending";
-    badge.className = inputOn ? "on" : "off";
+    const channelsOpen = ctlDC && ctlDC.readyState === "open" && moveDC && moveDC.readyState === "open";
+    const inputOn = channelsOpen && inputReady;
+    if (inputOn) {
+      badge.textContent = "input on";
+      badge.className = "on";
+      badge.title = "Remote input ready";
+    } else if (inputError) {
+      badge.textContent = "input unavailable";
+      badge.className = "off";
+      badge.title = inputError;
+    } else {
+      badge.textContent = "input pending";
+      badge.className = "off";
+      badge.title = "Waiting for remote input helper";
+    }
   }
 
   function clearV2FirstFrameTimer() {
@@ -207,7 +225,28 @@
   function resetInputChannels() {
     ctlDC = null;
     moveDC = null;
+    inputReady = false;
+    inputError = "";
+    activePointerId = null;
+    activePointerButton = null;
+    activePointerPoint = null;
+    pressedKeys.clear();
     inputSeq = 0;
+    setBadge();
+  }
+
+  function setInputReady(message) {
+    inputReady = true;
+    inputError = "";
+    setBadge();
+    if (message && message.helper) {
+      console.debug("remote input ready:", message.helper);
+    }
+  }
+
+  function setInputFailed(reason) {
+    inputReady = false;
+    inputError = reason || "Remote input helper is unavailable";
     setBadge();
   }
 
@@ -224,7 +263,7 @@
   }
 
   function sendInput(channel, input) {
-    if (!channel || channel.readyState !== "open" || channel.bufferedAmount > BUFFER_LIMIT) return false;
+    if (!inputReady || !channel || channel.readyState !== "open" || channel.bufferedAmount > BUFFER_LIMIT) return false;
     input.seq = ++inputSeq;
     try {
       channel.send(JSON.stringify(input));
@@ -276,6 +315,43 @@
     textCapture.textContent = "";
   }
 
+  function pointerButton(ev) {
+    return ev.button === 2 ? "r" : "l";
+  }
+
+  function releaseActivePointer() {
+    if (activePointerButton && activePointerPoint) {
+      sendControlInput({
+        t: "u",
+        rx: activePointerPoint.rx,
+        ry: activePointerPoint.ry,
+        btn: activePointerButton,
+      });
+    }
+    activePointerId = null;
+    activePointerButton = null;
+    activePointerPoint = null;
+  }
+
+  function sendKeyEvent(ev, action) {
+    const code = MAC_VK[ev.code];
+    if (code === undefined) return false;
+    return sendControlInput({
+      t: "k",
+      action,
+      code,
+      flags: macFlags(ev),
+      repeat: !!ev.repeat,
+    });
+  }
+
+  function releasePressedKeys() {
+    for (const entry of pressedKeys.values()) {
+      sendControlInput({ t: "k", action: "up", code: entry.code, flags: 0 });
+    }
+    pressedKeys.clear();
+  }
+
   // -------------------------------------------------------------------------
   // v2 WebRTC stream (UDP/RTP H.264). Signaling over a WS to the sidecar's
   // serve-webrtc; media is decoded natively by the browser/Chromium WebRTC
@@ -283,6 +359,8 @@
   // -------------------------------------------------------------------------
 
   function closePc2() {
+    releaseActivePointer();
+    releasePressedKeys();
     if (pc2) {
       try { pc2.close(); } catch (_e) {}
       pc2 = null;
@@ -559,6 +637,14 @@
       let m;
       try { m = JSON.parse(ev.data); } catch (_e) { return; }
       if (m.type === "status") {
+        if (m.kind === "input-ready") {
+          setInputReady(m);
+          return;
+        }
+        if (m.kind === "input-failed") {
+          setInputFailed(m.reason || m.detail || "Remote input helper is unavailable");
+          return;
+        }
         const kind = normalizeFailureKind(m.kind);
         const parts = [];
         if (m.reason || m.detail) parts.push(String(m.reason || m.detail));
@@ -612,20 +698,48 @@
       try { video.setPointerCapture(ev.pointerId); } catch (_e) {}
     }
     const p = relativePoint(ev);
-    const btn = ev.button === 2 ? "r" : "l";
-    if (sendControlInput({ t: "c", rx: p.rx, ry: p.ry, btn })) {
+    const btn = pointerButton(ev);
+    activePointerId = ev.pointerId;
+    activePointerButton = btn;
+    activePointerPoint = p;
+    if (sendControlInput({ t: "d", rx: p.rx, ry: p.ry, btn })) {
       ev.preventDefault();
     }
   });
 
   video.addEventListener("pointermove", function (ev) {
+    if (!inputArmed) return;
+    if (activePointerId !== null && ev.pointerId !== activePointerId) return;
     const now = Date.now();
     if (now - lastMoveTs < MOVE_MIN_MS) return;
     const p = relativePoint(ev);
-    if (sendMoveInput({ t: "m", rx: p.rx, ry: p.ry })) {
+    activePointerPoint = p;
+    const msg = { t: "m", rx: p.rx, ry: p.ry };
+    if (activePointerButton) msg.btn = activePointerButton;
+    if (sendMoveInput(msg)) {
       lastMoveTs = now;
       ev.preventDefault();
     }
+  });
+
+  video.addEventListener("pointerup", function (ev) {
+    if (activePointerId !== null && ev.pointerId !== activePointerId) return;
+    const p = relativePoint(ev);
+    const btn = activePointerButton || pointerButton(ev);
+    activePointerPoint = p;
+    if (sendControlInput({ t: "u", rx: p.rx, ry: p.ry, btn })) {
+      ev.preventDefault();
+    }
+    if (typeof video.releasePointerCapture === "function") {
+      try { video.releasePointerCapture(ev.pointerId); } catch (_e) {}
+    }
+    activePointerId = null;
+    activePointerButton = null;
+    activePointerPoint = null;
+  });
+
+  video.addEventListener("pointercancel", function () {
+    releaseActivePointer();
   });
 
   video.addEventListener("wheel", function (ev) {
@@ -647,7 +761,20 @@
     if (printable && !modified) return;
     const code = MAC_VK[ev.code];
     if (code === undefined) return;
-    if (sendControlInput({ t: "k", code, flags: macFlags(ev) })) {
+    pressedKeys.set(ev.code, { code });
+    if (sendKeyEvent(ev, "down")) {
+      ev.preventDefault();
+    }
+  });
+
+  document.addEventListener("keyup", function (ev) {
+    if (!pressedKeys.has(ev.code)) return;
+    if (ev.isComposing || ev.keyCode === 229) return;
+    const entry = pressedKeys.get(ev.code);
+    const code = entry ? entry.code : MAC_VK[ev.code];
+    if (code === undefined) return;
+    pressedKeys.delete(ev.code);
+    if (sendControlInput({ t: "k", action: "up", code, flags: macFlags(ev) })) {
       ev.preventDefault();
     }
   });
@@ -662,6 +789,11 @@
     const text = ev.data || textCapture.textContent;
     if (text) sendControlInput({ t: "x", s: text });
     clearCapturedText();
+  });
+
+  window.addEventListener("blur", function () {
+    releaseActivePointer();
+    releasePressedKeys();
   });
   }
 

@@ -13,9 +13,11 @@ screen serve  ──JPEG──▶   remote-desktop.js
 serve-webrtc :8890 (v2)   ──H.264──▶  v2 peer connection (WebRTC)
 ```
 
-Remote Desktop is view-only. The IDE must not capture or forward pointer,
-wheel, text, or keyboard input. It creates no WebRTC DataChannels and closes or
-ignores host-created channels, including legacy `rp-ctl`/`rp-move`.
+Remote Desktop supports authenticated input. The IDE captures pointer, wheel,
+keyboard, and composed text only inside the RD webview, then forwards it over
+the active WebRTC session. Input is gated by the host helper readiness signal:
+`rp-ctl` carries reliable ordered control input and `rp-move` carries lossy
+pointer motion.
 
 ## Contract (`constants.json`)
 | Area | Value |
@@ -24,8 +26,8 @@ ignores host-created channels, including legacy `rp-ctl`/`rp-move`.
 | v2 WebRTC | signaling `127.0.0.1:8890`, H.264/WebRTC |
 | v0 fallback | ssh screenshot polling, switches in auto after ~4s with no frame |
 | Capture parameters | fps 1–120 · quality 1–100 · scale 0.1–1.0 |
-| Remote input | unsupported; view-only, no pointer/wheel/text/keyboard forwarding |
-| WebRTC DataChannels | none created by the client; host-created channels are closed/ignored |
+| Remote input | supported; pointer/wheel/keyboard/text forwarding inside the RD webview |
+| WebRTC DataChannels | `rp-ctl` reliable ordered input; `rp-move` unreliable pointer motion |
 | webview→ext message | ready·v2Error·v2FirstFrame |
 
 ## Consumers
@@ -33,8 +35,8 @@ ignores host-created channels, including legacy `rp-ctl`/`rp-move`.
 |--------|------|
 | `host/rd/screen/src/serve.rs` | v1a WS+JPEG server (port 8889 default) |
 | `host/rd/screen/src/serve_webrtc.rs` | v2 WebRTC (signaling 8890) |
-| `client/ide/remotepair/ext/extension.js` | tunnel · port constants (SIGNAL) · view-only status messages |
-| `client/ide/remotepair/ext/media/remote-desktop.js` | webview video rendering · DataChannel ignore/close · message vocabulary |
+| `client/ide/remotepair/ext/extension.js` | tunnel · port constants (SIGNAL) · RD status messages |
+| `client/ide/remotepair/ext/media/remote-desktop.js` | webview video rendering · input DataChannels · message vocabulary |
 
 ## Usage
 ```bash
