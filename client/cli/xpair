@@ -881,12 +881,26 @@ cmd_attach() {
     return 4
   fi
   printf '\033]2;%s\007' "$session"
+  # On connection drop (tab close / link loss) detach the orphaned remote tmux client server-side,
+  # so it does not linger as an attached client. exec would make this trap impossible — run non-exec.
+  on_attach_close() {
+    ( trap '' HUP; ssh -n -o BatchMode=yes -o ConnectTimeout=3 "$REMOTE_HOST" \
+        "$remote_bin/tmux-aqua -S $aqua_sock_q detach-client -s $(sh_quote "=$session")" \
+        >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+    exit 129
+  }
+  trap on_attach_close HUP TERM
+  local rc=0
   if command -v mosh >/dev/null 2>&1; then
     printf 'attaching via mosh → tmux session "%s" on %s ...\n' "$session" "$REMOTE_HOST"
-    exec mosh --server="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session"
+    mosh --server="${MOSH_SERVER:-$HOME/.local/bin/mosh-server}" "$REMOTE_HOST" -- "$HOME/.local/bin/tmux-aqua" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
+    trap - HUP TERM
+    return "$rc"
   fi
   printf 'mosh not found → falling back to ssh -t (attach tmux "%s") ...\n' "$session"
-  exec ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")"
+  ssh -t "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q attach -d -t $(sh_quote "=$session")" || rc=$?
+  trap - HUP TERM
+  return "$rc"
 }
 
 cmd_host() {
