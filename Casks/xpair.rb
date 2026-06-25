@@ -1,5 +1,5 @@
 cask "xpair" do
-  version "0.5.0a38" # release-pinned (NOT the dev shared/.build-counter, which bumps per build); bump when cutting a release
+  version "0.5.0a48" # release-pinned (NOT the dev shared/.build-counter, which bumps per build); bump when cutting a release
   sha256 :no_check # alpha pre-release (0.5.0aN); sha re-pinned at release time
 
   url "https://github.com/x10lab/xpair/releases/download/v#{version}/Xpair-#{version}.zip"
