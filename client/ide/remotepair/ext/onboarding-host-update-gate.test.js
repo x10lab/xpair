@@ -161,6 +161,58 @@ test("D — successful final-gate update waits for fresh host status before re-c
   );
 });
 
+// --- Round 3: follow-on edge cases -----------------------------------------------------------
+
+test("A3 — explicit back-out sets updateDismissed and suppresses the Connect auto-route", () => {
+  // A dedicated dismissed flag exists.
+  assert.match(app, /const \[updateDismissed, setUpdateDismissed\] = useState\(false\)/);
+  // Both back-out paths (header Back + failed-update onFail) set it true.
+  assert.match(
+    app,
+    /w\.index === S\.INSTALL && installMode === "update"\) \{[\s\S]*setUpdateDismissed\(true\)/,
+  );
+  assert.match(
+    app,
+    /onFail=\{\(\) => \{[\s\S]*setUpdateDismissed\(true\)/,
+  );
+  // The Connect-step auto-route is suppressed while dismissed, even for a still-below-floor host.
+  assert.match(
+    app,
+    /!updateDismissed &&[\s\S]*hostApp\.incompatibleKind === "below_floor"\s*\)\s*\{\s*routeToHostUpdate\(connectTarget/,
+  );
+  // The flag is reset when re-initiating the update and when targeting a different host / manual.
+  assert.match(app, /setInstallMode\("update"\);[\s\S]*setUpdateDismissed\(false\)/);
+  // onSelectPeer and onManual both clear it for a new target.
+  assert.match(
+    app,
+    /setInstallMode\("install"\);\s*\n\s*\/\/[^\n]*\n\s*setUpdateDismissed\(false\);\s*\n\s*setReconnectReady/,
+  );
+});
+
+test("B3 — connect-path update success waits for fresh host status before returning to Connect", () => {
+  // The connect (non-final) onDone branch runs the same freshness poll as the final gate before
+  // navigating back to Connect, so the Connect re-probe doesn't read the stale status.json.
+  assert.match(
+    app,
+    /setInstallState\("idle"\);\s*\n\s*setLive\("checking"\);[\s\S]*await waitForFreshHostStatus\(updTarget, staleVer\);\s*\n\s*setLive\("idle"\);\s*\n\s*w\.goTo\(S\.CONNECT, "prev"\)/,
+  );
+});
+
+test("C3 — Next stays blocked during the freshness-poll window on both origins", () => {
+  // Final-gate return sets live="checking" before navigating to Mappings + polling.
+  assert.match(
+    app,
+    /setInstallState\("done"\);\s*\n[\s\S]*setLive\("checking"\);[\s\S]*w\.goTo\(S\.MAPPINGS, "prev"\)/,
+  );
+  // Connect-path return likewise sets live="checking" during the poll.
+  assert.match(
+    app,
+    /setLive\("checking"\);[\s\S]*await waitForFreshHostStatus\(updTarget, staleVer\);\s*\n\s*setLive\("idle"\)/,
+  );
+  // live === "checking" disables Next globally (WizardShell), gating it during the whole window.
+  assert.match(app, /nextDisabled=\{nextDisabled \|\| live === "checking"\}/);
+});
+
 console.log(
   failed ? `\n${failed} test(s) failed` : "\nall onboarding host-update gate tests passed",
 );

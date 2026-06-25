@@ -224,6 +224,14 @@ export default function App() {
   // there. "connect" = the Connect-step host-app gate (non-setup); "final" = the Mappings final
   // liveness gate (either path, incl. setup peers whose first install hit an existing host).
   const [updateOrigin, setUpdateOrigin] = useState<"connect" | "final">("connect");
+  // Explicit "user backed out of the update" flag (Finding A). Set on Back/cancel from the update
+  // step; SUPPRESSES the Connect-step auto-route even when a fresh host-app probe STILL reports the
+  // host below-floor. Clearing the cached probe alone is not enough: a reachable, still-incompatible
+  // host re-reports below_floor on the Connect re-probe, which would immediately re-route the user
+  // back into the update they just abandoned — trapping them. With this flag set, the gate stays
+  // closed (warning still visible) but the auto-route holds, so the user can recover or pick another
+  // host. Reset when the user re-initiates the update or selects/targets a different host / re-discovers.
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   // Host-version context for the update warning copy (current host version vs the client version it
   // must match), captured from the incompatible host-app probe that triggered the update.
   const [updateCtx, setUpdateCtx] = useState<{ host: string; current: string; required: string }>({
@@ -289,6 +297,8 @@ export default function App() {
       setHostPerms(null);
       setInstallState("idle");
       setInstallMode("install");
+      // New target → a prior back-out no longer applies; let the new host's probe drive routing.
+      setUpdateDismissed(false);
       setReconnectReady(false);
       setLive("idle");
       setLiveErr("");
@@ -307,6 +317,8 @@ export default function App() {
     setHostPerms(null);
     setInstallState("idle");
     setInstallMode("install");
+    // New manual target → a prior back-out no longer applies (Finding A).
+    setUpdateDismissed(false);
     setLive("idle");
     setLiveErr("");
     w.goTo(S.CONNECT, "next");
@@ -318,6 +330,9 @@ export default function App() {
     (target: string, hostVersion: string, origin: "connect" | "final") => {
       setInstallMode("update");
       setUpdateOrigin(origin);
+      // User is (re-)initiating the update → clear any prior back-out so the post-update re-checks
+      // and the Connect-step auto-route behave normally again (Finding A).
+      setUpdateDismissed(false);
       setUpdateCtx({ host: target, current: hostVersion, required: clientVer });
       setInstallState("idle");
       // The final-gate path already flipped live="checking" (runLivenessCheck). Clear it so that when
@@ -494,6 +509,12 @@ export default function App() {
     if (
       requiresHostApp &&
       !hostAppChecking &&
+      // The user explicitly backed out of the update for this host (Finding A). A reachable but still
+      // below-floor host re-reports below_floor on every Connect re-probe, so without this guard the
+      // auto-route would immediately bounce them back into the update they just abandoned. Hold the
+      // route; the gate stays closed (warning shown via centerSlot) so they can recover / pick another
+      // host. The flag is reset when they re-initiate the update or target a different host.
+      !updateDismissed &&
       hostApp &&
       hostApp.target === connectTarget &&
       hostApp.installed &&
@@ -505,7 +526,7 @@ export default function App() {
       routeToHostUpdate(connectTarget, hostApp.version, "connect");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requiresHostApp, hostAppChecking, hostApp, connectTarget]);
+  }, [requiresHostApp, hostAppChecking, hostApp, connectTarget, updateDismissed]);
 
   // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
   // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
@@ -608,6 +629,9 @@ export default function App() {
       hostAppProbeId.current += 1;
       setHostApp(null);
       setHostAppChecking(false);
+      // Mark the update explicitly dismissed so a still-below-floor Connect re-probe doesn't auto-route
+      // the user straight back into it (Finding A). Reset on re-initiate / different host.
+      setUpdateDismissed(true);
       if (updateOrigin === "final" && isSetup) {
         setInstallState("done");
       } else {
@@ -790,6 +814,13 @@ export default function App() {
                 // it performs the host-app re-check itself, so Next continues past the completed update
                 // instead of re-entering fresh-install.
                 setInstallState("done");
+                // Keep Next BLOCKED for the whole freshness-poll window (Finding C). Without this,
+                // `live` is "idle" on the Mappings return until runLivenessCheck flips it to "checking"
+                // seconds later, so a quick Next click would launch a second liveness check that reads
+                // the same stale status.json and bypasses the poll. live === "checking" disables Next
+                // globally (WizardShell nextDisabled). runLivenessCheck re-sets it on resolve.
+                setLive("checking");
+                setLiveErr("");
                 w.goTo(S.MAPPINGS, "prev");
                 // The forced reinstall just kickstarted the host's LaunchAgent; status.json may still
                 // hold the STALE pre-update version for a moment (Finding D). Wait for a fresh/newer
@@ -804,11 +835,25 @@ export default function App() {
               } else {
                 // Triggered from the Connect-step host-app gate (non-setup). Returning to Connect
                 // re-probes the host app itself (requiresHostApp is true there → the Connect effect
-                // runs checkHostApp on entry). The auto-route effect only re-routes on the FRESH probe
-                // result, and only for the same-major below-floor case (Finding A), so a genuinely
-                // still-incompatible host re-enters update — which is correct for the connect path.
+                // runs checkHostApp on entry). But install-host --force only KICKSTARTS the host's
+                // LaunchAgent; status.json keeps the pre-update below-floor version until the host
+                // rewrites it on its next tick. If we navigate back immediately, the Connect re-probe
+                // reads that STALE status and the auto-route bounces the just-updated host right back
+                // into update (Finding B). So apply the SAME freshness wait as the final gate: poll
+                // until status.json refreshes/compatible BEFORE returning to Connect, and keep Next
+                // blocked (live === "checking") for the whole window so a quick click can't skip it
+                // (Finding C). Once fresh, drop live back to "idle" so Connect's own connectReady gate
+                // (re-probe + perms) takes over.
                 setInstallState("idle");
-                w.goTo(S.CONNECT, "prev");
+                setLive("checking");
+                setLiveErr("");
+                const staleVer = updateCtx.current;
+                const updTarget = updateCtx.host;
+                void (async () => {
+                  await waitForFreshHostStatus(updTarget, staleVer);
+                  setLive("idle");
+                  w.goTo(S.CONNECT, "prev");
+                })();
               }
             }}
             onFail={() => {
@@ -820,6 +865,9 @@ export default function App() {
               hostAppProbeId.current += 1;
               setHostApp(null);
               setHostAppChecking(false);
+              // Explicit back-out from a failed update: suppress the Connect-step auto-route so a host
+              // that is still below-floor doesn't bounce the user right back here (Finding A).
+              setUpdateDismissed(true);
               if (updateOrigin === "final" && isSetup) {
                 // Setup peer whose already-completed setup (installState "done") routed into the final
                 // gate because the existing host was incompatible. The forced update FAILED, but setup
