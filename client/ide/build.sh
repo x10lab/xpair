@@ -14,6 +14,28 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENDOR="$HERE/vendor/vscodium"
 RP="$HERE/remotepair"
 
+# ── toolchain pin ──────────────────────────────────────────────────────────────
+# The vendored VSCodium recipe's `npm ci` is strict about lockfile/engine: it needs the
+# Node in .nvmrc (a newer Node makes npm ci report "lock file out of sync"). And the CLI
+# (`code`) build needs cargo. The default shell often has neither, so pin both here instead
+# of silently building under the wrong Node and failing deep in the recipe.
+_want_node="$(cat "$HERE/.nvmrc" 2>/dev/null | tr -d '[:space:]')"
+if [ -n "$_want_node" ] && [ "$(node -v 2>/dev/null)" != "v$_want_node" ]; then
+  if [ -x "$HOME/.nvm/versions/node/v$_want_node/bin/node" ]; then
+    export PATH="$HOME/.nvm/versions/node/v$_want_node/bin:$PATH"
+  elif command -v nvm >/dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" 2>/dev/null && nvm use "$_want_node" >/dev/null
+  else
+    echo "✗ Node v$_want_node required (.nvmrc) but active is $(node -v 2>/dev/null). Install: nvm install $_want_node" >&2
+    exit 1
+  fi
+fi
+# cargo (Rust) for the CLI build — rustup is usually on PATH but ~/.cargo/bin often is not.
+[ -x "$HOME/.cargo/bin/cargo" ] && case ":$PATH:" in *":$HOME/.cargo/bin:"*) ;; *) export PATH="$HOME/.cargo/bin:$PATH";; esac
+command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not found — install Rust (https://rustup.rs) for the CLI build" >&2; exit 1; }
+echo "→ toolchain: node $(node -v) · $(cargo --version 2>/dev/null | head -1)"
+
 [ -d "$VENDOR" ] || {
   echo "vendor/vscodium/ missing — populate it first:" >&2
   echo "  git subtree add --prefix=client/ide/vendor/vscodium vscodium <tag> --squash" >&2
