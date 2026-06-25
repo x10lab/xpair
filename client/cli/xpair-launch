@@ -660,6 +660,7 @@ remote_disconnect_diag() {
 if ! reach; then
   remote_disconnect_diag "cannot reach $REMOTE_HOST by SSH" 20
 fi
+clear_local_mode_quiet
 
 # ---- check that the host folder (mapped path) exists ----
 # Distinguish ssh failure (timeout/hiccup) from "directory genuinely missing" —
