@@ -79,12 +79,15 @@ function versionMajor(v) {
 }
 
 /** The OLDEST host version this client can talk to. **BUMP THIS** whenever a host↔client
- *  protocol/interface changes incompatibly — e.g. the a45 RD remote-input restore changed
- *  serve_webrtc's data channels. A same-major host that is OLDER than this connects today but
- *  fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with a clear
- *  "update the host" message is far better than a silent breakage. Keep this in lockstep with the
- *  newest breaking change; a host >= this is accepted. */
-const MIN_COMPATIBLE_HOST = "0.5.0a45";
+ *  protocol/interface changes incompatibly. A same-major host that is OLDER than this connects
+ *  today but fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with
+ *  a clear "update the host" message is far better than a silent breakage. A host >= this is accepted.
+ *  CRITICAL: this floor must be <= the version the host cask actually ships (Casks/xpair-host.rb),
+ *  or it rejects every real install. It was previously set to an unreachable a45 (nothing has
+ *  shipped past the build counter at 12 / host cask 0.5.0a12), which told a cask-installed host it
+ *  was "older than minimum compatible" and dead-ended the install. Pinned to the current shipped
+ *  host release so the cask-install flow is unblocked while still rejecting genuinely older hosts. */
+const MIN_COMPATIBLE_HOST = "0.5.0a12";
 
 /** Compare two "X.Y.Z" or "X.Y.ZaN" version strings → -1 | 0 | 1 (a<b | a==b | a>b).
  *  The alpha suffix sorts BELOW the same release: 0.5.0a44 < 0.5.0a45 < 0.5.0 (a released X.Y.Z
@@ -797,10 +800,21 @@ const bridge = {
     }
     void password; // compatibility-only: do not route onboarding through account-password auth.
     const target = account ? `${account}@${h}` : h;
+    // Reachability/host-identity preflight ONLY. The key-only probe doubles as a reachability check,
+    // but its key-auth result must NOT gate the install: `xpair install-host` AUTHORIZES this client's
+    // key on the host over the setup connection (that is the whole point of install — it replaces PIN
+    // pairing). A host discovered BEFORE this client's key was added to authorized_keys returns
+    // "Permission denied (publickey)" here yet installs fine, so a KEY_AUTH_BLOCKED preflight would
+    // wrongly dead-end first-time setup. Block only on genuine non-key failures (unreachable / host-key
+    // mismatch); a key-auth failure falls through to the CLI, which handles authorization during install.
     const preflight = await run("ssh", [...sshProbeOpts(8), target, "true"]);
     if (preflight.code !== 0) {
       const s = sshResult(preflight);
-      return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
+      if (s.state !== SSH_STATE.KEY_AUTH_BLOCKED) {
+        return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
+      }
+      // KEY_AUTH_BLOCKED → first-time install: the client key is not yet authorized. Proceed to the
+      // CLI install-host, which authorizes the key (idempotent ssh-copy-id append) over its connection.
     }
     const args = ["install-host", "--host", h];
     if (account) args.push("--account", account);

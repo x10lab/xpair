@@ -1234,6 +1234,9 @@ rp_ssh_config_write() {
   {
     printf '%s\n' "$beg"
     printf 'Host %s\n' "$alias"
+    # IgnoreUnknown must precede any keyword it guards. macOS honors UseKeychain;
+    # Linux/WSL OpenSSH ignores it cleanly instead of fatally rejecting it.
+    printf '  IgnoreUnknown UseKeychain\n'
     printf '  HostName %s\n' "$hostname"
     printf '  User %s\n' "$user"
     printf '  IdentityFile %s\n' "$identity"

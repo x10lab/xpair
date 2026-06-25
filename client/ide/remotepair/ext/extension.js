@@ -1179,6 +1179,82 @@ function expandHome(p) {
   return p;
 }
 
+/** Decode a bash ANSI-C `$'...'` segment body (the text BETWEEN the quotes) to its literal value.
+ *  Handles the escapes printf %q emits: \t \n \r \\ \' \" \a \b \f \v \e \xHH \nnn(octal) \uHHHH. */
+function unescapeAnsiC(body) {
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== "\\") { out += ch; continue; }
+    const n = body[++i];
+    switch (n) {
+      case "t": out += "\t"; break;
+      case "n": out += "\n"; break;
+      case "r": out += "\r"; break;
+      case "a": out += "\x07"; break;
+      case "b": out += "\b"; break;
+      case "f": out += "\f"; break;
+      case "v": out += "\v"; break;
+      case "e": out += "\x1b"; break;
+      case "\\": out += "\\"; break;
+      case "'": out += "'"; break;
+      case '"': out += '"'; break;
+      case "x": { // \xHH (1-2 hex)
+        const m = /^[0-9a-fA-F]{1,2}/.exec(body.slice(i + 1));
+        if (m) { out += String.fromCharCode(parseInt(m[0], 16)); i += m[0].length; }
+        else out += "x";
+        break;
+      }
+      case "u": { // \uHHHH (1-4 hex)
+        const m = /^[0-9a-fA-F]{1,4}/.exec(body.slice(i + 1));
+        if (m) { out += String.fromCharCode(parseInt(m[0], 16)); i += m[0].length; }
+        else out += "u";
+        break;
+      }
+      default: {
+        if (n >= "0" && n <= "7") { // octal \nnn (1-3 digits)
+          const m = /^[0-7]{1,3}/.exec(n + body.slice(i + 1));
+          out += String.fromCharCode(parseInt(m[0], 8) & 0xff);
+          i += m[0].length - 1;
+        } else if (n === undefined) {
+          out += "\\";
+        } else {
+          out += n; // unknown escape — keep the char
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Reverse bash `printf %q` for ONE shell word. `%q` emits an unquoted, backslash-escaped form
+ *  (e.g. `Google\ Drive`, `a\'b`) and/or inline ANSI-C `$'...'` segments for control chars. This
+ *  un-escapes both so the result is the REAL filesystem path. Plain values pass through unchanged. */
+function unquoteShellWord(s) {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "\\") { // backslash escape: next char is literal
+      if (i + 1 < s.length) { out += s[++i]; } else { out += "\\"; }
+    } else if (ch === "$" && s[i + 1] === "'") { // $'...' ANSI-C segment
+      let j = i + 2, body = "";
+      while (j < s.length && s[j] !== "'") {
+        if (s[j] === "\\" && j + 1 < s.length) { body += s[j] + s[j + 1]; j += 2; }
+        else { body += s[j]; j++; }
+      }
+      out += unescapeAnsiC(body);
+      i = j; // skip past the closing quote
+    } else if (ch === "'") { // plain '...' single-quoted segment: literal until next '
+      let j = i + 1;
+      while (j < s.length && s[j] !== "'") { out += s[j]; j++; }
+      i = j;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 function readFolderMaps() {
   const envPath = path.join(os.homedir(), ".xpair/host", "client.env");
   let raw;
@@ -1195,13 +1271,13 @@ function readFolderMaps() {
     const key = t.slice(0, eq).trim();
     if (key !== "FOLDER_MAPS") continue;
     let val = t.slice(eq + 1).trim();
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
     if (!val) return [];
+    // The CLI persists the WHOLE `;`-joined value via `printf '%s=%q\n'`, so paths with spaces/specials
+    // arrive bash-`%q`-escaped (e.g. `Google\ Drive`, `a\'b`, or inline `$'...'` ANSI-C form) and a `;`
+    // separator is itself escaped to `\;`. The CLI consumes this by SOURCING client.env (bash un-escapes
+    // the word) and then word-splitting on `;` — so un-escape the whole value FIRST, exactly mirroring
+    // bash, THEN split on `;` / `::`. (Doing it after the split would corrupt the escaped `\;` boundaries.)
+    val = unquoteShellWord(val);
     return val
       .split(";")
       .map((pair) => pair.trim())

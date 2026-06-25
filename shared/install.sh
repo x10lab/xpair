@@ -50,7 +50,7 @@ _write_env() {
   } > "$f"
 }
 write_config() {
-  mk_dir "$RP_DIR"
+  mk_dir "$RP_DIR"; chmod 700 "$RP_DIR"
   _write_env "$COMMON_ENV" "${COMMON_KEYS[@]}"
   if is_host;   then _write_env "$HOST_ENV"   "${HOST_KEYS[@]}"; fi
   if is_client; then _write_env "$CLIENT_ENV" "${CLIENT_KEYS[@]}"; fi
@@ -88,7 +88,7 @@ record NOTE "installed role=$ROLE at $(date '+%F %T') on $(hostname -s)"
 say "xpair CLI → $LOCAL_BIN"
 install_file "$CLIENT_DIR/xpair" "$LOCAL_BIN/xpair" 755
 case ":$PATH:" in *":$LOCAL_BIN:"*) : ;; *) warn "$LOCAL_BIN is not in PATH — add it to your shell rc" ;; esac
-mk_dir "$LOG_DIR"
+mk_dir "$LOG_DIR"; chmod 700 "$LOG_DIR"
 
 # ── Common: ensure mosh (resilient UDP attach; ssh fallback if absent) ──
 # Split by role. The CLIENT runs `mosh`/`mosh-client` to connect and always has Homebrew (it installed

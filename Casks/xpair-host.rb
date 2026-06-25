@@ -25,8 +25,10 @@ cask "xpair-host" do
 
   uninstall quit: "com.x10lab.xpair-host"
 
-  zap trash: "~/.xpair/host",
-      trash: "~/.local/share/xpair"
+  zap trash: [
+    "~/.xpair/host",
+    "~/.local/share/xpair",
+  ]
 
   caveats <<~EOS
     XpairHost is self-signed (not notarized). After install you must grant,

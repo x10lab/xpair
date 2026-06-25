@@ -71,11 +71,26 @@ done
 SUBCMD="${SUBCMD:-help}"
 
 # ── helpers ──
+# Mirror the main CLI's valid_host guard: reject empty, option-looking (-…), or any
+# host containing characters outside [A-Za-z0-9._-] before it reaches ssh/sshfs/mount_smbfs.
+# This helper re-sources client.env, so re-validate here (e.g. -oProxyCommand=… injection).
+valid_host() {
+  case "${1:-}" in
+    ''|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 require_host() {
   if [ -z "$REMOTE_HOST" ]; then
     err "REMOTE_HOST is not set."
     printf >&2 '  Set it with:  xpair config set host <ssh-alias>\n'
     printf >&2 '  Or in ~/.xpair/host/client.env:  REMOTE_HOST=<ssh-alias>\n'
+    exit 1
+  fi
+  if ! valid_host "$REMOTE_HOST"; then
+    err "invalid REMOTE_HOST rejected: $REMOTE_HOST"
+    printf >&2 '  A host must contain only [A-Za-z0-9._-] and must not look like an ssh option.\n'
     exit 1
   fi
 }
