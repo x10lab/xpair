@@ -100,8 +100,31 @@ test("RD capture failures are forwarded as structured sidecar diagnostics", () =
   assert.match(captureEngine, /case encoderFailed = "encoder-failed"/);
   assert.match(captureEngine, /eventSink: \(\(CaptureEvent\) -> Void\)\? = nil/);
   assert.match(captureEngine, /reportCaptureError\(\s*kind: \.startFailed/);
-  assert.match(screenServer, /handleCaptureEvent\(_ event: CaptureEngine\.CaptureEvent\)/);
-  assert.match(screenServer, /writeSidecarControl\(\["capture": "error", "kind": kind\.rawValue, "reason": reason\]\)/);
+  assert.match(screenServer, /handleCaptureEvent\(_ event: CaptureEngine\.CaptureEvent, generation: UInt64\?\)/);
+  assert.match(screenServer, /"capture": "error", "kind": kind\.rawValue, "reason": reason/);
+});
+
+test("RD signaling token is host-generated, persisted 0600, and read by client over SSH", () => {
+  assert.match(config, /RD_SESSION_TOKEN_FILE = .*rd-session-token/);
+  assert.match(screenServer, /SecRandomCopyBytes\(kSecRandomDefault/);
+  assert.match(screenServer, /open\(RD_SESSION_TOKEN_FILE, O_WRONLY \| O_CREAT \| O_TRUNC, mode\)/);
+  assert.match(screenServer, /fchmod\(fd, mode\)/);
+  assert.match(screenServer, /let argv = \[bin, "serve-webrtc", "--token", "@\\\(RD_SESSION_TOKEN_FILE\)"\]/);
+  assert.match(screenServer, /127\.0\.0\.1:8890 is reachable by any process/);
+  assert.match(clientExtension, /RD_SESSION_TOKEN_REMOTE_FILE = "~\/\.xpair\/host\/rd-session-token"/);
+  assert.match(clientExtension, /async function readRdSessionToken\(host\)/);
+  assert.match(clientExtension, /cat \$\{RD_SESSION_TOKEN_REMOTE_FILE\}/);
+  assert.match(clientExtension, /readRdSessionToken\(host\)/);
+  assert.doesNotMatch(clientExtension, /makeRdSessionToken/);
+});
+
+test("RD capture replacement uses generation so stale stops cannot cancel newer starts", () => {
+  assert.match(screenServer, /activeCaptureGeneration/);
+  assert.match(screenServer, /generation < active/);
+  assert.match(screenServer, /ignoring stale capture stop generation/);
+  assert.match(screenServer, /writeCaptureStopped\(generation: control\.generation\)/);
+  assert.match(screenServer, /"capture": "started"/);
+  assert.match(screenServer, /json\["generation"\] = NSNumber\(value: generation\)/);
 });
 
 console.log(`${__filename}`);

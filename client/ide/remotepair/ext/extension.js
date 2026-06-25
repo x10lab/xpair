@@ -11,7 +11,6 @@
 
 const vscode = require("vscode");
 const cp = require("child_process");
-const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -60,12 +59,13 @@ const TUNNEL_SETTLE_MS = 1200; // wait for ssh -N tunnel to establish before the
 const RD_CAPTURE_DEFAULTS = Object.freeze({ fps: 30, bitrate: 4_000_000, scale: 1.0 });
 const RD_BIND_RETRY_DELAY_MS = 150;
 const RD_MAX_BIND_ATTEMPTS = 3;
+const RD_SESSION_TOKEN_REMOTE_FILE = "~/.xpair/host/rd-session-token";
+const RD_SESSION_TOKEN_RE = /^[A-Za-z0-9._-]{24,128}$/;
 
 // REMOTE_HOST must be a bare ssh host alias / hostname. Validate hard before
 // it ever reaches a spawned process (defense in depth even though spawn is
 // argv-safe: prevents an attacker-controlled env from injecting ssh options).
 const HOST_RE = /^[A-Za-z0-9._-]+$/;
-const RD_SESSION_TOKEN_BYTES = 32;
 const { spawnEnv, sshFailureKind, sshFailureMessage, SSH_STATE } = onboardingBridge;
 
 // --- logging (US-006) ------------------------------------------------------
@@ -378,8 +378,25 @@ function shSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
-function makeRdSessionToken() {
-  return crypto.randomBytes(RD_SESSION_TOKEN_BYTES).toString("hex");
+async function readRdSessionToken(host) {
+  const res = await sshRun(host, `cat ${RD_SESSION_TOKEN_REMOTE_FILE}`, {
+    timeoutMs: 6000,
+    maxBuffer: 4096,
+  });
+  if (res.code !== 0) {
+    const stderr = String(res.stderr || "").trim();
+    const detail = stderr
+      ? `Could not read host RD token: ${stderr}`
+      : `Could not read host RD token: ssh exited ${res.code}`;
+    const error = new Error(detail);
+    error.failureKind = res.failureKind || sshFailureKind(detail);
+    throw error;
+  }
+  const token = String(res.stdout || "").trim();
+  if (!RD_SESSION_TOKEN_RE.test(token)) {
+    throw new Error("Host RD token is missing or malformed");
+  }
+  return token;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -747,7 +764,26 @@ class RemoteDesktopPanel {
     }
     if (!this._v2Active || this._v2Generation !== generation) return;
     this._tunnelPort = localPort;
-    this._v2SessionToken = makeRdSessionToken();
+    let hostSessionToken;
+    try {
+      hostSessionToken = await readRdSessionToken(host);
+    } catch (e) {
+      if (this._v2Generation === generation) {
+        this._v2Active = false;
+        this._tunnelPort = null;
+        const detail = e && e.message ? e.message : String(e || "could not read host RD token");
+        const failureKind = e && e.failureKind ? e.failureKind : sshFailureKind(detail);
+        this.post({
+          type: "status",
+          state: "error",
+          detail: classifiedSshFailureMessage(detail),
+          failureKind: rdFailureKindForSshState(failureKind),
+        });
+      }
+      return;
+    }
+    if (!this._v2Active || this._v2Generation !== generation) return;
+    this._v2SessionToken = hostSessionToken;
     // Tunnel forwards the SIGNALING port only (TCP). Media flows over UDP/ICE.
     const child = spawnTunnel(host, localPort, SIGNAL_REMOTE_PORT);
     this._tunnelChild = child;

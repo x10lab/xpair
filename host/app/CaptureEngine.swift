@@ -33,6 +33,7 @@ final class CaptureEngine {
     }
 
     enum CaptureEvent {
+        case started(displayID: UInt32, width: Int, height: Int)
         case error(kind: CaptureFailureKind, reason: String)
     }
 
@@ -136,7 +137,9 @@ final class CaptureEngine {
                         self.stop()
                         return
                     }
-                    log("CAPTURE: SCK \(cfg.width)x\(cfg.height) @\(safeFps)fps capturing")
+                    let displayID = UInt32(display.displayID)
+                    log("CAPTURE: SCK \(cfg.width)x\(cfg.height) @\(safeFps)fps capturing displayId=\(displayID)")
+                    self.eventSink?(.started(displayID: displayID, width: cfg.width, height: cfg.height))
                 }
             } catch {
                 self.reportCaptureError(

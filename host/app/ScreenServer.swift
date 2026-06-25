@@ -18,6 +18,7 @@
 // one from a crash is reaped on the next ensure().
 import Cocoa
 import Darwin
+import Security
 
 final class ScreenServer {
     private(set) var childPid: pid_t = 0
@@ -30,6 +31,7 @@ final class ScreenServer {
 
     // In-app capture/encode (uses the APP's Screen Recording TCC grant, not a helper binary's).
     private let captureEngine = CaptureEngine()
+    private let rdTokenByteCount = 32
     // Pipe A write end (app -> child stdin: the AU stream). -1 when not spawned.
     private var auWriteFD: Int32 = -1
     // Pipe B read end (child stdout -> app: control lines). -1 when not spawned.
@@ -41,6 +43,7 @@ final class ScreenServer {
     private var pendingDeltaAU: Data?
     private var auWriterScheduled = false
     private var droppedAUFrames: UInt64 = 0
+    private var activeCaptureGeneration: UInt64?
 
     var droppedFrameCount: UInt64 {
         auStateLock.lock()
@@ -61,6 +64,70 @@ final class ScreenServer {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/screen").path
     }
 
+    private func generateRDToken() -> String? {
+        var bytes = [UInt8](repeating: 0, count: rdTokenByteCount)
+        let status = bytes.withUnsafeMutableBytes { rawBuffer -> OSStatus in
+            guard let base = rawBuffer.baseAddress else { return errSecAllocate }
+            return SecRandomCopyBytes(kSecRandomDefault, rawBuffer.count, base)
+        }
+        guard status == errSecSuccess else {
+            log(.error, "SCREEN: could not generate RD session token status=\(status)")
+            return nil
+        }
+        var token = ""
+        token.reserveCapacity(bytes.count * 2)
+        for byte in bytes {
+            token += String(format: "%02x", Int(byte))
+        }
+        return token
+    }
+
+    private func writeAllToFD(_ fd: Int32, data: Data) -> Bool {
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            guard let base = raw.baseAddress else { return true }
+            var offset = 0
+            while offset < raw.count {
+                let n = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                if n > 0 {
+                    offset += n
+                    continue
+                }
+                if n == -1 && errno == EINTR { continue }
+                log(.error, "SCREEN: token file write failed errno=\(errno)")
+                return false
+            }
+            return true
+        }
+    }
+
+    private func writeRDTokenFile(_ token: String) -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                atPath: RP_DIR,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            log(.error, "SCREEN: could not create \(RP_DIR) for RD token: \(error)")
+            return false
+        }
+        let mode = mode_t(S_IRUSR | S_IWUSR)
+        let fd = open(RD_SESSION_TOKEN_FILE, O_WRONLY | O_CREAT | O_TRUNC, mode)
+        guard fd >= 0 else {
+            log(.error, "SCREEN: could not open RD token file errno=\(errno)")
+            return false
+        }
+        defer { close(fd) }
+        if fchmod(fd, mode) != 0 {
+            log(.warn, "SCREEN: could not chmod RD token file 0600 errno=\(errno)")
+        }
+        guard let data = "\(token)\n".data(using: .utf8) else {
+            log(.error, "SCREEN: could not encode RD token")
+            return false
+        }
+        return writeAllToFD(fd, data: data)
+    }
+
     /// Idempotent: (re)spawn the sidecar if it is not genuinely alive. Safe to call from
     /// the same 5 s timer that drives HostManager.ensureServer — doubles as a watchdog.
     func ensureServer() {
@@ -69,6 +136,7 @@ final class ScreenServer {
     }
 
     func stop() {
+        activeCaptureGeneration = nil
         captureEngine.stop()
         closePipes()
         if childPid != 0 { kill(childPid, SIGTERM); childPid = 0 }
@@ -119,6 +187,14 @@ final class ScreenServer {
         // Log stderr (serve-webrtc logs there) so connection/capture issues are diagnosable.
         try? FileManager.default.createDirectory(atPath: LOG_DIR, withIntermediateDirectories: true)
         let logPath = "\(LOG_DIR)/screen-serve.log"
+        // Threat model: 127.0.0.1:8890 is reachable by any process running on
+        // this host, including another local user. The 0600 token file gates
+        // OTHER users; the same-user host owner can already control this app
+        // and is trusted.
+        guard let rdToken = generateRDToken(), writeRDTokenFile(rdToken) else {
+            log(.error, "SCREEN: not spawning serve-webrtc without a persisted RD token")
+            return
+        }
 
         // pipe A: app -> child stdin (AU stream). pipe B: child stdout -> app (control lines).
         var pipeA: [Int32] = [-1, -1] // [read(child fd0), write(app)]
@@ -131,7 +207,7 @@ final class ScreenServer {
         let aRead = pipeA[0], aWrite = pipeA[1]
         let bRead = pipeB[0], bWrite = pipeB[1]
 
-        let argv = [bin, "serve-webrtc"]
+        let argv = [bin, "serve-webrtc", "--token", "@\(RD_SESSION_TOKEN_FILE)"]
         let env = ["PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
                    "HOME=\(HOME)", "LANG=en_US.UTF-8", "RP_AU_STDIN=1"]
         var cargs = argv.map { strdup($0) }; cargs.append(nil)
@@ -159,7 +235,7 @@ final class ScreenServer {
         childPid = pid
         auWriteFD = aWrite
         ctlReadFD = bRead
-        log("SCREEN: serve-webrtc spawned pid=\(pid) RP_AU_STDIN=1 (\(bin))")
+        log("SCREEN: serve-webrtc spawned pid=\(pid) RP_AU_STDIN=1 token-file=\(RD_SESSION_TOKEN_FILE) (\(bin))")
         startControlReader(fd: bRead)
     }
 
@@ -194,22 +270,49 @@ final class ScreenServer {
         }
 
         if control.capture == "start" {
-            log("SCREEN: control start -> begin in-app capture fps=\(control.fps) bitrate=\(control.bitrate) scale=\(control.scale)")
+            if let generation = control.generation,
+               let active = activeCaptureGeneration,
+               generation < active {
+                log("SCREEN: ignoring stale capture start generation=\(generation) active=\(active)")
+                return
+            }
+            if let generation = control.generation,
+               let active = activeCaptureGeneration,
+               generation == active,
+               captureEngine.isCapturing {
+                log("SCREEN: duplicate capture start generation=\(generation) ignored")
+                return
+            }
+            if captureEngine.isCapturing {
+                log("SCREEN: replacing active capture generation=\(String(describing: activeCaptureGeneration)) with generation=\(String(describing: control.generation))")
+                captureEngine.stop()
+                clearPendingAUs()
+            }
+            activeCaptureGeneration = control.generation
+            log("SCREEN: control start -> begin in-app capture generation=\(String(describing: control.generation)) fps=\(control.fps) bitrate=\(control.bitrate) scale=\(control.scale)")
             captureEngine.start(
                 fps: control.fps,
                 bitrate: control.bitrate,
                 scale: control.scale,
                 eventSink: { [weak self] event in
-                    self?.handleCaptureEvent(event)
+                    self?.handleCaptureEvent(event, generation: control.generation)
                 },
                 sink: { [weak self] data in
                     self?.writeAU(data)
                 }
             )
         } else if control.capture == "stop" {
-            log("SCREEN: control stop -> stop in-app capture")
+            if let generation = control.generation {
+                guard activeCaptureGeneration == generation else {
+                    log("SCREEN: ignoring stale capture stop generation=\(generation) active=\(String(describing: activeCaptureGeneration))")
+                    return
+                }
+            }
+            log("SCREEN: control stop -> stop in-app capture generation=\(String(describing: control.generation))")
             captureEngine.stop()
             clearPendingAUs()
+            activeCaptureGeneration = nil
+            writeCaptureStopped(generation: control.generation)
         } else if control.keyframe {
             // Client signalled picture loss (RTCP PLI/FIR) via the sidecar — force an IDR
             // so a viewer that lost the original keyframe can recover from a black frame.
@@ -220,16 +323,41 @@ final class ScreenServer {
         }
     }
 
-    private func handleCaptureEvent(_ event: CaptureEngine.CaptureEvent) {
+    private func handleCaptureEvent(_ event: CaptureEngine.CaptureEvent, generation: UInt64?) {
         switch event {
+        case let .started(displayID, width, height):
+            var json: [String: Any] = [
+                "capture": "started",
+                "displayId": Int(displayID),
+                "width": width,
+                "height": height,
+            ]
+            if let generation = generation {
+                json["generation"] = NSNumber(value: generation)
+            }
+            log("SCREEN: forwarding capture started generation=\(String(describing: generation)) displayId=\(displayID)")
+            writeSidecarControl(json)
         case let .error(kind, reason):
             log(.error, "SCREEN: forwarding capture error kind=\(kind.rawValue): \(reason)")
-            writeSidecarControl(["capture": "error", "kind": kind.rawValue, "reason": reason])
+            var json: [String: Any] = ["capture": "error", "kind": kind.rawValue, "reason": reason]
+            if let generation = generation {
+                json["generation"] = NSNumber(value: generation)
+            }
+            writeSidecarControl(json)
         }
+    }
+
+    private func writeCaptureStopped(generation: UInt64?) {
+        var json: [String: Any] = ["capture": "stopped"]
+        if let generation = generation {
+            json["generation"] = NSNumber(value: generation)
+        }
+        writeSidecarControl(json)
     }
 
     private struct ControlMessage {
         var capture: String?
+        var generation: UInt64?
         var fps: Int = 30
         var bitrate: Int = 4_000_000
         var scale: Double = 1.0
@@ -244,6 +372,15 @@ final class ScreenServer {
         }
         var control = ControlMessage()
         control.capture = json["capture"] as? String
+        if let generation = json["generation"] as? UInt64 {
+            control.generation = generation
+        } else if let generation = json["generation"] as? Int, generation >= 0 {
+            control.generation = UInt64(generation)
+        } else if let generation = json["generation"] as? Double,
+                  generation.isFinite,
+                  generation >= 0 {
+            control.generation = UInt64(generation.rounded(.towardZero))
+        }
         if let keyframe = json["keyframe"] as? Bool {
             control.keyframe = keyframe
         }

@@ -95,12 +95,11 @@ enum Command {
         /// TCP port for the signaling WebSocket (bound on 127.0.0.1).
         #[arg(long, default_value_t = 8890)]
         port: u16,
-        /// Optional expected signaling session token. When set, every WebSocket
-        /// must present the same token in `?token=...`; when omitted, the
-        /// sidecar still requires a syntactically valid per-session token and
-        /// uses it as the arbiter identity.
+        /// Required expected signaling session token. Use TOKEN directly or
+        /// @TOKEN_FILE to read the token from an owner-only file. Every
+        /// WebSocket must present this exact token in `?token=...`.
         #[arg(long, value_name = "TOKEN")]
-        token: Option<String>,
+        token: String,
         /// Target frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,

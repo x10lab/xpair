@@ -11,9 +11,12 @@ process.env.HOME = TMP_HOME;
 process.env.USERPROFILE = TMP_HOME;
 fs.mkdirSync(path.join(TMP_HOME, ".xpair/host"), { recursive: true });
 
+const TEST_RD_TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const spawnedChildren = [];
+const tokenReadCommands = [];
 const scheduledTimers = [];
 let nextLocalPort = 31000;
+let failTokenRead = false;
 function fakeSpawn(cmd, args, opts) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -26,6 +29,19 @@ function fakeSpawn(cmd, args, opts) {
     child.killed = true;
     return true;
   };
+  if (cmd === "ssh" && Array.isArray(args) && args[args.length - 1] === "cat ~/.xpair/host/rd-session-token") {
+    tokenReadCommands.push(args);
+    process.nextTick(() => {
+      if (failTokenRead) {
+        child.stderr.emit("data", Buffer.from("cat: ~/.xpair/host/rd-session-token: Permission denied\n"));
+        child.emit("close", 1);
+      } else {
+        child.stdout.emit("data", Buffer.from(`${TEST_RD_TOKEN}\n`));
+        child.emit("close", 0);
+      }
+    });
+    return child;
+  }
   spawnedChildren.push(child);
   return child;
 }
@@ -170,9 +186,11 @@ async function check(name, fn) {
 
 function resetHarness() {
   spawnedChildren.length = 0;
+  tokenReadCommands.length = 0;
   postedMessages.length = 0;
   scheduledTimers.length = 0;
   nextLocalPort = 31000;
+  failTokenRead = false;
 }
 
 function makePanel() {
@@ -502,17 +520,35 @@ function runRemoteDesktopWebview() {
     resetHarness();
     const panel = makePanel();
     await panel._startV2("test-host");
-    const firstTimer = scheduledTimers[0];
+    assert.strictEqual(tokenReadCommands.length, 1, "first start should read the RD token over ssh");
+    const firstTimer = latestTimerByDelay(scheduledTimers, 1200);
+    assert.ok(firstTimer, "first start should arm a settle timer");
     panel._stopV2();
     await panel._startV2("test-host");
+    assert.strictEqual(tokenReadCommands.length, 2, "restart should read the current host RD token again");
 
     firstTimer();
     assert.strictEqual(v2ConnectPosts().length, 0, "old timer should not post a stale v2Connect");
-    scheduledTimers[1]();
+    const currentTimer = latestTimerByDelay(scheduledTimers, 1200);
+    assert.ok(currentTimer, "restart should arm a current settle timer");
+    currentTimer();
     const posts = v2ConnectPosts();
     assert.strictEqual(posts.length, 1, "current timer should still post v2Connect");
-    assert.match(posts[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}&fps=30&bitrate=4000000&scale=1$/);
-    assert.match(posts[0].sessionToken, /^[0-9a-f]{64}$/);
+    assert.match(posts[0].signalUrl, new RegExp(`^ws://127\\.0\\.0\\.1:\\d+/\\?token=${TEST_RD_TOKEN}&fps=30&bitrate=4000000&scale=1$`));
+    assert.strictEqual(posts[0].sessionToken, TEST_RD_TOKEN);
+  });
+
+  await check("RD tunnel fails closed when host token file cannot be read", async () => {
+    resetHarness();
+    failTokenRead = true;
+    const panel = makePanel();
+    await panel._startV2("test-host");
+
+    assert.strictEqual(tokenReadCommands.length, 1, "should try to read the host RD token");
+    assert.strictEqual(spawnedChildren.length, 0, "must not open a signaling tunnel without the host token");
+    const errors = errorPosts();
+    assert.strictEqual(errors.length, 1, "token read failure should surface as RD error");
+    assert.match(errors[0].detail, /Could not read host RD token|Permission denied/);
   });
 
   await check("RemoteDesktopPanel dispose tears down active RD tunnel", async () => {

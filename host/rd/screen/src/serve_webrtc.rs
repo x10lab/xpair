@@ -47,12 +47,15 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 use webrtc::track::track_local::TrackLocal;
 
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
+const CAPTURE_START_ACK_DEADLINE: Duration = Duration::from_secs(5);
 const SESSION_TOKEN_MIN_LEN: usize = 24;
 const SESSION_TOKEN_MAX_LEN: usize = 128;
 
 type SignalingWs = WebSocketStream<tokio::net::TcpStream>;
 type WsTx = SplitSink<SignalingWs, Message>;
 type WsRx = SplitStream<SignalingWs>;
+type InputTx = std::sync::mpsc::Sender<Vec<u8>>;
+type InputRx = std::sync::mpsc::Receiver<Vec<u8>>;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct SessionToken(String);
@@ -232,14 +235,36 @@ impl RdStatus {
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum AppCaptureEvent {
+    Started,
+    Stopped,
     Error,
 }
 
 #[derive(Debug, Deserialize)]
 struct AppCaptureControl {
     capture: Option<AppCaptureEvent>,
+    generation: Option<u64>,
     kind: Option<CaptureErrorKind>,
     reason: Option<String>,
+    #[serde(rename = "displayId")]
+    display_id: Option<u32>,
+    width: Option<f64>,
+    height: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CaptureStartInfo {
+    generation: u64,
+    display_id: Option<u32>,
+    width: Option<f64>,
+    height: Option<f64>,
+}
+
+#[derive(Debug)]
+enum AppCaptureFrame {
+    Started(CaptureStartInfo),
+    Stopped { generation: Option<u64> },
+    Status(RdStatus),
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,9 +288,11 @@ struct SignalingIo {
 struct PeerResources {
     pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
     _input_dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>>,
+    input_rx: Option<InputRx>,
 }
 
 struct NegotiatingSession {
+    seq: u64,
     token: SessionToken,
     started: Instant,
     io: SignalingIo,
@@ -352,13 +379,17 @@ fn screencap_path() -> String {
     "rp-screencap".to_string()
 }
 
-pub fn run(
-    port: u16,
-    fps: u32,
-    bitrate: u32,
-    scale: f32,
-    token: Option<String>,
-) -> Result<(), String> {
+fn expected_token_from_arg(raw: &str) -> Result<SessionToken, String> {
+    let token = if let Some(path) = raw.strip_prefix('@') {
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("read signaling token file '{path}': {e}"))?
+    } else {
+        raw.to_string()
+    };
+    SessionToken::parse(&token).map_err(|e| e.to_string())
+}
+
+pub fn run(port: u16, fps: u32, bitrate: u32, scale: f32, token: String) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -371,7 +402,7 @@ async fn run_async(
     fps: u32,
     bitrate: u32,
     scale: f32,
-    token: Option<String>,
+    token: String,
 ) -> Result<(), String> {
     let fps = fps.clamp(1, 120);
     let scale = scale.clamp(0.1, 1.0);
@@ -380,11 +411,7 @@ async fn run_async(
         bitrate,
         scale,
     };
-    let expected_token = token
-        .as_deref()
-        .map(SessionToken::parse)
-        .transpose()
-        .map_err(|e| e.to_string())?;
+    let expected_token = expected_token_from_arg(&token)?;
 
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -393,11 +420,7 @@ async fn run_async(
     tracing::info!("screen serve-webrtc: signaling ws://{addr} (H.264/WebRTC UDP)");
     tracing::info!("  reach signaling over:  ssh -L {port}:127.0.0.1:{port} <host>");
     tracing::info!("  media flows P2P over UDP/ICE (host-candidate, loopback/LAN/VPN)");
-    if expected_token.is_some() {
-        tracing::info!("  signaling token: required");
-    } else {
-        tracing::info!("  signaling token: required by WS, no fixed launch token configured");
-    }
+    tracing::info!("  signaling token: required");
 
     let (ready_tx, mut ready_rx) = mpsc::unbounded_channel::<SignalingAcceptResult>();
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<SessionDone>();
@@ -426,7 +449,7 @@ async fn run_async(
                 tokio::spawn(async move {
                     let result = tokio::time::timeout(
                         CONNECT_DEADLINE,
-                        accept_signaling(stream, expected_token.as_ref(), capture_config),
+                        accept_signaling(stream, &expected_token, capture_config),
                     )
                     .await
                     .map_err(|_| SessionError::ConnectDeadlineExceeded)
@@ -478,7 +501,7 @@ async fn run_async(
                 });
                 let done_tx = done_tx.clone();
                 tokio::spawn(async move {
-                    let result = serve_session(accepted, cancel).await;
+                    let result = serve_session(seq, accepted, cancel).await;
                     let _ = done_tx.send(SessionDone { seq, token, result });
                 });
             }
@@ -514,7 +537,7 @@ async fn run_async(
 #[allow(clippy::result_large_err)]
 async fn accept_signaling(
     stream: tokio::net::TcpStream,
-    expected_token: Option<&SessionToken>,
+    expected_token: &SessionToken,
     default_capture_config: CaptureConfig,
 ) -> Result<AcceptedSignaling, SessionError> {
     let mut parsed_token: Option<SessionToken> = None;
@@ -540,7 +563,7 @@ async fn accept_signaling(
 
 fn parse_request_token(
     req: &Request,
-    expected_token: Option<&SessionToken>,
+    expected_token: &SessionToken,
 ) -> Result<SessionToken, SessionError> {
     let raw = req
         .uri()
@@ -548,10 +571,8 @@ fn parse_request_token(
         .and_then(token_from_query)
         .ok_or(SessionError::MissingToken)?;
     let token = SessionToken::parse(raw)?;
-    if let Some(expected) = expected_token {
-        if expected != &token {
-            return Err(SessionError::TokenMismatch);
-        }
+    if expected_token != &token {
+        return Err(SessionError::TokenMismatch);
     }
     Ok(token)
 }
@@ -658,22 +679,30 @@ fn bounded_reason(raw: impl Into<String>) -> String {
     shortened
 }
 
-fn status_from_app_control_frame(frame: &[u8]) -> Option<RdStatus> {
+fn app_capture_frame(frame: &[u8]) -> Option<AppCaptureFrame> {
     if frame.first().is_none_or(|b| *b != b'{') {
         return None;
     }
     let control: AppCaptureControl = serde_json::from_slice(frame).ok()?;
-    if control.capture != Some(AppCaptureEvent::Error) {
-        return None;
+    match control.capture? {
+        AppCaptureEvent::Started => Some(AppCaptureFrame::Started(CaptureStartInfo {
+            generation: control.generation?,
+            display_id: control.display_id,
+            width: control.width,
+            height: control.height,
+        })),
+        AppCaptureEvent::Stopped => Some(AppCaptureFrame::Stopped {
+            generation: control.generation,
+        }),
+        AppCaptureEvent::Error => Some(AppCaptureFrame::Status(RdStatus::CaptureFailed {
+            capture_kind: control.kind.unwrap_or(CaptureErrorKind::Unknown),
+            reason: bounded_reason(
+                control
+                    .reason
+                    .unwrap_or_else(|| "host capture failed".to_string()),
+            ),
+        })),
     }
-    Some(RdStatus::CaptureFailed {
-        capture_kind: control.kind.unwrap_or(CaptureErrorKind::Unknown),
-        reason: bounded_reason(
-            control
-                .reason
-                .unwrap_or_else(|| "host capture failed".to_string()),
-        ),
-    })
 }
 
 fn status_from_input_helper_line(line: &str, helper: &str) -> Option<RdStatus> {
@@ -698,7 +727,7 @@ fn status_from_input_helper_line(line: &str, helper: &str) -> Option<RdStatus> {
     }
 }
 
-fn wire_input_data_channel(dc: &Arc<RTCDataChannel>, in_tx: std::sync::mpsc::Sender<Vec<u8>>) {
+fn wire_input_data_channel(dc: &Arc<RTCDataChannel>, in_tx: InputTx) {
     let label = dc.label().to_string();
     dc.on_open(Box::new(move || {
         tracing::info!("serve-webrtc: input DataChannel '{label}' open");
@@ -710,6 +739,118 @@ fn wire_input_data_channel(dc: &Arc<RTCDataChannel>, in_tx: std::sync::mpsc::Sen
             let _ = tx.send(msg.data.to_vec());
         })
     }));
+}
+
+async fn configure_input_data_channels(
+    pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
+) -> Result<(Vec<Arc<RTCDataChannel>>, InputRx), SessionError> {
+    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let incoming_tx = in_tx.clone();
+    pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+        let tx = incoming_tx.clone();
+        Box::pin(async move {
+            let label = dc.label().to_string();
+            if label == "rp-ctl" || label == "rp-move" {
+                wire_input_data_channel(&dc, tx);
+            } else {
+                tracing::debug!("serve-webrtc: ignoring unexpected input DataChannel '{label}'");
+            }
+        })
+    }));
+
+    let ctl = pc
+        .create_data_channel("rp-ctl", None)
+        .await
+        .map_err(SessionError::from)?;
+    let mv_init = RTCDataChannelInit {
+        ordered: Some(false),
+        max_retransmits: Some(0),
+        ..Default::default()
+    };
+    let mv = pc
+        .create_data_channel("rp-move", Some(mv_init))
+        .await
+        .map_err(SessionError::from)?;
+    for dc in [&ctl, &mv] {
+        wire_input_data_channel(dc, in_tx.clone());
+    }
+    Ok((vec![ctl, mv], in_rx))
+}
+
+fn spawn_input_helper(
+    input_rx: InputRx,
+    sig_tx: mpsc::UnboundedSender<String>,
+    display_id: Option<u32>,
+) {
+    match input_helper_path() {
+        Ok(bin) => {
+            let mut command = Command::new(&bin);
+            command.stdin(Stdio::piped()).stderr(Stdio::piped());
+            if let Some(display_id) = display_id {
+                command.env("RP_CAPTURE_DISPLAY_ID", display_id.to_string());
+            }
+            match command.spawn() {
+                Ok(mut child) => {
+                    if let Some(stderr) = child.stderr.take() {
+                        let sig_tx = sig_tx.clone();
+                        let helper = bin.clone();
+                        std::thread::Builder::new()
+                            .name("rp-input-stderr".into())
+                            .spawn(move || {
+                                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                                    if let Some(status) =
+                                        status_from_input_helper_line(&line, &helper)
+                                    {
+                                        queue_status(&sig_tx, status);
+                                    } else if line.starts_with("RPIN ") {
+                                        tracing::debug!("serve-webrtc input: {line}");
+                                    } else {
+                                        tracing::info!("serve-webrtc input: {line}");
+                                    }
+                                }
+                            })
+                            .ok();
+                    }
+                    if let Some(mut stdin) = child.stdin.take() {
+                        std::thread::Builder::new()
+                            .name("rp-input-writer".into())
+                            .spawn(move || {
+                                while let Ok(json) = input_rx.recv() {
+                                    let len = (json.len() as u32).to_be_bytes();
+                                    if stdin.write_all(&len).is_err()
+                                        || stdin.write_all(&json).is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            })
+                            .ok();
+                    } else {
+                        queue_status(
+                            &sig_tx,
+                            RdStatus::InputFailed {
+                                reason: format!("input helper '{bin}' did not expose stdin"),
+                            },
+                        );
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+                Err(e) => {
+                    let reason =
+                        format!("input helper '{bin}' spawn failed (remote input disabled): {e}");
+                    tracing::warn!("serve-webrtc: {reason}");
+                    queue_status(&sig_tx, RdStatus::InputFailed { reason });
+                }
+            }
+        }
+        Err(reason) => {
+            tracing::warn!("serve-webrtc: {reason}");
+            queue_status(&sig_tx, RdStatus::InputFailed { reason });
+        }
+    }
 }
 
 fn queue_status(sig_tx: &mpsc::UnboundedSender<String>, status: RdStatus) {
@@ -741,6 +882,7 @@ fn session_rejection(error: &SessionError) -> ErrorResponse {
 }
 
 async fn serve_session(
+    seq: u64,
     accepted: AcceptedSignaling,
     cancel: CancellationToken,
 ) -> Result<(), SessionError> {
@@ -914,115 +1056,12 @@ async fn serve_session(
         }
     });
 
-    // --- remote input: spawn injector helper + TWO DataChannels BEFORE the offer ---
+    // --- remote input: create TWO DataChannels BEFORE the offer ---
     // host creates both channels so the m=application (SCTP) section is in the
     // first offer (no renegotiation); the client only uses `ondatachannel` (B3).
     // rp-ctl = reliable/ordered (text/keys/clicks); rp-move = unreliable/unordered
     // (mousemove — stale positions are worthless, dropping is correct) (B4).
-    let mut _input_dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>> = Vec::new();
-    {
-        match input_helper_path() {
-            Ok(bin) => match Command::new(&bin)
-                .stdin(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
-                Ok(mut child) => {
-                    if let Some(stderr) = child.stderr.take() {
-                        let sig_tx = sig_tx.clone();
-                        let helper = bin.clone();
-                        std::thread::Builder::new()
-                            .name("rp-input-stderr".into())
-                            .spawn(move || {
-                                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                                    if let Some(status) =
-                                        status_from_input_helper_line(&line, &helper)
-                                    {
-                                        queue_status(&sig_tx, status);
-                                    } else if line.starts_with("RPIN ") {
-                                        tracing::debug!("serve-webrtc input: {line}");
-                                    } else {
-                                        tracing::info!("serve-webrtc input: {line}");
-                                    }
-                                }
-                            })
-                            .ok();
-                    }
-                    if let Some(mut stdin) = child.stdin.take() {
-                        // writer thread: frame [4B BE len | json] -> helper stdin (blocking)
-                        let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-                        std::thread::Builder::new()
-                            .name("rp-input-writer".into())
-                            .spawn(move || {
-                                while let Ok(json) = in_rx.recv() {
-                                    let len = (json.len() as u32).to_be_bytes();
-                                    if stdin.write_all(&len).is_err()
-                                        || stdin.write_all(&json).is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                let _ = child.kill();
-                            })
-                            .ok();
-
-                        let incoming_tx = in_tx.clone();
-                        pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-                            let tx = incoming_tx.clone();
-                            Box::pin(async move {
-                                let label = dc.label().to_string();
-                                if label == "rp-ctl" || label == "rp-move" {
-                                    wire_input_data_channel(&dc, tx);
-                                } else {
-                                    tracing::debug!(
-                                        "serve-webrtc: ignoring unexpected input DataChannel '{label}'"
-                                    );
-                                }
-                            })
-                        }));
-
-                        let ctl = pc
-                            .create_data_channel("rp-ctl", None)
-                            .await
-                            .map_err(SessionError::from)?;
-                        let mv_init = RTCDataChannelInit {
-                            ordered: Some(false),
-                            max_retransmits: Some(0),
-                            ..Default::default()
-                        };
-                        let mv = pc
-                            .create_data_channel("rp-move", Some(mv_init))
-                            .await
-                            .map_err(SessionError::from)?;
-                        for dc in [&ctl, &mv] {
-                            wire_input_data_channel(dc, in_tx.clone());
-                        }
-                        // keep channels alive for the session (dropped when the session returns)
-                        _input_dcs.push(ctl);
-                        _input_dcs.push(mv);
-                    } else {
-                        queue_status(
-                            &sig_tx,
-                            RdStatus::InputFailed {
-                                reason: format!("input helper '{bin}' did not expose stdin"),
-                            },
-                        );
-                        let _ = child.kill();
-                    }
-                }
-                Err(e) => {
-                    let reason =
-                        format!("input helper '{bin}' spawn failed (remote input disabled): {e}");
-                    tracing::warn!("serve-webrtc: {reason}");
-                    queue_status(&sig_tx, RdStatus::InputFailed { reason });
-                }
-            },
-            Err(reason) => {
-                tracing::warn!("serve-webrtc: {reason}");
-                queue_status(&sig_tx, RdStatus::InputFailed { reason });
-            }
-        }
-    }
+    let (_input_dcs, input_rx) = configure_input_data_channels(&pc).await?;
 
     // --- create offer, send to browser ---
     let offer = pc.create_offer(None).await.map_err(SessionError::from)?;
@@ -1038,8 +1077,13 @@ async fn serve_session(
         ws_rx,
         sig_rx,
     };
-    let peer = PeerResources { pc, _input_dcs };
+    let peer = PeerResources {
+        pc,
+        _input_dcs,
+        input_rx: Some(input_rx),
+    };
     let session = Session::Negotiating(NegotiatingSession {
+        seq,
         token,
         started: Instant::now(),
         io,
@@ -1128,10 +1172,11 @@ impl NegotiatingSession {
     }
 
     async fn into_connected(mut self) -> Result<ConnectedSession, SessionError> {
-        let capture = match CaptureSource::start(
+        let mut capture = match CaptureSource::start(
             self.capture_config,
             self.au_tx.clone(),
             self.sig_tx.clone(),
+            self.seq,
         ) {
             Ok(capture) => capture,
             Err(e) => {
@@ -1144,6 +1189,17 @@ impl NegotiatingSession {
                 return Err(e);
             }
         };
+        if let Some(input_rx) = self.peer.input_rx.take() {
+            match capture.capture_display_id_for_input().await {
+                Ok(display_id) => {
+                    spawn_input_helper(input_rx, self.sig_tx.clone(), display_id);
+                }
+                Err(reason) => {
+                    tracing::warn!("serve-webrtc: {reason}");
+                    queue_status(&self.sig_tx, RdStatus::InputFailed { reason });
+                }
+            }
+        }
         Ok(ConnectedSession {
             token: self.token,
             started: self.started,
@@ -1313,6 +1369,7 @@ impl CaptureSource {
         config: CaptureConfig,
         au_tx: mpsc::Sender<Vec<u8>>,
         sig_tx: mpsc::UnboundedSender<String>,
+        generation: u64,
     ) -> Result<Self, SessionError> {
         // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
         // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
@@ -1322,12 +1379,19 @@ impl CaptureSource {
         let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
         if au_stdin_mode {
             Ok(CaptureSource::Stdin(spawn_au_stdin_reader(
-                config, au_tx, sig_tx,
+                config, au_tx, sig_tx, generation,
             )))
         } else {
             spawn_screencap(config.fps, config.bitrate, config.scale, au_tx)
                 .map(CaptureSource::Child)
                 .map_err(SessionError::Capture)
+        }
+    }
+
+    async fn capture_display_id_for_input(&mut self) -> Result<Option<u32>, String> {
+        match self {
+            CaptureSource::Child(_) => Ok(None),
+            CaptureSource::Stdin(h) => h.capture_display_id_for_input().await,
         }
     }
 
@@ -1361,44 +1425,79 @@ fn write_control(line: &str) {
     }
 }
 
+fn capture_start_control_line(config: CaptureConfig, generation: u64) -> String {
+    format!(
+        "{{\"capture\":\"start\",\"generation\":{},\"fps\":{},\"bitrate\":{},\"scale\":{}}}\n",
+        generation, config.fps, config.bitrate, config.scale
+    )
+}
+
+fn capture_stop_control_line(generation: u64) -> String {
+    format!("{{\"capture\":\"stop\",\"generation\":{generation}}}\n")
+}
+
 /// Handle to stop the AU-from-stdin reader. The reader thread exits on EOF/error
-/// or when `stop()` flips the shared flag; `stop()` also emits `{"capture":"stop"}`
-/// to the parent so it can stop the in-app CaptureEngine for this session.
+/// or when `stop()` flips the shared flag; `stop()` also emits a generation-
+/// bearing `{"capture":"stop"}` to the parent so it can stop the matching
+/// in-app CaptureEngine session.
 struct StdinReaderHandle {
     stopped: Arc<std::sync::atomic::AtomicBool>,
+    generation: u64,
+    started_rx: Option<tokio::sync::oneshot::Receiver<CaptureStartInfo>>,
 }
 impl StdinReaderHandle {
     fn stop(&self) {
         if !self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            write_control("{\"capture\":\"stop\"}\n");
+            write_control(&capture_stop_control_line(self.generation));
         }
+    }
+
+    async fn capture_display_id_for_input(&mut self) -> Result<Option<u32>, String> {
+        let Some(started_rx) = self.started_rx.take() else {
+            return Err("host capture start metadata was already consumed".to_string());
+        };
+        let info = tokio::time::timeout(CAPTURE_START_ACK_DEADLINE, started_rx)
+            .await
+            .map_err(|_| "timed out waiting for host capture display id".to_string())?
+            .map_err(|_| "host capture ended before reporting its display id".to_string())?;
+        if info.generation != self.generation {
+            return Err(format!(
+                "host reported stale capture generation {} for active generation {}",
+                info.generation, self.generation
+            ));
+        }
+        info.display_id.ok_or_else(|| {
+            "host capture did not report a display id; remote input disabled to avoid misaligned injection"
+                .to_string()
+        }).map(Some)
     }
 }
 
-/// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. Emits
-/// `{"capture":"start"}` to stdout (the parent app then begins in-app capture),
-/// then reads `[4B BE len][Annex-B AU]` frames from stdin and forwards each AU
-/// into `au_tx` with the same bounded drop-delta policy as `spawn_screencap`'s
-/// reader thread. The thread returns on EOF/error or when `stop()` is called.
+/// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. Emits a generation-
+/// bearing `{"capture":"start"}` to stdout (the parent app then begins in-app
+/// capture), then reads `[4B BE len][Annex-B AU]` frames from stdin and forwards
+/// each AU into `au_tx` with the same bounded drop-delta policy as
+/// `spawn_screencap`'s reader thread. The thread returns on EOF/error or when
+/// `stop()` is called.
 fn spawn_au_stdin_reader(
     config: CaptureConfig,
     au_tx: mpsc::Sender<Vec<u8>>,
     sig_tx: mpsc::UnboundedSender<String>,
+    generation: u64,
 ) -> StdinReaderHandle {
     tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); requesting capture start");
-    write_control(&format!(
-        "{{\"capture\":\"start\",\"fps\":{},\"bitrate\":{},\"scale\":{}}}\n",
-        config.fps, config.bitrate, config.scale
-    ));
+    write_control(&capture_start_control_line(config, generation));
 
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped_thread = stopped.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<CaptureStartInfo>();
     std::thread::Builder::new()
         .name("au-stdin-reader".into())
         .spawn(move || {
             let mut stdin = std::io::stdin();
             let mut len_buf = [0u8; 4];
             let mut dropped_delta_frames = 0u64;
+            let mut started_tx = Some(started_tx);
             loop {
                 if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
@@ -1414,9 +1513,33 @@ fn spawn_au_stdin_reader(
                 if stdin.read_exact(&mut au).is_err() {
                     break;
                 }
-                if let Some(status) = status_from_app_control_frame(&au) {
-                    tracing::warn!("serve-webrtc: relaying host capture status: {status:?}");
-                    queue_status(&sig_tx, status);
+                if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                if let Some(frame) = app_capture_frame(&au) {
+                    match frame {
+                        AppCaptureFrame::Started(info) => {
+                            tracing::info!(
+                                "serve-webrtc: host capture generation {} started display={:?} size={:?}x{:?}",
+                                info.generation,
+                                info.display_id,
+                                info.width,
+                                info.height
+                            );
+                            if let Some(tx) = started_tx.take() {
+                                let _ = tx.send(info);
+                            }
+                        }
+                        AppCaptureFrame::Stopped { generation } => {
+                            tracing::info!(
+                                "serve-webrtc: host capture stopped generation={generation:?}"
+                            );
+                        }
+                        AppCaptureFrame::Status(status) => {
+                            tracing::warn!("serve-webrtc: relaying host capture status: {status:?}");
+                            queue_status(&sig_tx, status);
+                        }
+                    }
                     continue;
                 }
                 if !forward_au_latest(&au_tx, au, &mut dropped_delta_frames) {
@@ -1426,7 +1549,11 @@ fn spawn_au_stdin_reader(
         })
         .ok();
 
-    StdinReaderHandle { stopped }
+    StdinReaderHandle {
+        stopped,
+        generation,
+        started_rx: Some(started_rx),
+    }
 }
 
 /// Handle to stop the capture/encode helper process.
@@ -1496,4 +1623,82 @@ fn spawn_screencap(
     Ok(CaptureHandle {
         child: std::sync::Mutex::new(child),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(uri: &str) -> Request {
+        Request::builder()
+            .uri(uri)
+            .body(())
+            .expect("test request should build")
+    }
+
+    fn token(ch: char) -> String {
+        std::iter::repeat(ch).take(SESSION_TOKEN_MIN_LEN).collect()
+    }
+
+    #[test]
+    fn parse_request_token_requires_exact_expected_token() {
+        let expected = SessionToken::parse(&token('a')).expect("expected token should parse");
+        let accepted = parse_request_token(&request(&format!("/?token={}", token('a'))), &expected)
+            .expect("matching token should be accepted");
+        assert_eq!(accepted, expected);
+
+        let mismatch = parse_request_token(&request(&format!("/?token={}", token('b'))), &expected);
+        assert!(matches!(mismatch, Err(SessionError::TokenMismatch)));
+
+        let missing = parse_request_token(&request("/"), &expected);
+        assert!(matches!(missing, Err(SessionError::MissingToken)));
+    }
+
+    #[test]
+    fn capture_control_lines_carry_session_generation() {
+        let config = CaptureConfig {
+            fps: 30,
+            bitrate: 4_000_000,
+            scale: 1.0,
+        };
+        assert_eq!(
+            capture_start_control_line(config, 42),
+            "{\"capture\":\"start\",\"generation\":42,\"fps\":30,\"bitrate\":4000000,\"scale\":1}\n"
+        );
+        assert_eq!(
+            capture_stop_control_line(42),
+            "{\"capture\":\"stop\",\"generation\":42}\n"
+        );
+    }
+
+    #[test]
+    fn expected_token_arg_reads_owner_file_form() {
+        let raw = token('c');
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("xpair-rd-token-{}-{unique}", std::process::id()));
+        std::fs::write(&path, format!("{raw}\n")).expect("test token file should write");
+        let resolved = expected_token_from_arg(&format!("@{}", path.display()))
+            .expect("token file should resolve");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(resolved, SessionToken(raw));
+    }
+
+    #[test]
+    fn app_capture_started_frame_reports_display_alignment_metadata() {
+        let frame = br#"{"capture":"started","generation":7,"displayId":69734662,"width":2560,"height":1440}"#;
+        let parsed = app_capture_frame(frame).expect("started frame should parse");
+        match parsed {
+            AppCaptureFrame::Started(info) => {
+                assert_eq!(info.generation, 7);
+                assert_eq!(info.display_id, Some(69_734_662));
+                assert_eq!(info.width, Some(2560.0));
+                assert_eq!(info.height, Some(1440.0));
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
 }

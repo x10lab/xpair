@@ -11,7 +11,9 @@ process.env.USERPROFILE = TMP_HOME;
 process.env.REMOTE_HOST = "same-host";
 fs.mkdirSync(path.join(TMP_HOME, ".xpair/host"), { recursive: true });
 
+const TEST_RD_TOKEN = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 const spawnedChildren = [];
+const tokenReadCommands = [];
 const postedMessages = [];
 const scheduledTimers = [];
 let nextLocalPort = 32000;
@@ -27,6 +29,14 @@ function fakeSpawn(cmd, args) {
     child.killed = true;
     return true;
   };
+  if (cmd === "ssh" && Array.isArray(args) && args[args.length - 1] === "cat ~/.xpair/host/rd-session-token") {
+    tokenReadCommands.push(args);
+    process.nextTick(() => {
+      child.stdout.emit("data", Buffer.from(`${TEST_RD_TOKEN}\n`));
+      child.emit("close", 0);
+    });
+    return child;
+  }
   spawnedChildren.push(child);
   return child;
 }
@@ -172,6 +182,13 @@ function v2ConnectPosts() {
   return postedMessages.filter((message) => message.type === "v2Connect");
 }
 
+function latestTimerByDelay(delay) {
+  for (let i = scheduledTimers.length - 1; i >= 0; i -= 1) {
+    if (scheduledTimers[i].delay === delay && !scheduledTimers[i].cleared) return scheduledTimers[i];
+  }
+  return null;
+}
+
 (async () => {
   await test("Q0548/Q0552 RD restores and reconnects to the same host with a fresh tunnel", async () => {
     const panel = new extension.RemoteDesktopPanel({ fsPath: "/test/ext" });
@@ -179,6 +196,7 @@ function v2ConnectPosts() {
     panel.restore(fakePanel);
     await waitForAsync();
 
+    assert.equal(tokenReadCommands.length, 1, "visible restored RD panel should read the host RD token");
     assert.equal(spawnedChildren.length, 1, "visible restored RD panel should start one tunnel");
     assert.equal(spawnedChildren[0].cmd, "ssh");
     assert.ok(spawnedChildren[0].args.includes("same-host"), "first tunnel must target the configured host");
@@ -187,9 +205,9 @@ function v2ConnectPosts() {
       "first tunnel must forward a local signaling port to the host RD signaling port",
     );
 
-    scheduledTimers[0]();
+    latestTimerByDelay(1200)();
     assert.equal(v2ConnectPosts().length, 1, "restored RD should tell the webview to connect after tunnel settle");
-    assert.match(v2ConnectPosts()[0].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}&fps=30&bitrate=4000000&scale=1$/);
+    assert.match(v2ConnectPosts()[0].signalUrl, new RegExp(`^ws://127\\.0\\.0\\.1:\\d+/\\?token=${TEST_RD_TOKEN}&fps=30&bitrate=4000000&scale=1$`));
 
     const firstChild = spawnedChildren[0];
     panel.onMessage({ type: "v2Error", detail: "peer connection failed" });
@@ -198,13 +216,14 @@ function v2ConnectPosts() {
     await panel.reveal();
     await waitForAsync();
 
+    assert.equal(tokenReadCommands.length, 2, "retry should read the current host RD token again");
     assert.equal(spawnedChildren.length, 2, "revealing after an RD error should start a fresh tunnel");
     assert.ok(spawnedChildren[1].args.includes("same-host"), "retry tunnel must target the same configured host");
     assert.notEqual(spawnedChildren[1], firstChild, "retry must use a new child process");
 
-    scheduledTimers[scheduledTimers.length - 1]();
+    latestTimerByDelay(1200)();
     assert.equal(v2ConnectPosts().length, 2, "fresh retry tunnel should reconnect the webview");
-    assert.match(v2ConnectPosts()[1].signalUrl, /^ws:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{64}&fps=30&bitrate=4000000&scale=1$/);
+    assert.match(v2ConnectPosts()[1].signalUrl, new RegExp(`^ws://127\\.0\\.0\\.1:\\d+/\\?token=${TEST_RD_TOKEN}&fps=30&bitrate=4000000&scale=1$`));
   });
 
   global.setTimeout = realSetTimeout;

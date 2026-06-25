@@ -12,6 +12,8 @@ function read(rel) {
 const webview = read("client/ide/remotepair/ext/media/remote-desktop.js");
 const injector = read("host/rd/rpmedia/rp-input-inject.swift");
 const sidecar = read("host/rd/screen/src/serve_webrtc.rs");
+const screenServer = read("host/app/ScreenServer.swift");
+const captureEngine = read("host/app/CaptureEngine.swift");
 const buildHost = read("host/build-host.sh");
 const installer = read("host/app/Installer.swift");
 const contracts = JSON.parse(fs.readFileSync(path.join(ext, "generated/contracts.json"), "utf8"));
@@ -48,6 +50,8 @@ test("serve-webrtc resolves input helper by explicit bundle/install paths and re
   assert.match(sidecar, /InputReady/);
   assert.match(sidecar, /InputFailed/);
   assert.match(sidecar, /status_from_input_helper_line/);
+  assert.match(sidecar, /command\.env\("RP_CAPTURE_DISPLAY_ID", display_id\.to_string\(\)\)/);
+  assert.match(sidecar, /capture_display_id_for_input/);
   assert.match(sidecar, /on_data_channel/);
   assert.match(sidecar, /wire_input_data_channel/);
 });
@@ -59,7 +63,12 @@ test("injector supports wheel, pointer lifecycle, key lifecycle, and capture-ali
   assert.match(injector, /case "u":/);
   assert.match(injector, /rightMouseDragged|leftMouseDragged/);
   assert.match(injector, /"action":"down"\|"up"|action/);
-  assert.match(injector, /activeDisplayIDs\(\)\.first/);
+  assert.match(injector, /configuredDisplayID\(\) \?\? activeDisplayIDs\(\)\.first/);
+  assert.match(injector, /RP_CAPTURE_DISPLAY_ID/);
+  assert.match(captureEngine, /case started\(displayID: UInt32, width: Int, height: Int\)/);
+  assert.match(captureEngine, /display\.displayID/);
+  assert.match(screenServer, /"capture": "started"/);
+  assert.match(screenServer, /"displayId": Int\(displayID\)/);
   assert.doesNotMatch(injector, /let\s+\w*Bounds\s*=\s*CGDisplayBounds\(CGMainDisplayID\(\)\)/);
   assert.match(injector, /RPINPUT/);
 });
