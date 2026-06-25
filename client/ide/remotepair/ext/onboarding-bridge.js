@@ -78,6 +78,29 @@ function versionMajor(v) {
   return m ? m[1] : "";
 }
 
+/** The OLDEST host version this client can talk to. **BUMP THIS** whenever a host↔client
+ *  protocol/interface changes incompatibly — e.g. the a45 RD remote-input restore changed
+ *  serve_webrtc's data channels. A same-major host that is OLDER than this connects today but
+ *  fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with a clear
+ *  "update the host" message is far better than a silent breakage. Keep this in lockstep with the
+ *  newest breaking change; a host >= this is accepted. */
+const MIN_COMPATIBLE_HOST = "0.5.0a45";
+
+/** Compare two "X.Y.Z" or "X.Y.ZaN" version strings → -1 | 0 | 1 (a<b | a==b | a>b).
+ *  The alpha suffix sorts BELOW the same release: 0.5.0a44 < 0.5.0a45 < 0.5.0 (a released X.Y.Z
+ *  has no `aN`, so it ranks above every alpha of that X.Y.Z). Unparseable input → 0 (unknown). */
+function compareVersions(a, b) {
+  const parse = (v) => {
+    const m = String(v || "").match(/^\s*(\d+)\.(\d+)\.(\d+)(?:a(\d+))?/);
+    // 4th field: alpha number, or Infinity for a non-alpha release (ranks above any aN).
+    return m ? [+m[1], +m[2], +m[3], m[4] !== undefined ? +m[4] : Infinity] : null;
+  };
+  const pa = parse(a), pb = parse(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 4; i++) if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+  return 0;
+}
+
 /** Resolve the tailscale binary path (macOS .app / brew / std locations), or null if absent.
  *  Sync existsSync probe — Tailscale on macOS often has NO `tailscale` on PATH, only the .app. */
 function resolveTailscale() {
@@ -890,15 +913,28 @@ const bridge = {
     const clientV = clientVersion();
     const hostMajor = versionMajor(version);
     const clientMajor = versionMajor(clientV);
-    // Unknown host version ⇒ don't block (compatible). Known + same major ⇒ compatible.
-    const compatible = !hostMajor ? true : hostMajor === clientMajor;
+    // Compatibility = same MAJOR (necessary) AND host >= MIN_COMPATIBLE_HOST (the protocol floor).
+    // The old check was major-only, which let a too-old same-major host (e.g. a43 vs an a45-protocol
+    // client) connect and fail subtly. Unknown host version (app installed, status.json not stamped
+    // yet) is still allowed so a fresh install isn't hard-blocked before its first status write.
+    let compatible;
+    let reason = "";
+    if (!hostMajor) {
+      compatible = true; // unknown version → allow (fresh install)
+    } else if (hostMajor !== clientMajor) {
+      compatible = false;
+      reason = `Host version ${version} is a different major than client ${clientV}`;
+    } else if (compareVersions(version, MIN_COMPATIBLE_HOST) < 0) {
+      compatible = false;
+      reason = `Host version ${version} is older than the minimum compatible ${MIN_COMPATIBLE_HOST} — update the host (xpair install-host --force)`;
+    } else {
+      compatible = true;
+    }
     return {
       installed: true,
       version,
       compatible,
-      err: compatible
-        ? ""
-        : `Host version ${version || "?"} is incompatible with client ${clientV}`,
+      err: compatible ? "" : reason,
     };
   },
 
