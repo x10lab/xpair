@@ -340,11 +340,15 @@ enum Updater {
         //   So this function is reached only after the consent gate (promptAndApply) passes — the user has already
         //   acknowledged and consented that sessions may be interrupted. It does not rely on the assumption that "the session survives".
         let uid = getuid()
+        // Relaunch the bundle we actually swapped into, wherever it lives (/Applications OR
+        // ~/Applications). Hard-coding /Applications here would, on a ~/Applications install, either
+        // open a stale /Applications copy or fail to restart at all, leaving the host down.
+        let appPath = Bundle.main.bundlePath
         // detached helper: wait for the current PID to exit → LaunchAgent kickstart. (Automatic if KeepAlive, but guaranteed explicitly.)
         let script = """
         while kill -0 \(getpid()) 2>/dev/null; do sleep 0.3; done
         /bin/launchctl kickstart -k gui/\(uid)/\(BUNDLE_ID) 2>/dev/null \
-          || /usr/bin/open -a '/Applications/\(APP_NAME).app'
+          || /usr/bin/open '\(appPath)'
         """
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
