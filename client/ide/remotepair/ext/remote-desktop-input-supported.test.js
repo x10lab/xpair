@@ -12,6 +12,7 @@ function read(rel) {
 const webview = read("client/ide/remotepair/ext/media/remote-desktop.js");
 const injector = read("host/rd/rpmedia/rp-input-inject.swift");
 const sidecar = read("host/rd/screen/src/serve_webrtc.rs");
+const onboardingBridge = read("client/ide/remotepair/ext/onboarding-bridge.js");
 const screenServer = read("host/app/ScreenServer.swift");
 const captureEngine = read("host/app/CaptureEngine.swift");
 const buildHost = read("host/build-host.sh");
@@ -71,6 +72,31 @@ test("injector supports wheel, pointer lifecycle, key lifecycle, and capture-ali
   assert.match(screenServer, /"displayId": Int\(displayID\)/);
   assert.doesNotMatch(injector, /let\s+\w*Bounds\s*=\s*CGDisplayBounds\(CGMainDisplayID\(\)\)/);
   assert.match(injector, /RPINPUT/);
+});
+
+test("input protocol hardening releases held state and preserves ordering", () => {
+  assert.match(injector, /var heldButtons = Set<String>\(\)/);
+  assert.match(injector, /var heldKeys: \[Int: UInt64\] = \[:\]/);
+  assert.match(injector, /func releaseHeldInputs\(reason: String\)/);
+  assert.match(injector, /injectMouse\(p, down: false, right: btn == "r"\)/);
+  assert.match(injector, /postKeyEvent\(code, down: false, flags: 0\)/);
+  assert.match(injector, /releaseHeldInputs\(reason: exitReason\)/);
+
+  assert.match(injector, /case 36: if injectText\("\\n"\) \{ return \}/);
+  assert.match(injector, /case 48: if injectText\("\\t"\) \{ return \}/);
+  assert.match(injector, /If Return\/Tab have no AX text target[\s\S]*fall through to the normal keycode path/);
+
+  assert.match(sidecar, /fn should_forward_input_message\(json: &\[u8\], last_applied_seq: &mut u64\) -> bool/);
+  assert.match(sidecar, /kind == Some\("m"\) && seq <= \*last_applied_seq/);
+  assert.match(sidecar, /\*last_applied_seq = \(\*last_applied_seq\)\.max\(seq\)/);
+  assert.match(sidecar, /drop\(stdin\);[\s\S]*child\.wait\(\)/);
+  assert.doesNotMatch(sidecar, /while let Ok\(json\) = input_rx\.recv\(\)[\s\S]{0,400}child\.kill\(\)/);
+});
+
+test("RD token requirement bumps the onboarding host compatibility floor", () => {
+  assert.match(onboardingBridge, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
+  assert.match(onboardingBridge, /a49 RD session-token requirement/);
+  assert.match(onboardingBridge, /rd-session-token and serve-webrtc --token mandatory/);
 });
 
 test("webview gates input on helper readiness and sends down/up/drag/key-up events", () => {

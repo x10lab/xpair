@@ -329,7 +329,9 @@
   }
 
   function pointerButton(ev) {
-    return ev.button === 2 ? "r" : "l";
+    if (ev.button === 0) return "l";
+    if (ev.button === 2) return "r";
+    return null;
   }
 
   function releaseActivePointer() {
@@ -712,12 +714,13 @@
 
   if (video && typeof video.addEventListener === "function") {
   video.addEventListener("pointerdown", function (ev) {
+    const btn = pointerButton(ev);
+    if (!btn) return;
     armInput();
     if (typeof video.setPointerCapture === "function") {
       try { video.setPointerCapture(ev.pointerId); } catch (_e) {}
     }
     const p = relativePoint(ev);
-    const btn = pointerButton(ev);
     activePointerId = ev.pointerId;
     activePointerButton = btn;
     activePointerPoint = p;
@@ -745,6 +748,7 @@
     if (activePointerId !== null && ev.pointerId !== activePointerId) return;
     const p = relativePoint(ev);
     const btn = activePointerButton || pointerButton(ev);
+    if (!btn) return;
     activePointerPoint = p;
     if (sendControlInput({ t: "u", rx: p.rx, ry: p.ry, btn })) {
       ev.preventDefault();

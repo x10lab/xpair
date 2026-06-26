@@ -741,6 +741,27 @@ fn wire_input_data_channel(dc: &Arc<RTCDataChannel>, in_tx: InputTx) {
     }));
 }
 
+fn should_forward_input_message(json: &[u8], last_applied_seq: &mut u64) -> bool {
+    let parsed: serde_json::Value = match serde_json::from_slice(json) {
+        Ok(value) => value,
+        Err(_) => return true,
+    };
+    let seq = match parsed.get("seq").and_then(serde_json::Value::as_u64) {
+        Some(seq) => seq,
+        None => return true,
+    };
+    let kind = parsed.get("t").and_then(serde_json::Value::as_str);
+    if kind == Some("m") && seq <= *last_applied_seq {
+        tracing::debug!(
+            "serve-webrtc: dropping stale rp-move seq={seq} last_applied_seq={}",
+            *last_applied_seq
+        );
+        return false;
+    }
+    *last_applied_seq = (*last_applied_seq).max(seq);
+    true
+}
+
 async fn configure_input_data_channels(
     pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
 ) -> Result<(Vec<Arc<RTCDataChannel>>, InputRx), SessionError> {
@@ -815,7 +836,11 @@ fn spawn_input_helper(
                         std::thread::Builder::new()
                             .name("rp-input-writer".into())
                             .spawn(move || {
+                                let mut last_applied_seq = 0;
                                 while let Ok(json) = input_rx.recv() {
+                                    if !should_forward_input_message(&json, &mut last_applied_seq) {
+                                        continue;
+                                    }
                                     let len = (json.len() as u32).to_be_bytes();
                                     if stdin.write_all(&len).is_err()
                                         || stdin.write_all(&json).is_err()
@@ -823,7 +848,7 @@ fn spawn_input_helper(
                                         break;
                                     }
                                 }
-                                let _ = child.kill();
+                                drop(stdin);
                                 let _ = child.wait();
                             })
                             .ok();
@@ -1700,5 +1725,46 @@ mod tests {
             }
             other => panic!("unexpected frame: {other:?}"),
         }
+    }
+
+    #[test]
+    fn input_writer_drops_stale_moves_without_dropping_releases() {
+        let mut last_applied_seq = 0;
+
+        assert!(should_forward_input_message(
+            br#"{"t":"d","seq":10,"rx":0.1,"ry":0.1,"btn":"l"}"#,
+            &mut last_applied_seq
+        ));
+        assert_eq!(last_applied_seq, 10);
+
+        assert!(should_forward_input_message(
+            br#"{"t":"m","seq":11,"rx":0.2,"ry":0.2,"btn":"l"}"#,
+            &mut last_applied_seq
+        ));
+        assert_eq!(last_applied_seq, 11);
+
+        assert!(!should_forward_input_message(
+            br#"{"t":"m","seq":11,"rx":0.3,"ry":0.3,"btn":"l"}"#,
+            &mut last_applied_seq
+        ));
+        assert_eq!(last_applied_seq, 11);
+
+        assert!(should_forward_input_message(
+            br#"{"t":"u","seq":12,"rx":0.4,"ry":0.4,"btn":"l"}"#,
+            &mut last_applied_seq
+        ));
+        assert_eq!(last_applied_seq, 12);
+
+        assert!(!should_forward_input_message(
+            br#"{"t":"m","seq":12,"rx":0.5,"ry":0.5,"btn":"l"}"#,
+            &mut last_applied_seq
+        ));
+        assert_eq!(last_applied_seq, 12);
+
+        assert!(should_forward_input_message(
+            br#"{"t":"k","seq":11,"code":55,"action":"up","flags":0}"#,
+            &mut last_applied_seq
+        ));
+        assert_eq!(last_applied_seq, 12);
     }
 }

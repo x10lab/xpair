@@ -851,6 +851,41 @@ function runRemoteDesktopWebview() {
     );
   });
 
+  await check("webview ignores unsupported mouse buttons instead of mapping them to primary", () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:9/?token=777777777777777777777777" });
+    const ctl = harness.peers[0].dataChannels.find((channel) => channel.label === "rp-ctl");
+    assert.ok(ctl, "webview should create the reliable control DataChannel");
+    ctl.readyState = "open";
+    harness.sockets[0].emit("message", {
+      data: JSON.stringify({ type: "status", kind: "input-ready" }),
+    });
+
+    const video = harness.elements.get("screen-video");
+    const pointerEvent = (props) => ({
+      pointerId: 2,
+      button: 1,
+      clientX: 10,
+      clientY: 20,
+      preventDefault() {},
+      ...props,
+    });
+
+    video.emit("pointerdown", pointerEvent({ button: 1 }));
+    video.emit("pointerup", pointerEvent({ button: 1 }));
+    video.emit("pointerdown", pointerEvent({ button: 3 }));
+    video.emit("pointerup", pointerEvent({ button: 3 }));
+    assert.deepStrictEqual(ctl.sent, [], "middle/back/forward buttons must not emit left-click events");
+
+    video.emit("pointerdown", pointerEvent({ button: 2 }));
+    video.emit("pointerup", pointerEvent({ button: 2 }));
+    assert.deepStrictEqual(
+      ctl.sent.map((message) => JSON.parse(message).btn),
+      ["r", "r"],
+      "right button should still map to right-button down/up"
+    );
+  });
+
   await check("webview samples WebRTC stats and clears sampler on cancel", async () => {
     const harness = runRemoteDesktopWebview();
     harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:7/?token=999999999999999999999999" });

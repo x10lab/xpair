@@ -66,6 +66,10 @@ func mouseButton(_ btn: String?) -> CGMouseButton {
   btn == "r" ? .right : .left
 }
 
+func buttonName(_ btn: String?) -> String {
+  btn == "r" ? "r" : "l"
+}
+
 func injectMove(_ p: CGPoint, dragging btn: String? = nil) {
   let button = mouseButton(btn)
   let eventType: CGEventType
@@ -134,9 +138,16 @@ func axDeleteLast() {
 }
 
 let modifierKeyCodes: Set<Int> = [54, 55, 56, 58, 59, 60, 61, 62]
+var heldButtons = Set<String>()
+var heldKeys: [Int: UInt64] = [:]
+var lastPointerPoint: CGPoint?
+
+func validKeyCode(_ code: Int) -> Bool {
+  code >= 0 && code <= Int(UInt16.max)
+}
 
 func postKeyEvent(_ code: Int, down: Bool, flags: UInt64) {
-  guard code >= 0, code <= Int(UInt16.max),
+  guard validKeyCode(code),
         let ev = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(code), keyDown: down) else {
     log("injectKey: invalid key code \(code)")
     return
@@ -170,10 +181,12 @@ func injectKey(_ code: Int, _ flags: UInt64, _ action: String) {
   // Text-producing keys with no modifier → AX text path (reliable + targetable),
   // matching the AX text injection used for typed characters:
   //   Return(36)→"\n", Tab(48)→"\t", Delete/Backspace(51)→delete last char.
+  // If Return/Tab have no AX text target, fall through to the normal keycode path
+  // so dialogs, buttons, and focus traversal still receive them.
   if flags == 0 && action == "down" {
     switch code {
-    case 36: injectText("\n"); return
-    case 48: injectText("\t"); return
+    case 36: if injectText("\n") { return }
+    case 48: if injectText("\t") { return }
     case 51: axDeleteLast(); return
     default: break
     }
@@ -218,15 +231,16 @@ func textTargetElement() -> AXUIElement? {
   return nil
 }
 
-func injectText(_ s: String) {
+func injectText(_ s: String) -> Bool {
   // Text (incl. Korean) via Accessibility — insert exact Unicode. CGEvent
   // keyboardSetUnicodeString does NOT reach Cocoa/most apps; System Events
   // mangles Hangul. AX kAXSelectedTextAttribute lands exact Korean. See FINDINGS.
-  guard let el = textTargetElement() else { log("injectText: no target element"); return }
+  guard let el = textTargetElement() else { log("injectText: no target element"); return false }
   // prefer selected-text (insert at cursor); fall back to value (replace) for elements that reject it
   var r = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, s as CFString)
   if r != .success { r = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, s as CFString) }
   if r != .success { log("injectText: AX set rc=\(r.rawValue)") }
+  return r == .success
 }
 
 func number(_ value: Any?) -> Double? {
@@ -248,15 +262,25 @@ func handle(_ j: [String: Any]) {
   switch t {
   case "m":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
-      injectMove(point(rx, ry), dragging: j["btn"] as? String)
+      let p = point(rx, ry)
+      lastPointerPoint = p
+      injectMove(p, dragging: j["btn"] as? String)
     }
   case "d":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
-      injectMouse(point(rx, ry), down: true, right: (j["btn"] as? String) == "r")
+      let p = point(rx, ry)
+      let btn = buttonName(j["btn"] as? String)
+      lastPointerPoint = p
+      heldButtons.insert(btn)
+      injectMouse(p, down: true, right: btn == "r")
     }
   case "u":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
-      injectMouse(point(rx, ry), down: false, right: (j["btn"] as? String) == "r")
+      let p = point(rx, ry)
+      let btn = buttonName(j["btn"] as? String)
+      lastPointerPoint = p
+      injectMouse(p, down: false, right: btn == "r")
+      heldButtons.remove(btn)
     }
   case "c":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
@@ -269,12 +293,38 @@ func handle(_ j: [String: Any]) {
   case "k":
     if let code = integer(j["code"]) {
       let flags = UInt64(integer(j["flags"]) ?? 0)
-      injectKey(code, flags, j["action"] as? String ?? "down")
+      let action = j["action"] as? String ?? "down"
+      if validKeyCode(code) {
+        if action == "up" {
+          heldKeys.removeValue(forKey: code)
+        } else if action == "down" {
+          heldKeys[code] = flags
+        }
+      }
+      injectKey(code, flags, action)
     }
-  case "x": if let s = j["s"] as? String { injectText(s) }
+  case "x": if let s = j["s"] as? String { _ = injectText(s) }
   default: break
   }
   log("RPIN seq=\(seq) t=\(t)")
+}
+
+func releaseHeldInputs(reason: String) {
+  if heldButtons.isEmpty && heldKeys.isEmpty {
+    return
+  }
+  let fallbackPoint = CGPoint(x: targetBounds.midX, y: targetBounds.midY)
+  let p = lastPointerPoint ?? fallbackPoint
+  for btn in ["l", "r"] where heldButtons.contains(btn) {
+    injectMouse(p, down: false, right: btn == "r")
+    log("rp-input-inject: cleanup mouse up btn=\(btn) reason=\(reason)")
+  }
+  heldButtons.removeAll()
+  for code in heldKeys.keys.sorted() {
+    postKeyEvent(code, down: false, flags: 0)
+    log("rp-input-inject: cleanup key up code=\(code) reason=\(reason)")
+  }
+  heldKeys.removeAll()
 }
 
 // read [4B BE len][JSON] frames from stdin
@@ -315,10 +365,25 @@ if axTrusted {
   )
 }
 log("rp-input-inject: ready (display \(Int(targetBounds.size.width))x\(Int(targetBounds.size.height)) id=\(UInt32(targetDisplayID)))")
-while let hdr = readN(4) {
+var exitReason = "stdin EOF"
+while true {
+  guard let hdr = readN(4) else {
+    exitReason = "stdin EOF"
+    break
+  }
   let len = hdr.withUnsafeBytes { Int($0.load(as: UInt32.self).bigEndian) }
-  if len == 0 || len > 1 << 20 { break }
-  guard let body = readN(len),
-        let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { break }
+  if len == 0 || len > 1 << 20 {
+    exitReason = "invalid frame length"
+    break
+  }
+  guard let body = readN(len) else {
+    exitReason = "stdin EOF"
+    break
+  }
+  guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+    exitReason = "invalid json"
+    break
+  }
   handle(obj)
 }
+releaseHeldInputs(reason: exitReason)
