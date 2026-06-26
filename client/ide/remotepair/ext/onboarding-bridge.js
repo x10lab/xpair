@@ -918,19 +918,21 @@ const bridge = {
     // second, so it only exists while the app is RUNNING — an installed-but-not-running too-old host
     // would report no version and slip through the gate as "unknown".
     const probe =
-      // Read the version of the copy the LaunchAgent actually runs — that bundle is what serves the RD
-      // session, so it is what compatibility must be judged against. install.sh / Installer.swift register
-      // ProgramArguments[0] = <bundle>/Contents/MacOS/<app> at the active location (/Applications, the cask
-      // default, OR ~/Applications when the app self-installed from there). Measuring the active copy means
-      // a stale dormant copy in the other location can neither mask a real update nor (the inverse) fool the
-      // gate into passing a newer-but-not-running bundle. Fall back to mere presence when no host LaunchAgent
-      // is registered yet (installed but not set up → version unknown, handled as a fresh install below).
-      'la="$(ls "$HOME"/Library/LaunchAgents/*.xpair-host.plist 2>/dev/null | head -1)"; ' +
+      // Resolve the version of the host copy that will actually run. Primary source: the host
+      // LaunchAgent's ProgramArguments[0] (config.sh APP_EXEC / Installer.swift Bundle.main.executablePath)
+      // → that bundle's CFBundleShortVersionString — the copy that serves the RD session, so it is what
+      // compatibility must be judged against (a stale dormant copy elsewhere neither masks a real update
+      // nor fools the gate with a newer-but-not-running bundle). If no host LaunchAgent is registered yet
+      // (e.g. a Homebrew cask install before first launch/self-install), fall back to whichever installed
+      // bundle exists (/Applications, the cask default, then ~/Applications) and read ITS version too — so a
+      // cask-installed-but-not-yet-launched old host is still gated, not waved through as "unknown".
+      // `find -name` (quoted) is used instead of a shell glob so an unmatched pattern can't abort the probe
+      // under zsh NOMATCH (the host's SSH login shell may be zsh).
+      'la="$(find "$HOME/Library/LaunchAgents" -maxdepth 1 -name "*.xpair-host.plist" 2>/dev/null | head -1)"; ' +
       'ex="$([ -n "$la" ] && /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$la" 2>/dev/null)"; ' +
       'app="${ex%/Contents/MacOS/*}"; ' +
-      'if [ -n "$app" ] && [ -d "$app" ]; then echo RP_APP_INSTALLED=1; v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; ' +
-      'elif [ -d "/Applications/XpairHost.app" ] || [ -d "$HOME/Applications/XpairHost.app" ]; then echo RP_APP_INSTALLED=1; ' +
-      'else echo RP_APP_INSTALLED=0; fi';
+      'if [ -z "$app" ] || [ ! -d "$app" ]; then for d in "/Applications/XpairHost.app" "$HOME/Applications/XpairHost.app"; do [ -d "$d" ] && { app="$d"; break; }; done; fi; ' +
+      'if [ -n "$app" ] && [ -d "$app" ]; then echo RP_APP_INSTALLED=1; v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; else echo RP_APP_INSTALLED=0; fi';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
