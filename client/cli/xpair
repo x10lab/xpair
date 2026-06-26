@@ -1532,7 +1532,7 @@ PY
 #   --bootstrap: explicit opt-in to curl|bash; REQUIRES --sha256 of the fetched
 #                script and a pinned --ref; aborts before any host exec on mismatch.
 cmd_install_host() {
-  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0 password_stdin=0 pw="" pwdir="" fifo="" wpid="" wdpid=""
+  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0 password_stdin=0 pw="" pwdir="" fifo="" wpid=""
   while [ $# -gt 0 ]; do case "$1" in
     --host)      host="${2:-}"; shift 2 ;;
     --account)   account="${2:-}"; shift 2 ;;
@@ -1570,11 +1570,12 @@ cmd_install_host() {
     fifo="$pwdir/pw.fifo"
     mkfifo -m 600 "$fifo" || { rm -rf "$pwdir"; err "mkfifo failed"; return 1; }
     # One-shot writer: opening a FIFO for write BLOCKS until a reader (the askpass helper) opens it,
-    # so this parks until ssh actually prompts, then delivers exactly one line. The watchdog kills the
-    # writer if ssh never reaches the password stage (it would otherwise block on open forever); it
-    # survives a SIGKILL of this shell (reparented), so the FIFO can't leak indefinitely.
+    # so this parks until ssh actually prompts, then delivers exactly one line. Do NOT add a fixed
+    # timeout watchdog: a slow host (slow sshd/PAM before the prompt) could outlast it, and killing
+    # the only writer makes the later askpass `read < fifo` block forever on open → a hung install.
+    # The writer's lifetime is bounded by ssh instead: when ssh exits (auth done, denied, or
+    # ConnectTimeout) the function returns and the RETURN trap below kills this writer.
     ( printf '%s\n' "$pw" > "$fifo" ) & wpid=$!
-    ( sleep 30; kill "$wpid" 2>/dev/null ) >/dev/null 2>&1 & wdpid=$!
     unset pw
     export RP_ASKPASS_FIFO="$fifo"
   fi
@@ -1617,7 +1618,6 @@ cmd_install_host() {
   # shellcheck disable=SC2064
   trap '
     ssh -O exit -o "ControlPath=$RP_CM" "$target" >/dev/null 2>&1 || true; rm -f "$RP_CM" || true
-    { [ -n "${wdpid:-}" ] && kill "$wdpid" 2>/dev/null; } || true
     { [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null; } || true
     { [ -n "${pwdir:-}" ] && rm -rf "$pwdir"; } || true
     unset RP_ASKPASS_FIFO || true

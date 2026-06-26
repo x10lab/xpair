@@ -105,9 +105,13 @@ export function StepInstalling({
       window.clearInterval(adv);
     };
     const acct = (account || "").trim();
+    // Only forward the account on the SETUP path (fresh bare host, where the password bootstrap needs
+    // it). On the UPDATE/reconnect path the host is typically an ssh-config alias whose `User` may
+    // differ; passing the (auto-defaulted, local-username) account as `cliuser@alias` would override
+    // that configured User and break otherwise-working hosts, so let the alias's SSH config apply.
     const opts = {
       host,
-      ...(acct ? { user: acct } : {}),
+      ...(!isUpdate && acct ? { user: acct } : {}),
       ...(isUpdate ? { force: true } : {}),
       ...(password !== undefined ? { password } : {}),
     };
