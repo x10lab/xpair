@@ -167,14 +167,14 @@ enum Installer {
             }
         } else { log(.debug, "bundled mosh-server not found (\(moshSrc)) — attach uses ssh fallback") }
 
-        // 4b. Two screen-sharing symlinks → bundled Helpers/{screen,rp-screencap}.
+        // 4b. Screen-sharing symlinks → bundled Helpers/{screen,rp-screencap,rp-input-inject}.
         //     Resolves the stable path ~/.xpair/host/bin/<name> that extensions/docs call to the bundle's signed binary
         //     (after retiring SSH deploy, the bundle is the only delivery path). Being symlinks, on .app update they always
         //     point at the new bundle so there is no version skew, and the serve_webrtc resolver's current_exe().canonicalize()
         //     resolves the link to the real Helpers path to discover sibling helpers.
         //     If a stale real file (ad-hoc signed) left behind by the old SSH deploy exists, replace it with a symlink — so that
         //     grant resolves to the stable-cert binary (S3c stale cleanup). Same meaning as install.sh manifest reversibility.
-        linkBundledBinaries(["screen", "rp-screencap"])
+        linkBundledBinaries(["screen", "rp-screencap", "rp-input-inject"])
 
         // 5. watchdog script + LaunchAgent plist (app + watchdog) — same shape as install.sh
         writeWatchdogScript()

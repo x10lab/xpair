@@ -6,8 +6,8 @@
 // Remote Desktop is a single WebRTC path (v2): an ssh local-forward tunnel carries
 // only the signaling WebSocket (ws://127.0.0.1:<port> → host `screen serve-webrtc`).
 // The H.264 media itself flows P2P over UDP/RTP/ICE and is decoded natively by the
-// webview. This Remote Desktop view is PERMANENTLY view-only: no cursor/keyboard
-// input is captured or forwarded (display/video only, no remote control).
+// webview. Authenticated remote input is forwarded over RD WebRTC DataChannels
+// after the host-side input helper reports readiness.
 
 const vscode = require("vscode");
 const cp = require("child_process");
@@ -19,6 +19,7 @@ const net = require("net");
 // Telemetry: zero-dep PostHog capture + Sentry envelope (consent-gated, opt-in default OFF).
 // Self-contained stdlib-only module — does NOT add an external npm dependency.
 const telemetry = require("./telemetry.js");
+const onboardingBridge = require("./onboarding-bridge.js");
 
 // CLIENT→HOST liveness heartbeat: while the workbench is alive, periodically write a small file to
 // the host over SSH so the host can show this client as connected. Self-contained, stdlib-only,
@@ -60,11 +61,40 @@ const NOTIFY_TYPE_SETTINGS = [
 // v2 WebRTC signaling (shared/screen-protocol → generated contracts)
 const SIGNAL_REMOTE_PORT = CONTRACTS.screen.v2SignalPort; // host `screen serve-webrtc` signaling port
 const TUNNEL_SETTLE_MS = 1200; // wait for ssh -N tunnel to establish before the webview connects
+const RD_CAPTURE_DEFAULTS = Object.freeze({ fps: 30, bitrate: 4_000_000, scale: 1.0 });
+const RD_BIND_RETRY_DELAY_MS = 150;
+const RD_MAX_BIND_ATTEMPTS = 3;
+const RD_SESSION_TOKEN_REMOTE_FILE = "~/.xpair/host/rd-session-token";
+const RD_SESSION_TOKEN_RE = /^[A-Za-z0-9._-]{24,128}$/;
+const RD_TOKEN_FILE_NOT_READY_RE = /rd-session-token[\s\S]*(?:No such file|ENOENT)|(?:No such file|ENOENT)[\s\S]*rd-session-token/i;
 
 // REMOTE_HOST must be a bare ssh host alias / hostname. Validate hard before
 // it ever reaches a spawned process (defense in depth even though spawn is
 // argv-safe: prevents an attacker-controlled env from injecting ssh options).
 const HOST_RE = /^[A-Za-z0-9._-]+$/;
+const { spawnEnv, sshFailureKind, sshFailureMessage, SSH_STATE } = onboardingBridge;
+const RD_TRANSIENT_SSH_RE = /agent refused operation|signing failed|Permission denied \(publickey|Connection refused|Connection reset|kex_exchange|Operation timed out|Could not resolve|Host is down/i;
+const RD_MAX_TRANSIENT_ATTEMPTS = 4;
+
+function isTransientRdSshFailure(failureKind, detail) {
+  return (
+    failureKind !== SSH_STATE.HOST_KEY_MISMATCH &&
+    (failureKind === SSH_STATE.KEY_AUTH_BLOCKED || RD_TRANSIENT_SSH_RE.test(String(detail || "")))
+  );
+}
+
+function isRetryableRdTokenReadFailure(error, failureKind, detail) {
+  return (
+    failureKind !== SSH_STATE.HOST_KEY_MISMATCH &&
+    ((error && error.retryable === true) ||
+      isTransientRdSshFailure(failureKind, detail) ||
+      RD_TOKEN_FILE_NOT_READY_RE.test(String(detail || "")))
+  );
+}
+
+function rdTransientRetryDelayMs(attempt) {
+  return 1200 + attempt * 1200; // 1.2s -> 2.4s -> 3.6s -> 4.8s
+}
 
 // --- logging (US-006) ------------------------------------------------------
 // Conforms to docs/logging.md: line format `[<ISO>] [<LEVEL>] [ide] [<session>] <msg>`,
@@ -331,7 +361,7 @@ function sshRun(host, remoteCmd, opts = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = cp.spawn("ssh", args, { windowsHide: true });
+      child = cp.spawn("ssh", args, { windowsHide: true, env: spawnEnv() });
     } catch (e) {
       resolve({ code: -1, stdout: encoding === null ? Buffer.alloc(0) : "", stderr: String(e) });
       return;
@@ -349,6 +379,7 @@ function sshRun(host, remoteCmd, opts = {}) {
         code,
         stdout: encoding === null ? outBuf : outBuf.toString(encoding),
         stderr: Buffer.concat(errChunks).toString("utf8"),
+        failureKind: code === 0 ? SSH_STATE.READY : sshFailureKind(Buffer.concat(errChunks).toString("utf8")),
       });
     };
     const timer = setTimeout(() => {
@@ -373,6 +404,96 @@ function sshRun(host, remoteCmd, opts = {}) {
 /** POSIX single-quote escape for embedding a literal in a sh command. */
 function shSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+async function readRdSessionToken(host) {
+  const res = await sshRun(host, `cat ${RD_SESSION_TOKEN_REMOTE_FILE}`, {
+    timeoutMs: 6000,
+    maxBuffer: 4096,
+  });
+  if (res.code !== 0) {
+    const stderr = String(res.stderr || "").trim();
+    const detail = stderr
+      ? `Could not read host RD token: ${stderr}`
+      : `Could not read host RD token: ssh exited ${res.code}`;
+    const error = new Error(detail);
+    error.failureKind = res.failureKind || sshFailureKind(detail);
+    error.retryable = RD_TOKEN_FILE_NOT_READY_RE.test(detail);
+    throw error;
+  }
+  const token = String(res.stdout || "").trim();
+  if (!RD_SESSION_TOKEN_RE.test(token)) {
+    const error = new Error("Host RD token is missing or malformed");
+    error.failureKind = SSH_STATE.UNREACHABLE;
+    error.retryable = true;
+    throw error;
+  }
+  return token;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function clampInteger(value, min, max, fallback) {
+  return Math.round(clampNumber(value, min, max, fallback));
+}
+
+function rdCaptureParams() {
+  const cfg = vscode.workspace.getConfiguration("xpair.remoteDesktop");
+  const fps = clampInteger(cfg.get("fps", RD_CAPTURE_DEFAULTS.fps), 1, 120, RD_CAPTURE_DEFAULTS.fps);
+  const bitrate = clampInteger(
+    cfg.get("bitrate", RD_CAPTURE_DEFAULTS.bitrate),
+    100000,
+    50000000,
+    RD_CAPTURE_DEFAULTS.bitrate
+  );
+  const scale = clampNumber(cfg.get("scale", RD_CAPTURE_DEFAULTS.scale), 0.1, 1.0, RD_CAPTURE_DEFAULTS.scale);
+  return { fps, bitrate, scale };
+}
+
+function appendQueryParams(url, params) {
+  const sep = url.includes("?") ? "&" : "?";
+  const query = Object.entries(params)
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+    .join("&");
+  return `${url}${sep}${query}`;
+}
+
+function isBindCollision(detail) {
+  return /bind: Address already in use|Address already in use|Local forwarding failed|cannot listen to port|EADDRINUSE/i.test(String(detail || ""));
+}
+
+function classifiedSshFailureMessage(detail) {
+  const state = sshFailureKind(detail);
+  if (state === SSH_STATE.UNREACHABLE) return String(detail || "SSH tunnel failed");
+  return sshFailureMessage(state, detail);
+}
+
+function rdFailureKindForSshState(state) {
+  if (state === SSH_STATE.HOST_KEY_MISMATCH) return "host-key";
+  if (state === SSH_STATE.KEY_AUTH_BLOCKED) return "key-auth";
+  return "reach";
+}
+
+function normalizeRdFailureKind(kind, fallback = "reach") {
+  const raw = String(kind || "").toLowerCase().replace(/_/g, "-");
+  if (raw === "host-key-mismatch") return "host-key";
+  if (raw === "key-auth-blocked") return "key-auth";
+  if (
+    raw === "reach" ||
+    raw === "key-auth" ||
+    raw === "host-key" ||
+    raw === "capture-failed" ||
+    raw === "peer-failed" ||
+    raw === "no-first-frame" ||
+    raw === "superseded"
+  ) {
+    return raw;
+  }
+  return fallback;
 }
 
 // --- tunnel helpers ----------------------------------------------------------
@@ -422,12 +543,13 @@ function spawnTunnel(host, localPort, remotePort) {
     "-o", "ControlMaster=auto",
     "-o", `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
     "-o", "ControlPersist=300",
+    "-o", "ExitOnForwardFailure=yes",
     "-N",
     "-L", `${localPort}:127.0.0.1:${rport}`,
     host, // validated HOST_RE element
   ];
   log(`tunnel: ssh -N -L ${localPort}:127.0.0.1:${rport} ${host}`);
-  const child = cp.spawn("ssh", args, { windowsHide: true, detached: false });
+  const child = cp.spawn("ssh", args, { windowsHide: true, detached: false, env: spawnEnv() });
   child.stderr.on("data", (d) => log(`tunnel stderr: ${d.toString().trim()}`));
   child.on("error", (e) => log(`tunnel spawn error: ${e.message}`));
   child.on("close", (code) => log(`tunnel exited code=${code}`));
@@ -452,6 +574,8 @@ class RemoteDesktopPanel {
     this._v2Active = false;     // true while the v2 signaling tunnel is up
     this._v2Generation = 0;
     this._v2SettleTimer = null;
+    this._v2RetryTimer = null;
+    this._v2SessionToken = null;
   }
 
   /** Create the singleton RD editor tab, or reveal it if it already exists. */
@@ -647,9 +771,18 @@ class RemoteDesktopPanel {
     this._stopV2();
   }
 
+  dispose() {
+    this._stopAll();
+    const panel = this.panel;
+    this.panel = null;
+    if (panel && typeof panel.dispose === "function") {
+      try { panel.dispose(); } catch (_e) {}
+    }
+  }
+
   // --- v2 WebRTC (UDP/RTP H.264) -------------------------------------------
 
-  async _startV2(host, attempt = 0) {
+  async _startV2(host, attempt = 0, bindAttempt = 0) {
     this._stopV2();
     const generation = ++this._v2Generation;
     this._v2Active = true;
@@ -659,11 +792,48 @@ class RemoteDesktopPanel {
     } catch (e) {
       log(`v2: getFreePort error: ${e.message}`);
       if (this._v2Generation === generation) this._v2Active = false;
-      this.post({ type: "status", state: "error", detail: String(e.message) });
+      this.post({ type: "status", state: "error", detail: String(e.message), failureKind: "reach" });
       return;
     }
     if (!this._v2Active || this._v2Generation !== generation) return;
     this._tunnelPort = localPort;
+    let hostSessionToken;
+    try {
+      hostSessionToken = await readRdSessionToken(host);
+    } catch (e) {
+      const detail = e && e.message ? e.message : String(e || "could not read host RD token");
+      const failureKind = e && e.failureKind ? e.failureKind : sshFailureKind(detail);
+      if (
+        this._v2Generation === generation &&
+        attempt < RD_MAX_TRANSIENT_ATTEMPTS &&
+        isRetryableRdTokenReadFailure(e, failureKind, detail)
+      ) {
+        this._tunnelPort = null;
+        const delay = rdTransientRetryDelayMs(attempt);
+        log(`v2: RD token read transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS} in ${delay}ms`);
+        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS})` });
+        const retryTimer = setTimeout(() => {
+          if (this._v2RetryTimer === retryTimer) this._v2RetryTimer = null;
+          if (this._v2Generation !== generation) return;
+          this._startV2(host, attempt + 1, bindAttempt);
+        }, delay);
+        this._v2RetryTimer = retryTimer;
+        return;
+      }
+      if (this._v2Generation === generation) {
+        this._v2Active = false;
+        this._tunnelPort = null;
+        this.post({
+          type: "status",
+          state: "error",
+          detail: classifiedSshFailureMessage(detail),
+          failureKind: rdFailureKindForSshState(failureKind),
+        });
+      }
+      return;
+    }
+    if (!this._v2Active || this._v2Generation !== generation) return;
+    this._v2SessionToken = hostSessionToken;
     // Tunnel forwards the SIGNALING port only (TCP). Media flows over UDP/ICE.
     const child = spawnTunnel(host, localPort, SIGNAL_REMOTE_PORT);
     this._tunnelChild = child;
@@ -681,18 +851,33 @@ class RemoteDesktopPanel {
     // on a retry once 1Password is unlocked/approved, so don't surface a hard error on the first blip.
     // Match only genuinely retryable auth/network transients — NOT a bare code=255 (that also covers
     // hard failures like "bind: Address already in use" which must surface immediately).
-    const TRANSIENT_RE = /agent refused operation|signing failed|Permission denied \(publickey|Connection refused|Connection reset|kex_exchange|Operation timed out|Could not resolve|Host is down/i;
-    const MAX_TUNNEL_ATTEMPTS = 4;
     const postTunnelFailure = (detail) => {
       if (!this._v2Active || this._tunnelChild !== child || this._v2Generation !== generation) return;
-      // Lazy connect: re-spawn with backoff instead of failing hard, giving 1Password time to
-      // unlock/approve. Only surface the error after the retry window is exhausted.
-      if (attempt < MAX_TUNNEL_ATTEMPTS && TRANSIENT_RE.test(detail)) {
+      if (isBindCollision(detail) && bindAttempt < RD_MAX_BIND_ATTEMPTS) {
         this._tunnelChild = null;
         this._tunnelPort = null;
-        const delay = 1200 + attempt * 1200; // 1.2s → 2.4s → 3.6s → 4.8s
-        log(`v2: tunnel transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${MAX_TUNNEL_ATTEMPTS} in ${delay}ms`);
-        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${MAX_TUNNEL_ATTEMPTS})` });
+        log(`v2: local bind collision on ${localPort} — retrying with a fresh port (${bindAttempt + 1}/${RD_MAX_BIND_ATTEMPTS})`);
+        this.post({ type: "status", state: "connecting", detail: "retrying local tunnel port…" });
+        const retryTimer = setTimeout(() => {
+          if (this._v2RetryTimer === retryTimer) this._v2RetryTimer = null;
+          if (this._v2Generation !== generation) return;
+          this._startV2(host, attempt, bindAttempt + 1);
+        }, RD_BIND_RETRY_DELAY_MS);
+        this._v2RetryTimer = retryTimer;
+        return;
+      }
+      const failureKind = sshFailureKind(detail);
+      // Lazy connect: re-spawn with backoff instead of failing hard, giving 1Password time to
+      // unlock/approve. Only surface the error after the retry window is exhausted.
+      if (
+        attempt < RD_MAX_TRANSIENT_ATTEMPTS &&
+        isTransientRdSshFailure(failureKind, detail)
+      ) {
+        this._tunnelChild = null;
+        this._tunnelPort = null;
+        const delay = rdTransientRetryDelayMs(attempt);
+        log(`v2: tunnel transient (${detail.slice(0, 120)}) — retry ${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS} in ${delay}ms`);
+        this.post({ type: "status", state: "connecting", detail: `reconnecting… (${attempt + 1}/${RD_MAX_TRANSIENT_ATTEMPTS})` });
         const retryTimer = setTimeout(() => {
           if (this._v2RetryTimer === retryTimer) this._v2RetryTimer = null;
           if (this._v2Generation !== generation) return; // superseded by a stop/newer start
@@ -704,7 +889,12 @@ class RemoteDesktopPanel {
       this._v2Active = false;
       this._tunnelChild = null;
       this._tunnelPort = null;
-      this.post({ type: "status", state: "error", detail });
+      this.post({
+        type: "status",
+        state: "error",
+        detail: classifiedSshFailureMessage(detail),
+        failureKind: rdFailureKindForSshState(failureKind),
+      });
     };
 
     if (child && typeof child.on === "function") {
@@ -728,9 +918,14 @@ class RemoteDesktopPanel {
         self._v2SettleTimer = null;
       }
       if (!self._v2Active || self._v2Generation !== generation || self._tunnelChild !== child || self._tunnelPort !== localPort || !self.panel) return;
-      const signalUrl = `ws://127.0.0.1:${localPort}`;
-      log(`v2: telling webview to connect signaling ${signalUrl}`);
-      self.post({ type: "v2Connect", signalUrl });
+      const sessionToken = self._v2SessionToken;
+      const captureParams = rdCaptureParams();
+      const signalUrl = appendQueryParams(
+        `ws://127.0.0.1:${localPort}/?token=${encodeURIComponent(sessionToken)}`,
+        captureParams
+      );
+      log(`v2: telling webview to connect signaling ws://127.0.0.1:${localPort}/?token=<redacted>`);
+      self.post({ type: "v2Connect", signalUrl, sessionToken });
     }, TUNNEL_SETTLE_MS);
     this._v2SettleTimer = settleTimer;
   }
@@ -752,6 +947,7 @@ class RemoteDesktopPanel {
       this._tunnelChild = null;
     }
     this._tunnelPort = null;
+    this._v2SessionToken = null;
   }
 
   onMessage(msg) {
@@ -766,16 +962,29 @@ class RemoteDesktopPanel {
       this._startStream();
       return;
     }
-    // v2 (WebRTC) feedback from webview. This view is view-only (no input
-    // forwarding), so the extension only handles status/first-frame events.
+    // v2 (WebRTC) feedback from webview. Reconnect is handled inside the webview
+    // over the current tunnel; v2Error is terminal for that bounded retry window.
     if (msg.type === "v2FirstFrame") {
       log(`v2: media track rendering`);
       return;
     }
+    if (msg.type === "v2Stats") {
+      log(
+        `v2 stats: decoded=${msg.decoded ?? "-"} dropped=${msg.dropped ?? "-"} ` +
+        `fps=${msg.fps ?? "-"} jitterMs=${msg.jitterMs ?? "-"} bitrateKbps=${msg.bitrateKbps ?? "-"}`
+      );
+      return;
+    }
     if (msg.type === "v2Error") {
-      log(`v2: webview reported error: ${msg.detail || "unknown"}`);
+      const failureKind = normalizeRdFailureKind(msg.failureKind, "peer-failed");
+      log(`v2: webview reported error (${failureKind}): ${msg.detail || "unknown"}`);
       this._stopAll();
-      this.post({ type: "status", state: "error", detail: String(msg.detail || "webrtc error") });
+      this.post({
+        type: "status",
+        state: "error",
+        detail: String(msg.detail || "webrtc error"),
+        failureKind,
+      });
       return;
     }
   }
@@ -831,7 +1040,7 @@ class RemoteDesktopPanel {
       <div id="overlay-title">Xpair</div>
       <div id="overlay-msg">Connecting to host…</div>
     </div>
-    <div id="badge" class="off" title="View-only (no remote control)">view-only</div>
+    <div id="badge" class="off" title="Waiting for remote input helper">input pending</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -1693,6 +1902,7 @@ function activate(context) {
   // 2) Remote Desktop = a pinned editor tab ("RD") in the main editor area
   //    (NOT a left activity-bar view).
   const panel = new RemoteDesktopPanel(context.extensionUri);
+  context.subscriptions.push(panel);
 
   // Auto-open the Remote Desktop on launch so it is the default surface (v2 RD). This regressed
   // when the onboarding / session-picker UX changed the startup view: the panel was created but

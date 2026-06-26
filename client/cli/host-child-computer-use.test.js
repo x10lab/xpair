@@ -33,7 +33,7 @@ test("Q0025 Q0101 Q0245 child sessions use the host tmux-aqua subtree for comput
   assert.match(launcher, /TMUXB="\$\{REMOTE_BIN\}\/tmux-aqua"/);
   assert.match(launcher, /tm\(\) \{ "\\\$TMUXB" -S "\\\$SOCK" "\\\$@"; \}/);
   assert.match(launcher, /tm new-session -d -x \$\{COLS\} -y \$\{LINES\} -s "\\\$SESSION" -c \$\{HOST_DIR_Q\} "bash \\\$T"/);
-  assert.match(launcher, /mosh --server="\$MOSH_SERVER" "\$REMOTE_HOST" -- "\$HOME\/\.local\/bin\/tmux-aqua" -S "\$AQUA_SOCK" attach -d -t "=\$ACTUAL_SESSION"/);
+  assert.match(launcher, /mosh --server="\$MOSH_SERVER" "\$REMOTE_HOST" -- "\$REMOTE_HOME\/\.local\/bin\/tmux-aqua" -S "\$AQUA_SOCK" attach -d -t "=\$ACTUAL_SESSION"/);
   // non-exec by design: ssh-fallback failure must return to choose_attach_recovery
   assert.match(launcher, /\n  ssh -t "\$REMOTE_HOST" "\$REMOTE_BIN\/tmux-aqua -S \$\{AQUA_SOCK_Q\} attach -d -t/);
 

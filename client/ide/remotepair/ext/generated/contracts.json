@@ -3,7 +3,7 @@
   "screen": {
     "v1aPort": 8889,
     "v2SignalPort": 8890,
-    "remoteInputSupported": false
+    "remoteInputSupported": true
   },
   "identity": {
     "product": "Xpair",

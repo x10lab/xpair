@@ -17,10 +17,6 @@ have() { # desc file pattern
   if [[ -f "$2" ]] && grep -qE "$3" "$2"; then printf 'ok:  %-46s\n' "$1"
   else printf 'MISS: %-46s (%s)\n' "$1" "${3}"; fail=1; fi
 }
-absent() { # desc file pattern
-  if [[ -f "$2" ]] && ! grep -qE "$3" "$2"; then printf 'ok:  %-46s absent\n' "$1"
-  else printf 'MISS: %-46s should be absent (%s)\n' "$1" "${3}"; fail=1; fi
-}
 eq() { # desc expected actual
   if [[ "$2" == "$3" ]]; then printf 'ok:  %-46s = %s\n' "$1" "$2"
   else printf 'MISS: %-46s SoT=%q gen=%q\n' "$1" "$2" "$3"; fail=1; fi
@@ -45,19 +41,29 @@ else
   printf 'MISS: %-46s (run generate-contracts.mjs)\n' "generated/contracts.json present"; fail=1
 fi
 
-# --- ide webview: Remote Desktop is view-only ---
+# --- ide webview: Remote Desktop supports authenticated remote input ---
 have "remote-desktop.js recvonly video" "$RDJS" 'addTransceiver\("video", \{ direction: "recvonly" \}\)'
-have "remote-desktop.js closes DataChannels" "$RDJS" 'ondatachannel = function'
-have "remote-desktop.js closes channel" "$RDJS" 'channel\.close\(\)'
-absent "remote-desktop.js creates DataChannels" "$RDJS" 'createDataChannel\('
-absent "remote-desktop.js captures RD input" "$RDJS" 'addEventListener\("(pointer|mouse|click|wheel|key|beforeinput|input|composition)'
-absent "remote-desktop.js sends input payloads" "$RDJS" 't:[[:space:]]*["'\''](c|m|k|x)["'\'']'
+have "remote-desktop.js receives DataChannels" "$RDJS" 'ondatachannel = function'
+have "remote-desktop.js creates rp-ctl" "$RDJS" 'createDataChannel\("rp-ctl"\)'
+have "remote-desktop.js creates rp-move" "$RDJS" 'createDataChannel\("rp-move"\)'
+have "remote-desktop.js captures pointerdown" "$RDJS" 'addEventListener\("pointerdown"'
+have "remote-desktop.js captures pointermove" "$RDJS" 'addEventListener\("pointermove"'
+have "remote-desktop.js captures pointerup" "$RDJS" 'addEventListener\("pointerup"'
+have "remote-desktop.js captures wheel" "$RDJS" 'addEventListener\("wheel"'
+have "remote-desktop.js captures keydown" "$RDJS" 'addEventListener\("keydown"'
+have "remote-desktop.js captures keyup" "$RDJS" 'addEventListener\("keyup"'
+have "remote-desktop.js captures compositionend" "$RDJS" 'addEventListener\("compositionend"'
+have "remote-desktop.js captures beforeinput" "$RDJS" 'addEventListener\("beforeinput"'
+have "remote-desktop.js sends pointer down" "$RDJS" 't:[[:space:]]*["'\'']d["'\'']'
+have "remote-desktop.js sends pointer up" "$RDJS" 't:[[:space:]]*["'\'']u["'\'']'
+have "remote-desktop.js sends pointer move" "$RDJS" 't:[[:space:]]*["'\'']m["'\'']'
+have "remote-desktop.js sends wheel" "$RDJS" 't:[[:space:]]*["'\'']w["'\'']'
+have "remote-desktop.js sends key" "$RDJS" 't:[[:space:]]*["'\'']k["'\'']'
+have "remote-desktop.js sends text" "$RDJS" 't:[[:space:]]*["'\'']x["'\'']'
+have "remote-desktop.js gates badge on input-ready" "$RDJS" 'input-ready'
 
 # --- ide webview: message vocabulary ---
 for m in $(jq -r '.webviewToExtMessages[]' "$C"); do
   have "remote-desktop.js msg '$m'" "$RDJS" "\"$m\""
 done
-absent "remote-desktop.js msg 'click'" "$RDJS" '"click"'
-absent "remote-desktop.js msg 'key'" "$RDJS" '"key"'
-
 if [[ $fail -eq 0 ]]; then echo "✓ screen-protocol SoT: host/rd/ + client/ide/ aligned"; else echo "✗ screen-protocol drift detected"; exit 1; fi

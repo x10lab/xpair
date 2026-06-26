@@ -50,7 +50,7 @@ First run opens a guided setup where each step is a **hard gate that fixes itsel
 Attach from a client Mac (Finder → right-click → *Launch Remote Pair*), Xpair's Sessions sidebar, or any SSH/mosh client including Claude Code on mobile. Same sessions, same state, wherever you are.
 
 ### Remote Desktop, built in
-View and drive the host screen from Xpair's Remote Desktop tab over a native H.264/WebRTC stream (view-only). `xpair desktop` falls back to macOS Screen Sharing.
+View and drive the host screen from Xpair's Remote Desktop tab over a native H.264/WebRTC stream with authenticated pointer, wheel, keyboard, and text input. `xpair desktop` falls back to macOS Screen Sharing.
 
 ### Permission dialogs answered for you
 A blocking "Allow?" dialog (or a 1Password unlock prompt) on a headless host stalls the whole session. An on-demand approve router (OCR + click, with a Claude fallback classifier) detects and clicks the right button, so unattended sessions don't hang.
@@ -74,16 +74,22 @@ Setup runs from **Xpair**, the client app: install it, launch it, and its first-
 ### 1. Install Xpair and launch it
 
 ```bash
-brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
-```
-
-No Homebrew? Install the app directly — same result, no `brew`:
-
-```bash
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash
 ```
 
-It downloads the latest `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
+This installs the latest **stable** release that actually includes the `Xpair.zip` client asset. Xpair currently has no stable release on the renamed Xpair asset line, so the installer falls back to the newest `0.5.0aN` **pre-release** with a notice. To choose that channel explicitly, pass `--prerelease`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash -s -- --prerelease
+```
+
+It downloads the chosen `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
+
+Prefer Homebrew? The cask follows the **stable** line — the same channel as the default `curl` install above (alpha builds come from the `--prerelease` one-liner, not the cask). No stable Xpair release exists on the renamed asset line yet, so the cask is interim-pinned to the latest `0.5.0aN` pre-release; `brew upgrade` moves you onto stable the moment it ships:
+
+```bash
+brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
+```
 
 Open Xpair. First run opens onboarding (in-app, not a separate window) and walks:
 
@@ -179,7 +185,7 @@ Xpair is a **VSCodium-based desktop app** (`xpair` cask) reshaped around remote 
 
 - **Sessions sidebar** — lists your host sessions (Attached / Detached) with a session picker; the home base of the app.
 - **Browser container** — folder / Search / Extensions with per-folder favorites.
-- **Remote Desktop** — view and drive the host screen in-app over the native H.264/WebRTC pipeline (`host/rd`); view-only by design, with `xpair desktop` as a macOS Screen Sharing fallback.
+- **Remote Desktop** — view and drive the host screen in-app over the native H.264/WebRTC pipeline (`host/rd`), including pointer, wheel, keyboard, and text input over the active RD session; `xpair desktop` remains a macOS Screen Sharing fallback.
 - **First-run onboarding** — a guided, hard-gated flow that resolves each prerequisite (CLI install, engine, API key, SSH) before handing you the app.
 - **Editor (code-server)** *(scaffold)* — an in-app editor over `xpair editor`, still being wired in.
 

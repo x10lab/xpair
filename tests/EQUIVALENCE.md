@@ -33,7 +33,7 @@ Item-by-item verification of whether the new `client/cli/xpair-launch` reproduce
 ## Bugs Found and Fixed (during ralph)
 
 1. **`exec tm_local attach`** (line ~200) — `exec` cannot run a shell function → local aqua take-over attach breaks. → Fixed to `exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d ...`. (detected by t_00/t_05)
-2. **mosh `$REMOTE_BIN/tmux-aqua`** (just before ralph) — mosh `--` is a non-shell exec, so the literal `$HOME` is not expanded → tmux-aqua cannot be found. → Fixed to an absolute path (`"$HOME/.local/bin/tmux-aqua"`). (regression guarded by t_06 s4)
+2. **mosh `$REMOTE_BIN/tmux-aqua`** (just before ralph) — mosh `--` is a non-shell exec, so the literal `$HOME` is not expanded → tmux-aqua cannot be found. → Fixed to an absolute path built from the **ssh-resolved REMOTE home** (`"$REMOTE_HOME/.local/bin/tmux-aqua"`, and `--server=$REMOTE_HOME/.local/bin/mosh-server`). The remote script emits `__HOME__:$HOME` (login shell expands it remotely); the client parses it into `REMOTE_HOME` (falling back to the client `$HOME`). This is correct even when the remote SSH account differs from the client user — it no longer assumes remote home == client home. (regression guarded by t_06 s4, where the mock supplies a remote home distinct from the client `$HOME`)
 
 ## Conclusion
 - UNINTENTIONAL gap: **0**. Every core behavior of the reference maps to either SAME or an intended improvement.

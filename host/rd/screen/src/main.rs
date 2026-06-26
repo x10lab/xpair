@@ -26,6 +26,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use xcap::Monitor;
 
+#[cfg(feature = "webrtc")]
+mod control;
 mod log;
 mod serve;
 #[cfg(feature = "webrtc")]
@@ -95,6 +97,11 @@ enum Command {
         /// TCP port for the signaling WebSocket (bound on 127.0.0.1).
         #[arg(long, default_value_t = 8890)]
         port: u16,
+        /// Required expected signaling session token. Use TOKEN directly or
+        /// @TOKEN_FILE to read the token from an owner-only file. Every
+        /// WebSocket must present this exact token in `?token=...`.
+        #[arg(long, value_name = "TOKEN")]
+        token: String,
         /// Target frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,
@@ -133,10 +140,11 @@ fn main() -> ExitCode {
         #[cfg(feature = "webrtc")]
         Command::ServeWebrtc {
             port,
+            token,
             fps,
             bitrate,
             scale,
-        } => serve_webrtc::run(port, fps, bitrate, scale),
+        } => serve_webrtc::run(port, fps, bitrate, scale, token),
     };
 
     match result {
