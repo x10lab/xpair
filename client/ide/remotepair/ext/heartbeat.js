@@ -76,7 +76,11 @@ function parseEnv(file) {
 
 /** Read REMOTE_HOST from client.env (empty string if unset / unreadable). */
 function remoteHost() {
-  return (parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
+  const host = (parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
+  // Validate HERE so every caller (writeOnce AND stopHeartbeat) is covered before ssh is spawned —
+  // an invalid value yields "" and callers already bail on empty. `^(?!-)` rejects option-looking
+  // hosts like `-p2222`/`-oProxyCommand=...` that ssh would parse as options, not the destination.
+  return HOST_RE.test(host) ? host : "";
 }
 
 let _timer = null;
@@ -84,8 +88,7 @@ let _timer = null;
 /** Fire one heartbeat write over SSH. Fire-and-forget; never throws, never blocks. */
 function writeOnce() {
   const host = remoteHost();
-  if (!host) return; // not connected yet — retry next tick.
-  if (!HOST_RE.test(host)) return; // reject option-looking / malformed hosts before ssh sees them.
+  if (!host) return; // not connected yet, or host failed validation in remoteHost() — retry next tick.
   const id = clientId();
   const payload = JSON.stringify({
     name: clientHost(),

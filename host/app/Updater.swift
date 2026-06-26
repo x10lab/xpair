@@ -343,12 +343,15 @@ enum Updater {
         // Relaunch the bundle we actually swapped into, wherever it lives (/Applications OR
         // ~/Applications). Hard-coding /Applications here would, on a ~/Applications install, either
         // open a stale /Applications copy or fail to restart at all, leaving the host down.
-        let appPath = Bundle.main.bundlePath
+        // Shell-escape for the single-quoted context below: a bundle path containing a single
+        // quote (e.g. /Applications/O'Hare/XpairHost.app) would otherwise break out of the quote
+        // and the fallback `open` would fail after the app has already terminated.
+        let appPathQ = Bundle.main.bundlePath.replacingOccurrences(of: "'", with: "'\\''")
         // detached helper: wait for the current PID to exit → LaunchAgent kickstart. (Automatic if KeepAlive, but guaranteed explicitly.)
         let script = """
         while kill -0 \(getpid()) 2>/dev/null; do sleep 0.3; done
         /bin/launchctl kickstart -k gui/\(uid)/\(BUNDLE_ID) 2>/dev/null \
-          || /usr/bin/open '\(appPath)'
+          || /usr/bin/open '\(appPathQ)'
         """
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
