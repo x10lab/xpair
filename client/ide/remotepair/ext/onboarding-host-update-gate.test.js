@@ -28,7 +28,7 @@ test("bridge installHost supports force:true and host incompatibility kinds", ()
   assert.match(bridge, /if \(force\) args\.push\("--force"\)/);
   assert.match(bridge, /incompatibleKind = "major_mismatch"/);
   assert.match(bridge, /incompatibleKind = "below_floor"/);
-  assert.match(bridge, /MIN_COMPATIBLE_HOST = "0\.5\.0a45"/);
+  assert.match(bridge, /MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
 });
 
 test("global.d.ts exposes force installs and incompatibleKind", () => {
@@ -68,7 +68,7 @@ test("below-floor hosts render an inline Update host button instead of navigatin
     app,
     /const hostUpdatePanel = canUpdateHost \? \([\s\S]*<StepInstalling\s*isUpdate[\s\S]*host=\{connectTarget\}[\s\S]*requiredVersion=\{MIN_COMPATIBLE_HOST\}/,
   );
-  assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a45"/);
+  assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
 });
 
 test("major-mismatch hosts stay blocked with an error and no update button", () => {

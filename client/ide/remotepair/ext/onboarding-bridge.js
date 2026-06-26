@@ -910,12 +910,26 @@ const bridge = {
       };
     }
     const sshArgs = sshProbeOpts(6);
-    // One round-trip: print whether the .app dir exists, then the status.json contents.
+    // Resolve the host version that will actually serve the RD session, in priority order:
+    //   1. RUNNING version — ~/.xpair/host/logs/status.json. The app rewrites it every second, so a FRESH
+    //      file means the app is up and its `version` is the live process version. After an on-disk update
+    //      that did not restart the daemon (e.g. `brew upgrade --cask` without kickstart), the running
+    //      process — which is what actually serves RD — can be older than the on-disk bundle, so it wins.
+    //   2. ON-DISK version of the copy the LaunchAgent will launch — ProgramArguments[0] (config.sh
+    //      APP_EXEC / Installer.swift Bundle.main.executablePath) → that bundle's CFBundleShortVersionString.
+    //      The label comes from host.env BUNDLE_PREFIX (the current label) so a leftover legacy plist
+    //      (e.g. com.ghyeong.xpair-host) can't be picked nondeterministically over the active one.
+    //   3. Fallback when no host LaunchAgent is registered yet (e.g. a cask install before first launch):
+    //      whichever installed bundle exists (/Applications, the cask default, then ~/Applications) — read
+    //      ITS version too, so a cask-installed-but-not-launched old host is gated, not waved through.
     const probe =
-      // install-host puts the app in /Applications (system) OR ~/Applications; check BOTH so a
-      // correctly-installed host app is never false-flagged "missing" (which would wrongly gate onboarding).
-      '{ [ -d "$HOME/Applications/XpairHost.app" ] || [ -d "/Applications/XpairHost.app" ]; } && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +
-      'cat "$HOME/.xpair/host/logs/status.json" 2>/dev/null || true';
+      'pf="$(. "$HOME/.xpair/host/host.env" 2>/dev/null && printf %s "${BUNDLE_PREFIX:-}")"; [ -n "$pf" ] || pf=com.x10lab.xpair-host; ' +
+      'la="$HOME/Library/LaunchAgents/$pf.plist"; [ -f "$la" ] || la=""; ' +
+      'ex="$([ -n "$la" ] && /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$la" 2>/dev/null)"; ' +
+      'app="${ex%/Contents/MacOS/*}"; ' +
+      'if [ -z "$app" ] || [ ! -d "$app" ]; then for d in "/Applications/XpairHost.app" "$HOME/Applications/XpairHost.app"; do [ -d "$d" ] && { app="$d"; break; }; done; fi; ' +
+      'if [ -n "$app" ] && [ -d "$app" ]; then echo RP_APP_INSTALLED=1; dv="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$dv" ] && echo "RP_DISK_VERSION=$dv"; else echo RP_APP_INSTALLED=0; fi; ' +
+      'st="$HOME/.xpair/host/logs/status.json"; if [ -f "$st" ]; then now="$(date +%s)"; mt="$(stat -f %m "$st" 2>/dev/null || echo 0)"; [ "$((now - mt))" -le 10 ] && { echo RP_RUNNING=1; cat "$st"; }; fi';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
@@ -926,26 +940,36 @@ const bridge = {
     if (!installed) {
       return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "Host has no Xpair host app" };
     }
-    let version = "";
-    const jsonStart = out.indexOf("{");
-    if (jsonStart !== -1) {
-      try {
-        const j = JSON.parse(out.slice(jsonStart));
-        if (j && typeof j.version === "string") version = j.version;
-      } catch { /* status.json absent/garbled — version stays unknown */ }
+    // The RUNNING process version (fresh status.json) wins over the on-disk bundle — it is what actually
+    // serves RD; on-disk is used only when the app is not running (so an old running process is never
+    // masked by a newer on-disk bundle that hasn't been started yet).
+    let diskVersion = "";
+    const dm = out.match(/^RP_DISK_VERSION=(.+)$/m);
+    if (dm) diskVersion = dm[1].trim();
+    let runningVersion = "";
+    if (/^RP_RUNNING=1$/m.test(out)) {
+      const j0 = out.indexOf("{");
+      if (j0 !== -1) {
+        try {
+          const j = JSON.parse(out.slice(j0));
+          if (j && typeof j.version === "string") runningVersion = j.version.trim();
+        } catch { /* status.json garbled — ignore and use the on-disk version */ }
+      }
     }
+    const version = runningVersion || diskVersion;
     const clientV = clientVersion();
     const hostMajor = versionMajor(version);
     const clientMajor = versionMajor(clientV);
     // Compatibility = same MAJOR (necessary) AND host >= MIN_COMPATIBLE_HOST (the protocol floor).
     // The old check was major-only, which let a too-old same-major host (e.g. a43 vs an a45-protocol
-    // client) connect and fail subtly. Unknown host version (app installed, status.json not stamped
-    // yet) is still allowed so a fresh install isn't hard-blocked before its first status write.
+    // client) connect and fail subtly. Version comes from the running process or the installed bundle
+    // (above), so an installed host normally has a known version; unknown only when neither is readable
+    // (corrupt/partial install), which we allow rather than hard-block on a read glitch.
     let compatible;
     let incompatibleKind = "";
     let reason = "";
     if (!hostMajor) {
-      compatible = true; // unknown version → allow (fresh install)
+      compatible = true; // unreadable bundle version → allow (don't hard-block on a read glitch)
     } else if (hostMajor !== clientMajor) {
       // Different major — including a NEWER host. Force-reinstalling the client's bundled (older) host
       // over it would be a DOWNGRADE/overwrite, so this must NOT route into the update flow; the UI
