@@ -918,11 +918,19 @@ const bridge = {
     // second, so it only exists while the app is RUNNING — an installed-but-not-running too-old host
     // would report no version and slip through the gate as "unknown".
     const probe =
-      // install-host puts the app in /Applications (system) OR ~/Applications; emit the version of
-      // EVERY copy present and let the client pick the newest (below). Both can coexist — a forced
-      // "Update host" lands in /Applications, so a stale per-user ~/Applications copy must NOT mask it
-      // (else the gate keeps reporting below_floor and onboarding stays blocked after a real update).
-      'inst=0; for d in "/Applications/XpairHost.app" "$HOME/Applications/XpairHost.app"; do [ -d "$d" ] || continue; inst=1; v="$(defaults read "$d/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; done; [ "$inst" = 1 ] && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0';
+      // Read the version of the copy the LaunchAgent actually runs — that bundle is what serves the RD
+      // session, so it is what compatibility must be judged against. install.sh / Installer.swift register
+      // ProgramArguments[0] = <bundle>/Contents/MacOS/<app> at the active location (/Applications, the cask
+      // default, OR ~/Applications when the app self-installed from there). Measuring the active copy means
+      // a stale dormant copy in the other location can neither mask a real update nor (the inverse) fool the
+      // gate into passing a newer-but-not-running bundle. Fall back to mere presence when no host LaunchAgent
+      // is registered yet (installed but not set up → version unknown, handled as a fresh install below).
+      'la="$(ls "$HOME"/Library/LaunchAgents/*.xpair-host.plist 2>/dev/null | head -1)"; ' +
+      'ex="$([ -n "$la" ] && /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$la" 2>/dev/null)"; ' +
+      'app="${ex%/Contents/MacOS/*}"; ' +
+      'if [ -n "$app" ] && [ -d "$app" ]; then echo RP_APP_INSTALLED=1; v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; ' +
+      'elif [ -d "/Applications/XpairHost.app" ] || [ -d "$HOME/Applications/XpairHost.app" ]; then echo RP_APP_INSTALLED=1; ' +
+      'else echo RP_APP_INSTALLED=0; fi';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
@@ -933,14 +941,11 @@ const bridge = {
     if (!installed) {
       return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "Host has no Xpair host app" };
     }
-    // A host may carry copies in BOTH /Applications and ~/Applications; the gate cares about the NEWEST
-    // installed bundle (what an update produces and what will run), so take the max across whatever the
-    // probe reported. This keeps a stale per-user copy from pinning the gate to an old version.
+    // Version of the LaunchAgent-registered (active) host copy — the one that will actually serve RD.
+    // Empty when installed-but-not-yet-registered (handled as unknown below).
     let version = "";
-    for (const mm of out.matchAll(/^RP_APP_VERSION=(.+)$/gm)) {
-      const v = mm[1].trim();
-      if (v && (!version || compareVersions(v, version) > 0)) version = v;
-    }
+    const m = out.match(/^RP_APP_VERSION=(.+)$/m);
+    if (m) version = m[1].trim();
     const clientV = clientVersion();
     const hostMajor = versionMajor(version);
     const clientMajor = versionMajor(clientV);
