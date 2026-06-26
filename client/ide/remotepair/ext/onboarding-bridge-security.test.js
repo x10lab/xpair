@@ -1,8 +1,11 @@
 const assert = require("node:assert/strict");
 const childProcess = require("node:child_process");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const bridge = require("./onboarding-bridge.js");
+const xpairCli = fs.readFileSync(path.join(__dirname, "../../../cli/xpair"), "utf8");
 
 let failures = 0;
 async function check(name, fn) {
@@ -50,7 +53,20 @@ function withSpawnSpy(fn) {
       assert.equal(calls.length, 1);
       assert.equal(calls[0].cmd, "ssh");
       assert.ok(calls[0].args.includes("test-host_1.example"));
+      assert.ok(calls[0].args.includes("ControlMaster=auto"));
+      assert.ok(calls[0].args.includes("ControlPersist=300"));
+      const controlPath = calls[0].args.find((arg) => String(arg).startsWith("ControlPath="));
+      assert.match(controlPath, /rp-cm-%C$/, "ControlPath must be keyed by OpenSSH %C");
+      assert.doesNotMatch(controlPath, new RegExp(String(process.pid)), "ControlPath must not be pid-scoped");
     });
+  });
+
+  await check("host-permissions CLI probe shares the session ControlMaster", async () => {
+    assert.match(xpairCli, /rp_ssh_control_path\(\)[\s\S]*rp-cm-%%C/);
+    assert.match(
+      xpairCli,
+      /cmd_host_permissions\(\)[\s\S]*cm="\$\(rp_ssh_control_path\)"[\s\S]*ControlMaster=auto[\s\S]*"ControlPath=\$cm"[\s\S]*ControlPersist=300/,
+    );
   });
 
   if (failures > 0) {

@@ -1,7 +1,7 @@
 // onboarding-main.cjs — single-app onboarding window, hosted by the IDE's MAIN process.
 //
 // One app, one main process (spec .omc/specs/deep-interview-single-app-onboarding.md): the VSCodium
-// electron-main calls shouldOnboard()/openOnboardingWindow() on first run and shows this
+// electron-main calls resolveOnboarding()/openOnboardingWindow() before the workbench and shows this
 // PRE-WORKBENCH BrowserWindow INSTEAD of creating the workbench window; on completion the window
 // closes and the caller-provided onComplete() opens the workbench (RD auto-opens there). This
 // REPLACES the old standalone client/onboarding 2nd-process Electron wrapper — no second app, no
@@ -40,32 +40,110 @@ function clearForceOnboardingSentinel() {
   try { fs.rmSync(FORCE_ONBOARDING_SENTINEL, { force: true }) } catch { /* ignore */ }
 }
 
-/** "onboarded" ⇔ REMOTE_HOST is set. Folder mappings are OPTIONAL (you can attach to a host for
- *  screen share / terminal with no folders mapped and add them later from the IDE), so a connected
- *  but unmapped client still counts as onboarded — otherwise the hard guard would re-show onboarding
- *  forever for anyone who skipped mapping. */
-function isOnboarded() {
+const START_STEP = Object.freeze({
+  WELCOME: 'welcome',
+  CONNECT: 'connect',
+  GRANT: 'grant',
+  ENGINE: 'engine',
+})
+const START_STEPS = new Set(Object.values(START_STEP))
+const SESSION_ENGINES = new Set(['claude', 'shell', 'codex', 'opencode'])
+
+function readClientEnv() {
   const file = path.join(os.homedir(), '.xpair/host', 'client.env')
   let txt = ''
-  try { txt = fs.readFileSync(file, 'utf8') } catch { return false }
+  try { txt = fs.readFileSync(file, 'utf8') } catch { return {} }
   const env = {}
   for (const line of txt.split('\n')) {
     const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/)
     if (m) env[m[1]] = m[2].replace(/^["']/, '').replace(/["']\s*$/, '')
   }
-  return (env.REMOTE_HOST || '').trim().length > 0
+  return env
 }
 
-/** Should the onboarding window show on this launch? `RP_FORCE_ONBOARDING=1` / `--force`, or the
- *  force-onboarding sentinel (written by "Re-run setup") forces it. */
-function shouldOnboard(argv = process.argv) {
+function configuredRemoteHost() {
+  return (readClientEnv().REMOTE_HOST || '').trim()
+}
+
+function configuredEngine() {
+  const engine = (readClientEnv().ENGINE || 'claude').trim()
+  return SESSION_ENGINES.has(engine) ? engine : 'claude'
+}
+
+/** Historical helper: "configured" ⇔ REMOTE_HOST is set. Folder mappings are OPTIONAL (you can
+ *  attach to a host for screen share / terminal with no folders mapped and add them later from the
+ *  IDE), so they are intentionally not part of the launch guard. */
+function isOnboarded() {
+  return configuredRemoteHost().length > 0
+}
+
+function forcedOnboardingRequested(argv = process.argv) {
   if (process.env.RP_FORCE_ONBOARDING === '1' || (Array.isArray(argv) && argv.includes('--force'))) {
     return true
   }
-  if (forceOnboardingSentinelExists()) {
-    return true
+  return forceOnboardingSentinelExists()
+}
+
+/**
+ * Evaluate the launch guard in wizard order and return the first step that needs attention.
+ * Folder mappings are not a launch guard; every other runtime precondition is rechecked per launch.
+ * @param {string[]} [argv]
+ * @param {object} [probeBridge] test override; defaults to onboarding-bridge.js
+ * @returns {Promise<'welcome'|'connect'|'grant'|'engine'|null>}
+ */
+async function firstFailingGuard(argv = process.argv, probeBridge = bridge) {
+  if (forcedOnboardingRequested(argv)) return START_STEP.WELCOME
+
+  const host = configuredRemoteHost()
+  if (!host) return START_STEP.WELCOME
+
+  try {
+    const cli = await probeBridge.cliReady()
+    if (!cli || cli.ready !== true) return START_STEP.WELCOME
+  } catch {
+    return START_STEP.WELCOME
   }
-  return !isOnboarded()
+
+  try {
+    const reach = await probeBridge.sshReachable(host)
+    if (!reach || reach.reachable !== true) return START_STEP.CONNECT
+  } catch {
+    return START_STEP.CONNECT
+  }
+
+  try {
+    const app = await probeBridge.hostAppStatus(host)
+    if (!app || app.installed !== true || app.compatible !== true) return START_STEP.CONNECT
+  } catch {
+    return START_STEP.CONNECT
+  }
+
+  try {
+    const perms = await probeBridge.hostPermissions({ host })
+    if (!perms || perms.alive !== true || perms.ax !== true || perms.sr !== true) return START_STEP.GRANT
+  } catch {
+    return START_STEP.GRANT
+  }
+
+  try {
+    const engine = await probeBridge.hostEngineStatus(configuredEngine())
+    if (!engine || engine.installed !== true || engine.authed !== true) return START_STEP.ENGINE
+  } catch {
+    return START_STEP.ENGINE
+  }
+
+  return null
+}
+
+/** Compatibility wrapper for older local tests/scripts; new electron-main code uses
+ *  resolveOnboarding() so it can await the per-launch guard. */
+async function shouldOnboard(argv = process.argv) {
+  return (await firstFailingGuard(argv)) !== null
+}
+
+function normalizeStartStep(startStep) {
+  const step = String(startStep || '').trim().toLowerCase()
+  return START_STEPS.has(step) ? step : ''
 }
 
 let _ipcWired = false
@@ -114,9 +192,10 @@ let _completed = false
  * @param {object}  o
  * @param {typeof import('electron')} o.electron   the electron module from the main process
  * @param {() => void} o.onComplete                opens the workbench window (same process)
+ * @param {string} [o.startStep]                   wizard step id to parachute into
  * @returns {import('electron').BrowserWindow}
  */
-function openOnboardingWindow({ electron, onComplete }) {
+function openOnboardingWindow({ electron, onComplete, startStep } = {}) {
   const { app, BrowserWindow, ipcMain, shell } = electron
   // Onboarding is actually opening now, so consume the one-shot force sentinel (if any). This
   // guarantees exactly one forced run — a later normal launch won't re-trigger onboarding.
@@ -153,7 +232,12 @@ function openOnboardingWindow({ electron, onComplete }) {
     try { app.focus({ steal: true }) } catch { try { app.focus() } catch { /* */ } }
   })
 
-  _win.loadFile(WEBVIEW_INDEX)
+  const normalizedStartStep = normalizeStartStep(startStep)
+  if (normalizedStartStep) {
+    _win.loadFile(WEBVIEW_INDEX, { query: { startStep: normalizedStartStep } })
+  } else {
+    _win.loadFile(WEBVIEW_INDEX)
+  }
   _win.webContents.setWindowOpenHandler(({ url }) => {
     try { shell.openExternal(url) } catch { /* */ }
     return { action: 'deny' }
@@ -168,4 +252,17 @@ function openOnboardingWindow({ electron, onComplete }) {
   return _win
 }
 
-module.exports = { isOnboarded, shouldOnboard, openOnboardingWindow }
+async function resolveOnboarding({ electron, onComplete, argv = process.argv, probeBridge = bridge } = {}) {
+  const startStep = await firstFailingGuard(argv, probeBridge)
+  if (!startStep) return false
+  openOnboardingWindow({ electron, onComplete, startStep })
+  return true
+}
+
+module.exports = {
+  isOnboarded,
+  firstFailingGuard,
+  shouldOnboard,
+  resolveOnboarding,
+  openOnboardingWindow,
+}

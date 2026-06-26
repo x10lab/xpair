@@ -152,15 +152,24 @@ function spawnEnv(extra = {}) {
   return env;
 }
 
+function sshControlPath() {
+  return path.join(os.tmpdir() || "/tmp", "rp-cm-%C");
+}
+
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
  *  publickey-only auth, and BatchMode so ssh NEVER drops to a password/passphrase prompt (which
  *  would hang or spawn an out-of-band GUI prompt). Used by every read/probe ssh call and by the
- *  install preflight: fingerprint-confirmed key auth is the primary path. */
+ *  install preflight: fingerprint-confirmed key auth is the primary path. ControlMaster is shared
+ *  across this GUI login session (not pid-scoped) so launch-time onboarding probes multiplex over
+ *  one authenticated SSH master instead of re-prompting per probe. */
 function sshProbeOpts(connectTimeout = 5) {
   const opts = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${connectTimeout}`,
     "-o", "ConnectionAttempts=1",
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${sshControlPath()}`,
+    "-o", "ControlPersist=300",
     "-o", "PreferredAuthentications=publickey",
     "-o", "PubkeyAuthentication=yes",
     "-o", "PasswordAuthentication=no",

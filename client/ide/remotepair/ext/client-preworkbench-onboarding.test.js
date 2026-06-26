@@ -34,16 +34,19 @@ function stripLineComments(source) {
 
 test("Q0369 client onboarding appears before the IDE workbench and only completion opens it", () => {
   assert.match(electronMainPatch, /private async openFirstWindow/);
-  assert.match(electronMainPatch, /ob\.shouldOnboard\(\)/);
-  assert.match(electronMainPatch, /ob\.openOnboardingWindow\(/);
+  assert.match(electronMainPatch, /typeof ob\.resolveOnboarding === 'function'/);
+  assert.match(electronMainPatch, /const handled = await ob\.resolveOnboarding\(/);
   assert.match(electronMainPatch, /return \[\];/);
   assert.match(electronMainPatch, /onComplete: \(\) => \{ this\.doOpenFirstWindow\(accessor, initialProtocolUrls\); \}/);
 
   assert.match(main, /new BrowserWindow\(\{/);
-  assert.match(main, /loadFile\(WEBVIEW_INDEX\)/);
+  assert.match(main, /loadFile\(WEBVIEW_INDEX, \{ query: \{ startStep: normalizedStartStep \} \}\)/);
   assert.doesNotMatch(main, /\bapp\.quit\(/, "IDE-hosted onboarding must not use the old second-app quit/relaunch flow");
   assert.match(preload, /complete: \(\) => \{[\s\S]*ipcRenderer\.invoke\('onboarding:complete'\)/);
 
+  assert.match(app, /new URLSearchParams\(window\.location\.search\)\.get\("startStep"\)/);
+  assert.match(app, /const w = useWizard\(9, initialStep\)/);
+  assert.match(app, /autoCheck=\{initialStep === S\.CONNECT\}/);
   assert.match(app, /<StepDiscover onSelect=\{onSelectPeer\} onManual=\{onManual\} \/>/);
   assert.match(app, /const onManual = useCallback/);
   assert.match(app, /<StepConnect[\s\S]*state=\{connState\}[\s\S]*setState=\{setConnState\}/);

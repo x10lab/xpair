@@ -79,6 +79,12 @@ TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 |
 TMUXB="$LOCAL_BIN/tmux-aqua"
 RP_YES="${RP_YES:-0}"
 
+rp_ssh_control_path() {
+  local dir="${TMPDIR:-/tmp}"
+  dir="${dir%/}"
+  printf '%s/rp-cm-%%C' "$dir"
+}
+
 # Absolute path to this CLI (for relaunch via terminal apps). Prefer LOCAL_BIN, fall back to $0.
 SELF_CLI="$LOCAL_BIN/xpair"
 [ -x "$SELF_CLI" ] || SELF_CLI="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
@@ -1705,8 +1711,9 @@ cmd_host_permissions() {
   esac; done
   [ -n "$host" ] || { printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no host"}\n'; return 0; }
   local raw
+  local cm; cm="$(rp_ssh_control_path)"
   raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
-             -o ControlMaster=no -o ControlPath=none \
+             -o ControlMaster=auto -o "ControlPath=$cm" -o ControlPersist=300 \
              -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 \
              -o StrictHostKeyChecking=accept-new -T -n "$host" \
              'cat ~/.xpair/host/logs/status.json 2>/dev/null' </dev/null 2>/dev/null)" || true

@@ -59,6 +59,27 @@ const S = {
   DONE: 8,
 } as const;
 
+const START_STEPS: Record<string, number> = {
+  welcome: S.WELCOME,
+  consent: S.CONSENT,
+  discover: S.DISCOVER,
+  connect: S.CONNECT,
+  install: S.INSTALL,
+  grant: S.GRANT,
+  engine: S.ENGINE,
+  mappings: S.MAPPINGS,
+  done: S.DONE,
+};
+
+function initialStepFromLocation() {
+  if (typeof window === "undefined") return S.WELCOME;
+  const raw = new URLSearchParams(window.location.search).get("startStep") || "";
+  if (Object.prototype.hasOwnProperty.call(START_STEPS, raw)) return START_STEPS[raw];
+  const numeric = Number(raw);
+  if (Number.isInteger(numeric) && numeric >= S.WELCOME && numeric <= S.DONE) return numeric;
+  return S.WELCOME;
+}
+
 type LiveState =
   | "idle"
   | "checking"
@@ -102,7 +123,9 @@ type HostPermState =
   | null;
 
 export default function App() {
-  const w = useWizard(9);
+  const [initialStep] = useState(() => initialStepFromLocation());
+  const w = useWizard(9, initialStep);
+  const startsFromSavedHost = initialStep >= S.CONNECT && initialStep <= S.ENGINE;
 
   // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
   // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
@@ -236,7 +259,7 @@ export default function App() {
   }, [w.index, cancelLivenessCheck]);
 
   // Manual-entry fallback reuses the existing StepConnect machine.
-  const [manual, setManual] = useState(false);
+  const [manual, setManual] = useState(initialStep === S.CONNECT);
   const [host, setHost] = useState("");
   const [connState, setConnState] = useState<ConnState>("idle");
 
@@ -255,6 +278,37 @@ export default function App() {
       .then((i) => setAccount((a) => a || i.user))
       .catch(() => {});
   }, []);
+
+  // Parachuted launches start from saved client.env state rather than a freshly discovered peer.
+  // Hydrate the smallest peer shape needed by the existing Grant/Engine back-navigation paths.
+  useEffect(() => {
+    if (!startsFromSavedHost) return;
+    let active = true;
+    void window.remotepair
+      .getConfig()
+      .then((cfg) => {
+        const savedHost = cfg.remoteHost.trim();
+        if (!active || !savedHost) return;
+        setHost((current) => current || savedHost);
+        if (initialStep === S.GRANT || initialStep === S.ENGINE) {
+          setPeer((current) =>
+            current || {
+              name: savedHost,
+              addrs: [savedHost],
+              target: savedHost,
+              source: "ssh",
+              sources: ["ssh"],
+              fp: null,
+              status: "reconnect",
+            },
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [initialStep, startsFromSavedHost]);
 
   // Reconnect: this client already authorized with the host (ssh-config entry) and the app is
   // installed, so there's nothing to install — just re-persist REMOTE_HOST and confirm reachability.
@@ -731,6 +785,7 @@ export default function App() {
                 state={connState}
                 setState={setConnState}
                 cliBlocked={cliGateActive}
+                autoCheck={initialStep === S.CONNECT}
                 onBackToDiscovery={() => {
                   stepRef.current = S.DISCOVER;
                   w.goTo(S.DISCOVER, "prev");

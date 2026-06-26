@@ -15,10 +15,9 @@ index d886313c..3368da50 100644
  	}
  
  	private async openFirstWindow(accessor: ServicesAccessor, initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
-+		// RemotePair: single-app onboarding hook. On first run, suppress the workbench window and show
-+		// the pre-workbench onboarding BrowserWindow instead; on completion re-enter the normal open.
-+		// All window logic lives in the RemotePair-owned `onboarding-main.cjs` (shipped as a builtin
-+		// extension). Any resolve/require failure falls through to the NORMAL open (never break startup).
++		// RemotePair: pre-workbench onboarding guard. All guard/window logic lives in the
++		// RemotePair-owned `onboarding-main.cjs` (shipped as a builtin extension). Any
++		// resolve/require failure falls through to the NORMAL open (never break startup).
 +		try {
 +			const nodeRequire = createRequire(import.meta.url);
 +			const extRoot = this.environmentMainService.builtinExtensionsPath;
@@ -29,12 +28,12 @@ index d886313c..3368da50 100644
 +			}
 +			if (resolved) {
 +				const ob = nodeRequire(resolved);
-+				if (ob && typeof ob.shouldOnboard === 'function' && ob.shouldOnboard()) {
-+					ob.openOnboardingWindow({
++				if (ob && typeof ob.resolveOnboarding === 'function') {
++					const handled = await ob.resolveOnboarding({
 +						electron: nodeRequire('electron'),
 +						onComplete: () => { this.doOpenFirstWindow(accessor, initialProtocolUrls); },
 +					});
-+					return [];
++					if (handled) { return []; }
 +				}
 +			}
 +		} catch (error) {

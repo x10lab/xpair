@@ -112,6 +112,10 @@ function resolveLogThreshold() {
 }
 const LOG_THRESHOLD = resolveLogThreshold();
 
+function sshControlPath() {
+  return path.join(os.tmpdir() || "/tmp", "rp-cm-%C");
+}
+
 // Local-tz ISO-8601 with offset, second precision (e.g. 2026-06-15T10:45:16+0900).
 function logTimestamp() {
   const d = new Date();
@@ -340,14 +344,14 @@ function sshRun(host, remoteCmd, opts = {}) {
     `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
     "-o",
     "StrictHostKeyChecking=accept-new",
-    // ControlMaster: reuse ONE persistent connection across frames → faster polling
-    // and a single SSH-agent (1Password) authorization instead of one per frame.
-    // pid-scoped ControlPath (see spawnTunnel): a stale socket from a prior session must never
-    // collide with this one (that's what made the RD tunnel exit 255 → "signaling closed 1006").
+    // ControlMaster: reuse ONE persistent connection across probes/tunnels → faster polling
+    // and a single SSH-agent (1Password) authorization instead of one per probe. The path lives
+    // under this GUI session's temp dir and %C keys it by host/port/user, so the electron-main
+    // onboarding guard and extension-host workbench share it without a pid split.
     "-o",
     "ControlMaster=auto",
     "-o",
-    `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
+    `ControlPath=${sshControlPath()}`,
     "-o",
     "ControlPersist=300",
     host, // validated against HOST_RE; passed as its own argv element
@@ -525,18 +529,15 @@ function spawnTunnel(host, localPort, remotePort) {
   // IS the tunnel and can be killed. ControlMaster=auto reuses the existing authenticated
   // master so there's no new key prompt.
   const rport = remotePort;
-  // ControlPath is SCOPED TO THIS PROCESS (pid). A bare /tmp/rp-cm-%C is keyed only on host/port/user,
-  // so a stale socket left by a PRIOR session (master died but the file lingers — e.g. after a host
-  // reinstall or yesterday's run) collides with today's tunnel: ControlMaster=auto tries the dead
-  // master and ssh exits 255, the tunnel never forms, and RD shows "signaling closed (1006)". Adding
-  // the pid makes the path unique per IDE session, so a stale socket can never break a fresh launch,
-  // while reconnects WITHIN this session still reuse the live master (no re-auth).
+  // ControlPath is shared across the GUI login session, not scoped to this Node pid. That lets the
+  // pre-workbench onboarding guard authenticate once and the workbench tunnel reuse the same live
+  // master, while os.tmpdir() keeps old global /tmp sockets out of the normal path.
   const args = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ControlMaster=auto",
-    "-o", `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
+    "-o", `ControlPath=${sshControlPath()}`,
     "-o", "ControlPersist=300",
     "-o", "ExitOnForwardFailure=yes",
     "-N",
@@ -1744,15 +1745,13 @@ async function showLogs() {
 // Single-app model (spec: single-app onboarding): onboarding is hosted by the IDE MAIN process as a
 // pre-workbench window on first run — there is NO separate "Xpair Setup" Electron app to launch
 // (that 2nd process is removed). "Re-run setup" therefore makes the NEXT launch onboard again
-// (the main-process hook shows onboarding when not onboarded) and asks the user to restart, instead
-// of spawning a second app/process.
+// (the main-process hook resolves the per-launch onboarding guard) and asks the user to restart,
+// instead of spawning a second app/process.
 function runSetup() {
   log("runSetup: re-onboarding requested — main process onboards on next launch");
-  // An already-onboarded user has REMOTE_HOST + folder maps in client.env, so shouldOnboard()
-  // would return false on relaunch and skip straight to the workbench. A quit+relaunch can't carry
-  // an env var (RP_FORCE_ONBOARDING), so persist a one-shot sentinel that onboarding-main.cjs's
-  // shouldOnboard() honors (and clears on next open). Path MUST match FORCE_ONBOARDING_SENTINEL
-  // in onboarding-main.cjs.
+  // A quit+relaunch can't carry an env var (RP_FORCE_ONBOARDING), so persist a one-shot sentinel
+  // that onboarding-main.cjs's firstFailingGuard() honors (and clears on next open). Path MUST
+  // match FORCE_ONBOARDING_SENTINEL in onboarding-main.cjs.
   try {
     fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");

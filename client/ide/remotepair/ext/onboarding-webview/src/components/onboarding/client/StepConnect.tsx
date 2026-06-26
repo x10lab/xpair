@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -35,10 +35,19 @@ type Props = {
   state: ConnState;
   setState: (s: ConnState) => void;
   cliBlocked?: boolean;
+  autoCheck?: boolean;
   onBackToDiscovery?: () => void;
 };
 
-export function StepConnect({ host, setHost, state, setState, cliBlocked = false, onBackToDiscovery }: Props) {
+export function StepConnect({
+  host,
+  setHost,
+  state,
+  setState,
+  cliBlocked = false,
+  autoCheck = false,
+  onBackToDiscovery,
+}: Props) {
   const [tailscale, setTailscale] = useState<{
     installed: boolean;
     up: boolean;
@@ -47,6 +56,7 @@ export function StepConnect({ host, setHost, state, setState, cliBlocked = false
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
   const [hostIdentityTrusted, setHostIdentityTrusted] = useState(false);
+  const autoCheckStarted = useRef(false);
   // Telemetry inputs for ssh_config_completed: whether a fresh key was generated this run, and how
   // the user transferred the pubkey to the host (auto = clicked the copy button; manual_paste = not).
   const [keygenNew, setKeygenNew] = useState(false);
@@ -133,6 +143,14 @@ export function StepConnect({ host, setHost, state, setState, cliBlocked = false
       capture(EVENTS.SSH_CONFIG_FAILED, { reason: REASONS.UNKNOWN });
     }
   };
+
+  useEffect(() => {
+    if (!autoCheck || autoCheckStarted.current || state !== "idle" || !host.trim()) return;
+    autoCheckStarted.current = true;
+    void check();
+    // check intentionally stays local to this component; the ref guarantees one auto-run per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCheck, host, state]);
 
   return (
     <div>
