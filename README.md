@@ -74,12 +74,6 @@ Setup runs from **Xpair**, the client app: install it, launch it, and its first-
 ### 1. Install Xpair and launch it
 
 ```bash
-brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
-```
-
-No Homebrew? Install the app directly — same result, no `brew`:
-
-```bash
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash
 ```
 
@@ -90,6 +84,12 @@ curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-cl
 ```
 
 It downloads the chosen `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
+
+Prefer Homebrew? Same result via the cask:
+
+```bash
+brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
+```
 
 Open Xpair. First run opens onboarding (in-app, not a separate window) and walks:
 
