@@ -265,6 +265,43 @@ function run(cmd, args, opts = {}) {
 }
 const cli = (args) => run(rpBin(), args);
 
+/** Like cli(), but supplies a ONE-SHOT account password to install-host's askpass over an INHERITED
+ *  file descriptor (fd 3 → RP_ASKPASS_FD), never via argv (`ps`), an env VALUE, a log line, or disk.
+ *  `xpair-askpass` reads exactly one line from that fd and feeds it to ssh's password prompt, which
+ *  bootstraps the FIRST install connection when the client key is not yet authorized. install-host
+ *  multiplexes the whole install over that single connection and then appends the key (ssh-copy-id),
+ *  so this password is used once and every later op is key-auth. Keys remain the primary path. */
+function cliWithPassword(args, secret) {
+  return new Promise((resolve) => {
+    let out = "";
+    let err = "";
+    let child;
+    try {
+      child = cp.spawn(rpBin(), args, {
+        windowsHide: true,
+        env: spawnEnv({ RP_ASKPASS_FD: "3" }),
+        stdio: ["ignore", "pipe", "pipe", "pipe"], // fd3 = one-shot password pipe for xpair-askpass
+      });
+    } catch (e) {
+      return resolve({ code: -1, out: "", err: String(e && e.message ? e.message : e) });
+    }
+    const pwPipe = child.stdio[3];
+    if (pwPipe) {
+      pwPipe.on("error", () => {}); // EPIPE if ssh authenticates without ever needing it — benign.
+      try {
+        pwPipe.write(String(secret) + "\n");
+        pwPipe.end();
+      } catch {
+        /* write race — child already gone; ignore */
+      }
+    }
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e) => resolve({ code: -1, out, err: String(e.message) }));
+    child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
+  });
+}
+
 /** Like run(), but writes ONE secret line to the child's STDIN (fd 0) then closes it — for handing a
  *  secret to a remote `read -r KEY` over ssh WITHOUT it ever touching argv (`ps`), a log line, or
  *  disk. ssh forwards its own stdin to the remote command's stdin, so a single `printf '%s' "$KEY" |`
@@ -749,10 +786,13 @@ const bridge = {
 
   // --- Discovery / remote-install (component ⑤ — shells to the CLI brain) -----------------------
   //
-  // SECURITY (Principle 2): NONE of these methods ever receives or returns an SSH key passphrase or
-  // uses a password/PIN as the primary path. SSH probes/install preflight are BatchMode,
-  // publickey-only; host-key mismatch and key-agent/passphrase failures are returned as explicit
-  // recovery states. Do NOT add a tCapture/telemetry call inside discover/installHost.
+  // SECURITY (Principle 2): public-key auth is the PRIMARY path — SSH probes and the install
+  // preflight are BatchMode, publickey-only; host-key mismatch and key-agent/passphrase failures are
+  // returned as explicit recovery states. An account password is accepted by installHost ONLY as a
+  // one-shot bootstrap for the first connection to a host that has not yet authorized this client's
+  // key, and even then it is handed to ssh's askpass over an inherited fd (never argv/env-value/log/
+  // disk — see cliWithPassword). A key passphrase is never received or returned. Do NOT add a
+  // tCapture/telemetry call inside discover/installHost.
 
   // Discovery — concurrent Bonjour + Tailscale sweep via the CLI. Returns a deduped peer array
   // (deduped by host-key fingerprint inside the CLI; the UI dedups again as a backstop).
@@ -770,11 +810,13 @@ const bridge = {
     return { peers, err: "" };
   },
 
-  // Setup — remote install over SSH. Primary path is automatic public-key auth after the user has
-  // confirmed the host fingerprint. We preflight that exact key-only path before calling the CLI so
-  // the CLI's legacy askpass path never becomes a password/passphrase prompt. `password` remains in
-  // the destructuring only for older preload/renderers; it is intentionally ignored. Returns
-  // {ok,out,err,state,action}; `out` carries the redacted progress stream for StepInstalling.
+  // Setup — remote install over SSH. Keys are the PRIMARY path: we preflight the key-only path and,
+  // once the host trusts this client's key, every install/connect is key-auth. But the first install
+  // on a host that has NOT yet authorized this client's key cannot connect with a key that isn't
+  // there yet — so when that preflight reports KEY_AUTH_BLOCKED and the user supplied an account
+  // `password`, it is handed to install-host's askpass over an inherited fd (never argv/env/disk) to
+  // bootstrap that one setup connection; install-host then appends the key (ssh-copy-id) so all later
+  // ops are key-auth. Returns {ok,out,err,state,action}; `out` carries the redacted progress stream.
   async installHost({ host, user, password } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
     const h = String(host || "").trim();
@@ -797,27 +839,31 @@ const bridge = {
         action: SSH_ACTION.ABORT,
       };
     }
-    void password; // compatibility-only: do not route onboarding through account-password auth.
+    const pw = String(password || "");
     const target = account ? `${account}@${h}` : h;
     // Reachability/host-identity preflight ONLY. The key-only probe doubles as a reachability check,
     // but its key-auth result must NOT gate the install: `xpair install-host` AUTHORIZES this client's
     // key on the host over the setup connection (that is the whole point of install — it replaces PIN
     // pairing). A host discovered BEFORE this client's key was added to authorized_keys returns
-    // "Permission denied (publickey)" here yet installs fine, so a KEY_AUTH_BLOCKED preflight would
-    // wrongly dead-end first-time setup. Block only on genuine non-key failures (unreachable / host-key
-    // mismatch); a key-auth failure falls through to the CLI, which handles authorization during install.
+    // "Permission denied (publickey)" here, so a KEY_AUTH_BLOCKED preflight must NOT dead-end first-time
+    // setup. Block only on genuine non-key failures (unreachable / host-key mismatch); a key-auth
+    // failure means "first-time" and falls through to the CLI install.
+    let keyBlocked = false;
     const preflight = await run("ssh", [...sshProbeOpts(8), target, "true"]);
     if (preflight.code !== 0) {
       const s = sshResult(preflight);
       if (s.state !== SSH_STATE.KEY_AUTH_BLOCKED) {
         return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
       }
-      // KEY_AUTH_BLOCKED → first-time install: the client key is not yet authorized. Proceed to the
-      // CLI install-host, which authorizes the key (idempotent ssh-copy-id append) over its connection.
+      keyBlocked = true; // client key not yet authorized → bootstrap this one connection with the password.
     }
     const args = ["install-host", "--host", h];
     if (account) args.push("--account", account);
-    const r = await cli(args);
+    // First-time (key not yet authorized) AND a password was supplied → bootstrap the setup
+    // connection via install-host's askpass (over an inherited fd). Otherwise (key already
+    // authorized, or no password given) run key-auth only; a fresh host with no password then
+    // surfaces a clear publickey error instead of silently dead-ending.
+    const r = keyBlocked && pw ? await cliWithPassword(args, pw) : await cli(args);
     if (r.code === 0) {
       return { ok: true, out: r.out, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
     }
