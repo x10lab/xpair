@@ -81,21 +81,22 @@ enum EngineGuard {
     private static func installScript(_ engine: String) -> String {
         switch engine {
         case "claude":
-            return pathPrefix + "curl -fsSL https://claude.ai/install.sh | bash"
+            return pathPrefix + "bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'"
         case "codex":
-            return pathPrefix + "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
+            return pathPrefix + "bash -c 'set -o pipefail; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'"
         default: // opencode
-            return pathPrefix + "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+            return pathPrefix + "bash -c 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'"
         }
     }
 
     private static let pathPersistScript =
+        "set -e; " +
         "mkdir -p \"$HOME/.xpair\"; " +
         "printf '%s\\n' 'export PATH=\"$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"' > \"$HOME/.xpair/env\"; " +
-        "for RC in \"$HOME/.zprofile\" \"$HOME/.zshrc\"; do " +
+        "for RC in \"$HOME/.zprofile\" \"$HOME/.zshrc\" \"$HOME/.bash_profile\" \"$HOME/.bashrc\"; do " +
         "touch \"$RC\"; TMP=\"$(mktemp)\"; " +
         "grep -vF '# >>> xpair PATH >>>' \"$RC\" | grep -vF '. \"$HOME/.xpair/env\"' | grep -vF '# <<< xpair PATH <<<' > \"$TMP\" || true; " +
-        "mv \"$TMP\" \"$RC\"; " +
+        "cat \"$TMP\" > \"$RC\"; rm -f \"$TMP\"; " +
         "{ echo '# >>> xpair PATH >>>'; echo '[ -f \"$HOME/.xpair/env\" ] && . \"$HOME/.xpair/env\"'; echo '# <<< xpair PATH <<<'; } >> \"$RC\"; " +
         "done; echo RP_PATH_OK=1"
 
@@ -105,7 +106,11 @@ enum EngineGuard {
             let msg = r.err.isEmpty ? (r.out.isEmpty ? "install failed" : r.out) : r.err
             return Result(ok: false, err: msg)
         }
-        _ = runLogin(pathPersistScript)
+        let p = runLogin(pathPersistScript)
+        if p.code != 0 || !p.out.contains("RP_PATH_OK=1") {
+            let msg = p.err.isEmpty ? (p.out.isEmpty ? "PATH persistence failed" : p.out) : p.err
+            return Result(ok: false, err: "\(engine) installed but PATH persistence failed: \(msg)")
+        }
         return Result(ok: true, err: "")
     }
 

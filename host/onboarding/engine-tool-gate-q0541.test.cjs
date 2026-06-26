@@ -63,9 +63,9 @@ test("Q0541 host onboarding checks, installs, authenticates, and rechecks select
     assert.ok(engineGuard.includes(`command -v ${engine}`), `${engine} install probe must check the real binary`);
   }
   assert.match(engineGuard, /RP_ENGINE_AUTHED=1/, "The host guard must report an authenticated state");
-  assert.match(engineGuard, /curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash/, "Claude install guidance/action must exist");
-  assert.match(engineGuard, /curl -fsSL https:\/\/chatgpt\.com\/codex\/install\.sh \| CODEX_NON_INTERACTIVE=1 sh/, "Codex install guidance/action must exist");
-  assert.match(engineGuard, /curl -fsSL https:\/\/opencode\.ai\/install \| bash -s -- --no-modify-path/, "opencode install guidance/action must exist");
+  assert.match(engineGuard, /bash -c 'set -o pipefail; curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash'/, "Claude install guidance/action must exist");
+  assert.match(engineGuard, /bash -c 'set -o pipefail; curl -fsSL https:\/\/chatgpt\.com\/codex\/install\.sh \| CODEX_NON_INTERACTIVE=1 sh'/, "Codex install guidance/action must exist");
+  assert.match(engineGuard, /bash -c 'set -o pipefail; curl -fsSL https:\/\/opencode\.ai\/install \| bash -s -- --no-modify-path'/, "opencode install guidance/action must exist");
   assert.match(
     onboardingWindow,
     /case "engineStatus":[\s\S]*EngineGuard\.status\(engine\)/,

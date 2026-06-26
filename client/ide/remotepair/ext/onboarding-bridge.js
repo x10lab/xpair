@@ -348,25 +348,25 @@ const ENGINE_PROBE = {
 // onto the host's login PATH). The installers' own rc-PATH edits are suppressed where supported
 // (opencode --no-modify-path) since PATH_PERSIST owns PATH persistence. Mirrored in EngineGuard.swift.
 const ENGINE_INSTALL = {
-  claude: 'curl -fsSL https://claude.ai/install.sh | bash',
+  claude: "bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'",
   shell: 'true',
-  codex: 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
-  opencode: 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path',
+  codex: "bash -c 'set -o pipefail; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'",
+  opencode: "bash -c 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'",
 };
 
 // PATH persistence (engine-agnostic): write ~/.xpair/env with the canonical PATH (incl. the native
-// install dirs ~/.local/bin and ~/.opencode/bin) and source it from BOTH .zprofile (login shells) and
-// .zshrc (interactive shells) via an idempotent xpair-delimited block — so a bare `claude`/`codex`
-// resolves in the host's own Terminal. macOS zsh reads .zprofile for login and .zshrc for interactive,
-// so writing only one is not enough. Idempotent: the delimited block + sourced file are rewritten, never
-// duplicated. Mirrored in host/app/EngineGuard.swift (pathPersistScript).
+// install dirs ~/.local/bin and ~/.opencode/bin) and source it from zsh/bash login + interactive rc
+// files via an idempotent xpair-delimited block — so a bare `claude`/`codex` resolves in the host's own
+// Terminal. Idempotent: the delimited block + sourced file are rewritten, never duplicated. Mirrored in
+// host/app/EngineGuard.swift (pathPersistScript).
 const PATH_PERSIST =
+  'set -e; ' +
   'mkdir -p "$HOME/.xpair"; ' +
   'printf \'%s\\n\' \'export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"\' > "$HOME/.xpair/env"; ' +
-  'for RC in "$HOME/.zprofile" "$HOME/.zshrc"; do ' +
+  'for RC in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do ' +
   'touch "$RC"; TMP="$(mktemp)"; ' +
   'grep -vF \'# >>> xpair PATH >>>\' "$RC" | grep -vF \'. "$HOME/.xpair/env"\' | grep -vF \'# <<< xpair PATH <<<\' > "$TMP" || true; ' +
-  'mv "$TMP" "$RC"; ' +
+  'cat "$TMP" > "$RC"; rm -f "$TMP"; ' +
   '{ echo \'# >>> xpair PATH >>>\'; echo \'[ -f "$HOME/.xpair/env" ] && . "$HOME/.xpair/env"\'; echo \'# <<< xpair PATH <<<\'; } >> "$RC"; ' +
   'done; echo RP_PATH_OK=1';
 
@@ -664,7 +664,7 @@ const bridge = {
     }
     if (!ENGINE_INSTALL[e]) return { ok: false, err: `unknown engine: ${e}` };
     // Run the native installer, then persist PATH (skip for shell — nothing was installed).
-    const persist = e === "shell" ? "" : `; ${PATH_PERSIST}`;
+    const persist = e === "shell" ? "" : ` && { ${PATH_PERSIST}; }`;
     const cmd = `${PATH_PREFIX}${ENGINE_INSTALL[e]}${persist}`;
     const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* installer can take a while */ });
     if (r.code !== 0) {
