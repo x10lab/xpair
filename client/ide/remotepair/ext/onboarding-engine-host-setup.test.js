@@ -28,7 +28,11 @@ function test(name, fn) {
 test("Q0545 host setup probes, installs, authenticates, and gates supported engines on the host", () => {
   assert.match(app, /"Find your host"[\s\S]*"Connect"[\s\S]*"Set up host"[\s\S]*"Grant permissions"[\s\S]*"Choose engine"/);
   assert.match(app, /w\.index === S\.ENGINE && !engineReady/);
-  assert.match(app, /<StepEngine engine=\{engine\} setEngine=\{setEngine\} onReady=\{setEngineReady\}/);
+  assert.match(app, /const lockConfiguredEngine = initialStep === S\.ENGINE && startsFromSavedHost;/);
+  assert.match(
+    app,
+    /<StepEngine[\s\S]*engine=\{engine\}[\s\S]*setEngine=\{setEngine\}[\s\S]*lockConfigured=\{lockConfiguredEngine\}[\s\S]*onReady=\{setEngineReady\}/,
+  );
   assert.match(app, /const ENGINE_IDS = new Set<EngineId>\(\["claude", "shell", "codex", "opencode"\]\)/);
   assert.match(
     app,
@@ -38,8 +42,12 @@ test("Q0545 host setup probes, installs, authenticates, and gates supported engi
   assert.doesNotMatch(app, /setEngine\(savedEngine\)/);
 
   assert.match(stepEngine, /const ENGINES:[\s\S]*id: "claude"[\s\S]*id: "codex"[\s\S]*id: "opencode"/);
+  assert.match(stepEngine, /lockConfigured\?: boolean/);
+  assert.match(stepEngine, /lockConfigured = false/);
   assert.match(stepEngine, /window\.remotepair\.hostEngineStatus\(e\)/);
   assert.match(stepEngine, /onReady\(r\.installed && r\.authed\)/);
+  assert.match(stepEngine, /void probe\(engine, !lockConfigured\)/);
+  assert.match(stepEngine, /allowReadyFallback && firstReady/);
   assert.match(stepEngine, /window\.remotepair\.installHostEngine\(engine\)/);
   assert.match(stepEngine, /window\.remotepair\.setHostEngineAuth\(engine, apiKey\.trim\(\)\)/);
   assert.match(stepEngine, /await probe\(engine\)/);

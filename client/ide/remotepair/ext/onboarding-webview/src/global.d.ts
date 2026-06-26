@@ -86,8 +86,8 @@ declare global {
       // and the bridge uses BatchMode/publickey-only probes. Failures return explicit recovery states
       // (host-key mismatch, key-agent/passphrase failure) instead of password or pairing-code entry.
       discover: () => Promise<{ peers: Peer[]; err: string }>
-      // force:true reinstalls the bundled XpairHost over a missing/incompatible/dead host app —
-      // used by the in-UI host-repair flow. The host restarts (running tmux sessions die).
+      // force:true reinstalls the bundled XpairHost over a missing/incompatible/below-floor host app.
+      // Restart repairs intentionally omit force so the CLI only kickstarts/opens the existing app.
       installHost: (opts: { host: string; user?: string; force?: boolean }) => Promise<{
         ok: boolean
         out: string

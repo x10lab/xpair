@@ -42,13 +42,19 @@ test("global.d.ts exposes force installs and incompatibleKind", () => {
   assert.match(globals, /incompatibleKind: "below_floor" \| "major_mismatch" \| ""/);
 });
 
-test("StepInstalling repair mode warns first and only force-installs after a repair click", () => {
+test("StepInstalling repair mode warns first and only force-installs non-restart repairs after a click", () => {
   assert.match(stepInstalling, /isUpdate\?: boolean/);
   assert.match(stepInstalling, /forceInstall\?: boolean/);
   assert.match(stepInstalling, /repairKind\?: "missing" \| "update" \| "restart" \| "incompatible"/);
-  assert.match(stepInstalling, /installHost\(repairMode \? \{ host, force: true \} : \{ host \}\)/);
+  assert.match(stepInstalling, /const useForce = repairMode && repairKind !== "restart";/);
+  assert.match(stepInstalling, /installHost\(useForce \? \{ host, force: true \} : \{ host \}\)/);
   assert.match(stepInstalling, /restart XpairHost/);
   assert.match(stepInstalling, /terminate any running tmux sessions on the host/);
+  assert.match(stepInstalling, /without reinstalling it/);
+  assert.match(
+    stepInstalling,
+    /\{useForce \? \([\s\S]*terminate any running tmux sessions on the host[\s\S]*\) : \([\s\S]*without reinstalling it/,
+  );
   assert.match(stepInstalling, /minimum compatible host version is \$\{requiredVersion\} or newer/);
   assert.match(stepInstalling, /if \(repairMode\) return;\s*\n\s*if \(started\.current\) return;/);
   assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*\{repairButton\}/);
@@ -86,6 +92,29 @@ test("safe saved, manual, reconnect, or connect hosts render an inline repair bu
     /const hostRepairPanel = canRepairHost \? \([\s\S]*<StepInstalling[\s\S]*forceInstall[\s\S]*repairKind=\{hostRepairKind\}[\s\S]*host=\{connectTarget\}/,
   );
   assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
+});
+
+test("manual missing-app repair shows fingerprint/key prep before the install panel", () => {
+  assert.match(
+    app,
+    /const manualMissingNeedsFingerprint =[\s\S]*manual && !startsFromSavedHost && hostRepairKind === "missing";/,
+  );
+  assert.match(
+    app,
+    /const manualMissingRepairPeer: Peer \| null = connectTarget[\s\S]*source: "ssh"[\s\S]*status: "setup"/,
+  );
+  assert.match(
+    app,
+    /manualMissingNeedsFingerprint && manualMissingRepairPeer[\s\S]*<StepSetupPassword peer=\{manualMissingRepairPeer\} onReady=\{setSetupReady\} \/>/,
+  );
+  assert.match(
+    app,
+    /\{\(!manualMissingNeedsFingerprint \|\| setupReady\) && \([\s\S]*<StepInstalling/,
+  );
+  assert.match(
+    app,
+    /previousConnectTarget\.current = connectTarget;[\s\S]*setSetupReady\(false\);[\s\S]*setInstallState\("idle"\);/,
+  );
 });
 
 test("below-floor hosts keep update wording while major-mismatch hosts stay blocked", () => {

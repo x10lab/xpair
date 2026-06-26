@@ -7,6 +7,7 @@ import type { EngineId } from "@/global";
 type Props = {
   engine: EngineId;
   setEngine: (e: EngineId) => void;
+  lockConfigured?: boolean;
   // Lifted to the wizard so Next stays HARD-GATED until the chosen engine is installed AND
   // authenticated on the host (or block with the reason).
   onReady: (ready: boolean) => void;
@@ -43,7 +44,7 @@ const missingText = (s: EngineStatus | null | undefined) => {
  * Browser-OAuth engines (codex ChatGPT login, opencode `auth login`) can't be driven over SSH — for
  * those the user signs in on the host's own screen; we only automate the API-key path.
  */
-export function StepEngine({ engine, setEngine, onReady }: Props) {
+export function StepEngine({ engine, setEngine, lockConfigured = false, onReady }: Props) {
   const [statuses, setStatuses] = useState<EngineStatuses | null>(null);
   const [probing, setProbing] = useState(false);
   const [installing, setInstalling] = useState<EngineId | null>(null);
@@ -105,7 +106,7 @@ export function StepEngine({ engine, setEngine, onReady }: Props) {
 
   // Probe every supported engine on the selected host before rendering primary choices.
   useEffect(() => {
-    void probe(engine, true);
+    void probe(engine, !lockConfigured);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -137,6 +137,7 @@ export default function App() {
   const [initialStep] = useState(() => initialStepFromLocation());
   const w = useWizard(9, initialStep);
   const startsFromSavedHost = initialStep >= S.CONNECT && initialStep <= S.ENGINE;
+  const lockConfiguredEngine = initialStep === S.ENGINE && startsFromSavedHost;
 
   // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
   // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
@@ -476,6 +477,7 @@ export default function App() {
     if (previousConnectTarget.current === connectTarget) return;
     previousConnectTarget.current = connectTarget;
     cancelLivenessCheck();
+    setSetupReady(false);
     setInstallState("idle");
   }, [connectTarget, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
@@ -548,6 +550,19 @@ export default function App() {
         ? "update"
         : "incompatible"
       : "restart";
+  const manualMissingNeedsFingerprint =
+    manual && !startsFromSavedHost && hostRepairKind === "missing";
+  const manualMissingRepairPeer: Peer | null = connectTarget
+    ? {
+        name: connectTarget,
+        addrs: [connectTarget],
+        target: connectTarget,
+        source: "ssh",
+        sources: ["ssh"],
+        fp: null,
+        status: "setup",
+      }
+    : null;
 
   const handleHostRepairDone = useCallback(() => {
     if (!connectTarget) return;
@@ -681,21 +696,30 @@ export default function App() {
       : "Next";
 
   const hostRepairPanel = canRepairHost ? (
-    <div className="mt-4">
-      <StepInstalling
-        isUpdate={hostRepairKind === "update"}
-        forceInstall
-        repairKind={hostRepairKind}
-        host={connectTarget}
-        hostName={manual ? connectTarget : peer?.name || connectTarget}
-        currentVersion={hostApp?.version || ""}
-        requiredVersion={hostRepairKind === "update" ? MIN_COMPATIBLE_HOST : ""}
-        state={installState}
-        setState={setInstallState}
-        onDone={handleHostRepairDone}
-        onFail={() => setInstallState("idle")}
-      />
-    </div>
+    <>
+      {manualMissingNeedsFingerprint && manualMissingRepairPeer && (
+        <div className="mt-4">
+          <StepSetupPassword peer={manualMissingRepairPeer} onReady={setSetupReady} />
+        </div>
+      )}
+      {(!manualMissingNeedsFingerprint || setupReady) && (
+        <div className="mt-4">
+          <StepInstalling
+            isUpdate={hostRepairKind === "update"}
+            forceInstall
+            repairKind={hostRepairKind}
+            host={connectTarget}
+            hostName={manual ? connectTarget : peer?.name || connectTarget}
+            currentVersion={hostApp?.version || ""}
+            requiredVersion={hostRepairKind === "update" ? MIN_COMPATIBLE_HOST : ""}
+            state={installState}
+            setState={setInstallState}
+            onDone={handleHostRepairDone}
+            onFail={() => setInstallState("idle")}
+          />
+        </div>
+      )}
+    </>
   ) : null;
 
   return (
@@ -870,7 +894,12 @@ export default function App() {
           <StepGrantPermissions peer={peer} user={account} onReady={setGrantReady} />
         )}
         {w.index === S.ENGINE && (
-          <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
+          <StepEngine
+            engine={engine}
+            setEngine={setEngine}
+            lockConfigured={lockConfiguredEngine}
+            onReady={setEngineReady}
+          />
         )}
         {w.index === S.MAPPINGS && (
           <StepFileAccess mappings={mappings} setMappings={setMappings} />

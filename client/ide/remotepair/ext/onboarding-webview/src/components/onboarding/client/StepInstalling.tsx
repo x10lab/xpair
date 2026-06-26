@@ -8,8 +8,8 @@ type Props = {
   // Fresh-install (setup) path supplies a Peer; the repair path (manual/connect/reconnect) has no
   // setup Peer, so it passes host/hostName explicitly. One of {peer} or {host} must be present.
   peer?: Peer;
-  // Repair mode: force-installs the bundled host over a missing/incompatible/dead host app and
-  // restarts it. The below-floor update case keeps the existing update wording via repairKind.
+  // Repair mode: force-installs missing/incompatible/update hosts, or restarts an installed
+  // compatible-but-dead host through the non-force CLI path.
   isUpdate?: boolean;
   forceInstall?: boolean;
   repairKind?: "missing" | "update" | "restart" | "incompatible";
@@ -26,11 +26,18 @@ type Props = {
   onFail: () => void;
 };
 
-const PHASES = [
+const INSTALL_PHASES = [
   "Verified SSH key auth",
   "Pushed XpairHost.app",
   "Registering launch agent",
   "Starting host",
+];
+
+const RESTART_PHASES = [
+  "Verified SSH key auth",
+  "Found XpairHost.app",
+  "Starting host",
+  "Checking host",
 ];
 
 /**
@@ -59,6 +66,8 @@ export function StepInstalling({
   const name = hostName || peer?.name || host;
   const repairMode = isUpdate || forceInstall;
   const repairKind = repairKindProp || (isUpdate ? "update" : "incompatible");
+  const useForce = repairMode && repairKind !== "restart";
+  const phases = repairMode && !useForce ? RESTART_PHASES : INSTALL_PHASES;
   const repairTitle =
     repairKind === "missing"
       ? "Installing the host"
@@ -100,8 +109,8 @@ export function StepInstalling({
   }, []);
 
   // Run the install. Cosmetic phase advance while the single blocking CLI call runs; the real result
-  // overrides it. In repair mode we pass force:true so the CLI overwrites/reinstalls the host app and
-  // restarts it.
+  // overrides it. Repair mode force-installs missing/incompatible/update hosts; restart repairs use
+  // the non-force CLI path so an existing app is only kickstarted/opened.
   const runInstall = useCallback(() => {
     const runId = ++installRunId.current;
     const isCurrent = () => mounted.current && installRunId.current === runId;
@@ -114,7 +123,7 @@ export function StepInstalling({
     setState("installing");
     const adv = window.setInterval(() => {
       if (!isCurrent()) return;
-      setPhase((p) => Math.min(PHASES.length - 2, p + 1));
+      setPhase((p) => Math.min(phases.length - 2, p + 1));
     }, 1200);
     phaseTimer.current = adv;
     const clearAdv = () => {
@@ -122,12 +131,12 @@ export function StepInstalling({
       window.clearInterval(adv);
     };
     window.remotepair
-      .installHost(repairMode ? { host, force: true } : { host })
+      .installHost(useForce ? { host, force: true } : { host })
       .then((r) => {
         clearAdv();
         if (!isCurrent()) return;
         if (r.ok) {
-          setPhase(PHASES.length);
+          setPhase(phases.length);
           setState("done");
         } else {
           setErr(r.err || (repairMode ? "Repair failed." : "Install failed."));
@@ -140,11 +149,10 @@ export function StepInstalling({
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });
-  }, [host, repairMode, setState]);
+  }, [host, phases.length, repairMode, setState, useForce]);
 
-  // Fresh-install (setup) mode auto-starts on mount. Repair mode does NOT: forcing the reinstall
-  // restarts XpairHost and kills any running tmux sessions on the host, so the user must read the
-  // warning and click first. Their click IS the consent.
+  // Fresh-install (setup) mode auto-starts on mount. Repair mode does NOT: the user clicks to start
+  // the forced reinstall/update or the non-force restart.
   const started = useRef(false);
   useEffect(() => {
     if (repairMode) return;
@@ -180,6 +188,8 @@ export function StepInstalling({
               ? `XpairHost is ready on ${name}.`
               : state === "idle"
               ? repairIdle
+              : repairKind === "restart"
+              ? `Restarting XpairHost on ${name} over SSH.`
               : `Repairing XpairHost on ${name} over SSH.`
             : state === "failed"
             ? `Couldn't finish setting up ${name}.`
@@ -189,8 +199,7 @@ export function StepInstalling({
         </p>
       </div>
 
-      {/* Repair mode: force-installing restarts XpairHost and can kill running host sessions.
-          The user's click to start IS the consent to that. */}
+      {/* Repair mode: the user's click starts the repair/restart action. */}
       {repairMode && state !== "done" && (
         <div className="mx-auto mt-4 max-w-sm rounded-xl border border-amber-500/30 bg-amber-500/5 p-3.5 text-xs text-amber-700 dark:text-amber-400">
           <div className="flex items-start gap-2">
@@ -213,10 +222,14 @@ export function StepInstalling({
                       currentVersion ? ` (version ${currentVersion})` : ""
                     } but incompatible with this client.`}
               </p>
-              <p>
-                Repairing will restart XpairHost and{" "}
-                <span className="font-semibold">terminate any running tmux sessions on the host.</span>
-              </p>
+              {useForce ? (
+                <p>
+                  Repairing will reinstall and restart XpairHost and{" "}
+                  <span className="font-semibold">terminate any running tmux sessions on the host.</span>
+                </p>
+              ) : (
+                <p>This will ask the existing XpairHost app to start again without reinstalling it.</p>
+              )}
               {state === "idle" && (
                 <button
                   type="button"
@@ -233,7 +246,7 @@ export function StepInstalling({
       )}
 
       <div className="mx-auto mt-5 max-w-sm space-y-3">
-        {PHASES.map((label, i) => {
+        {phases.map((label, i) => {
           const done = i < phase;
           const now = i === phase && installing;
           return (
