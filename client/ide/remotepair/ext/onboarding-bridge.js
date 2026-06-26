@@ -910,12 +910,18 @@ const bridge = {
       };
     }
     const sshArgs = sshProbeOpts(6);
-    // One round-trip: print whether the .app dir exists, then the status.json contents.
+    // One round-trip: locate the installed host .app and read its version straight from the bundle's
+    // Info.plist (CFBundleShortVersionString) — the SAME source the host app itself uses for its
+    // version (host/app/Config.swift APP_VERSION = Bundle CFBundleShortVersionString). That bundle is
+    // the single source of truth for "what host version is INSTALLED". We deliberately do NOT read it
+    // from ~/.xpair/host/logs/status.json: that file is a runtime heartbeat the app rewrites every
+    // second, so it only exists while the app is RUNNING — an installed-but-not-running too-old host
+    // would report no version and slip through the gate as "unknown".
     const probe =
       // install-host puts the app in /Applications (system) OR ~/Applications; check BOTH so a
       // correctly-installed host app is never false-flagged "missing" (which would wrongly gate onboarding).
-      '{ [ -d "$HOME/Applications/XpairHost.app" ] || [ -d "/Applications/XpairHost.app" ]; } && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +
-      'cat "$HOME/.xpair/host/logs/status.json" 2>/dev/null || true';
+      'app=""; for d in "$HOME/Applications/XpairHost.app" "/Applications/XpairHost.app"; do [ -d "$d" ] && { app="$d"; break; }; done; ' +
+      'if [ -n "$app" ]; then echo RP_APP_INSTALLED=1; v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; else echo RP_APP_INSTALLED=0; fi';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
@@ -927,25 +933,21 @@ const bridge = {
       return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "Host has no Xpair host app" };
     }
     let version = "";
-    const jsonStart = out.indexOf("{");
-    if (jsonStart !== -1) {
-      try {
-        const j = JSON.parse(out.slice(jsonStart));
-        if (j && typeof j.version === "string") version = j.version;
-      } catch { /* status.json absent/garbled — version stays unknown */ }
-    }
+    const m = out.match(/^RP_APP_VERSION=(.+)$/m);
+    if (m) version = m[1].trim();
     const clientV = clientVersion();
     const hostMajor = versionMajor(version);
     const clientMajor = versionMajor(clientV);
     // Compatibility = same MAJOR (necessary) AND host >= MIN_COMPATIBLE_HOST (the protocol floor).
     // The old check was major-only, which let a too-old same-major host (e.g. a43 vs an a45-protocol
-    // client) connect and fail subtly. Unknown host version (app installed, status.json not stamped
-    // yet) is still allowed so a fresh install isn't hard-blocked before its first status write.
+    // client) connect and fail subtly. Version now comes from the installed bundle (above), so an
+    // installed host always has a known version; unknown only means the bundle's Info.plist was
+    // unreadable (corrupt/partial install), which we allow rather than hard-block on a read glitch.
     let compatible;
     let incompatibleKind = "";
     let reason = "";
     if (!hostMajor) {
-      compatible = true; // unknown version → allow (fresh install)
+      compatible = true; // unreadable bundle version → allow (don't hard-block on a read glitch)
     } else if (hostMajor !== clientMajor) {
       // Different major — including a NEWER host. Force-reinstalling the client's bundled (older) host
       // over it would be a DOWNGRADE/overwrite, so this must NOT route into the update flow; the UI
