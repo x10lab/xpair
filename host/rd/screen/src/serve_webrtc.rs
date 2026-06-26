@@ -46,8 +46,12 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
+use crate::control::{
+    app_control_frame, AppControlFrame, CaptureConfig, CaptureErrorKind, ControlClient,
+    ControlError, StartedInfo,
+};
+
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
-const CAPTURE_START_ACK_DEADLINE: Duration = Duration::from_secs(5);
 const SESSION_TOKEN_MIN_LEN: usize = 24;
 const SESSION_TOKEN_MAX_LEN: usize = 128;
 
@@ -113,11 +117,16 @@ impl From<webrtc::Error> for SessionError {
     }
 }
 
-#[derive(Clone, Copy)]
-struct CaptureConfig {
-    fps: u32,
-    bitrate: u32,
-    scale: f32,
+impl From<ControlError> for SessionError {
+    fn from(value: ControlError) -> Self {
+        match value {
+            ControlError::CaptureFailed { kind, reason } => {
+                SessionError::Capture(format!("{kind:?}: {reason}"))
+            }
+            ControlError::Superseded { .. } => SessionError::Superseded,
+            other => SessionError::Capture(other.to_string()),
+        }
+    }
 }
 
 struct AcceptedSignaling {
@@ -173,18 +182,6 @@ impl std::fmt::Display for PeerFailureKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum CaptureErrorKind {
-    NoDisplay,
-    StartFailed,
-    AddOutputFailed,
-    EncoderFailed,
-    EncodeFailed,
-    HelperFailed,
-    Unknown,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 enum RdStatus {
@@ -232,41 +229,6 @@ impl RdStatus {
     }
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum AppCaptureEvent {
-    Started,
-    Stopped,
-    Error,
-}
-
-#[derive(Debug, Deserialize)]
-struct AppCaptureControl {
-    capture: Option<AppCaptureEvent>,
-    generation: Option<u64>,
-    kind: Option<CaptureErrorKind>,
-    reason: Option<String>,
-    #[serde(rename = "displayId")]
-    display_id: Option<u32>,
-    width: Option<f64>,
-    height: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CaptureStartInfo {
-    generation: u64,
-    display_id: Option<u32>,
-    width: Option<f64>,
-    height: Option<f64>,
-}
-
-#[derive(Debug)]
-enum AppCaptureFrame {
-    Started(CaptureStartInfo),
-    Stopped { generation: Option<u64> },
-    Status(RdStatus),
-}
-
 #[derive(Debug, Deserialize)]
 struct InputHelperStatus {
     kind: String,
@@ -301,6 +263,7 @@ struct NegotiatingSession {
     state_rx: mpsc::UnboundedReceiver<PeerEvent>,
     au_tx: mpsc::Sender<Vec<u8>>,
     capture_config: CaptureConfig,
+    control: ControlClient,
     cancel: CancellationToken,
 }
 
@@ -679,32 +642,6 @@ fn bounded_reason(raw: impl Into<String>) -> String {
     shortened
 }
 
-fn app_capture_frame(frame: &[u8]) -> Option<AppCaptureFrame> {
-    if frame.first().is_none_or(|b| *b != b'{') {
-        return None;
-    }
-    let control: AppCaptureControl = serde_json::from_slice(frame).ok()?;
-    match control.capture? {
-        AppCaptureEvent::Started => Some(AppCaptureFrame::Started(CaptureStartInfo {
-            generation: control.generation?,
-            display_id: control.display_id,
-            width: control.width,
-            height: control.height,
-        })),
-        AppCaptureEvent::Stopped => Some(AppCaptureFrame::Stopped {
-            generation: control.generation,
-        }),
-        AppCaptureEvent::Error => Some(AppCaptureFrame::Status(RdStatus::CaptureFailed {
-            capture_kind: control.kind.unwrap_or(CaptureErrorKind::Unknown),
-            reason: bounded_reason(
-                control
-                    .reason
-                    .unwrap_or_else(|| "host capture failed".to_string()),
-            ),
-        })),
-    }
-}
-
 fn status_from_input_helper_line(line: &str, helper: &str) -> Option<RdStatus> {
     let payload = line.strip_prefix("RPINPUT ")?;
     let status: InputHelperStatus = serde_json::from_str(payload).ok()?;
@@ -915,6 +852,7 @@ async fn serve_session(
     let capture_config = accepted.capture_config;
     let ws = accepted.ws;
     let (mut ws_tx, ws_rx) = ws.split();
+    let control = ControlClient::stdout();
 
     // --- build webrtc API with H264 ---
     let mut m = MediaEngine::default();
@@ -949,12 +887,13 @@ async fn serve_session(
 
     // RTCP reader: the client sends PictureLossIndication / FullIntraRequest when it
     // loses a keyframe (e.g. a packet of the 76KB IDR dropped on a lossy link). Forward
-    // that as a {"keyframe":true} control line so the parent app forces a fresh IDR —
+    // that as a keyframe control op so the parent app forces a fresh IDR —
     // otherwise the remote viewer stays BLACK forever. read_rtcp() returning Err ends
     // the task (session over). In standalone mode (no RP_AU_STDIN) the parent ignores
-    // the control line harmlessly; the loop still drains RTCP as webrtc-rs expects.
+    // the control op harmlessly; the loop still drains RTCP as webrtc-rs expects.
     {
         let rtp_sender = rtp_sender.clone();
+        let control = control.clone();
         tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
             use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
@@ -965,7 +904,7 @@ async fn serve_session(
                         || any.downcast_ref::<FullIntraRequest>().is_some()
                     {
                         tracing::info!("serve-webrtc: RTCP PLI/FIR -> requesting keyframe");
-                        write_control("{\"keyframe\":true}\n");
+                        control.keyframe_noack(seq);
                     }
                 }
             }
@@ -1117,6 +1056,7 @@ async fn serve_session(
         state_rx,
         au_tx,
         capture_config,
+        control,
         cancel,
     });
     let session = match session {
@@ -1202,15 +1142,12 @@ impl NegotiatingSession {
             self.au_tx.clone(),
             self.sig_tx.clone(),
             self.seq,
-        ) {
+            self.control.clone(),
+        )
+        .await
+        {
             Ok(capture) => capture,
             Err(e) => {
-                let _ = self
-                    .send_status(RdStatus::CaptureFailed {
-                        capture_kind: CaptureErrorKind::HelperFailed,
-                        reason: e.to_string(),
-                    })
-                    .await;
                 return Err(e);
             }
         };
@@ -1390,26 +1327,62 @@ enum CaptureSource {
     Stdin(StdinReaderHandle),
 }
 impl CaptureSource {
-    fn start(
+    async fn start(
         config: CaptureConfig,
         au_tx: mpsc::Sender<Vec<u8>>,
         sig_tx: mpsc::UnboundedSender<String>,
         generation: u64,
+        control: ControlClient,
     ) -> Result<Self, SessionError> {
         // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
         // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
         // stdin. We then ONLY do WebRTC transport — no rp-screencap spawn. stdout is
-        // the control channel back to the app ({"capture":"start"|"stop"}\n).
+        // the framed JSON control channel back to the app.
         // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
         let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
         if au_stdin_mode {
-            Ok(CaptureSource::Stdin(spawn_au_stdin_reader(
-                config, au_tx, sig_tx, generation,
-            )))
+            let handle = spawn_au_stdin_reader(au_tx, sig_tx.clone(), generation, control.clone());
+            let start_info = match control.start(generation, config).await {
+                Ok(info) => info,
+                Err(ControlError::CaptureFailed { kind, reason }) => {
+                    queue_status(
+                        &sig_tx,
+                        RdStatus::CaptureFailed {
+                            capture_kind: kind,
+                            reason: bounded_reason(reason.clone()),
+                        },
+                    );
+                    return Err(ControlError::CaptureFailed { kind, reason }.into());
+                }
+                Err(ControlError::Superseded { gen, active_gen }) => {
+                    return Err(ControlError::Superseded { gen, active_gen }.into());
+                }
+                Err(e) => {
+                    queue_status(
+                        &sig_tx,
+                        RdStatus::CaptureFailed {
+                            capture_kind: CaptureErrorKind::Unknown,
+                            reason: bounded_reason(e.to_string()),
+                        },
+                    );
+                    return Err(e.into());
+                }
+            };
+            Ok(CaptureSource::Stdin(handle.with_start_info(start_info)))
         } else {
-            spawn_screencap(config.fps, config.bitrate, config.scale, au_tx)
-                .map(CaptureSource::Child)
-                .map_err(SessionError::Capture)
+            match spawn_screencap(config.fps, config.bitrate, config.scale, au_tx) {
+                Ok(handle) => Ok(CaptureSource::Child(handle)),
+                Err(reason) => {
+                    queue_status(
+                        &sig_tx,
+                        RdStatus::CaptureFailed {
+                            capture_kind: CaptureErrorKind::HelperFailed,
+                            reason: bounded_reason(reason.clone()),
+                        },
+                    );
+                    Err(SessionError::Capture(reason))
+                }
+            }
         }
     }
 
@@ -1434,63 +1407,32 @@ impl Drop for CaptureSource {
     }
 }
 
-/// Write a one-line control message to **stdout** (the control channel to the
-/// parent app in `RP_AU_STDIN=1` mode) and flush. stdout is reserved for these
-/// control lines — the logger never writes to stdout, so this stays clean.
-///
-/// Concurrency: control lines are emitted from several places — the capture
-/// start/stop writers AND the RTCP reader task ({"keyframe":true}) — possibly on
-/// different threads. We take an explicit lock on the process-wide `Stdout` for the
-/// whole write+flush so a control line is never interleaved/corrupted by another.
-fn write_control(line: &str) {
-    let out = std::io::stdout();
-    let mut guard = out.lock();
-    if guard.write_all(line.as_bytes()).is_err() || guard.flush().is_err() {
-        tracing::warn!("serve-webrtc: failed to write control line to stdout");
-    }
-}
-
-fn capture_start_control_line(config: CaptureConfig, generation: u64) -> String {
-    format!(
-        "{{\"capture\":\"start\",\"generation\":{},\"fps\":{},\"bitrate\":{},\"scale\":{}}}\n",
-        generation, config.fps, config.bitrate, config.scale
-    )
-}
-
-fn capture_stop_control_line(generation: u64) -> String {
-    format!("{{\"capture\":\"stop\",\"generation\":{generation}}}\n")
-}
-
 /// Handle to stop the AU-from-stdin reader. The reader thread exits on EOF/error
 /// or when `stop()` flips the shared flag; `stop()` also emits a generation-
-/// bearing `{"capture":"stop"}` to the parent so it can stop the matching
+/// bearing `stop` control op to the parent so it can stop the matching
 /// in-app CaptureEngine session.
 struct StdinReaderHandle {
     stopped: Arc<std::sync::atomic::AtomicBool>,
     generation: u64,
-    started_rx: Option<tokio::sync::oneshot::Receiver<CaptureStartInfo>>,
+    control: ControlClient,
+    start_info: Option<StartedInfo>,
 }
 impl StdinReaderHandle {
+    fn with_start_info(mut self, start_info: StartedInfo) -> Self {
+        self.start_info = Some(start_info);
+        self
+    }
+
     fn stop(&self) {
         if !self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            write_control(&capture_stop_control_line(self.generation));
+            self.control.stop_noack(self.generation);
         }
     }
 
     async fn capture_display_id_for_input(&mut self) -> Result<Option<u32>, String> {
-        let Some(started_rx) = self.started_rx.take() else {
+        let Some(info) = self.start_info.take() else {
             return Err("host capture start metadata was already consumed".to_string());
         };
-        let info = tokio::time::timeout(CAPTURE_START_ACK_DEADLINE, started_rx)
-            .await
-            .map_err(|_| "timed out waiting for host capture display id".to_string())?
-            .map_err(|_| "host capture ended before reporting its display id".to_string())?;
-        if info.generation != self.generation {
-            return Err(format!(
-                "host reported stale capture generation {} for active generation {}",
-                info.generation, self.generation
-            ));
-        }
         info.display_id.ok_or_else(|| {
             "host capture did not report a display id; remote input disabled to avoid misaligned injection"
                 .to_string()
@@ -1498,31 +1440,28 @@ impl StdinReaderHandle {
     }
 }
 
-/// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. Emits a generation-
-/// bearing `{"capture":"start"}` to stdout (the parent app then begins in-app
-/// capture), then reads `[4B BE len][Annex-B AU]` frames from stdin and forwards
-/// each AU into `au_tx` with the same bounded drop-delta policy as
-/// `spawn_screencap`'s reader thread. The thread returns on EOF/error or when
-/// `stop()` is called.
+/// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. It reads
+/// `[4B BE len][Annex-B AU or JSON ack/event]` frames from stdin, routes JSON
+/// control frames to the `ControlClient`, and forwards AUs into `au_tx` with the
+/// same bounded drop-delta policy as `spawn_screencap`'s reader thread. The
+/// thread returns on EOF/error or when `stop()` is called.
 fn spawn_au_stdin_reader(
-    config: CaptureConfig,
     au_tx: mpsc::Sender<Vec<u8>>,
     sig_tx: mpsc::UnboundedSender<String>,
     generation: u64,
+    control: ControlClient,
 ) -> StdinReaderHandle {
     tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); requesting capture start");
-    write_control(&capture_start_control_line(config, generation));
 
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped_thread = stopped.clone();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<CaptureStartInfo>();
+    let control_thread = control.clone();
     std::thread::Builder::new()
         .name("au-stdin-reader".into())
         .spawn(move || {
             let mut stdin = std::io::stdin();
             let mut len_buf = [0u8; 4];
             let mut dropped_delta_frames = 0u64;
-            let mut started_tx = Some(started_tx);
             loop {
                 if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
@@ -1541,28 +1480,23 @@ fn spawn_au_stdin_reader(
                 if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                if let Some(frame) = app_capture_frame(&au) {
+                if let Some(frame) = app_control_frame(&au) {
                     match frame {
-                        AppCaptureFrame::Started(info) => {
-                            tracing::info!(
-                                "serve-webrtc: host capture generation {} started display={:?} size={:?}x{:?}",
-                                info.generation,
-                                info.display_id,
-                                info.width,
-                                info.height
+                        AppControlFrame::Ack(ack) => control_thread.deliver_ack(ack),
+                        AppControlFrame::CaptureError(event) => {
+                            tracing::warn!(
+                                "serve-webrtc: relaying host capture error gen={}: {:?}: {}",
+                                event.gen,
+                                event.kind,
+                                event.reason
                             );
-                            if let Some(tx) = started_tx.take() {
-                                let _ = tx.send(info);
-                            }
-                        }
-                        AppCaptureFrame::Stopped { generation } => {
-                            tracing::info!(
-                                "serve-webrtc: host capture stopped generation={generation:?}"
+                            queue_status(
+                                &sig_tx,
+                                RdStatus::CaptureFailed {
+                                    capture_kind: event.kind,
+                                    reason: bounded_reason(event.reason),
+                                },
                             );
-                        }
-                        AppCaptureFrame::Status(status) => {
-                            tracing::warn!("serve-webrtc: relaying host capture status: {status:?}");
-                            queue_status(&sig_tx, status);
                         }
                     }
                     continue;
@@ -1577,7 +1511,8 @@ fn spawn_au_stdin_reader(
     StdinReaderHandle {
         stopped,
         generation,
-        started_rx: Some(started_rx),
+        control,
+        start_info: None,
     }
 }
 
@@ -1680,23 +1615,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_control_lines_carry_session_generation() {
-        let config = CaptureConfig {
-            fps: 30,
-            bitrate: 4_000_000,
-            scale: 1.0,
-        };
-        assert_eq!(
-            capture_start_control_line(config, 42),
-            "{\"capture\":\"start\",\"generation\":42,\"fps\":30,\"bitrate\":4000000,\"scale\":1}\n"
-        );
-        assert_eq!(
-            capture_stop_control_line(42),
-            "{\"capture\":\"stop\",\"generation\":42}\n"
-        );
-    }
-
-    #[test]
     fn expected_token_arg_reads_owner_file_form() {
         let raw = token('c');
         let unique = std::time::SystemTime::now()
@@ -1713,17 +1631,28 @@ mod tests {
     }
 
     #[test]
-    fn app_capture_started_frame_reports_display_alignment_metadata() {
-        let frame = br#"{"capture":"started","generation":7,"displayId":69734662,"width":2560,"height":1440}"#;
-        let parsed = app_capture_frame(frame).expect("started frame should parse");
-        match parsed {
-            AppCaptureFrame::Started(info) => {
-                assert_eq!(info.generation, 7);
-                assert_eq!(info.display_id, Some(69_734_662));
-                assert_eq!(info.width, Some(2560.0));
-                assert_eq!(info.height, Some(1440.0));
+    fn superseded_ack_maps_to_session_superseded() {
+        let err: SessionError = ControlError::Superseded {
+            gen: 42,
+            active_gen: 43,
+        }
+        .into();
+        assert!(matches!(err, SessionError::Superseded));
+    }
+
+    #[test]
+    fn error_ack_maps_to_capture_failed_with_kind_preserved() {
+        let err: SessionError = ControlError::CaptureFailed {
+            kind: CaptureErrorKind::StartFailed,
+            reason: "missing grant".to_string(),
+        }
+        .into();
+        match err {
+            SessionError::Capture(reason) => {
+                assert!(reason.contains("StartFailed"));
+                assert!(reason.contains("missing grant"));
             }
-            other => panic!("unexpected frame: {other:?}"),
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 

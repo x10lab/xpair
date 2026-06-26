@@ -26,6 +26,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use xcap::Monitor;
 
+#[cfg(feature = "webrtc")]
+mod control;
 mod log;
 mod serve;
 #[cfg(feature = "webrtc")]

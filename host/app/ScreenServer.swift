@@ -4,14 +4,14 @@
 // GUI/Aqua session with WindowServer access AND a per-binary Screen Recording (TCC) grant,
 // so the capture+encode now runs IN THIS APP PROCESS (CaptureEngine) using the app's grant.
 // The sidecar (`screen serve-webrtc`, env RP_AU_STDIN=1) does ONLY WebRTC transport: it reads
-// already-encoded H.264 access units from its stdin and writes control lines to its stdout.
+// already-encoded H.264 access units from its stdin and writes framed control ops to its stdout.
 //
 // Wiring (per session):
-//   pipe A (app -> child stdin): the AU stream — CaptureEngine sink writes [4B len][AU] here.
-//   pipe B (child stdout -> app): control lines — {"capture":"start","fps":30,...} / {"capture":"stop"}.
+//   pipe A (app -> child stdin): [4B len][AU] frames plus [4B len][JSON ack/event] frames.
+//   pipe B (child stdout -> app): [4B len][JSON op] start / stop / keyframe.
 //   child stderr (fd2): LOG_DIR/screen-serve.log (as before).
-// On {"capture":"start"} we start CaptureEngine (in-app SCK+VT capture); on {"capture":"stop"}
-// we stop it. Capture is thus per-connection — no capture (privacy/power cost) while idle.
+// On start we start CaptureEngine (in-app SCK+VT capture); on stop we stop it.
+// Capture is thus per-connection — no capture (privacy/power cost) while idle.
 //
 // Lifecycle: the sidecar process is kept alive for as long as the app runs (idle = a listening
 // signaling socket, no capture). On app quit we kill the sidecar and stop the engine; a stale
@@ -27,14 +27,16 @@ final class ScreenServer {
     /// True while the screen-share sidecar is running (serving; awaiting or with viewers).
     var serving: Bool { childPid != 0 && isAlive(childPid) }
     /// True while a remote viewer is actively connected (the sidecar requested capture:start).
-    var viewerConnected: Bool { captureEngine.isCapturing }
+    var viewerConnected: Bool {
+        controlQueue.sync { state.activeGen != nil }
+    }
 
     // In-app capture/encode (uses the APP's Screen Recording TCC grant, not a helper binary's).
     private let captureEngine = CaptureEngine()
     private let rdTokenByteCount = 32
     // Pipe A write end (app -> child stdin: the AU stream). -1 when not spawned.
     private var auWriteFD: Int32 = -1
-    // Pipe B read end (child stdout -> app: control lines). -1 when not spawned.
+    // Pipe B read end (child stdout -> app: framed control ops). -1 when not spawned.
     private var ctlReadFD: Int32 = -1
     // Serialize writes to pipe A: SCK's sample callback runs on its own queue.
     private let auWriteQueue = DispatchQueue(label: "rp.screenserver.au-write")
@@ -43,8 +45,12 @@ final class ScreenServer {
     private var pendingDeltaAU: Data?
     private var auWriterScheduled = false
     private var droppedAUFrames: UInt64 = 0
-    private var activeCaptureGeneration: UInt64?
-    private var pendingCaptureStartGeneration: UInt64?
+    private let controlQueue = DispatchQueue(label: "rp.screenserver.capture-control")
+    private var state: CaptureState = .idle
+    private var pendingStartAck: [(gen: Generation, rid: String)] = []
+    private var cachedStartedInfo: StartedInfo?
+    private let captureGateLock = NSLock()
+    private var activeAUGeneration: Generation?
 
     var droppedFrameCount: UInt64 {
         auStateLock.lock()
@@ -137,8 +143,13 @@ final class ScreenServer {
     }
 
     func stop() {
-        activeCaptureGeneration = nil
-        pendingCaptureStartGeneration = nil
+        controlQueue.sync {
+            cancelStartingToken()
+            state = .idle
+            pendingStartAck.removeAll()
+            cachedStartedInfo = nil
+            setActiveAUGeneration(nil)
+        }
         captureEngine.stop()
         closePipes()
         if childPid != 0 { kill(childPid, SIGTERM); childPid = 0 }
@@ -181,6 +192,13 @@ final class ScreenServer {
         // surfaces as a -1/EPIPE return in writeAU (handled) instead of killing the app.
         signal(SIGPIPE, SIG_IGN)
         // A fresh spawn: tear down any leftover engine/pipes from a previous (dead) child.
+        controlQueue.sync {
+            cancelStartingToken()
+            state = .idle
+            pendingStartAck.removeAll()
+            cachedStartedInfo = nil
+            setActiveAUGeneration(nil)
+        }
         captureEngine.stop()
         closePipes()
         reapStrays()
@@ -198,7 +216,7 @@ final class ScreenServer {
             return
         }
 
-        // pipe A: app -> child stdin (AU stream). pipe B: child stdout -> app (control lines).
+        // pipe A: app -> child stdin (AU stream + control acks). pipe B: child stdout -> app (control ops).
         var pipeA: [Int32] = [-1, -1] // [read(child fd0), write(app)]
         var pipeB: [Int32] = [-1, -1] // [read(app), write(child fd1)]
         guard pipe(&pipeA) == 0 else { log(.error, "SCREEN: pipe(A) failed errno=\(errno)"); return }
@@ -241,9 +259,8 @@ final class ScreenServer {
         startControlReader(fd: bRead)
     }
 
-    /// Background reader for pipe B (child stdout): newline-delimited control lines.
-    /// {"capture":"start","fps":30,"bitrate":4000000,"scale":1.0} -> start in-app CaptureEngine;
-    /// {"capture":"stop"}  -> stop it. Exits on EOF (child gone).
+    /// Background reader for pipe B (child stdout): length-prefixed JSON control ops.
+    /// Exits on EOF (child gone).
     private func startControlReader(fd: Int32) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var buf = Data()
@@ -252,174 +269,291 @@ final class ScreenServer {
                 let n = read(fd, &chunk, chunk.count)
                 if n <= 0 { break } // EOF or error: child gone
                 buf.append(contentsOf: chunk[0..<n])
-                // Process each complete newline-delimited line.
-                while let nl = buf.firstIndex(of: 0x0A) {
-                    let lineData = buf.subdata(in: buf.startIndex..<nl)
-                    buf.removeSubrange(buf.startIndex...nl)
-                    guard let self = self,
-                          let line = String(data: lineData, encoding: .utf8) else { continue }
-                    self.handleControlLine(line.trimmingCharacters(in: .whitespaces))
+                while buf.count >= 4 {
+                    let len = buf.withUnsafeBytes { raw -> UInt32 in
+                        guard let base = raw.baseAddress else { return 0 }
+                        var value: UInt32 = 0
+                        memcpy(&value, base, 4)
+                        return UInt32(bigEndian: value)
+                    }
+                    if len == 0 || len > 1024 * 1024 {
+                        log(.warn, "SCREEN: invalid control frame length \(len)")
+                        return
+                    }
+                    let total = 4 + Int(len)
+                    if buf.count < total { break }
+                    let frame = buf.subdata(in: 4..<total)
+                    buf.removeSubrange(0..<total)
+                    self?.handleControlFrame(frame)
                 }
             }
         }
     }
 
-    private func handleControlLine(_ line: String) {
-        if line.isEmpty { return }
-        guard let control = parseControlLine(line) else {
-            log(.warn, "SCREEN: unknown control line: \(line)")
+    private func handleControlFrame(_ frame: Data) {
+        guard let event = parseControlFrame(frame) else {
+            let text = String(data: frame, encoding: .utf8) ?? "<non-utf8>"
+            log(.warn, "SCREEN: unknown control frame: \(text)")
+            return
+        }
+        controlQueue.async { [weak self] in
+            self?.apply(event)
+        }
+    }
+
+    private func apply(_ event: CaptureControlEvent) {
+        switch event {
+        case let .startOp(gen, rid, cfg):
+            applyStart(gen: gen, rid: rid, cfg: cfg)
+        case let .stopOp(gen, rid):
+            applyStop(gen: gen, rid: rid)
+        case let .keyframeOp(gen, rid):
+            applyKeyframe(gen: gen, rid: rid)
+        case let .startCompleted(gen, info):
+            applyStartCompleted(gen: gen, info: info)
+        case let .startFailed(gen, kind, reason):
+            applyStartFailed(gen: gen, kind: kind, reason: reason)
+        case let .engineError(gen, kind, reason):
+            applyEngineError(gen: gen, kind: kind, reason: reason)
+        }
+    }
+
+    private func applyStart(gen: Generation, rid: String, cfg: CaptureConfig) {
+        if let active = state.activeGen, gen < active {
+            writeAck(gen: gen, rid: rid, op: .start, result: .superseded(activeGen: active))
             return
         }
 
-        if control.capture == "start" {
-            if let generation = control.generation,
-               let active = activeCaptureGeneration,
-               generation < active {
-                log("SCREEN: ignoring stale capture start generation=\(generation) active=\(active)")
-                return
+        if case let .running(active) = state, active == gen {
+            if let info = cachedStartedInfo {
+                writeAck(gen: gen, rid: rid, op: .start, result: .started(info))
+            } else {
+                writeAck(
+                    gen: gen,
+                    rid: rid,
+                    op: .start,
+                    result: .error(kind: .startFailed, reason: "capture is running without cached start metadata")
+                )
             }
-            if let generation = control.generation,
-               let active = activeCaptureGeneration,
-               generation == active,
-               (captureEngine.isCapturing || pendingCaptureStartGeneration == generation) {
-                log("SCREEN: duplicate capture start generation=\(generation) ignored")
-                return
+            return
+        }
+
+        if case let .starting(active, _) = state, active == gen {
+            pendingStartAck.append((gen: gen, rid: rid))
+            return
+        }
+
+        if let active = state.activeGen, gen > active {
+            supersedeActiveCapture(with: gen)
+        }
+
+        let token = StartToken()
+        state = .starting(gen: gen, token: token)
+        pendingStartAck.append((gen: gen, rid: rid))
+        cachedStartedInfo = nil
+        setActiveAUGeneration(nil)
+        log("SCREEN: control start -> begin in-app capture generation=\(gen.raw) fps=\(cfg.fps) bitrate=\(cfg.bitrate) scale=\(cfg.scale)")
+        captureEngine.start(
+            fps: cfg.fps,
+            bitrate: cfg.bitrate,
+            scale: cfg.scale,
+            token: token,
+            eventSink: { [weak self] event in
+                self?.handleCaptureEvent(event, generation: gen)
+            },
+            sink: { [weak self] data in
+                self?.writeCaptureAU(data, generation: gen)
             }
-            if captureEngine.isCapturing || pendingCaptureStartGeneration != nil {
-                log("SCREEN: replacing active/pending capture generation=\(String(describing: activeCaptureGeneration)) pending=\(String(describing: pendingCaptureStartGeneration)) with generation=\(String(describing: control.generation))")
-                captureEngine.stop()
-                clearPendingAUs()
-            }
-            activeCaptureGeneration = control.generation
-            pendingCaptureStartGeneration = control.generation
-            log("SCREEN: control start -> begin in-app capture generation=\(String(describing: control.generation)) fps=\(control.fps) bitrate=\(control.bitrate) scale=\(control.scale)")
-            captureEngine.start(
-                fps: control.fps,
-                bitrate: control.bitrate,
-                scale: control.scale,
-                eventSink: { [weak self] event in
-                    self?.handleCaptureEvent(event, generation: control.generation)
-                },
-                sink: { [weak self] data in
-                    self?.writeCaptureAU(data, generation: control.generation)
-                }
-            )
-        } else if control.capture == "stop" {
-            if let generation = control.generation {
-                guard activeCaptureGeneration == generation else {
-                    log("SCREEN: ignoring stale capture stop generation=\(generation) active=\(String(describing: activeCaptureGeneration))")
-                    writeCaptureStopped(generation: control.generation)
-                    return
-                }
-            }
-            log("SCREEN: control stop -> stop in-app capture generation=\(String(describing: control.generation))")
+        )
+    }
+
+    private func applyStop(gen: Generation, rid: String) {
+        guard let active = state.activeGen else {
+            writeAck(gen: gen, rid: rid, op: .stop, result: .stopped)
+            return
+        }
+        guard active == gen else {
+            writeAck(gen: gen, rid: rid, op: .stop, result: .superseded(activeGen: active))
+            return
+        }
+
+        switch state {
+        case .idle:
+            writeAck(gen: gen, rid: rid, op: .stop, result: .stopped)
+        case let .starting(_, token):
+            token.cancel()
+            let startAcks = consumePendingStartAcks(for: gen)
+            state = .idle
+            cachedStartedInfo = nil
+            setActiveAUGeneration(nil)
             captureEngine.stop()
             clearPendingAUs()
-            activeCaptureGeneration = nil
-            pendingCaptureStartGeneration = nil
-            writeCaptureStopped(generation: control.generation)
-        } else if control.keyframe {
-            // Client signalled picture loss (RTCP PLI/FIR) via the sidecar — force an IDR
-            // so a viewer that lost the original keyframe can recover from a black frame.
-            log("SCREEN: control keyframe -> force keyframe")
-            captureEngine.requestKeyframe()
-        } else {
-            log(.warn, "SCREEN: unknown control line: \(line)")
+            for ack in startAcks {
+                writeAck(gen: ack.gen, rid: ack.rid, op: .start, result: .stopped)
+            }
+            writeAck(gen: gen, rid: rid, op: .stop, result: .stopped)
+        case .running:
+            state = .stopping(gen: gen)
+            cachedStartedInfo = nil
+            setActiveAUGeneration(nil)
+            captureEngine.stop()
+            clearPendingAUs()
+            state = .idle
+            writeAck(gen: gen, rid: rid, op: .stop, result: .stopped)
+        case .stopping:
+            state = .idle
+            writeAck(gen: gen, rid: rid, op: .stop, result: .stopped)
         }
     }
 
-    private func handleCaptureEvent(_ event: CaptureEngine.CaptureEvent, generation: UInt64?) {
-        guard activeCaptureGeneration == generation else {
-            log("SCREEN: ignoring stale capture event generation=\(String(describing: generation)) active=\(String(describing: activeCaptureGeneration))")
+    private func applyKeyframe(gen: Generation, rid: String) {
+        if case let .running(active) = state, active == gen {
+            log("SCREEN: control keyframe -> force keyframe generation=\(gen.raw)")
+            captureEngine.requestKeyframe()
+            writeAck(gen: gen, rid: rid, op: .keyframe, result: .accepted)
             return
         }
-        switch event {
-        case let .started(displayID, width, height):
-            if pendingCaptureStartGeneration == generation {
-                pendingCaptureStartGeneration = nil
-            }
-            var json: [String: Any] = [
-                "capture": "started",
-                "displayId": Int(displayID),
-                "width": width,
-                "height": height,
-            ]
-            if let generation = generation {
-                json["generation"] = NSNumber(value: generation)
-            }
-            log("SCREEN: forwarding capture started generation=\(String(describing: generation)) displayId=\(displayID)")
-            writeSidecarControl(json)
-        case let .error(kind, reason):
-            if pendingCaptureStartGeneration == generation {
-                pendingCaptureStartGeneration = nil
-            }
-            log(.error, "SCREEN: forwarding capture error kind=\(kind.rawValue): \(reason)")
-            var json: [String: Any] = ["capture": "error", "kind": kind.rawValue, "reason": reason]
-            if let generation = generation {
-                json["generation"] = NSNumber(value: generation)
-            }
-            writeSidecarControl(json)
+        if let active = state.activeGen, active != gen {
+            writeAck(gen: gen, rid: rid, op: .keyframe, result: .superseded(activeGen: active))
+        } else {
+            writeAck(gen: gen, rid: rid, op: .keyframe, result: .accepted)
         }
     }
 
-    private func writeCaptureAU(_ data: Data, generation: UInt64?) {
-        guard activeCaptureGeneration == generation else { return }
+    private func applyStartCompleted(gen: Generation, info: StartedInfo) {
+        guard case let .starting(active, _) = state, active == gen else {
+            log("SCREEN: ignoring late capture start completion generation=\(gen.raw) active=\(String(describing: state.activeGen?.raw))")
+            return
+        }
+        state = .running(gen: gen)
+        cachedStartedInfo = info
+        setActiveAUGeneration(gen)
+        let startAcks = consumePendingStartAcks(for: gen)
+        log("SCREEN: forwarding capture started generation=\(gen.raw) displayId=\(info.displayID)")
+        for ack in startAcks {
+            writeAck(gen: ack.gen, rid: ack.rid, op: .start, result: .started(info))
+        }
+    }
+
+    private func applyStartFailed(gen: Generation, kind: CaptureEngine.CaptureFailureKind, reason: String) {
+        guard case let .starting(active, _) = state, active == gen else {
+            log("SCREEN: ignoring late capture start failure generation=\(gen.raw) active=\(String(describing: state.activeGen?.raw))")
+            return
+        }
+        state = .idle
+        cachedStartedInfo = nil
+        setActiveAUGeneration(nil)
+        captureEngine.stop()
+        let startAcks = consumePendingStartAcks(for: gen)
+        log(.error, "SCREEN: forwarding capture start error generation=\(gen.raw) kind=\(kind.rawValue): \(reason)")
+        for ack in startAcks {
+            writeAck(gen: ack.gen, rid: ack.rid, op: .start, result: .error(kind: kind, reason: reason))
+        }
+    }
+
+    private func applyEngineError(gen: Generation, kind: CaptureEngine.CaptureFailureKind, reason: String) {
+        guard case let .running(active) = state, active == gen else {
+            log("SCREEN: ignoring stale capture engine error generation=\(gen.raw) active=\(String(describing: state.activeGen?.raw))")
+            return
+        }
+        state = .idle
+        cachedStartedInfo = nil
+        setActiveAUGeneration(nil)
+        captureEngine.stop()
+        clearPendingAUs()
+        log(.error, "SCREEN: forwarding capture engine error generation=\(gen.raw) kind=\(kind.rawValue): \(reason)")
+        writeEvent(gen: gen, kind: kind, reason: reason)
+    }
+
+    private func supersedeActiveCapture(with newGen: Generation) {
+        if case let .starting(_, token) = state {
+            token.cancel()
+        }
+        let startAcks = pendingStartAck
+        pendingStartAck.removeAll()
+        if state.activeGen != nil {
+            captureEngine.stop()
+            clearPendingAUs()
+        }
+        cachedStartedInfo = nil
+        setActiveAUGeneration(nil)
+        for ack in startAcks {
+            writeAck(gen: ack.gen, rid: ack.rid, op: .start, result: .superseded(activeGen: newGen))
+        }
+    }
+
+    private func cancelStartingToken() {
+        if case let .starting(_, token) = state {
+            token.cancel()
+        }
+    }
+
+    private func consumePendingStartAcks(for gen: Generation) -> [(gen: Generation, rid: String)] {
+        let matching = pendingStartAck.filter { $0.gen == gen }
+        pendingStartAck.removeAll { $0.gen == gen }
+        return matching
+    }
+
+    private func handleCaptureEvent(_ event: CaptureEngine.CaptureEvent, generation: Generation) {
+        controlQueue.async { [weak self] in
+            guard let self = self else { return }
+            switch event {
+            case let .started(displayID, width, height):
+                self.apply(.startCompleted(
+                    gen: generation,
+                    info: StartedInfo(displayID: displayID, width: width, height: height)
+                ))
+            case let .error(kind, reason):
+                if case let .starting(active, _) = self.state, active == generation {
+                    self.apply(.startFailed(gen: generation, kind: kind, reason: reason))
+                } else {
+                    self.apply(.engineError(gen: generation, kind: kind, reason: reason))
+                }
+            }
+        }
+    }
+
+    private func writeCaptureAU(_ data: Data, generation: Generation) {
+        captureGateLock.lock()
+        let shouldWrite = activeAUGeneration == generation
+        captureGateLock.unlock()
+        guard shouldWrite else { return }
         writeAU(data)
     }
 
-    private func writeCaptureStopped(generation: UInt64?) {
-        var json: [String: Any] = ["capture": "stopped"]
-        if let generation = generation {
-            json["generation"] = NSNumber(value: generation)
-        }
-        writeSidecarControl(json)
+    private struct ControlOpMessage: Decodable {
+        let v: Int
+        let op: String
+        let gen: UInt64
+        let rid: String
+        let fps: Int?
+        let bitrate: Int?
+        let scale: Double?
     }
 
-    private struct ControlMessage {
-        var capture: String?
-        var generation: UInt64?
-        var fps: Int = 30
-        var bitrate: Int = 4_000_000
-        var scale: Double = 1.0
-        var keyframe = false
-    }
-
-    private func parseControlLine(_ line: String) -> ControlMessage? {
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let json = object as? [String: Any] else {
+    private func parseControlFrame(_ frame: Data) -> CaptureControlEvent? {
+        guard let message = try? JSONDecoder().decode(ControlOpMessage.self, from: frame),
+              message.v == 1 else {
             return nil
         }
-        var control = ControlMessage()
-        control.capture = json["capture"] as? String
-        if let generation = json["generation"] as? UInt64 {
-            control.generation = generation
-        } else if let generation = json["generation"] as? Int, generation >= 0 {
-            control.generation = UInt64(generation)
-        } else if let generation = json["generation"] as? Double,
-                  generation.isFinite,
-                  generation >= 0 {
-            control.generation = UInt64(generation.rounded(.towardZero))
+        let gen = Generation(raw: message.gen)
+        switch message.op {
+        case "start":
+            let fps = max(1, min(120, message.fps ?? 30))
+            let bitrate = max(100_000, message.bitrate ?? 4_000_000)
+            let scale = max(0.1, min(1.0, message.scale ?? 1.0))
+            return .startOp(
+                gen: gen,
+                rid: message.rid,
+                cfg: CaptureConfig(fps: fps, bitrate: bitrate, scale: scale)
+            )
+        case "stop":
+            return .stopOp(gen: gen, rid: message.rid)
+        case "keyframe":
+            return .keyframeOp(gen: gen, rid: message.rid)
+        default:
+            return nil
         }
-        if let keyframe = json["keyframe"] as? Bool {
-            control.keyframe = keyframe
-        }
-        if let fps = json["fps"] as? Int {
-            control.fps = max(1, min(120, fps))
-        } else if let fps = json["fps"] as? Double {
-            control.fps = max(1, min(120, Int(fps.rounded())))
-        }
-        if let bitrate = json["bitrate"] as? Int {
-            control.bitrate = max(100_000, bitrate)
-        } else if let bitrate = json["bitrate"] as? Double {
-            control.bitrate = max(100_000, Int(bitrate.rounded()))
-        }
-        if let scale = json["scale"] as? Double, scale.isFinite {
-            control.scale = max(0.1, min(1.0, scale))
-        } else if let scale = json["scale"] as? Int {
-            control.scale = max(0.1, min(1.0, Double(scale)))
-        }
-        return control
     }
 
     private func isKeyframeAU(_ data: Data) -> Bool {
@@ -495,7 +629,35 @@ final class ScreenServer {
         }
     }
 
-    private func writeSidecarControl(_ json: [String: Any]) {
+    private func setActiveAUGeneration(_ generation: Generation?) {
+        captureGateLock.lock()
+        activeAUGeneration = generation
+        captureGateLock.unlock()
+    }
+
+    private func writeAck(gen: Generation, rid: String, op: CaptureAckOp, result: CaptureAckResult) {
+        let json: [String: Any] = [
+            "v": 1,
+            "ack": op.rawValue,
+            "gen": NSNumber(value: gen.raw),
+            "rid": rid,
+            "result": result.jsonObject,
+        ]
+        writeFramedSidecarJSON(json)
+    }
+
+    private func writeEvent(gen: Generation, kind: CaptureEngine.CaptureFailureKind, reason: String) {
+        let json: [String: Any] = [
+            "v": 1,
+            "event": "capture-error",
+            "gen": NSNumber(value: gen.raw),
+            "kind": kind.rawValue,
+            "reason": boundedControlReason(reason),
+        ]
+        writeFramedSidecarJSON(json)
+    }
+
+    private func writeFramedSidecarJSON(_ json: [String: Any]) {
         guard JSONSerialization.isValidJSONObject(json),
               let payload = try? JSONSerialization.data(withJSONObject: json, options: []) else {
             log(.warn, "SCREEN: could not encode sidecar control message")
@@ -538,6 +700,15 @@ final class ScreenServer {
                 log(.warn, "SCREEN: AU pipe write failed (child gone?) — stopping capture")
                 captureEngine.stop()
                 clearPendingAUs()
+                setActiveAUGeneration(nil)
+                controlQueue.async { [weak self] in
+                    guard let self = self else { return }
+                    self.cancelStartingToken()
+                    self.state = .idle
+                    self.pendingStartAck.removeAll()
+                    self.cachedStartedInfo = nil
+                    self.setActiveAUGeneration(nil)
+                }
                 if auWriteFD >= 0 { close(auWriteFD); auWriteFD = -1 }
                 return
             }

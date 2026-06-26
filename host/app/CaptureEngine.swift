@@ -82,6 +82,7 @@ final class CaptureEngine {
         fps: Int = 30,
         bitrate: Int = 4_000_000,
         scale: Double = 1.0,
+        token: StartToken,
         eventSink: ((CaptureEvent) -> Void)? = nil,
         sink: @escaping (Data) -> Void
     ) {
@@ -110,6 +111,7 @@ final class CaptureEngine {
 
         SCShareableContent.getWithCompletionHandler { [weak self] content, err in
             guard let self = self else { return }
+            guard !token.cancelled else { return }
             guard self.startGeneration == generation else { return }
             guard let content = content, let display = content.displays.first else {
                 self.reportCaptureError(
@@ -132,10 +134,12 @@ final class CaptureEngine {
             let s = SCStream(filter: filter, configuration: cfg, delegate: nil)
             do {
                 try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: self.sampleQueue)
+                guard !token.cancelled else { return }
                 guard self.startGeneration == generation else { return }
                 self.output = out
                 self.stream = s
                 s.startCapture { e in
+                    guard !token.cancelled else { return }
                     guard self.startGeneration == generation, self.stream === s else { return }
                     if let e = e {
                         self.reportCaptureError(
@@ -150,6 +154,7 @@ final class CaptureEngine {
                     self.eventSink?(.started(displayID: displayID, width: cfg.width, height: cfg.height))
                 }
             } catch {
+                guard !token.cancelled else { return }
                 guard self.startGeneration == generation else { return }
                 self.reportCaptureError(
                     kind: .addOutputFailed,
