@@ -77,7 +77,7 @@ Setup runs from **Xpair**, the client app: install it, launch it, and its first-
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash
 ```
 
-This installs the latest **stable** release. Xpair currently ships active development as `0.5.0aN` **pre-releases** — for the newest build, opt in with `--prerelease`:
+This installs the latest **stable** release that actually includes the `Xpair.zip` client asset. Xpair currently has no stable release on the renamed Xpair asset line, so the installer falls back to the newest `0.5.0aN` **pre-release** with a notice. To choose that channel explicitly, pass `--prerelease`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash -s -- --prerelease
@@ -85,7 +85,7 @@ curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-cl
 
 It downloads the chosen `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
 
-Prefer Homebrew? Same result via the cask:
+Prefer Homebrew? The cask currently tracks the pinned `0.5.0aN` **pre-release** line (matching the `--prerelease` curl path, not the stable-default path):
 
 ```bash
 brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
