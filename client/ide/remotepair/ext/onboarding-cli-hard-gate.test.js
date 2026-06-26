@@ -4,6 +4,10 @@ const path = require("node:path");
 
 const root = __dirname;
 const app = fs.readFileSync(path.join(root, "onboarding-webview/src/App.tsx"), "utf8");
+const stepConnect = fs.readFileSync(
+  path.join(root, "onboarding-webview/src/components/onboarding/client/StepConnect.tsx"),
+  "utf8",
+);
 const bridge = fs.readFileSync(path.join(root, "onboarding-bridge.js"), "utf8");
 const extension = fs.readFileSync(path.join(root, "extension.js"), "utf8");
 const cli = fs.readFileSync(path.join(root, "../../../cli/xpair"), "utf8");
@@ -68,6 +72,16 @@ test("Q0533/Q0534/Q0536/Q0537 xpair CLI availability is a hard gate before CLI-d
     app,
     />\s*Retry\s*<\/Button>/,
     "failed CLI install must expose a retry path instead of silently continuing",
+  );
+  assert.match(
+    stepConnect,
+    /if \(!autoCheck \|\| autoCheckStarted\.current \|\| state !== "idle" \|\| !host\.trim\(\) \|\| cliBlocked\) return;/,
+    "auto-check must wait for the CLI gate before consuming its one-shot ref",
+  );
+  assert.match(
+    stepConnect,
+    /\}, \[autoCheck, host, state, cliBlocked\]\);/,
+    "auto-check must re-run when cliBlocked flips false",
   );
 
   assert.match(

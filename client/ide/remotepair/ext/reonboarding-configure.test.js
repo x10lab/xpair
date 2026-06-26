@@ -14,19 +14,22 @@ const onboardingWindow = fs.readFileSync(path.join(repoRoot, "host/app/Onboardin
 
 let passed = 0;
 let failed = 0;
+const tests = [];
 
 function test(name, fn) {
-  try {
-    fn();
-    passed += 1;
-    console.log(`PASS ${name} - intended behavior is asserted`);
-  } catch (error) {
-    failed += 1;
-    console.error(`FAIL ${name} - ${error && error.message ? error.message.split("\n")[0] : error}`);
-  }
+  tests.push(async () => {
+    try {
+      await fn();
+      passed += 1;
+      console.log(`PASS ${name} - intended behavior is asserted`);
+    } catch (error) {
+      failed += 1;
+      console.error(`FAIL ${name} - ${error && error.message ? error.message.split("\n")[0] : error}`);
+    }
+  });
 }
 
-function withTempHome(fn) {
+async function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const previousUserProfile = process.env.USERPROFILE;
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "xpair-reonboard-test-"));
@@ -34,7 +37,7 @@ function withTempHome(fn) {
   process.env.USERPROFILE = tmpHome;
   delete require.cache[require.resolve(onboardingMainPath)];
   try {
-    return fn(tmpHome, require(onboardingMainPath));
+    return await fn(tmpHome, require(onboardingMainPath));
   } finally {
     delete require.cache[require.resolve(onboardingMainPath)];
     process.env.HOME = previousHome;
@@ -44,6 +47,7 @@ function withTempHome(fn) {
 }
 
 function fakeElectron() {
+  const loads = [];
   class BrowserWindow {
     constructor() {
       this.webContents = {
@@ -55,7 +59,9 @@ function fakeElectron() {
     on(event, fn) {
       this.closedHandlers[event] = fn;
     }
-    loadFile() {}
+    loadFile(file, options) {
+      loads.push({ file, options });
+    }
     show() {}
     focus() {}
     close() {}
@@ -65,34 +71,159 @@ function fakeElectron() {
   }
 
   return {
-    app: {
-      dock: { show() {} },
-      focus() {},
+    loads,
+    electron: {
+      app: {
+        dock: { show() {} },
+        focus() {},
+      },
+      BrowserWindow,
+      ipcMain: { handle() {} },
+      shell: { openExternal() {} },
     },
-    BrowserWindow,
-    ipcMain: { handle() {} },
-    shell: { openExternal() {} },
   };
 }
 
-test("Q0473/Q0493/Q0494 force-onboarding sentinel reopens onboarding once without clearing sessions", () => {
-  withTempHome((home, onboardingMain) => {
+function greenBridge(overrides = {}) {
+  return {
+    cliReady: async () => ({ ready: true, bin: "/tmp/xpair", err: "" }),
+    sshReachable: async () => ({ reachable: true, err: "" }),
+    hostAppStatus: async () => ({
+      installed: true,
+      version: "0.5.0a99",
+      compatible: true,
+      incompatibleKind: "",
+      err: "",
+    }),
+    hostPermissions: async () => ({ alive: true, ax: true, sr: true, fda: false, err: "" }),
+    hostEngineStatus: async () => ({ installed: true, authed: true, version: "ok", err: "" }),
+    ...overrides,
+  };
+}
+
+test("Q0473/Q0493/Q0494 force-onboarding sentinel reopens onboarding once without clearing sessions", async () => {
+  await withTempHome(async (home, onboardingMain) => {
     const rpDir = path.join(home, ".xpair/host");
     fs.mkdirSync(rpDir, { recursive: true });
-    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nFOLDER_MAPS=/c::/h\n");
-    assert.equal(onboardingMain.shouldOnboard([]), false, "configured clients should normally open workbench");
+    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nFOLDER_MAPS=/c::/h\nENGINE=codex\n");
+    assert.equal(
+      await onboardingMain.firstFailingGuard([], greenBridge()),
+      null,
+      "configured clients with all guards green should normally open workbench",
+    );
 
     const sentinel = path.join(rpDir, ".force-onboarding");
     fs.writeFileSync(sentinel, "");
-    assert.equal(onboardingMain.shouldOnboard([]), true, "sentinel must force setup on next launch");
+    assert.equal(
+      await onboardingMain.firstFailingGuard([], greenBridge()),
+      "welcome",
+      "sentinel must force setup on next launch",
+    );
 
-    onboardingMain.openOnboardingWindow({ electron: fakeElectron(), onComplete() {} });
+    const fake = fakeElectron();
+    assert.equal(
+      await onboardingMain.resolveOnboarding({
+        electron: fake.electron,
+        onComplete() {},
+        argv: [],
+        probeBridge: greenBridge(),
+      }),
+      true,
+    );
     assert.equal(fs.existsSync(sentinel), false, "forced setup must be one-shot after onboarding opens");
+    assert.deepEqual(fake.loads[0].options.query, { startStep: "welcome", engine: "codex" });
     assert.match(fs.readFileSync(path.join(rpDir, "client.env"), "utf8"), /REMOTE_HOST=host-mac/);
   });
 });
 
-test("Q0473/Q0493/Q0494 extension Re-run setup schedules next-launch onboarding and asks for restart", () => {
+test("Q0473/Q0493/Q0494 per-launch guard parachutes to the first failing step", async () => {
+  await withTempHome(async (home, onboardingMain) => {
+    const rpDir = path.join(home, ".xpair/host");
+    fs.mkdirSync(rpDir, { recursive: true });
+    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nENGINE=codex\n");
+
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      sshReachable: async () => ({ reachable: false, err: "offline" }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostAppStatus: async () => ({
+        installed: true,
+        version: "0.5.0a45",
+        compatible: false,
+        incompatibleKind: "below_floor",
+        err: "update",
+      }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostAppStatus: async () => ({
+        installed: true,
+        version: "9.0.0",
+        compatible: false,
+        incompatibleKind: "major_mismatch",
+        err: "major mismatch",
+      }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostAppStatus: async () => ({
+        installed: false,
+        version: "",
+        compatible: false,
+        incompatibleKind: "",
+        err: "missing",
+      }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostAppStatus: async () => {
+        throw new Error("host app probe failed");
+      },
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostPermissions: async () => ({ alive: false, ax: true, sr: true, fda: false, err: "dead" }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostPermissions: async () => {
+        throw new Error("permission probe failed");
+      },
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostPermissions: async () => ({ alive: true, ax: false, sr: true, fda: false, err: "" }),
+    })), "grant");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostEngineStatus: async (engine) => {
+        assert.equal(engine, "codex", "guard must reuse the configured #44 engine status path");
+        return { installed: false, authed: false, version: "", err: "missing" };
+      },
+    })), "engine");
+  });
+});
+
+test("Q0473/Q0493/Q0494 local mode opens the workbench after CLI readiness without remote probes", async () => {
+  await withTempHome(async (home, onboardingMain) => {
+    const rpDir = path.join(home, ".xpair/host");
+    fs.mkdirSync(rpDir, { recursive: true });
+    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nENGINE=codex\nLOCAL_MODE=1\n");
+
+    let sshProbes = 0;
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      sshReachable: async () => {
+        sshProbes += 1;
+        return { reachable: false, err: "offline" };
+      },
+    })), null);
+    assert.equal(sshProbes, 0, "LOCAL_MODE must skip remote reachability and later remote guards");
+
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      cliReady: async () => ({ ready: false, bin: "", err: "missing cli" }),
+    })), "welcome", "LOCAL_MODE must not skip the local CLI guard");
+
+    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nENGINE=codex\nLOCAL_MODE=0\n");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      sshReachable: async () => ({ reachable: false, err: "offline" }),
+    })), "connect", "cleared LOCAL_MODE=0 must not skip remote guards");
+  });
+});
+
+test("Q0473/Q0493/Q0494 extension Re-run setup schedules next-launch onboarding and asks for restart", async () => {
   assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.runSetup", \(\) => runSetup\(\)\)/);
   assert.match(extension, /fs\.writeFileSync\(path\.join\(os\.homedir\(\), "\.xpair\/host", "\.force-onboarding"\), ""\)/);
   assert.match(extension, /Xpair setup will run when you restart the app\./);
@@ -100,7 +231,7 @@ test("Q0473/Q0493/Q0494 extension Re-run setup schedules next-launch onboarding 
   assert.match(extension, /vscode\.commands\.executeCommand\("workbench\.action\.quit"\)/);
 });
 
-test("Q0473/Q0493/Q0494 status Configure preserves sessions while reserving setup again", () => {
+test("Q0473/Q0493/Q0494 status Configure preserves sessions while reserving setup again", async () => {
   assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.endSessionReonboard", \(\) => endSessionReonboard\(\)\)/);
   assert.match(extension, /Set up Xpair again\? Your sessions stay attached\./);
   assert.match(extension, /choice !== "Set up again"/);
@@ -108,12 +239,15 @@ test("Q0473/Q0493/Q0494 status Configure preserves sessions while reserving setu
   assert.match(extension, /vscode\.commands\.executeCommand\("workbench\.action\.quit"\)/);
 });
 
-test("Q0473/Q0493/Q0494 host Set up action opens onboarding from scratch, not a disconnected settings pane", () => {
+test("Q0473/Q0493/Q0494 host Set up action opens onboarding from scratch, not a disconnected settings pane", async () => {
   assert.match(appDelegate, /menu\.addItem\(withTitle: "Set up…", action: #selector\(openSetup\), keyEquivalent: ","\)/);
   assert.match(appDelegate, /@objc func openSetup\(\) \{[\s\S]*OnboardingWindow\(mode: \.grantOnly, initialStep: nil,/);
   assert.match(onboardingWindow, /nil = start at Welcome \(the whole flow from scratch\), so inject nothing/);
   assert.match(onboardingWindow, /if let step = initialStep \{[\s\S]*window\.__rp_initialStep/);
 });
 
-console.log(`${testFile} REDGREEN ${passed} ${failed}`);
-process.exitCode = failed ? 1 : 0;
+(async () => {
+  for (const entry of tests) await entry();
+  console.log(`${testFile} REDGREEN ${passed} ${failed}`);
+  process.exitCode = failed ? 1 : 0;
+})();

@@ -37,8 +37,8 @@ declare global {
         version: string
         compatible: boolean
         // WHY compatible is false (surfaced by the bridge so the UI doesn't re-parse versions):
-        //   "below_floor"    — same major but older than the protocol floor → safe to force-update.
-        //   "major_mismatch" — different/NEWER major → force-reinstall would DOWNGRADE; do NOT update.
+        //   "below_floor"    — same major but older than the protocol floor → use update wording.
+        //   "major_mismatch" — different/NEWER major → use generic repair wording.
         //   ""               — compatible.
         incompatibleKind: "below_floor" | "major_mismatch" | ""
         err: string
@@ -47,6 +47,7 @@ declare global {
       clientVersion: () => Promise<string>
       getConfig: () => Promise<{
         remoteHost: string
+        engine: string
         folderMaps: string
         syncBackend: string
         mountBackend: string
@@ -85,8 +86,8 @@ declare global {
       // and the bridge uses BatchMode/publickey-only probes. Failures return explicit recovery states
       // (host-key mismatch, key-agent/passphrase failure) instead of password or pairing-code entry.
       discover: () => Promise<{ peers: Peer[]; err: string }>
-      // force:true reinstalls the bundled XpairHost over an already-installed (but incompatible) host
-      // app — used by the in-UI host-update flow. The host restarts (running tmux sessions die).
+      // force:true reinstalls the bundled XpairHost over a missing/incompatible/below-floor host app.
+      // Restart repairs intentionally omit force so the CLI only kickstarts/opens the existing app.
       installHost: (opts: { host: string; user?: string; force?: boolean }) => Promise<{
         ok: boolean
         out: string

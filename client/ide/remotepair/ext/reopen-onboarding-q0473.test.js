@@ -23,15 +23,18 @@ fs.writeFileSync(path.join(hostDir, "client.env"), "REMOTE_HOST=configured-host\
 const onboardingMain = require("./onboarding-main.cjs");
 
 let failures = 0;
+const tests = [];
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`  ok  - ${name}`);
-  } catch (error) {
-    failures += 1;
-    console.error(`  FAIL - ${name}`);
-    console.error(`         ${error && error.message ? error.message.split("\n")[0] : error}`);
-  }
+  tests.push(async () => {
+    try {
+      await fn();
+      console.log(`  ok  - ${name}`);
+    } catch (error) {
+      failures += 1;
+      console.error(`  FAIL - ${name}`);
+      console.error(`         ${error && error.message ? error.message.split("\n")[0] : error}`);
+    }
+  });
 }
 
 function functionBody(source, name) {
@@ -53,14 +56,26 @@ function stripComments(source) {
     .replace(/(^|\s)\/\/.*$/gm, "$1");
 }
 
-test("Q0473 Settings Configure can reopen first-run onboarding without ending sessions", () => {
+const greenBridge = {
+  cliReady: async () => ({ ready: true, bin: "/tmp/xpair", err: "" }),
+  sshReachable: async () => ({ reachable: true, err: "" }),
+  hostAppStatus: async () => ({ installed: true, version: "0.5.0a99", compatible: true, incompatibleKind: "", err: "" }),
+  hostPermissions: async () => ({ alive: true, ax: true, sr: true, fda: false, err: "" }),
+  hostEngineStatus: async () => ({ installed: true, authed: true, version: "ok", err: "" }),
+};
+
+test("Q0473 Settings Configure can reopen first-run onboarding without ending sessions", async () => {
   assert.equal(onboardingMain.isOnboarded(), true, "fixture must represent an already configured user");
-  assert.equal(onboardingMain.shouldOnboard(["Xpair"]), false, "configured users should normally skip onboarding");
+  assert.equal(
+    await onboardingMain.firstFailingGuard(["Xpair"], greenBridge),
+    null,
+    "configured users should normally skip onboarding when guards pass",
+  );
 
   fs.writeFileSync(path.join(hostDir, ".force-onboarding"), "");
   assert.equal(
-    onboardingMain.shouldOnboard(["Xpair"]),
-    true,
+    await onboardingMain.firstFailingGuard(["Xpair"], greenBridge),
+    "welcome",
     "force-onboarding sentinel must reopen onboarding even when REMOTE_HOST is configured",
   );
 
@@ -86,18 +101,22 @@ test("Q0473 Settings Configure can reopen first-run onboarding without ending se
   );
 });
 
-process.env.HOME = oldHome;
-process.env.USERPROFILE = oldUserProfile;
-if (oldForce === undefined) {
-  delete process.env.RP_FORCE_ONBOARDING;
-} else {
-  process.env.RP_FORCE_ONBOARDING = oldForce;
-}
-fs.rmSync(tmpHome, { recursive: true, force: true });
+(async () => {
+  for (const entry of tests) await entry();
 
-if (failures > 0) {
-  console.error(`\n${failures} test(s) FAILED`);
-  process.exit(1);
-}
+  process.env.HOME = oldHome;
+  process.env.USERPROFILE = oldUserProfile;
+  if (oldForce === undefined) {
+    delete process.env.RP_FORCE_ONBOARDING;
+  } else {
+    process.env.RP_FORCE_ONBOARDING = oldForce;
+  }
+  fs.rmSync(tmpHome, { recursive: true, force: true });
 
-console.log("\nall Q0473 reopen onboarding tests passed");
+  if (failures > 0) {
+    console.error(`\n${failures} test(s) FAILED`);
+    process.exit(1);
+  }
+
+  console.log("\nall Q0473 reopen onboarding tests passed");
+})();

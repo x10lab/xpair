@@ -152,15 +152,24 @@ function spawnEnv(extra = {}) {
   return env;
 }
 
+function sshControlPath() {
+  return "/tmp/rp-cm-" + (process.env.RP_SSH_CM_TAG || "x") + "-%C";
+}
+
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
  *  publickey-only auth, and BatchMode so ssh NEVER drops to a password/passphrase prompt (which
  *  would hang or spawn an out-of-band GUI prompt). Used by every read/probe ssh call and by the
- *  install preflight: fingerprint-confirmed key auth is the primary path. */
+ *  install preflight: fingerprint-confirmed key auth is the primary path. ControlMaster is shared
+ *  within one app launch via RP_SSH_CM_TAG so probes/tunnels multiplex over one authenticated SSH
+ *  master without reusing a previous launch's stale master. */
 function sshProbeOpts(connectTimeout = 5) {
   const opts = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${connectTimeout}`,
     "-o", "ConnectionAttempts=1",
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${sshControlPath()}`,
+    "-o", "ControlPersist=300",
     "-o", "PreferredAuthentications=publickey",
     "-o", "PubkeyAuthentication=yes",
     "-o", "PasswordAuthentication=no",
@@ -524,6 +533,7 @@ const bridge = {
     }
     return {
       remoteHost: e.REMOTE_HOST || "",
+      engine: e.ENGINE || "",
       folderMaps,
       syncBackend: e.SYNC_BACKEND || "",
       mountBackend: e.MOUNT_BACKEND || "",
@@ -838,9 +848,9 @@ const bridge = {
     }
     const args = ["install-host", "--host", h];
     if (account) args.push("--account", account);
-    // force:true reinstalls the client-bundled XpairHost over an already-installed (but
-    // incompatible) host app — the CLI's --force flag overwrites the existing app and restarts the
-    // host (terminating any running tmux sessions). Used by the onboarding host-update flow.
+    // force:true installs/reinstalls the client-bundled XpairHost for a not-ready host app state
+    // — the CLI's --force flag overwrites the existing app when present and restarts the
+    // host (terminating any running tmux sessions). Used by the onboarding host-repair flow.
     if (force) args.push("--force");
     const r = await cli(args);
     if (r.code === 0) {
@@ -910,11 +920,9 @@ const bridge = {
   //                status yet) is treated as compatible (don't hard-block a fresh install that simply
   //                hasn't stamped status.json); a KNOWN mismatching major is incompatible.
   //   incompatibleKind — WHY compatible is false, so the UI doesn't re-parse versions:
-  //                "below_floor"   = same major but older than MIN_COMPATIBLE_HOST → safe to force-update
+  //                "below_floor"   = same major but older than MIN_COMPATIBLE_HOST → use update wording
   //                                  (the client's bundled host is the same major, just newer).
-  //                "major_mismatch"= different major (incl. a NEWER host) → force-reinstalling the
-  //                                  client's bundled (older) host would DOWNGRADE it. The UI must NOT
-  //                                  route into the update flow for this; it stays a blocking error.
+  //                "major_mismatch"= different major (incl. a NEWER host) → use generic repair wording.
   //                ""              = compatible (no incompatibility).
   // Returns {installed, version, compatible, incompatibleKind, err}.
   async hostAppStatus(host) {
@@ -993,9 +1001,8 @@ const bridge = {
     if (!hostMajor) {
       compatible = true; // unreadable bundle version → allow (don't hard-block on a read glitch)
     } else if (hostMajor !== clientMajor) {
-      // Different major — including a NEWER host. Force-reinstalling the client's bundled (older) host
-      // over it would be a DOWNGRADE/overwrite, so this must NOT route into the update flow; the UI
-      // keeps it a blocking error.
+      // Different major — including a NEWER host. Keep the diagnostic distinct so the UI can use
+      // generic repair wording instead of the below-floor update wording.
       compatible = false;
       incompatibleKind = "major_mismatch";
       reason = `Host version ${version} is a different major than client ${clientV}`;
