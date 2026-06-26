@@ -8,8 +8,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash
 #
 # By default it installs the latest STABLE release that includes Xpair.zip. If no stable release has
-# that asset yet, it falls back to the newest alpha pre-release with a notice. To opt into the newest
-# release with Xpair.zip directly, pass --prerelease:
+# that asset yet, it falls back to the newest release with Xpair.zip (a pre-release) with a notice.
+# To install the newest release with Xpair.zip directly — stable or pre-release, whichever is newer —
+# pass --prerelease:
 #   curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash -s -- --prerelease
 #
 # After it installs, open Xpair — first-run onboarding does the rest (CLI, SSH, engine, host app).
@@ -29,9 +30,6 @@ for arg in "$@"; do
     *) echo "✗ unknown argument: $arg (use --prerelease)" >&2; exit 2 ;;
   esac
 done
-
-[ "$(uname -s)" = Darwin ] || { echo "✗ macOS only" >&2; exit 1; }
-[ "$(uname -m)" = arm64 ]  || { echo "✗ Xpair ships arm64-only (Apple Silicon)" >&2; exit 1; }
 
 api="https://api.github.com/repos/$REPO"
 
@@ -61,6 +59,46 @@ parse_release_rows() {
       }
     }
   ' "$1"
+}
+
+parse_tag_name() {
+  awk '
+    /"tag_name"[[:space:]]*:/ {
+      v = $0
+      sub(".*\"tag_name\"[[:space:]]*:[[:space:]]*\"", "", v)
+      sub("\".*", "", v)
+      print v
+      exit
+    }
+  ' "$1"
+}
+
+# Resolve the latest STABLE release via GitHub's /releases/latest (which already excludes
+# pre-releases and drafts), then confirm it ships $ASSET. This is O(1) regardless of how many
+# alpha pre-releases pile up — the paginated scan below would otherwise stop at the page cap and
+# wrongly report "no stable" once the alpha line grows past PER_PAGE * MAX_RELEASE_PAGES.
+# Returns: "<tag> false" on success; rc=1 = no usable stable (fall back); rc=2 = transient/unknown.
+select_latest_stable_with_asset() {
+  local json_file http tag status
+  json_file="$tmp/release-latest.json"
+
+  http="$(curl -sSL -o "$json_file" -w "%{http_code}" "$api/releases/latest" 2>/dev/null || true)"
+  case "$http" in
+    200) ;;
+    404) return 1 ;;  # repo has no published stable release yet (only pre-releases)
+    *) echo "✗ could not query latest stable release ($api/releases/latest, HTTP ${http:-000})" >&2; return 2 ;;
+  esac
+
+  tag="$(parse_tag_name "$json_file")"
+  [ -n "$tag" ] || { echo "✗ latest stable response missing tag_name" >&2; return 2; }
+
+  status="$(asset_http_status "$tag")"
+  case "$status" in
+    2??) printf "%s false\n" "$tag"; return 0 ;;
+    404) return 1 ;;  # newest stable predates the $ASSET rename — fall back to a pre-release
+    000) echo "✗ could not verify $ASSET for $tag (network failure)" >&2; return 2 ;;
+    *) echo "✗ could not verify $ASSET for $tag (HTTP $status)" >&2; return 2 ;;
+  esac
 }
 
 fetch_release_rows() {
@@ -105,19 +143,14 @@ asset_http_status() {
   printf "%s\n" "$status"
 }
 
-select_release_with_asset() {
+# Newest release of ANY kind (stable or pre-release) that ships $ASSET. Rows are newest-first, so this
+# is what --prerelease installs — it never pins to an OLDER alpha once a newer stable is promoted.
+select_newest_with_asset() {
   local rows_file=$1
-  local channel=$2
   local candidate_tag candidate_prerelease status
 
   while read -r candidate_tag candidate_prerelease; do
     [ -n "${candidate_tag:-}" ] || continue
-    if [ "$channel" = stable ] && [ "$candidate_prerelease" != false ]; then
-      continue
-    fi
-    if [ "$channel" = prerelease ] && [ "$candidate_prerelease" != true ]; then
-      continue
-    fi
 
     status="$(asset_http_status "$candidate_tag")"
     case "$status" in
@@ -154,35 +187,38 @@ verify_selected_asset() {
 }
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-rows="$tmp/releases.rows"
-fetch_release_rows "$rows" || exit $?
-[ -s "$rows" ] || die "could not find any GitHub releases from $api/releases"
 
 tag=""
 release_prerelease=""
+# Default channel: the latest stable release that ships $ASSET (resolved directly, no pagination).
 if [ "$PRERELEASE" = 0 ]; then
-  if selected="$(select_release_with_asset "$rows" stable)"; then
+  if selected="$(select_latest_stable_with_asset)"; then
     read -r tag release_prerelease <<EOF
 $selected
 EOF
-    echo "→ installing the latest STABLE release with $ASSET ($tag); pass --prerelease for the newest alpha build" >&2
+    echo "→ installing the latest STABLE release with $ASSET ($tag); pass --prerelease for the newest build" >&2
   else
     rc=$?
     [ "$rc" -eq 1 ] || exit "$rc"
-    echo "→ no stable release currently includes $ASSET — falling back to the latest pre-release with $ASSET" >&2
+    echo "→ no stable release currently includes $ASSET — falling back to the newest release with $ASSET" >&2
   fi
 fi
+# --prerelease (and the stable fallback): newest release of ANY kind that ships $ASSET, so opting in
+# never pins you to an OLDER alpha once a newer stable has been promoted.
 if [ -z "$tag" ]; then
-  if selected="$(select_release_with_asset "$rows" prerelease)"; then
+  rows="$tmp/releases.rows"
+  fetch_release_rows "$rows" || exit $?
+  [ -s "$rows" ] || die "could not find any GitHub releases from $api/releases"
+  if selected="$(select_newest_with_asset "$rows")"; then
     read -r tag release_prerelease <<EOF
 $selected
 EOF
     if [ "$PRERELEASE" = 0 ]; then
-      echo "→ installing the latest pre-release ($tag); pass --prerelease to silence this" >&2
+      echo "→ installing the newest release with $ASSET ($tag); pass --prerelease to silence this" >&2
     elif [ "$release_prerelease" = true ]; then
-      echo "→ installing the latest release with $ASSET ($tag, pre-release)" >&2
+      echo "→ installing the newest release with $ASSET ($tag, pre-release)" >&2
     else
-      echo "→ installing the latest release with $ASSET ($tag)" >&2
+      echo "→ installing the newest release with $ASSET ($tag)" >&2
     fi
   else
     rc=$?
@@ -193,10 +229,15 @@ fi
 verify_selected_asset "$tag"
 
 # Test hook for CI/local checks: resolve and verify the asset without mutating /Applications.
+# Kept above the macOS/arm64 gates so non-Apple CI (e.g. Linux) can validate release resolution.
 if [ "${XPAIR_INSTALL_CLIENT_RESOLVE_ONLY:-0}" = 1 ]; then
   printf "%s\n" "$tag"
   exit 0
 fi
+
+# Only the /Applications install below is macOS/arm64-specific; release resolution above runs anywhere.
+[ "$(uname -s)" = Darwin ] || { echo "✗ macOS only" >&2; exit 1; }
+[ "$(uname -m)" = arm64 ]  || { echo "✗ Xpair ships arm64-only (Apple Silicon)" >&2; exit 1; }
 
 # Install to /Applications, where the cask puts it. It is group-writable by `admin`, so an admin account
 # (the macOS default) installs with NO sudo — same as `brew install --cask` or a drag-install. A standard
