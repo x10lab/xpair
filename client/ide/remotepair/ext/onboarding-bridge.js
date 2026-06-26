@@ -847,7 +847,16 @@ const bridge = {
   // update flow). Returns {ok,out,err,state,action}; `out` carries the redacted progress stream.
   async installHost({ host, user, password, force } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
-    const h = String(host || "").trim();
+    let h = String(host || "").trim();
+    let account = String(user || "").trim();
+    // Accept `user@host` typed into the host field — the documented way to set a remote login that
+    // differs from the local user. HOST_RE rejects `@`, so split it here (an explicit `user` wins)
+    // before validation; the CLI install-host then authenticates/normalizes as account@host.
+    if (!account && h.includes("@")) {
+      const at = h.indexOf("@");
+      account = h.slice(0, at);
+      h = h.slice(at + 1);
+    }
     if (!validHost(h)) {
       return {
         ok: false,
@@ -857,7 +866,6 @@ const bridge = {
         action: SSH_ACTION.ABORT,
       };
     }
-    const account = String(user || "").trim();
     if (account && !validAccount(account)) {
       return {
         ok: false,

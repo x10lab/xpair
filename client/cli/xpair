@@ -1161,7 +1161,7 @@ cmd_self_update() {
   c "self-update ← $repo@$ref"
   local tmp; tmp="$(mktemp -d)" || { warn "mktemp failed"; return 1; }
   local got=0 f
-  for f in xpair xpair-launch hangul-romanize; do
+  for f in xpair xpair-launch hangul-romanize xpair-askpass; do
     curl -fsSL "$base/$f" -o "$tmp/$f" 2>/dev/null && [ -s "$tmp/$f" ] && got=$((got+1))
   done
   # logging.sh lives in shared/, not client/ — fetch separately so a flat client loop won't 404.
@@ -1169,6 +1169,10 @@ cmd_self_update() {
   curl -fsSL "$shared_base/logging.sh" -o "$tmp/logging.sh" 2>/dev/null && [ -s "$tmp/logging.sh" ] && got=$((got+1))
   [ "$got" -ge 2 ] || { warn "download failed (got=$got) — check network/repo"; rm -rf "$tmp"; return 1; }
   [ -s "$tmp/xpair" ]        && { chmod +x "$tmp/xpair";        mv "$tmp/xpair" "$SELF_CLI" && ok "CLI → $SELF_CLI"; }
+  # xpair-askpass MUST ship alongside the CLI (rp_askpass_path resolves it as a sibling): the
+  # --password-stdin FIFO bootstrap needs the RP_ASKPASS_FIFO-aware helper, so a self-updated client
+  # missing it would silently fall back to a broken/old askpass.
+  [ -s "$tmp/xpair-askpass" ] && { chmod +x "$tmp/xpair-askpass"; mv "$tmp/xpair-askpass" "$(dirname "$SELF_CLI")/xpair-askpass" && ok "askpass → $(dirname "$SELF_CLI")/xpair-askpass"; }
   [ -s "$tmp/xpair-launch" ] && { chmod +x "$tmp/xpair-launch"; mkdir -p "$(dirname "$LAUNCHER")"; mv "$tmp/xpair-launch" "$LAUNCHER" && ok "launcher → $LAUNCHER"; }
   [ -s "$tmp/hangul-romanize" ]    && { chmod +x "$tmp/hangul-romanize";    mkdir -p "$RP_DIR/bin"; mv "$tmp/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; }
   [ -s "$tmp/logging.sh" ]         && { mkdir -p "$RP_DIR/bin"; mv "$tmp/logging.sh" "$RP_DIR/bin/logging.sh" && ok "logger → $RP_DIR/bin/logging.sh"; }
