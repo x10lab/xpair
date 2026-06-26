@@ -79,14 +79,13 @@ function versionMajor(v) {
 }
 
 /** The OLDEST host version this client can talk to. **BUMP THIS** whenever a host↔client
- *  protocol/interface changes incompatibly — e.g. the a45 RD remote-input restore changed
- *  serve_webrtc's data channels. A same-major host that is OLDER than this connects today but
- *  fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with a clear
- *  "update the host" message is far better than a silent breakage. A host >= this is accepted.
- *  INVARIANT: the host cask (Casks/xpair-host.rb) must ship a version >= this floor, or a
- *  cask-installed host is (correctly) rejected as too old. The published pre-releases reach
- *  v0.5.0a47+, so the cask is bumped to a current release rather than lowering this baseline. */
-const MIN_COMPATIBLE_HOST = "0.5.0a45";
+ *  protocol/interface changes incompatibly — e.g. the a49 RD session-token requirement made
+ *  rd-session-token and serve-webrtc --token mandatory. A same-major host that is OLDER than this
+ *  connects today but fails subtly (black RD, "signaling closed 1006", etc.); gating it at
+ *  onboarding with a clear "update the host" message is far better than a silent breakage. A host
+ *  >= this is accepted. INVARIANT: the host cask (Casks/xpair-host.rb) must ship a version >= this
+ *  floor, or a cask-installed host is (correctly) rejected as too old. */
+const MIN_COMPATIBLE_HOST = "0.5.0a49";
 
 /** Compare two "X.Y.Z" or "X.Y.ZaN" version strings → -1 | 0 | 1 (a<b | a==b | a>b).
  *  The alpha suffix sorts BELOW the same release: 0.5.0a44 < 0.5.0a45 < 0.5.0 (a released X.Y.Z
@@ -118,7 +117,7 @@ function resolveTailscale() {
 }
 
 /** The standard user-tool PATH a GUI Electron app is missing (its inherited PATH is minimal). */
-const RICH_PATH = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
+const RICH_PATH = `${HOME}/.local/bin:${HOME}/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
 
 /** Resolve the running ssh-agent's auth socket. A GUI Electron app launched from Finder/Dock does
  *  NOT inherit SSH_AUTH_SOCK, so ssh can't reach the agent and silently falls back to a password
@@ -350,7 +349,8 @@ const SESSION_ENGINES = new Set([...ENGINES, "shell"]);
 //   shell     — no auth; uses the host account's default login shell.
 //   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
 //   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
-const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
+const PATH_PREFIX =
+  'export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
 const ENGINE_PROBE = {
   claude:
     PATH_PREFIX +
@@ -379,13 +379,32 @@ const ENGINE_PROBE = {
     'else echo RP_ENGINE_INSTALLED=0; fi',
 };
 
-// Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
+// Per-engine host install command — each engine's OFFICIAL native installer, run non-interactively.
+// No brew/npm: claude/codex land in ~/.local/bin, opencode in ~/.opencode/bin (PATH_PERSIST wires both
+// onto the host's login PATH). The installers' own rc-PATH edits are suppressed where supported
+// (opencode --no-modify-path) since PATH_PERSIST owns PATH persistence. Mirrored in EngineGuard.swift.
 const ENGINE_INSTALL = {
-  claude: 'brew install --quiet claude || npm install -g @anthropic-ai/claude-code',
+  claude: "bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'",
   shell: 'true',
-  codex: 'brew install --quiet codex',
-  opencode: 'brew install --quiet opencode',
+  codex: "bash -c 'set -o pipefail; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'",
+  opencode: "bash -c 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'",
 };
+
+// PATH persistence (engine-agnostic): write ~/.xpair/env with the canonical PATH (incl. the native
+// install dirs ~/.local/bin and ~/.opencode/bin) and source it from zsh/bash login + interactive rc
+// files via an idempotent xpair-delimited block — so a bare `claude`/`codex` resolves in the host's own
+// Terminal. Idempotent: the delimited block + sourced file are rewritten, never duplicated. Mirrored in
+// host/app/EngineGuard.swift (pathPersistScript).
+const PATH_PERSIST =
+  'set -e; ' +
+  'mkdir -p "$HOME/.xpair"; ' +
+  'printf \'%s\\n\' \'export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"\' > "$HOME/.xpair/env"; ' +
+  'for RC in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do ' +
+  'touch "$RC"; TMP="$(mktemp)"; ' +
+  'grep -vF \'# >>> xpair PATH >>>\' "$RC" | grep -vF \'. "$HOME/.xpair/env"\' | grep -vF \'# <<< xpair PATH <<<\' > "$TMP" || true; ' +
+  'cat "$TMP" > "$RC"; rm -f "$TMP"; ' +
+  '{ echo \'# >>> xpair PATH >>>\'; echo \'[ -f "$HOME/.xpair/env" ] && . "$HOME/.xpair/env"\'; echo \'# <<< xpair PATH <<<\'; } >> "$RC"; ' +
+  'done; echo RP_PATH_OK=1';
 
 // Per-engine host auth WRITER — a remote shell command that reads ONE secret line from STDIN
 // (`read -r KEY`) and persists it. The key NEVER appears on argv/log/disk on either side:
@@ -667,9 +686,11 @@ const bridge = {
     };
   },
 
-  // Engine — install `engine` on the host over SSH (brew, non-interactive). brew is non-interactive
-  // by default (no tty needed); we run it under a login shell so the host's brew is on PATH. Returns
-  // {ok, err}. Re-probe with hostEngineStatus afterwards — never trust the exit code alone.
+  // Engine — install `engine` on the host over SSH via its official native installer (non-interactive,
+  // no tty). PATH_PREFIX puts curl + the install dirs on PATH; after a non-shell install we run
+  // PATH_PERSIST so a bare `claude`/`codex` resolves in the host's own Terminal later. Returns {ok, err}.
+  // Re-probe with hostEngineStatus afterwards — never trust the exit code alone (a curl|sh exit 0 means
+  // "ran", not "binary is launch-able"). Mirrored in host/app/EngineGuard.swift.
   async installHostEngine(engine) {
     const e = String(engine || "");
     const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
@@ -678,10 +699,10 @@ const bridge = {
       return { ok: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
     }
     if (!ENGINE_INSTALL[e]) return { ok: false, err: `unknown engine: ${e}` };
-    // Login shell so the host's brew (e.g. /opt/homebrew/bin) is on PATH; NONINTERACTIVE=1 keeps brew
-    // from prompting. The formula name differs per engine (ENGINE_INSTALL).
-    const cmd = `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; NONINTERACTIVE=1 ${ENGINE_INSTALL[e]}`;
-    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* brew can take a while */ });
+    // Run the native installer, then persist PATH (skip for shell — nothing was installed).
+    const persist = e === "shell" ? "" : ` && { ${PATH_PERSIST}; }`;
+    const cmd = `${PATH_PREFIX}${ENGINE_INSTALL[e]}${persist}`;
+    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* installer can take a while */ });
     if (r.code !== 0) {
       const s = sshResult(r, `install exited ${r.code}`);
       return { ok: false, err: s.err, state: s.state, action: s.action };
@@ -816,8 +837,9 @@ const bridge = {
   // there yet — so when that preflight reports KEY_AUTH_BLOCKED and the user supplied an account
   // `password`, it is handed to install-host's askpass over an inherited fd (never argv/env/disk) to
   // bootstrap that one setup connection; install-host then appends the key (ssh-copy-id) so all later
-  // ops are key-auth. Returns {ok,out,err,state,action}; `out` carries the redacted progress stream.
-  async installHost({ host, user, password } = {}) {
+  // ops are key-auth. `force` reinstalls over an already-installed but incompatible host app (host
+  // update flow). Returns {ok,out,err,state,action}; `out` carries the redacted progress stream.
+  async installHost({ host, user, password, force } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
     const h = String(host || "").trim();
     if (!validHost(h)) {
@@ -859,6 +881,10 @@ const bridge = {
     }
     const args = ["install-host", "--host", h];
     if (account) args.push("--account", account);
+    // force:true reinstalls the client-bundled XpairHost over an already-installed (but
+    // incompatible) host app — the CLI's --force flag overwrites the existing app and restarts the
+    // host (terminating any running tmux sessions). Used by the onboarding host-update flow.
+    if (force) args.push("--force");
     // First-time (key not yet authorized) AND a password was supplied → bootstrap the setup
     // connection via install-host's askpass (over an inherited fd). Otherwise (key already
     // authorized, or no password given) run key-auth only; a fresh host with no password then
@@ -930,65 +956,105 @@ const bridge = {
   //   compatible — same MAJOR as this client's version. Unknown host version (app installed but no
   //                status yet) is treated as compatible (don't hard-block a fresh install that simply
   //                hasn't stamped status.json); a KNOWN mismatching major is incompatible.
-  // Returns {installed, version, compatible, err}.
+  //   incompatibleKind — WHY compatible is false, so the UI doesn't re-parse versions:
+  //                "below_floor"   = same major but older than MIN_COMPATIBLE_HOST → safe to force-update
+  //                                  (the client's bundled host is the same major, just newer).
+  //                "major_mismatch"= different major (incl. a NEWER host) → force-reinstalling the
+  //                                  client's bundled (older) host would DOWNGRADE it. The UI must NOT
+  //                                  route into the update flow for this; it stays a blocking error.
+  //                ""              = compatible (no incompatibility).
+  // Returns {installed, version, compatible, incompatibleKind, err}.
   async hostAppStatus(host) {
     const h = String(host || "").trim();
-    if (!h) return { installed: false, version: "", compatible: false, err: "no host" };
+    if (!h) return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "no host" };
     if (!validHost(h)) {
       return {
         installed: false,
         version: "",
         compatible: false,
+        incompatibleKind: "",
         err: invalidHost(h),
         state: SSH_STATE.INVALID_HOST,
         action: SSH_ACTION.ABORT,
       };
     }
     const sshArgs = sshProbeOpts(6);
-    // One round-trip: print whether the .app dir exists, then the status.json contents.
+    // Resolve the host version that will actually serve the RD session, in priority order:
+    //   1. RUNNING version — ~/.xpair/host/logs/status.json. The app rewrites it every second, so a FRESH
+    //      file means the app is up and its `version` is the live process version. After an on-disk update
+    //      that did not restart the daemon (e.g. `brew upgrade --cask` without kickstart), the running
+    //      process — which is what actually serves RD — can be older than the on-disk bundle, so it wins.
+    //   2. ON-DISK version of the copy the LaunchAgent will launch — ProgramArguments[0] (config.sh
+    //      APP_EXEC / Installer.swift Bundle.main.executablePath) → that bundle's CFBundleShortVersionString.
+    //      The label comes from host.env BUNDLE_PREFIX (the current label) so a leftover legacy plist
+    //      (e.g. com.ghyeong.xpair-host) can't be picked nondeterministically over the active one.
+    //   3. Fallback when no host LaunchAgent is registered yet (e.g. a cask install before first launch):
+    //      whichever installed bundle exists (/Applications, the cask default, then ~/Applications) — read
+    //      ITS version too, so a cask-installed-but-not-launched old host is gated, not waved through.
     const probe =
-      // install-host puts the app in /Applications (system) OR ~/Applications; check BOTH so a
-      // correctly-installed host app is never false-flagged "missing" (which would wrongly gate onboarding).
-      '{ [ -d "$HOME/Applications/XpairHost.app" ] || [ -d "/Applications/XpairHost.app" ]; } && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0; ' +
-      'cat "$HOME/.xpair/host/logs/status.json" 2>/dev/null || true';
+      'pf="$(. "$HOME/.xpair/host/host.env" 2>/dev/null && printf %s "${BUNDLE_PREFIX:-}")"; [ -n "$pf" ] || pf=com.x10lab.xpair-host; ' +
+      'la="$HOME/Library/LaunchAgents/$pf.plist"; [ -f "$la" ] || la=""; ' +
+      'ex="$([ -n "$la" ] && /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$la" 2>/dev/null)"; ' +
+      'app="${ex%/Contents/MacOS/*}"; ' +
+      'if [ -z "$app" ] || [ ! -d "$app" ]; then for d in "/Applications/XpairHost.app" "$HOME/Applications/XpairHost.app"; do [ -d "$d" ] && { app="$d"; break; }; done; fi; ' +
+      'if [ -n "$app" ] && [ -d "$app" ]; then echo RP_APP_INSTALLED=1; dv="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$dv" ] && echo "RP_DISK_VERSION=$dv"; else echo RP_APP_INSTALLED=0; fi; ' +
+      'st="$HOME/.xpair/host/logs/status.json"; if [ -f "$st" ]; then now="$(date +%s)"; mt="$(stat -f %m "$st" 2>/dev/null || echo 0)"; [ "$((now - mt))" -le 10 ] && { echo RP_RUNNING=1; cat "$st"; }; fi';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
-      return { installed: false, version: "", compatible: false, err: s.err, state: s.state, action: s.action };
+      return { installed: false, version: "", compatible: false, incompatibleKind: "", err: s.err, state: s.state, action: s.action };
     }
     const out = r.out || "";
     const installed = /RP_APP_INSTALLED=1/.test(out);
     if (!installed) {
-      return { installed: false, version: "", compatible: false, err: "Host has no Xpair host app" };
+      return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "Host has no Xpair host app" };
     }
-    let version = "";
-    const jsonStart = out.indexOf("{");
-    if (jsonStart !== -1) {
-      try {
-        const j = JSON.parse(out.slice(jsonStart));
-        if (j && typeof j.version === "string") version = j.version;
-      } catch { /* status.json absent/garbled — version stays unknown */ }
+    // The RUNNING process version (fresh status.json) wins over the on-disk bundle — it is what actually
+    // serves RD; on-disk is used only when the app is not running (so an old running process is never
+    // masked by a newer on-disk bundle that hasn't been started yet).
+    let diskVersion = "";
+    const dm = out.match(/^RP_DISK_VERSION=(.+)$/m);
+    if (dm) diskVersion = dm[1].trim();
+    let runningVersion = "";
+    if (/^RP_RUNNING=1$/m.test(out)) {
+      const j0 = out.indexOf("{");
+      if (j0 !== -1) {
+        try {
+          const j = JSON.parse(out.slice(j0));
+          if (j && typeof j.version === "string") runningVersion = j.version.trim();
+        } catch { /* status.json garbled — ignore and use the on-disk version */ }
+      }
     }
+    const version = runningVersion || diskVersion;
     const clientV = clientVersion();
     const hostMajor = versionMajor(version);
     const clientMajor = versionMajor(clientV);
     // Compatibility = same MAJOR (necessary) AND host >= MIN_COMPATIBLE_HOST (the protocol floor).
     // The old check was major-only, which let a too-old same-major host (e.g. a43 vs an a45-protocol
-    // client) connect and fail subtly. Unknown host version (app installed, status.json not stamped
-    // yet) is still allowed so a fresh install isn't hard-blocked before its first status write.
+    // client) connect and fail subtly. Version comes from the running process or the installed bundle
+    // (above), so an installed host normally has a known version; unknown only when neither is readable
+    // (corrupt/partial install), which we allow rather than hard-block on a read glitch.
     let compatible;
+    let incompatibleKind = "";
     let reason = "";
     if (!hostMajor) {
-      compatible = true; // unknown version → allow (fresh install)
+      compatible = true; // unreadable bundle version → allow (don't hard-block on a read glitch)
     } else if (hostMajor !== clientMajor) {
+      // Different major — including a NEWER host. Force-reinstalling the client's bundled (older) host
+      // over it would be a DOWNGRADE/overwrite, so this must NOT route into the update flow; the UI
+      // keeps it a blocking error.
       compatible = false;
+      incompatibleKind = "major_mismatch";
       reason = `Host version ${version} is a different major than client ${clientV}`;
     } else if (compareVersions(clientV, MIN_COMPATIBLE_HOST) >= 0 && compareVersions(version, MIN_COMPATIBLE_HOST) < 0) {
       // The protocol floor only applies when THIS client is itself a release at/above the floor.
       // A locally-built client derives its version from the untracked shared/.build-counter (low or
       // absent on a fresh checkout), so it can sit below the floor; in that dev case a same-major
       // host built from the same tree must NOT be rejected as "too old" — same major is enough.
+      // Same major + below floor → the client's bundled host is the same major (just newer), so a
+      // forced update is a safe in-place upgrade.
       compatible = false;
+      incompatibleKind = "below_floor";
       reason = `Host version ${version} is older than the minimum compatible ${MIN_COMPATIBLE_HOST} — update the host (xpair install-host --force)`;
     } else {
       compatible = true;
@@ -997,6 +1063,7 @@ const bridge = {
       installed: true,
       version,
       compatible,
+      incompatibleKind,
       err: compatible ? "" : reason,
     };
   },
@@ -1043,6 +1110,15 @@ const bridge = {
   tSetConsent(telemetryOn, crashReportOn) {
     return telemetry.setConsent(!!telemetryOn, !!crashReportOn);
   },
+
+  // Shared by the Remote Desktop tunnel path so every ssh child gets the same
+  // GUI-app PATH enrichment, SSH_AUTH_SOCK recovery, and failure taxonomy.
+  spawnEnv,
+  sshFailureKind,
+  sshFailureMessage,
+  sshActionForState,
+  SSH_STATE,
+  SSH_ACTION,
 };
 
 module.exports = bridge;

@@ -11,6 +11,7 @@ performance, it streams to the IDE's screen-sharing tab via H.264/WebRTC.
     TrackLocalStaticSample (H264). Built with `--features webrtc`.
 - `rpmedia/` — Swift VideoToolbox encoder + capture.
   - `rp-screencap.swift` — ScreenCaptureKit capture + VT H.264 (IOSurface zero-copy, recommended).
+  - `rp-input-inject.swift` — remote input injector for RD pointer, wheel, keyboard, and composed text.
   - `rp-vt-encode.swift` — stdin(BGRA)→stdout(NAL) streaming encoder (pipe-based).
   - `vt-encode-spike.swift` — viability spike.
   - `webrtc-test.html` — browser RTCPeerConnection viewer (webview porting reference).
@@ -21,7 +22,8 @@ performance, it streams to the IDE's screen-sharing tab via H.264/WebRTC.
   IOSurface zero-copy. rp-screencap standalone verification: SCK capture + VT, IDR 36KB / P-frame avg 2.2KB.
   (The previous xcap path was capped at 20fps for release decode.)
 - The client uses the browser's native WebRTC → cross-platform (mac/win/linux) decode.
-- Specify the helper path via the `RP_SCREENCAP` environment variable (default `~/.xpair/host/bin/rp-screencap` or PATH).
+- Remote input is supported over the authenticated RD session: `rp-ctl` carries reliable clicks/keys/text/wheel events, `rp-move` carries lossy pointer motion, and the sidecar spawns `rp-input-inject` from the signed app bundle or `~/.xpair/host/bin`.
+- Specify helper paths with `RP_SCREENCAP` / `RP_INPUT_INJECT` for development; production resolves the bundled helpers installed by XpairHost.app.
 
 ## License
 Apache-2.0. No AGPL mixing (`screen/deny.toml`). VideoToolbox/SCK = Apple EULA (system).

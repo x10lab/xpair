@@ -8,7 +8,7 @@
 //
 // Mirrors client/ide/remotepair/ext/onboarding-bridge.js (ENGINE_PROBE / ENGINE_INSTALL / ENGINE_AUTH_WRITE):
 //   probe   — `command -v <engine>` for install; engine-specific auth check (env OR on-disk credential).
-//   install — brew (npm fallback for claude), non-interactive.
+//   install — each engine's official native installer (non-interactive), then PATH persistence.
 //   auth    — the secret is fed over the child's STDIN only (read -r KEY) — never argv/log/disk-plaintext.
 //             codex pipes it into `codex login --with-api-key`; claude/opencode write an idempotent
 //             `export ANTHROPIC_API_KEY=…` block into the login-shell rc.
@@ -19,9 +19,10 @@
 import Foundation
 
 enum EngineGuard {
-    /// Path enrichment so a Homebrew/npm-global engine resolves even before the rc's own PATH lines run.
+    /// Path enrichment so a native (~/.local/bin, ~/.opencode/bin) or Homebrew engine resolves even
+    /// before the rc's own PATH lines run.
     private static let pathPrefix =
-        "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; "
+        "export PATH=\"$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; "
 
     static func isKnown(_ engine: String) -> Bool {
         engine == "claude" || engine == "codex" || engine == "opencode"
@@ -80,19 +81,35 @@ enum EngineGuard {
     private static func installScript(_ engine: String) -> String {
         switch engine {
         case "claude":
-            return pathPrefix + "brew install --quiet claude || npm install -g @anthropic-ai/claude-code"
+            return pathPrefix + "bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'"
         case "codex":
-            return pathPrefix + "brew install --quiet codex"
+            return pathPrefix + "bash -c 'set -o pipefail; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'"
         default: // opencode
-            return pathPrefix + "brew install --quiet opencode"
+            return pathPrefix + "bash -c 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'"
         }
     }
+
+    private static let pathPersistScript =
+        "set -e; " +
+        "mkdir -p \"$HOME/.xpair\"; " +
+        "printf '%s\\n' 'export PATH=\"$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"' > \"$HOME/.xpair/env\"; " +
+        "for RC in \"$HOME/.zprofile\" \"$HOME/.zshrc\" \"$HOME/.bash_profile\" \"$HOME/.bashrc\"; do " +
+        "touch \"$RC\"; TMP=\"$(mktemp)\"; " +
+        "grep -vF '# >>> xpair PATH >>>' \"$RC\" | grep -vF '. \"$HOME/.xpair/env\"' | grep -vF '# <<< xpair PATH <<<' > \"$TMP\" || true; " +
+        "cat \"$TMP\" > \"$RC\"; rm -f \"$TMP\"; " +
+        "{ echo '# >>> xpair PATH >>>'; echo '[ -f \"$HOME/.xpair/env\" ] && . \"$HOME/.xpair/env\"'; echo '# <<< xpair PATH <<<'; } >> \"$RC\"; " +
+        "done; echo RP_PATH_OK=1"
 
     static func install(_ engine: String) -> Result {
         let r = runLogin(installScript(engine))
         if r.code != 0 {
             let msg = r.err.isEmpty ? (r.out.isEmpty ? "install failed" : r.out) : r.err
             return Result(ok: false, err: msg)
+        }
+        let p = runLogin(pathPersistScript)
+        if p.code != 0 || !p.out.contains("RP_PATH_OK=1") {
+            let msg = p.err.isEmpty ? (p.out.isEmpty ? "PATH persistence failed" : p.out) : p.err
+            return Result(ok: false, err: "\(engine) installed but PATH persistence failed: \(msg)")
         }
         return Result(ok: true, err: "")
     }

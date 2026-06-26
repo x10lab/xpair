@@ -1,0 +1,114 @@
+name: win-probe (toolchain inventory)
+
+# Manual-only diagnostic: inventories what is actually installed on the
+# self-hosted Windows runner so we can settle the Windows-native CI plan
+# (open question U2: MSVC + rustup availability). Additive and read-only —
+# it builds nothing and changes no repo state.
+#
+# Trigger: Actions tab -> "win-probe (toolchain inventory)" -> Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64, Win11]
+    steps:
+      - name: Inventory toolchain
+        # Custom shell string overrides the default `powershell -command ". '{0}'"`, whose dot-source
+        # is blocked when the runner's execution policy is Restricted (the Windows default). Bypass is
+        # process-scoped (does not change the host policy). Still Windows PowerShell 5.1 — no pwsh 7.
+        shell: powershell -ExecutionPolicy Bypass -NoProfile -Command "& '{0}'"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          function Probe([string]$label, [scriptblock]$cmd) {
+            Write-Host "--- $label ---"
+            try {
+              $out = & $cmd 2>&1 | Out-String
+              if ([string]::IsNullOrWhiteSpace($out)) { Write-Host "(no output)" }
+              else { Write-Host $out.Trim() }
+            } catch {
+              Write-Host "ABSENT / ERROR: $($_.Exception.Message)"
+            }
+            Write-Host ""
+          }
+
+          function Where1([string]$exe) {
+            $c = Get-Command $exe -ErrorAction SilentlyContinue
+            if ($c) { return $c.Source } else { return "<not on PATH>" }
+          }
+
+          Write-Host "================ OS / RUNNER ================"
+          Probe "OS version (expect Win11 25H2)" { (Get-CimInstance Win32_OperatingSystem).Caption; [System.Environment]::OSVersion.Version.ToString(); (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').DisplayVersion }
+          Probe "Architecture" { $env:PROCESSOR_ARCHITECTURE }
+          Probe "PowerShell (this shell)" { $PSVersionTable.PSVersion.ToString() }
+
+          Write-Host "================ RUST / CARGO (U2) ================"
+          Write-Host "rustc path:  $(Where1 'rustc')"
+          Write-Host "cargo path:  $(Where1 'cargo')"
+          Write-Host "rustup path: $(Where1 'rustup')"
+          Probe "rustc -V"            { rustc -V }
+          Probe "cargo -V"            { cargo -V }
+          Probe "rustup show"         { rustup show }
+          Probe "installed targets"   { rustup target list --installed }
+
+          Write-Host "================ MSVC TOOLCHAIN (U2) ================"
+          Write-Host "cl.exe path (PATH):   $(Where1 'cl')"
+          Write-Host "link.exe path (PATH): $(Where1 'link')"
+          Probe "VS / Build Tools via vswhere" {
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (Test-Path $vswhere) {
+              & $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property displayName -property installationVersion
+            } else { "vswhere.exe not found (no VS/Build Tools installer present)" }
+          }
+
+          Write-Host "================ OPENSSH (transport / C4) ================"
+          Write-Host "ssh path:        $(Where1 'ssh')"
+          Write-Host "ssh-keygen path: $(Where1 'ssh-keygen')"
+          Write-Host "ssh-keyscan path:$(Where1 'ssh-keyscan')"
+          Probe "ssh -V" { ssh -V }
+          Probe "OpenSSH Authentication Agent service state (C4)" {
+            $svc = Get-Service ssh-agent -ErrorAction SilentlyContinue
+            if ($svc) { "Status=$($svc.Status) StartType=$($svc.StartType)" } else { "ssh-agent service not present" }
+          }
+          Probe "OpenSSH Client optional-feature state" {
+            try { (Get-WindowsCapability -Online -Name 'OpenSSH.Client*' | Select-Object Name,State | Format-Table -AutoSize | Out-String) }
+            catch { "Get-WindowsCapability unavailable: $($_.Exception.Message)" }
+          }
+
+          Write-Host "================ IDE BUILD / PACKAGING ================"
+          Write-Host "node path: $(Where1 'node')"
+          Write-Host "npm path:  $(Where1 'npm')"
+          Write-Host "git path:  $(Where1 'git')"
+          Probe "node -v"  { node -v }
+          Probe "npm -v"   { npm -v }
+          Probe "git --version" { git --version }
+
+          Write-Host "================ MISC SHELL/UTILS ================"
+          Write-Host "pwsh (PowerShell 7) path: $(Where1 'pwsh')"
+          Write-Host "tar path:  $(Where1 'tar')"
+          Write-Host "wt.exe path (Windows Terminal): $(Where1 'wt')"
+          Probe "pwsh -v (if present)" { pwsh -v }
+          Probe "tar --version" { tar --version }
+
+          Write-Host "================ SUMMARY (quick yes/no) ================"
+          $checks = @{
+            'rustc'         = [bool](Get-Command rustc  -ErrorAction SilentlyContinue)
+            'cargo'         = [bool](Get-Command cargo  -ErrorAction SilentlyContinue)
+            'rustup'        = [bool](Get-Command rustup -ErrorAction SilentlyContinue)
+            'cl.exe(onPATH)'= [bool](Get-Command cl     -ErrorAction SilentlyContinue)
+            'ssh'           = [bool](Get-Command ssh    -ErrorAction SilentlyContinue)
+            'node'          = [bool](Get-Command node   -ErrorAction SilentlyContinue)
+            'git'           = [bool](Get-Command git    -ErrorAction SilentlyContinue)
+            'pwsh7'         = [bool](Get-Command pwsh   -ErrorAction SilentlyContinue)
+          }
+          foreach ($k in $checks.Keys | Sort-Object) {
+            Write-Host ("{0,-16} {1}" -f $k, ($(if ($checks[$k]) {'PRESENT'} else {'ABSENT'})))
+          }
+          Write-Host ""
+          Write-Host "Note: cl.exe is usually ABSENT from bare PATH even when VS Build Tools ARE installed"
+          Write-Host "(it lives in a Developer Command Prompt env). Trust the vswhere result above for MSVC presence."

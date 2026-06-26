@@ -45,8 +45,8 @@ test("Q0438 Remote Desktop check keeps the RD screen operable after refresh", ()
   );
   assert.doesNotMatch(
     webview,
-    /PERMANENTLY view-only|never wire pc\.ondatachannel|never send anything/,
-    "Q0438 intended behavior is operable RD, not a permanently view-only screen",
+    /PERMANENTLY display-only|never wire pc\.ondatachannel|never send anything/,
+    "Q0438 intended behavior is operable RD with input support",
   );
 });
 

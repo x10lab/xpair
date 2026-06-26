@@ -33,7 +33,7 @@ remote-pair/                  (single git monorepo — host/client × components
 | Directory | Contract | Consumers | Check |
 |----------|------|--------|------|
 | `shared/identity/` | brand·component identifiers·version (independent) | Casks·client/ide/remotepair/product.overlay.json·host/rd Cargo·host/app Config | `check-identity.sh` |
-| `shared/screen-protocol/` | WS/WebRTC ports·frames·view-only input policy·message vocabulary | host/rd(serve*.rs)·client/ide(extension·remote-desktop.js) | `check-screen-protocol.sh` |
+| `shared/screen-protocol/` | WS/WebRTC ports·frames·supported input policy·message vocabulary | host/rd(serve*.rs)·client/ide(extension·remote-desktop.js) | `check-screen-protocol.sh` |
 | onboarding (to be implemented) | role-aware step model | host Electron window (RemotePairHost)·client Electron window (RemotePair IDE) | — |
 
 > **Onboarding (redesign, not yet built):** the onboarding requirement survives, but the prior browser-based web wizard

@@ -133,14 +133,15 @@ else
   echo "  mosh-server not embedded (build unavailable) — host attach will use ssh fallback"
 fi
 
-# ── the 2 screenshare binaries (screen sidecar + rp-screencap helper) → Contents/Helpers ──
-# Since the SSH deploy channel was retired, this bundle is the only delivery path for the two binaries.
+# ── screenshare binaries (screen sidecar + capture/input helpers) → Contents/Helpers ──
+# Since the SSH deploy channel was retired, this bundle is the only delivery path for these binaries.
 #   • screen           v1 (JPEG/WS) + v2 (WebRTC/H.264) sidecar. v2 requires --features webrtc.
 #   • rp-screencap     SCK+VT H.264 capture (Screen Recording permission)
-# Both are individually inside-out signed with the stable cert (below) so the TCC grant is bound to the designated requirement
+#   • rp-input-inject  remote input injector (Accessibility permission)
+# All are individually inside-out signed with the stable cert (below) so the TCC grant is bound to the designated requirement
 # and survives .app updates. The resolver (serve_webrtc.rs) probes the current_exe() sibling path first, so
-# when screen starts from Helpers/ it auto-discovers the sibling rp-screencap.
-echo "=== build + embed screenshare binaries (screen + rp-screencap) ==="
+# when screen starts from Helpers/ it auto-discovers the sibling helpers.
+echo "=== build + embed screenshare binaries (screen + rp-screencap + rp-input-inject) ==="
 # Ensure cargo (+rustc): the rustup shell may not have put the toolchain on PATH, so put ~/.cargo/bin first.
 export PATH="$HOME/.cargo/bin:$PATH"
 command -v cargo >/dev/null || { echo "✗ cargo missing — Rust toolchain required (rustup). Cannot build the screen sidecar." >&2; exit 1; }
@@ -169,7 +170,10 @@ compile_helper() { # $1=src $2=out
 compile_helper host/rd/rpmedia/rp-screencap.swift    "$HELP/rp-screencap";    chmod +x "$HELP/rp-screencap"
 [ -x "$HELP/rp-screencap" ] \
   || { echo "✗ rp-screencap bundle embed verification failed" >&2; exit 1; }
-echo "  embedded: screen ($("$HELP/screen" --version 2>/dev/null || echo '?')) + rp-screencap"
+compile_helper host/rd/rpmedia/rp-input-inject.swift "$HELP/rp-input-inject"; chmod +x "$HELP/rp-input-inject"
+[ -x "$HELP/rp-input-inject" ] \
+  || { echo "✗ rp-input-inject bundle embed verification failed" >&2; exit 1; }
+echo "  embedded: screen ($("$HELP/screen" --version 2>/dev/null || echo '?')) + rp-screencap + rp-input-inject"
 
 RES="$APP/Contents/Resources"; mkdir -p "$RES"   # (for the icon; populated below)
 # NOTE: keep coupling low — the app bundle holds only what the app uses directly at runtime (Helpers: tmux-aqua·router·ocr-find).
@@ -208,7 +212,7 @@ done
 # ── signing: inside-out individual signing (Apple-recommended; not reliant on --deep) ──
 # --deep is for verification and can miss or mis-sign nested code, destabilizing the TCC designated requirement.
 # Sign each Helpers entry individually with the stable cert first (--options runtime for Mach-O), then sign the outer .app.
-# Done this way, the Authority of the 2 screenshare binaries (screen·rp-screencap) is baked in with the stable cert
+# Done this way, the Authority of the screenshare binaries (screen·rp-screencap·rp-input-inject) is baked in with the stable cert
 # so the Screen Recording grant survives .app updates (designated requirement = cert leaf).
 # The shell script (approve-router.sh) must also be signed individually so that --verify --strict passes after the outer non-deep signing.
 for bin in "$HELP"/*; do
@@ -225,8 +229,8 @@ done
 codesign -s "$SIGN_ID" --force "$APP"
 echo "built + signed (inside-out): $APP (v$VERSION, $BUNDLE_PREFIX)"
 codesign -dv "$APP" 2>&1 | grep -iE 'Authority|^Identifier' || true
-# Check the Authority of the 2 screenshare binaries (AC2): it must be the stable cert for the grant to survive. If ad-hoc ('-'), report only (the build still passes).
-for b in screen rp-screencap; do
+# Check the Authority of the screenshare binaries (AC2): it must be the stable cert for the grant to survive. If ad-hoc ('-'), report only (the build still passes).
+for b in screen rp-screencap rp-input-inject; do
   echo "  helper $b: $(codesign -dvv "$HELP/$b" 2>&1 | grep -i 'Authority=' | head -1 || echo 'unsigned?')"
 done
 codesign --verify --strict "$APP" && echo "verify OK ✓"

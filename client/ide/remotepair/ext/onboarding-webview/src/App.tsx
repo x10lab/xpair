@@ -44,6 +44,9 @@ const STEP_TITLES = [
   "Done",
 ];
 
+// Warning copy only. Keep in sync with onboarding-bridge.js MIN_COMPATIBLE_HOST.
+const MIN_COMPATIBLE_HOST = "0.5.0a49";
+
 const S = {
   WELCOME: 0,
   CONSENT: 1,
@@ -83,7 +86,16 @@ const CLI_DEPENDENT_STEPS: ReadonlySet<number> = new Set([
 ]);
 // Per-host app readiness, checked on the Connect/Reconnect step. null = not yet checked.
 type HostAppState =
-  | { target: string; installed: boolean; version: string; compatible: boolean; err: string }
+  | {
+      target: string;
+      installed: boolean;
+      version: string;
+      compatible: boolean;
+      // WHY incompatible — only "below_floor" (same major, too old) is safe to force-update.
+      // "major_mismatch" (different/newer major) must stay a blocking error (force = downgrade).
+      incompatibleKind: "below_floor" | "major_mismatch" | "";
+      err: string;
+    }
   | null;
 type HostPermState =
   | { target: string; alive: boolean; ax: boolean; sr: boolean; fda: boolean; err: string }
@@ -184,7 +196,7 @@ export default function App() {
     const probeId = ++hostAppProbeId.current;
     if (!target) {
       setHostAppChecking(false);
-      setHostApp({ target, installed: false, version: "", compatible: false, err: "no host" });
+      setHostApp({ target, installed: false, version: "", compatible: false, incompatibleKind: "", err: "no host" });
       return;
     }
     setHostAppChecking(true);
@@ -193,7 +205,7 @@ export default function App() {
       if (hostAppProbeId.current === probeId) setHostApp({ target, ...r });
     } catch (e) {
       if (hostAppProbeId.current === probeId) {
-        setHostApp({ target, installed: false, version: "", compatible: false, err: String(e) });
+        setHostApp({ target, installed: false, version: "", compatible: false, incompatibleKind: "", err: String(e) });
       }
     } finally {
       if (hostAppProbeId.current === probeId) setHostAppChecking(false);
@@ -213,6 +225,15 @@ export default function App() {
   const [reconnectReady, setReconnectReady] = useState(false);
   const [live, setLive] = useState<LiveState>("idle");
   const [liveErr, setLiveErr] = useState("");
+  const stepRef = useRef(w.index);
+  stepRef.current = w.index;
+  const livenessCheckId = useRef(0);
+  const cancelLivenessCheck = useCallback(() => {
+    livenessCheckId.current += 1;
+  }, []);
+  useEffect(() => {
+    if (w.index !== S.MAPPINGS) cancelLivenessCheck();
+  }, [w.index, cancelLivenessCheck]);
 
   // Manual-entry fallback reuses the existing StepConnect machine.
   const [manual, setManual] = useState(false);
@@ -240,6 +261,9 @@ export default function App() {
   const isReconnect = peer?.status === "reconnect";
   const isConnect = peer?.status === "connect";
   const isSetup = !!peer && !isReconnect && !isConnect;
+  const currentTarget = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+  const currentTargetRef = useRef(currentTarget);
+  currentTargetRef.current = currentTarget;
 
   // Peer chosen on the Discover step → reset per-path state and advance to Connect/Setup.
   const onSelectPeer = useCallback(
@@ -258,6 +282,7 @@ export default function App() {
       setReconnectReady(false);
       setLive("idle");
       setLiveErr("");
+      stepRef.current = S.CONNECT;
       w.goTo(S.CONNECT, "next");
     },
     [cliReady, w],
@@ -271,15 +296,23 @@ export default function App() {
     setHostApp(null);
     setHostAppChecking(false);
     setHostPerms(null);
+    setInstallState("idle");
     setLive("idle");
     setLiveErr("");
+    stepRef.current = S.CONNECT;
     w.goTo(S.CONNECT, "next");
   }, [w]);
 
   // Final gate before Done: the earlier steps keep the user moving, but Done only opens after fresh
   // setup, host-app, permission, and SSH liveness probes all pass.
   const runLivenessCheck = useCallback(async () => {
-    const target = manual ? host.trim() : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+    const target = currentTargetRef.current;
+    const checkId = ++livenessCheckId.current;
+    const stillCurrent = () =>
+      livenessCheckId.current === checkId &&
+      stepRef.current === S.MAPPINGS &&
+      currentTargetRef.current === target;
+    if (stepRef.current !== S.MAPPINGS) return;
     if (!target) {
       setLiveErr("No host selected.");
       setLive("offline");
@@ -296,17 +329,20 @@ export default function App() {
 
     try {
       const app = await window.remotepair.hostAppStatus(target);
+      if (!stillCurrent()) return;
       setHostApp({ target, ...app });
-      if (!app.installed || !app.compatible) {
-        setLiveErr(
-          !app.installed
-            ? "Host has no Xpair host app. Install it on the host before finishing."
-            : app.err || "Host version is incompatible with this client.",
-        );
+      if (app.installed && !app.compatible) {
+        setLiveErr(app.err || "Host version is incompatible with this client.");
+        setLive("host-app");
+        return;
+      }
+      if (!app.installed) {
+        setLiveErr("Host has no Xpair host app. Install it on the host before finishing.");
         setLive("host-app");
         return;
       }
     } catch (e) {
+      if (!stillCurrent()) return;
       setLiveErr(`Host app check failed: ${String(e)}`);
       setLive("host-app");
       return;
@@ -314,6 +350,7 @@ export default function App() {
 
     try {
       const perms = await window.remotepair.hostPermissions({ host: target });
+      if (!stillCurrent()) return;
       const ready = perms.alive && perms.ax && perms.sr;
       setGrantReady(ready);
       if (!ready) {
@@ -327,6 +364,7 @@ export default function App() {
         return;
       }
     } catch (e) {
+      if (!stillCurrent()) return;
       setGrantReady(false);
       setLiveErr(`Permission check failed: ${String(e)}`);
       setLive("permissions");
@@ -335,8 +373,10 @@ export default function App() {
 
     try {
       const r = await window.remotepair.sshReachable(target);
+      if (!stillCurrent()) return;
       if (r.reachable) {
         setLive("reachable");
+        stepRef.current = S.DONE;
         w.goTo(S.DONE, "next");
         return;
       }
@@ -345,10 +385,11 @@ export default function App() {
       setLiveErr(r.err || "Host did not respond.");
       setLive(/host key|REMOTE HOST IDENTIFICATION/i.test(r.err || "") ? "rekeyed" : "offline");
     } catch (e) {
+      if (!stillCurrent()) return;
       setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [manual, host, peer, isSetup, installState, w]);
+  }, [isSetup, installState, w]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
@@ -365,6 +406,13 @@ export default function App() {
   const connectTarget = manual || isConnect
     ? host.trim()
     : peer?.target || peer?.addrs?.[0] || peer?.name || "";
+  const previousConnectTarget = useRef(connectTarget);
+  useEffect(() => {
+    if (previousConnectTarget.current === connectTarget) return;
+    previousConnectTarget.current = connectTarget;
+    cancelLivenessCheck();
+    setInstallState("idle");
+  }, [connectTarget, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
   // reconnect, the host app must be installed AND compatible before Next.
   const requiresHostApp = w.index === S.CONNECT && !isSetup;
@@ -395,6 +443,26 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
+
+  // Same-major-but-below-floor is the only incompatible host state that can be repaired in-place.
+  // Different/newer-major hosts remain a blocking incompatibility because force reinstalling would
+  // downgrade them.
+  const canUpdateHost =
+    requiresHostApp &&
+    !hostAppChecking &&
+    !!hostApp &&
+    hostApp.target === connectTarget &&
+    hostApp.installed &&
+    !hostApp.compatible &&
+    hostApp.incompatibleKind === "below_floor";
+
+  const handleHostUpdateDone = useCallback(() => {
+    if (!connectTarget) return;
+    setInstallState("idle");
+    setHostApp(null);
+    setHostPerms(null);
+    void checkHostApp(connectTarget);
+  }, [checkHostApp, connectTarget]);
 
   // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
   // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
@@ -465,6 +533,7 @@ export default function App() {
   const onNext = () => {
     if (w.index === S.CONNECT && !isSetup) {
       // Reconnect path and manual path both skip the Installing + Grant steps → straight to Engine.
+      stepRef.current = S.ENGINE;
       w.goTo(S.ENGINE, "next");
       return;
     }
@@ -480,15 +549,22 @@ export default function App() {
   const onPrev = () => {
     if (w.index === S.MAPPINGS) {
       // Mappings always follows the Engine step.
+      cancelLivenessCheck();
+      setLive("idle");
+      setLiveErr("");
+      stepRef.current = S.ENGINE;
       w.goTo(S.ENGINE, "prev");
       return;
     }
     if (w.index === S.ENGINE) {
       // Engine follows Grant on the setup path, Connect on the reconnect/manual paths.
-      w.goTo(isSetup && !manual ? S.GRANT : S.CONNECT, "prev");
+      const dest = isSetup && !manual ? S.GRANT : S.CONNECT;
+      stepRef.current = dest;
+      w.goTo(dest, "prev");
       return;
     }
     if (w.index === S.GRANT || w.index === S.INSTALL) {
+      stepRef.current = S.CONNECT;
       w.goTo(S.CONNECT, "prev");
       return;
     }
@@ -509,6 +585,22 @@ export default function App() {
       : w.index === S.MAPPINGS && mappings.length === 0
       ? "Skip for now"
       : "Next";
+
+  const hostUpdatePanel = canUpdateHost ? (
+    <div className="mt-4">
+      <StepInstalling
+        isUpdate
+        host={connectTarget}
+        hostName={manual ? connectTarget : peer?.name || connectTarget}
+        currentVersion={hostApp?.version || ""}
+        requiredVersion={MIN_COMPATIBLE_HOST}
+        state={installState}
+        setState={setInstallState}
+        onDone={handleHostUpdateDone}
+        onFail={() => setInstallState("idle")}
+      />
+    </div>
+  ) : null;
 
   return (
     <>
@@ -608,7 +700,17 @@ export default function App() {
         ) : w.index === S.MAPPINGS && live === "checking" ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         ) : (live === "offline" || live === "rekeyed") && w.index === S.MAPPINGS ? (
-          <Button size="sm" variant="outline" onClick={() => w.goTo(S.DISCOVER, "prev")}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              cancelLivenessCheck();
+              setLive("idle");
+              setLiveErr("");
+              stepRef.current = S.DISCOVER;
+              w.goTo(S.DISCOVER, "prev");
+            }}
+          >
             Re-discover
           </Button>
         ) : null
@@ -622,16 +724,25 @@ export default function App() {
         )}
         {w.index === S.CONNECT &&
           (manual || isConnect || !peer ? (
-            <StepConnect
-              host={host}
-              setHost={setHost}
-              state={connState}
-              setState={setConnState}
-              cliBlocked={cliGateActive}
-              onBackToDiscovery={() => w.goTo(S.DISCOVER, "prev")}
-            />
+            <>
+              <StepConnect
+                host={host}
+                setHost={setHost}
+                state={connState}
+                setState={setConnState}
+                cliBlocked={cliGateActive}
+                onBackToDiscovery={() => {
+                  stepRef.current = S.DISCOVER;
+                  w.goTo(S.DISCOVER, "prev");
+                }}
+              />
+              {hostUpdatePanel}
+            </>
           ) : isReconnect ? (
-            <StepReconnect peer={peer} onReady={setReconnectReady} />
+            <>
+              <StepReconnect peer={peer} onReady={setReconnectReady} />
+              {hostUpdatePanel}
+            </>
           ) : (
             <StepSetupPassword
               peer={peer}
@@ -645,9 +756,13 @@ export default function App() {
             setState={setInstallState}
             onDone={() => {
               setGrantReady(false);
+              stepRef.current = S.GRANT;
               w.goTo(S.GRANT, "next");
             }}
-            onFail={() => w.goTo(S.CONNECT, "prev")}
+            onFail={() => {
+              stepRef.current = S.CONNECT;
+              w.goTo(S.CONNECT, "prev");
+            }}
           />
         )}
         {w.index === S.GRANT && peer && (
