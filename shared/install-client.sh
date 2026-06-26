@@ -115,6 +115,9 @@ select_release_with_asset() {
     if [ "$channel" = stable ] && [ "$candidate_prerelease" != false ]; then
       continue
     fi
+    if [ "$channel" = prerelease ] && [ "$candidate_prerelease" != true ]; then
+      continue
+    fi
 
     status="$(asset_http_status "$candidate_tag")"
     case "$status" in
@@ -170,7 +173,7 @@ EOF
   fi
 fi
 if [ -z "$tag" ]; then
-  if selected="$(select_release_with_asset "$rows" any)"; then
+  if selected="$(select_release_with_asset "$rows" prerelease)"; then
     read -r tag release_prerelease <<EOF
 $selected
 EOF
