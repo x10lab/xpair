@@ -17,10 +17,6 @@ type Props = {
   // Explicit host/display name + version context for update mode (no Peer to derive them from).
   host?: string;
   hostName?: string;
-  // Host login account (defaults to the local username in App). Forwarded to installHost so the
-  // password bootstrap authenticates to the RIGHT account when the host login differs from the
-  // local user — otherwise ssh tries the bare host as the local user and the password is denied.
-  account?: string;
   currentVersion?: string;
   requiredVersion?: string;
   state: InstallState;
@@ -48,7 +44,6 @@ export function StepInstalling({
   isUpdate = false,
   host: hostProp,
   hostName,
-  account,
   currentVersion,
   requiredVersion,
   state,
@@ -104,14 +99,13 @@ export function StepInstalling({
       if (phaseTimer.current === adv) phaseTimer.current = null;
       window.clearInterval(adv);
     };
-    const acct = (account || "").trim();
-    // Only forward the account on the SETUP path (fresh bare host, where the password bootstrap needs
-    // it). On the UPDATE/reconnect path the host is typically an ssh-config alias whose `User` may
-    // differ; passing the (auto-defaulted, local-username) account as `cliuser@alias` would override
-    // that configured User and break otherwise-working hosts, so let the alias's SSH config apply.
+    // Do NOT force an account here. The only value available is the local macOS username
+    // (App defaults `account` from hostInfo().user — there is no host-login input), so passing it as
+    // `user` would either be redundant or, worse, override an ssh-config alias's configured `User`.
+    // A host whose login differs is addressed by typing `user@host` (the bridge/CLI normalize that to
+    // --account); the alias's SSH config `User` otherwise applies.
     const opts = {
       host,
-      ...(!isUpdate && acct ? { user: acct } : {}),
       ...(isUpdate ? { force: true } : {}),
       ...(password !== undefined ? { password } : {}),
     };
@@ -145,7 +139,7 @@ export function StepInstalling({
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });
-  }, [host, account, isUpdate, setState]);
+  }, [host, isUpdate, setState]);
 
   const submitPassword = useCallback(() => {
     if (!accountPassword) {

@@ -214,7 +214,7 @@ function isRemotePublickeyDenied(err) {
 // `Permission denied (publickey)`); when a local marker is present we must keep the approve/unlock
 // recovery path and NOT spend the account password authorizing an unusable key.
 function isLocalKeyFailure(err) {
-  return /sign_and_send_pubkey|agent refused operation|Load key [^\n]*:|incorrect passphrase|bad passphrase|Too many authentication failures|no mutual signature|key_load_public|invalid format/i.test(
+  return /sign_and_send_pubkey|agent refused operation|Load key [^\n]*:|passphrase|Too many authentication failures|no mutual signature|key_load_public|invalid format|error in libcrypto|No more authentication methods|not accessible/i.test(
     String(err || "")
   );
 }

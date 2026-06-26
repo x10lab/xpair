@@ -592,7 +592,6 @@ export default function App() {
         isUpdate
         host={connectTarget}
         hostName={manual ? connectTarget : peer?.name || connectTarget}
-        account={account}
         currentVersion={hostApp?.version || ""}
         requiredVersion={MIN_COMPATIBLE_HOST}
         state={installState}
@@ -753,7 +752,6 @@ export default function App() {
         {w.index === S.INSTALL && peer && (
           <StepInstalling
             peer={peer}
-            account={account}
             state={installState}
             setState={setInstallState}
             onDone={() => {

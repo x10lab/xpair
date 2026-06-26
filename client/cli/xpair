@@ -1637,6 +1637,12 @@ cmd_install_host() {
       err "password bootstrap failed for $target: ${auth_err:-ssh failed}"
       return 1
     }
+    # Auth succeeded → the ControlMaster is up and the one-shot FIFO is already consumed. Retire the
+    # askpass wiring so every later scp/ssh in this install reuses the master and, if it ever drops
+    # mid-step, fails cleanly instead of invoking askpass and blocking forever on the writerless FIFO.
+    { [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null; } || true
+    SSHENV=()
+    unset RP_ASKPASS_FIFO
   fi
 
   # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
