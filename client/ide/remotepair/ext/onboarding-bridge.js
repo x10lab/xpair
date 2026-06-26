@@ -775,7 +775,7 @@ const bridge = {
   // the CLI's legacy askpass path never becomes a password/passphrase prompt. `password` remains in
   // the destructuring only for older preload/renderers; it is intentionally ignored. Returns
   // {ok,out,err,state,action}; `out` carries the redacted progress stream for StepInstalling.
-  async installHost({ host, user, password } = {}) {
+  async installHost({ host, user, password, force } = {}) {
     if (!host) return { ok: false, out: "", err: "installHost requires host" };
     const h = String(host || "").trim();
     if (!validHost(h)) {
@@ -817,6 +817,10 @@ const bridge = {
     }
     const args = ["install-host", "--host", h];
     if (account) args.push("--account", account);
+    // force:true reinstalls the client-bundled XpairHost over an already-installed (but
+    // incompatible) host app — the CLI's --force flag overwrites the existing app and restarts the
+    // host (terminating any running tmux sessions). Used by the onboarding host-update flow.
+    if (force) args.push("--force");
     const r = await cli(args);
     if (r.code === 0) {
       return { ok: true, out: r.out, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
@@ -884,15 +888,23 @@ const bridge = {
   //   compatible — same MAJOR as this client's version. Unknown host version (app installed but no
   //                status yet) is treated as compatible (don't hard-block a fresh install that simply
   //                hasn't stamped status.json); a KNOWN mismatching major is incompatible.
-  // Returns {installed, version, compatible, err}.
+  //   incompatibleKind — WHY compatible is false, so the UI doesn't re-parse versions:
+  //                "below_floor"   = same major but older than MIN_COMPATIBLE_HOST → safe to force-update
+  //                                  (the client's bundled host is the same major, just newer).
+  //                "major_mismatch"= different major (incl. a NEWER host) → force-reinstalling the
+  //                                  client's bundled (older) host would DOWNGRADE it. The UI must NOT
+  //                                  route into the update flow for this; it stays a blocking error.
+  //                ""              = compatible (no incompatibility).
+  // Returns {installed, version, compatible, incompatibleKind, err}.
   async hostAppStatus(host) {
     const h = String(host || "").trim();
-    if (!h) return { installed: false, version: "", compatible: false, err: "no host" };
+    if (!h) return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "no host" };
     if (!validHost(h)) {
       return {
         installed: false,
         version: "",
         compatible: false,
+        incompatibleKind: "",
         err: invalidHost(h),
         state: SSH_STATE.INVALID_HOST,
         action: SSH_ACTION.ABORT,
@@ -908,12 +920,12 @@ const bridge = {
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
-      return { installed: false, version: "", compatible: false, err: s.err, state: s.state, action: s.action };
+      return { installed: false, version: "", compatible: false, incompatibleKind: "", err: s.err, state: s.state, action: s.action };
     }
     const out = r.out || "";
     const installed = /RP_APP_INSTALLED=1/.test(out);
     if (!installed) {
-      return { installed: false, version: "", compatible: false, err: "Host has no Xpair host app" };
+      return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "Host has no Xpair host app" };
     }
     let version = "";
     const jsonStart = out.indexOf("{");
@@ -931,18 +943,26 @@ const bridge = {
     // client) connect and fail subtly. Unknown host version (app installed, status.json not stamped
     // yet) is still allowed so a fresh install isn't hard-blocked before its first status write.
     let compatible;
+    let incompatibleKind = "";
     let reason = "";
     if (!hostMajor) {
       compatible = true; // unknown version → allow (fresh install)
     } else if (hostMajor !== clientMajor) {
+      // Different major — including a NEWER host. Force-reinstalling the client's bundled (older) host
+      // over it would be a DOWNGRADE/overwrite, so this must NOT route into the update flow; the UI
+      // keeps it a blocking error.
       compatible = false;
+      incompatibleKind = "major_mismatch";
       reason = `Host version ${version} is a different major than client ${clientV}`;
     } else if (compareVersions(clientV, MIN_COMPATIBLE_HOST) >= 0 && compareVersions(version, MIN_COMPATIBLE_HOST) < 0) {
       // The protocol floor only applies when THIS client is itself a release at/above the floor.
       // A locally-built client derives its version from the untracked shared/.build-counter (low or
       // absent on a fresh checkout), so it can sit below the floor; in that dev case a same-major
       // host built from the same tree must NOT be rejected as "too old" — same major is enough.
+      // Same major + below floor → the client's bundled host is the same major (just newer), so a
+      // forced update is a safe in-place upgrade.
       compatible = false;
+      incompatibleKind = "below_floor";
       reason = `Host version ${version} is older than the minimum compatible ${MIN_COMPATIBLE_HOST} — update the host (xpair install-host --force)`;
     } else {
       compatible = true;
@@ -951,6 +971,7 @@ const bridge = {
       installed: true,
       version,
       compatible,
+      incompatibleKind,
       err: compatible ? "" : reason,
     };
   },
