@@ -204,10 +204,11 @@ loopback + `ssh -L` deployment shape.
       feature flag in `Cargo.toml`. Signaling WS, ICE (host candidates), DTLS/SRTP.
 - [x] Client `<video>` rendering in the IDE extension (`media/remote-desktop.js`).
 - [x] On-change capture / GPU scale in `rp-screencap` to cut bandwidth.
-- [x] View-only policy enforced in the IDE: no client pointer, wheel, text, or
-      keyboard capture; legacy host-created input DataChannels are closed/ignored.
-- [x] Per-binary Screen Recording TCC grant on the signed capture helper
-      (`rp-screencap`), preserved across cask updates.
+- [x] Remote input support in the IDE: pointer down/up/drag, wheel, keyboard
+      down/up, and composed text are forwarded over `rp-ctl` / `rp-move` and
+      applied by `rp-input-inject`.
+- [x] Per-binary TCC grants on the signed capture/input helpers
+      (`rp-screencap`, `rp-input-inject`), preserved across cask updates.
 
 ### v2.x — robustness / quality (future)
 

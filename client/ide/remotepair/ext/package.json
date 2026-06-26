@@ -2,7 +2,7 @@
   "publisher": "x10lab",
   "name": "remotepair",
   "displayName": "Xpair",
-  "description": "Turns the Xpair IDE into a xpair client: view-only Remote Desktop of the host, one-click SSH connect, and host-side notifications.",
+  "description": "Turns the Xpair IDE into a xpair client: Remote Desktop with host input, one-click SSH connect, and host-side notifications.",
   "version": "0.1.0",
   "license": "AGPL-3.0-or-later",
   "repository": {
@@ -136,6 +136,33 @@
             "usesOnlineServices"
           ],
           "description": "Opt in to Xpair product analytics and crash reports for this client."
+        },
+        "xpair.remoteDesktop.fps": {
+          "type": "number",
+          "scope": "application",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 120,
+          "order": 60,
+          "description": "Remote Desktop capture frame rate."
+        },
+        "xpair.remoteDesktop.bitrate": {
+          "type": "number",
+          "scope": "application",
+          "default": 4000000,
+          "minimum": 100000,
+          "maximum": 50000000,
+          "order": 70,
+          "description": "Remote Desktop H.264 target bitrate in bits per second."
+        },
+        "xpair.remoteDesktop.scale": {
+          "type": "number",
+          "scope": "application",
+          "default": 1.0,
+          "minimum": 0.1,
+          "maximum": 1.0,
+          "order": 80,
+          "description": "Remote Desktop capture scale factor."
         }
       }
     },
@@ -164,7 +191,7 @@
           {
             "id": "remotepair.setup.permissions",
             "title": "Permissions are host-side",
-            "description": "Screen recording and folder access are granted on the HOST machine (XpairHost.app), not on this client. Accessibility is for host-side computer-use sessions; the IDE Remote Desktop is view-only. If RD is blank, check the host's System Settings > Privacy & Security.",
+            "description": "Screen recording, Accessibility, and folder access are granted on the HOST machine (XpairHost.app), not on this client. Remote Desktop uses Screen Recording for video and Accessibility for host input. If RD is blank or input is unavailable, check the host's System Settings > Privacy & Security.",
             "media": {
               "markdown": "media/walkthrough-permissions.md"
             }

@@ -79,14 +79,13 @@ function versionMajor(v) {
 }
 
 /** The OLDEST host version this client can talk to. **BUMP THIS** whenever a host↔client
- *  protocol/interface changes incompatibly — e.g. the a45 RD remote-input restore changed
- *  serve_webrtc's data channels. A same-major host that is OLDER than this connects today but
- *  fails subtly (black RD, "signaling closed 1006", etc.); gating it at onboarding with a clear
- *  "update the host" message is far better than a silent breakage. A host >= this is accepted.
- *  INVARIANT: the host cask (Casks/xpair-host.rb) must ship a version >= this floor, or a
- *  cask-installed host is (correctly) rejected as too old. The published pre-releases reach
- *  v0.5.0a47+, so the cask is bumped to a current release rather than lowering this baseline. */
-const MIN_COMPATIBLE_HOST = "0.5.0a45";
+ *  protocol/interface changes incompatibly — e.g. the a49 RD session-token requirement made
+ *  rd-session-token and serve-webrtc --token mandatory. A same-major host that is OLDER than this
+ *  connects today but fails subtly (black RD, "signaling closed 1006", etc.); gating it at
+ *  onboarding with a clear "update the host" message is far better than a silent breakage. A host
+ *  >= this is accepted. INVARIANT: the host cask (Casks/xpair-host.rb) must ship a version >= this
+ *  floor, or a cask-installed host is (correctly) rejected as too old. */
+const MIN_COMPATIBLE_HOST = "0.5.0a49";
 
 /** Compare two "X.Y.Z" or "X.Y.ZaN" version strings → -1 | 0 | 1 (a<b | a==b | a>b).
  *  The alpha suffix sorts BELOW the same release: 0.5.0a44 < 0.5.0a45 < 0.5.0 (a released X.Y.Z
@@ -1018,6 +1017,15 @@ const bridge = {
   tSetConsent(telemetryOn, crashReportOn) {
     return telemetry.setConsent(!!telemetryOn, !!crashReportOn);
   },
+
+  // Shared by the Remote Desktop tunnel path so every ssh child gets the same
+  // GUI-app PATH enrichment, SSH_AUTH_SOCK recovery, and failure taxonomy.
+  spawnEnv,
+  sshFailureKind,
+  sshFailureMessage,
+  sshActionForState,
+  SSH_STATE,
+  SSH_ACTION,
 };
 
 module.exports = bridge;

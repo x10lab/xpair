@@ -54,12 +54,14 @@ test("Q0474 Remote Desktop is a core Client IDE surface that starts when visible
   );
   assert.match(
     extension,
-    /(?:this|self)\.post\(\{ type: "v2Connect", signalUrl \}\)/,
-    "extension must hand the webview a signaling URL",
+    /(?:this|self)\.post\(\{ type: "v2Connect", signalUrl, sessionToken \}\)/,
+    "extension must hand the webview a tokenized signaling URL",
   );
   assert.match(webview, /new RTCPeerConnection\(\{ iceServers: \[\] \}\)/);
   assert.match(webview, /pc\.addTransceiver\("video", \{ direction: "recvonly" \}\)/);
   assert.match(webview, /pc\.ontrack[\s\S]*video\.srcObject = ev\.streams\[0\]/);
+  assert.match(webview, /requestVideoFrameCallback\(markFirstFrame\)/);
+  assert.match(webview, /addEventListener\("timeupdate", markFirstFrame, \{ once: true \}\)/);
   assert.match(webview, /vscode\.postMessage\(\{ type: "v2FirstFrame" \}\)/);
   assert.match(css, /#screen-video[\s\S]*object-fit: contain/);
 });

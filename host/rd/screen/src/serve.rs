@@ -90,8 +90,8 @@ pub fn run(port: u16, fps: u32, quality: u8, scale: f32) -> Result<(), String> {
     let monitor = crate::primary_monitor()?;
 
     let addr = format!("127.0.0.1:{port}");
-    let listener = TcpListener::bind(&addr)
-        .map_err(|e| format!("could not bind {addr} (loopback): {e}"))?;
+    let listener =
+        TcpListener::bind(&addr).map_err(|e| format!("could not bind {addr} (loopback): {e}"))?;
 
     tracing::info!(
         "screen serve: listening on ws://{addr} \
@@ -180,11 +180,7 @@ fn client_thread(id: u64, stream: TcpStream, clients: Clients, latest: Latest) {
 
     // Forward frames until the channel closes (capture loop dropped our tx,
     // meaning it pruned us) or a send fails (client went away).
-    loop {
-        let frame = match rx.recv() {
-            Ok(f) => f,
-            Err(_) => break, // tx dropped by capture loop -> we were pruned
-        };
+    while let Ok(frame) = rx.recv() {
         if websocket
             .send(Message::Binary(frame.as_ref().clone()))
             .is_err()

@@ -11,6 +11,7 @@ let RP_DIR = "\(HOME)/.xpair/host"
 let LOG_DIR = "\(RP_DIR)/logs"
 let ROLE_FILE = "\(RP_DIR)/role"            // host|client|both — written by install.sh. Used to block host self-install on a client.
 let CLIENT_ENV_FILE = "\(RP_DIR)/client.env" // present = client installed on this machine
+let RD_SESSION_TOKEN_FILE = "\(RP_DIR)/rd-session-token" // 0600 token read by the authenticated SSH client before RD signaling.
 
 /// This machine's role. ROLE_FILE trimmed and used as-is (host|client|both); "" if absent or empty (= default host).
 /// Parsing is kept consistent with Installer.shouldSkipSelfInstall(Installer.swift:50-55).

@@ -4,8 +4,8 @@
 > Shipped: v2 — `rp-screencap` (ScreenCaptureKit + VideoToolbox HW H.264) +
 >   webrtc-rs transport (DTLS/SRTP over UDP/ICE). Shipping in 0.5.0; verified
 >   end-to-end from the IDE Remote Desktop panel (loopback peer "connected", 30fps).
->   Product RD is view-only: no `rp-ctl`/`rp-move` input channel is opened, and
->   the IDE closes/ignores host-created DataChannels.
+>   Product RD supports input: `rp-ctl` / `rp-move` DataChannels carry pointer,
+>   wheel, keyboard, and text events to the bundled `rp-input-inject` helper.
 > v1a (xcap + tungstenite WS, JPEG ~10fps) remains a license-clean fallback (`serve`).
 > Still future: TWCC/GCC bitrate adaptation, HEVC/AV1, ICE-restart (sections d/e below).
 > License: AGPL-3.0-or-later (no AGPL contamination allowed)
