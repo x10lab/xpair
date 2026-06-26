@@ -17,6 +17,10 @@ type Props = {
   // Explicit host/display name + version context for update mode (no Peer to derive them from).
   host?: string;
   hostName?: string;
+  // Host login account (defaults to the local username in App). Forwarded to installHost so the
+  // password bootstrap authenticates to the RIGHT account when the host login differs from the
+  // local user — otherwise ssh tries the bare host as the local user and the password is denied.
+  account?: string;
   currentVersion?: string;
   requiredVersion?: string;
   state: InstallState;
@@ -44,6 +48,7 @@ export function StepInstalling({
   isUpdate = false,
   host: hostProp,
   hostName,
+  account,
   currentVersion,
   requiredVersion,
   state,
@@ -99,9 +104,13 @@ export function StepInstalling({
       if (phaseTimer.current === adv) phaseTimer.current = null;
       window.clearInterval(adv);
     };
-    const opts = isUpdate
-      ? { host, force: true, ...(password !== undefined ? { password } : {}) }
-      : { host, ...(password !== undefined ? { password } : {}) };
+    const acct = (account || "").trim();
+    const opts = {
+      host,
+      ...(acct ? { user: acct } : {}),
+      ...(isUpdate ? { force: true } : {}),
+      ...(password !== undefined ? { password } : {}),
+    };
     window.remotepair
       .installHost(opts)
       .then((r) => {
@@ -132,7 +141,7 @@ export function StepInstalling({
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });
-  }, [host, isUpdate, setState]);
+  }, [host, account, isUpdate, setState]);
 
   const submitPassword = useCallback(() => {
     if (!accountPassword) {

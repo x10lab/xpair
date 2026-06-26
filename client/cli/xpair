@@ -1601,7 +1601,7 @@ cmd_install_host() {
     # might disable it (PasswordAuthentication no / BatchMode yes) — otherwise askpass is never invoked
     # and setup fails right after collecting the password. PubkeyAuthentication=no so a passphrase key
     # can't consume the secret; NumberOfPasswordPrompts=1 because the FIFO carries exactly one line.
-    RP_SSHOPTS+=(-o PreferredAuthentications=password -o PubkeyAuthentication=no
+    RP_SSHOPTS+=(-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no
                  -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=yes
                  -o BatchMode=no -o NumberOfPasswordPrompts=1)
   fi
@@ -1611,13 +1611,16 @@ cmd_install_host() {
   # install into a nonzero exit.) Tears down the ControlMaster AND the password FIFO/writer/watchdog.
   # A hard parent SIGKILL can't run this, but the reparented watchdog still kills the writer and
   # ControlPersist expires the master, so nothing leaks indefinitely.
+  # Every line is best-effort (|| true): under `set -e`, a wrong/early-failed password leaves no
+  # ControlMaster socket so `ssh -O exit` returns nonzero — without the guard the trap would abort
+  # before cleaning up AND clobber the function's explicit status (e.g. the password-denied return 7).
   # shellcheck disable=SC2064
   trap '
-    ssh -O exit -o "ControlPath=$RP_CM" "$target" >/dev/null 2>&1; rm -f "$RP_CM"
-    [ -n "${wdpid:-}" ] && kill "$wdpid" 2>/dev/null
-    [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null
-    [ -n "${pwdir:-}" ] && rm -rf "$pwdir"
-    unset RP_ASKPASS_FIFO
+    ssh -O exit -o "ControlPath=$RP_CM" "$target" >/dev/null 2>&1 || true; rm -f "$RP_CM" || true
+    { [ -n "${wdpid:-}" ] && kill "$wdpid" 2>/dev/null; } || true
+    { [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null; } || true
+    { [ -n "${pwdir:-}" ] && rm -rf "$pwdir"; } || true
+    unset RP_ASKPASS_FIFO || true
   ' RETURN
   _rp_ssh() { "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$@" </dev/null; }
 

@@ -209,6 +209,16 @@ function isRemotePublickeyDenied(err) {
   return /Permission denied \((?=[^)]*publickey)[^)]*\)/i.test(String(err || ""));
 }
 
+// LOCAL key/agent problems — the key can't sign on THIS machine, which is NOT "the host hasn't
+// authorized us". ssh may print both (e.g. `sign_and_send_pubkey: agent refused operation` then
+// `Permission denied (publickey)`); when a local marker is present we must keep the approve/unlock
+// recovery path and NOT spend the account password authorizing an unusable key.
+function isLocalKeyFailure(err) {
+  return /sign_and_send_pubkey|agent refused operation|Load key .*error|incorrect passphrase|Too many authentication failures|no mutual signature|key_load_public/i.test(
+    String(err || "")
+  );
+}
+
 function isPasswordDenied(err) {
   const s = String(err || "");
   return /PASSWORD_DENIED/i.test(s) || /Permission denied \((?=[^)]*password)[^)]*\)/i.test(s);
@@ -862,7 +872,10 @@ const bridge = {
       if (s.state !== SSH_STATE.KEY_AUTH_BLOCKED) {
         return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
       }
-      if (!isRemotePublickeyDenied(raw)) {
+      // Take the password-bootstrap path ONLY for a clean remote publickey denial — NOT when ssh
+      // also shows a local key/agent failure (then the key is unusable here and the approve/unlock
+      // recovery path applies; a password would only authorize a key later probes still can't use).
+      if (!isRemotePublickeyDenied(raw) || isLocalKeyFailure(raw)) {
         return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
       }
       keyBlocked = true; // client key not yet authorized → bootstrap this one connection with the password.
