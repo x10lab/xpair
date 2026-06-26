@@ -83,7 +83,13 @@ No Homebrew? Install the app directly — same result, no `brew`:
 curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash
 ```
 
-It downloads the latest `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
+This installs the latest **stable** release. Xpair currently ships active development as `0.5.0aN` **pre-releases** — for the newest build, opt in with `--prerelease`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-client.sh | bash -s -- --prerelease
+```
+
+It downloads the chosen `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
 
 Open Xpair. First run opens onboarding (in-app, not a separate window) and walks:
 
