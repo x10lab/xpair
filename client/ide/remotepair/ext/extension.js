@@ -113,7 +113,7 @@ function resolveLogThreshold() {
 const LOG_THRESHOLD = resolveLogThreshold();
 
 function sshControlPath() {
-  return path.join(os.tmpdir() || "/tmp", `rp-cm-${process.env.RP_SSH_CM_TAG || "x"}-%C`);
+  return "/tmp/rp-cm-" + (process.env.RP_SSH_CM_TAG || "x") + "-%C";
 }
 
 // Local-tz ISO-8601 with offset, second precision (e.g. 2026-06-15T10:45:16+0900).

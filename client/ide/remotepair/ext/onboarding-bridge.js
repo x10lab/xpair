@@ -153,7 +153,7 @@ function spawnEnv(extra = {}) {
 }
 
 function sshControlPath() {
-  return path.join(os.tmpdir() || "/tmp", `rp-cm-${process.env.RP_SSH_CM_TAG || "x"}-%C`);
+  return "/tmp/rp-cm-" + (process.env.RP_SSH_CM_TAG || "x") + "-%C";
 }
 
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force

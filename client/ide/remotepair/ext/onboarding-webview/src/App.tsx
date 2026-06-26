@@ -531,7 +531,7 @@ export default function App() {
   const canRepairHost =
     requiresHostApp &&
     reachReady &&
-    (manual || startsFromSavedHost || isReconnect) &&
+    (manual || startsFromSavedHost || isReconnect || isConnect) &&
     !hostAppChecking &&
     !!hostApp &&
     hostApp.target === connectTarget &&

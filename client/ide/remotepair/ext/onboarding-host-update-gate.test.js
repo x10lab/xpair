@@ -67,7 +67,7 @@ test("App keeps automatic host detection but removes update auto-navigation mach
   assert.doesNotMatch(app, /w\.goTo\(S\.INSTALL, "next"\)/);
 });
 
-test("safe saved, manual, or reconnect hosts render an inline repair button instead of navigating", () => {
+test("safe saved, manual, reconnect, or connect hosts render an inline repair button instead of navigating", () => {
   assert.match(
     app,
     /const hostAppLiveFalse =[\s\S]*hostApp\.installed === true &&[\s\S]*hostApp\.compatible === true &&[\s\S]*hostPerms\.alive === false/,
@@ -75,7 +75,7 @@ test("safe saved, manual, or reconnect hosts render an inline repair button inst
   const canRepairHost = requiredConst("canRepairHost");
   assert.match(canRepairHost, /requiresHostApp &&/);
   assert.match(canRepairHost, /reachReady &&/);
-  assert.match(canRepairHost, /\(manual \|\| startsFromSavedHost \|\| isReconnect\) &&/);
+  assert.match(canRepairHost, /\(manual \|\| startsFromSavedHost \|\| isReconnect \|\| isConnect\) &&/);
   assert.match(canRepairHost, /hostApp\.target === connectTarget &&/);
   assert.match(
     canRepairHost,

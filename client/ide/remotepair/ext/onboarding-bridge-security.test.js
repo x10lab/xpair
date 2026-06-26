@@ -61,7 +61,7 @@ function withSpawnSpy(fn) {
         assert.ok(calls[0].args.includes("ControlMaster=auto"));
         assert.ok(calls[0].args.includes("ControlPersist=300"));
         const controlPath = calls[0].args.find((arg) => String(arg).startsWith("ControlPath="));
-        assert.match(controlPath, /rp-cm-testlaunch-%C$/, "ControlPath must include the per-launch tag and OpenSSH %C");
+        assert.equal(controlPath, "ControlPath=/tmp/rp-cm-testlaunch-%C");
       });
     } finally {
       if (previousTag === undefined) delete process.env.RP_SSH_CM_TAG;
@@ -71,11 +71,11 @@ function withSpawnSpy(fn) {
 
   await check("SSH ControlMaster scope is tagged once per app launch", async () => {
     assert.match(onboardingMain, /if \(!process\.env\.RP_SSH_CM_TAG\) process\.env\.RP_SSH_CM_TAG = String\(process\.pid\)/);
-    assert.match(extension, /`rp-cm-\$\{process\.env\.RP_SSH_CM_TAG \|\| "x"\}-%C`/);
+    assert.match(extension, /"\/tmp\/rp-cm-" \+ \(process\.env\.RP_SSH_CM_TAG \|\| "x"\) \+ "-%C"/);
   });
 
   await check("host-permissions CLI probe shares the session ControlMaster", async () => {
-    assert.match(xpairCli, /rp_ssh_control_path\(\)[\s\S]*rp-cm-%s-%%C[\s\S]*\$\{RP_SSH_CM_TAG:-x\}/);
+    assert.match(xpairCli, /rp_ssh_control_path\(\)[\s\S]*printf '\/tmp\/rp-cm-%s-%%C' "\$\{RP_SSH_CM_TAG:-x\}"/);
     assert.match(
       xpairCli,
       /cmd_host_permissions\(\)[\s\S]*cm="\$\(rp_ssh_control_path\)"[\s\S]*ControlMaster=auto[\s\S]*"ControlPath=\$cm"[\s\S]*ControlPersist=300/,

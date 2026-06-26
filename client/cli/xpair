@@ -80,9 +80,7 @@ TMUXB="$LOCAL_BIN/tmux-aqua"
 RP_YES="${RP_YES:-0}"
 
 rp_ssh_control_path() {
-  local dir="${TMPDIR:-/tmp}"
-  dir="${dir%/}"
-  printf '%s/rp-cm-%s-%%C' "$dir" "${RP_SSH_CM_TAG:-x}"
+  printf '/tmp/rp-cm-%s-%%C' "${RP_SSH_CM_TAG:-x}"
 }
 
 # Absolute path to this CLI (for relaunch via terminal apps). Prefer LOCAL_BIN, fall back to $0.
