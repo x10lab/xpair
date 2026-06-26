@@ -94,10 +94,22 @@ test("safe saved, manual, reconnect, or connect hosts render an inline repair bu
   assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
 });
 
-test("manual missing-app repair shows fingerprint/key prep before the install panel", () => {
+test("manual changed-target missing-app repair shows fingerprint/key prep before the install panel", () => {
+  assert.match(app, /const \[savedHost, setSavedHost\] = useState\(""\);/);
+  assert.match(app, /const hydratedHost = cfg\.remoteHost\.trim\(\);/);
+  assert.match(app, /setSavedHost\(\(current\) => current \|\| hydratedHost\);/);
+  assert.match(app, /setHost\(\(current\) => current \|\| hydratedHost\);/);
   assert.match(
     app,
-    /const manualMissingNeedsFingerprint =[\s\S]*manual && !startsFromSavedHost && hostRepairKind === "missing";/,
+    /const manualTargetIsSavedHost = !!savedHost && connectTarget === savedHost;/,
+  );
+  assert.match(
+    app,
+    /const manualMissingNeedsFingerprint =[\s\S]*manual && !manualTargetIsSavedHost && hostRepairKind === "missing";/,
+  );
+  assert.doesNotMatch(
+    app,
+    /manual && !startsFromSavedHost && hostRepairKind === "missing"/,
   );
   assert.match(
     app,

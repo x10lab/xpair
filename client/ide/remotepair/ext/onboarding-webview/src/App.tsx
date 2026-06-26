@@ -137,7 +137,7 @@ export default function App() {
   const [initialStep] = useState(() => initialStepFromLocation());
   const w = useWizard(9, initialStep);
   const startsFromSavedHost = initialStep >= S.CONNECT && initialStep <= S.ENGINE;
-  const lockConfiguredEngine = initialStep === S.ENGINE && startsFromSavedHost;
+  const lockConfiguredEngine = startsFromSavedHost;
 
   // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
   // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
@@ -271,6 +271,7 @@ export default function App() {
   }, [w.index, cancelLivenessCheck]);
 
   // Manual-entry fallback reuses the existing StepConnect machine.
+  const [savedHost, setSavedHost] = useState("");
   const [manual, setManual] = useState(initialStep === S.CONNECT);
   const [host, setHost] = useState("");
   const [connState, setConnState] = useState<ConnState>("idle");
@@ -299,15 +300,16 @@ export default function App() {
     void window.remotepair
       .getConfig()
       .then((cfg) => {
-        const savedHost = cfg.remoteHost.trim();
-        if (!active || !savedHost) return;
-        setHost((current) => current || savedHost);
+        const hydratedHost = cfg.remoteHost.trim();
+        if (!active || !hydratedHost) return;
+        setSavedHost((current) => current || hydratedHost);
+        setHost((current) => current || hydratedHost);
         if (initialStep === S.GRANT || initialStep === S.ENGINE) {
           setPeer((current) =>
             current || {
-              name: savedHost,
-              addrs: [savedHost],
-              target: savedHost,
+              name: hydratedHost,
+              addrs: [hydratedHost],
+              target: hydratedHost,
               source: "ssh",
               sources: ["ssh"],
               fp: null,
@@ -550,8 +552,9 @@ export default function App() {
         ? "update"
         : "incompatible"
       : "restart";
+  const manualTargetIsSavedHost = !!savedHost && connectTarget === savedHost;
   const manualMissingNeedsFingerprint =
-    manual && !startsFromSavedHost && hostRepairKind === "missing";
+    manual && !manualTargetIsSavedHost && hostRepairKind === "missing";
   const manualMissingRepairPeer: Peer | null = connectTarget
     ? {
         name: connectTarget,
