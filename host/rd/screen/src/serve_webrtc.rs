@@ -54,6 +54,9 @@ use crate::control::{
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 const SESSION_TOKEN_MIN_LEN: usize = 24;
 const SESSION_TOKEN_MAX_LEN: usize = 128;
+const APP_CONTROL_FD_ENV: &str = "RP_AU_CONTROL_FD";
+const MAX_AU_FRAME_LEN: usize = 64 * 1024 * 1024;
+const MAX_CONTROL_FRAME_LEN: usize = 1024 * 1024;
 
 type SignalingWs = WebSocketStream<tokio::net::TcpStream>;
 type WsTx = SplitSink<SignalingWs, Message>;
@@ -109,6 +112,37 @@ enum SessionError {
     Capture(String),
     #[error("status serialization: {0}")]
     StatusSerialize(String),
+}
+
+struct CaptureStartError {
+    status: Option<RdStatus>,
+    error: SessionError,
+}
+
+impl CaptureStartError {
+    fn with_status(status: RdStatus, error: SessionError) -> Self {
+        Self {
+            status: Some(status),
+            error,
+        }
+    }
+
+    fn without_status(error: SessionError) -> Self {
+        Self {
+            status: None,
+            error,
+        }
+    }
+
+    fn capture_failed(capture_kind: CaptureErrorKind, reason: String, error: SessionError) -> Self {
+        Self::with_status(
+            RdStatus::CaptureFailed {
+                capture_kind,
+                reason: bounded_reason(reason),
+            },
+            error,
+        )
+    }
 }
 
 impl From<webrtc::Error> for SessionError {
@@ -631,6 +665,99 @@ fn forward_au_latest(
     }
 }
 
+fn read_len_prefixed_frame<R: Read>(reader: &mut R, max_len: usize) -> Option<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    if reader.read_exact(&mut len_buf).is_err() {
+        return None;
+    }
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len == 0 || len > max_len {
+        return None;
+    }
+    let mut frame = vec![0u8; len];
+    if reader.read_exact(&mut frame).is_err() {
+        return None;
+    }
+    Some(frame)
+}
+
+fn relay_app_control_frame(
+    frame: AppControlFrame,
+    sig_tx: &mpsc::UnboundedSender<String>,
+    control: &ControlClient,
+) {
+    match frame {
+        AppControlFrame::Ack(ack) => control.deliver_ack(ack),
+        AppControlFrame::CaptureError(event) => {
+            tracing::warn!(
+                "serve-webrtc: relaying host capture error gen={}: {:?}: {}",
+                event.gen,
+                event.kind,
+                event.reason
+            );
+            queue_status(
+                sig_tx,
+                RdStatus::CaptureFailed {
+                    capture_kind: event.kind,
+                    reason: bounded_reason(event.reason),
+                },
+            );
+        }
+    }
+}
+
+fn read_app_control_stream<R: Read>(
+    reader: &mut R,
+    sig_tx: &mpsc::UnboundedSender<String>,
+    control: &ControlClient,
+) {
+    while let Some(frame) = read_len_prefixed_frame(reader, MAX_CONTROL_FRAME_LEN) {
+        if let Some(frame) = app_control_frame(&frame) {
+            relay_app_control_frame(frame, sig_tx, control);
+        } else {
+            tracing::debug!("serve-webrtc: ignoring non-control frame on app control fd");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn spawn_app_control_reader_from_env(
+    sig_tx: mpsc::UnboundedSender<String>,
+    control: ControlClient,
+) -> bool {
+    use std::os::fd::FromRawFd;
+
+    let raw_fd = match std::env::var(APP_CONTROL_FD_ENV) {
+        Ok(raw) => raw,
+        Err(_) => return false,
+    };
+    let Some(fd) = raw_fd.parse::<i32>().ok().filter(|fd| *fd > 2) else {
+        tracing::warn!("serve-webrtc: invalid {APP_CONTROL_FD_ENV}={raw_fd:?}; falling back to stdin control frames");
+        return false;
+    };
+    tracing::info!("serve-webrtc: app control reader using fd {fd}");
+    // SAFETY: ScreenServer passes an owned child-side pipe fd via RP_AU_CONTROL_FD.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    match std::thread::Builder::new()
+        .name("app-control-reader".into())
+        .spawn(move || read_app_control_stream(&mut file, &sig_tx, &control))
+    {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("serve-webrtc: failed to spawn app control reader: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn spawn_app_control_reader_from_env(
+    _sig_tx: mpsc::UnboundedSender<String>,
+    _control: ControlClient,
+) -> bool {
+    false
+}
+
 fn bounded_reason(raw: impl Into<String>) -> String {
     const MAX_REASON: usize = 800;
     let reason = raw.into();
@@ -1148,7 +1275,14 @@ impl NegotiatingSession {
         {
             Ok(capture) => capture,
             Err(e) => {
-                return Err(e);
+                if let Some(status) = e.status {
+                    if let Err(send_error) = self.send_status(status).await {
+                        tracing::warn!(
+                            "serve-webrtc: failed to send capture startup failure status: {send_error}"
+                        );
+                    }
+                }
+                return Err(e.error);
             }
         };
         if let Some(input_rx) = self.peer.input_rx.take() {
@@ -1333,7 +1467,7 @@ impl CaptureSource {
         sig_tx: mpsc::UnboundedSender<String>,
         generation: u64,
         control: ControlClient,
-    ) -> Result<Self, SessionError> {
+    ) -> Result<Self, CaptureStartError> {
         // RP_AU_STDIN=1: the parent app captures+encodes in-process (using the app's
         // Screen Recording TCC grant) and feeds already-encoded Annex-B AUs to our
         // stdin. We then ONLY do WebRTC transport — no rp-screencap spawn. stdout is
@@ -1345,27 +1479,25 @@ impl CaptureSource {
             let start_info = match control.start(generation, config).await {
                 Ok(info) => info,
                 Err(ControlError::CaptureFailed { kind, reason }) => {
-                    queue_status(
-                        &sig_tx,
-                        RdStatus::CaptureFailed {
-                            capture_kind: kind,
-                            reason: bounded_reason(reason.clone()),
-                        },
-                    );
-                    return Err(ControlError::CaptureFailed { kind, reason }.into());
+                    let error = ControlError::CaptureFailed {
+                        kind,
+                        reason: reason.clone(),
+                    }
+                    .into();
+                    return Err(CaptureStartError::capture_failed(kind, reason, error));
                 }
                 Err(ControlError::Superseded { gen, active_gen }) => {
-                    return Err(ControlError::Superseded { gen, active_gen }.into());
+                    return Err(CaptureStartError::without_status(
+                        ControlError::Superseded { gen, active_gen }.into(),
+                    ));
                 }
                 Err(e) => {
-                    queue_status(
-                        &sig_tx,
-                        RdStatus::CaptureFailed {
-                            capture_kind: CaptureErrorKind::Unknown,
-                            reason: bounded_reason(e.to_string()),
-                        },
-                    );
-                    return Err(e.into());
+                    let reason = e.to_string();
+                    return Err(CaptureStartError::capture_failed(
+                        CaptureErrorKind::Unknown,
+                        reason,
+                        e.into(),
+                    ));
                 }
             };
             Ok(CaptureSource::Stdin(handle.with_start_info(start_info)))
@@ -1373,14 +1505,12 @@ impl CaptureSource {
             match spawn_screencap(config.fps, config.bitrate, config.scale, au_tx) {
                 Ok(handle) => Ok(CaptureSource::Child(handle)),
                 Err(reason) => {
-                    queue_status(
-                        &sig_tx,
-                        RdStatus::CaptureFailed {
-                            capture_kind: CaptureErrorKind::HelperFailed,
-                            reason: bounded_reason(reason.clone()),
-                        },
-                    );
-                    Err(SessionError::Capture(reason))
+                    let error = SessionError::Capture(reason.clone());
+                    Err(CaptureStartError::capture_failed(
+                        CaptureErrorKind::HelperFailed,
+                        reason,
+                        error,
+                    ))
                 }
             }
         }
@@ -1441,10 +1571,12 @@ impl StdinReaderHandle {
 }
 
 /// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. It reads
-/// `[4B BE len][Annex-B AU or JSON ack/event]` frames from stdin, routes JSON
-/// control frames to the `ControlClient`, and forwards AUs into `au_tx` with the
-/// same bounded drop-delta policy as `spawn_screencap`'s reader thread. The
-/// thread returns on EOF/error or when `stop()` is called.
+/// `[4B BE len][Annex-B AU]` frames from stdin and forwards them into `au_tx`
+/// with the same bounded drop-delta policy as `spawn_screencap`'s reader thread.
+/// When `RP_AU_CONTROL_FD` is present, app control ACK/event frames are read on
+/// that separate fd so they cannot queue behind media pipe backpressure; otherwise
+/// JSON control frames on stdin remain supported as a fallback. The thread returns
+/// on EOF/error or when `stop()` is called.
 fn spawn_au_stdin_reader(
     au_tx: mpsc::Sender<Vec<u8>>,
     sig_tx: mpsc::UnboundedSender<String>,
@@ -1456,49 +1588,29 @@ fn spawn_au_stdin_reader(
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped_thread = stopped.clone();
     let control_thread = control.clone();
+    let mixed_stdin_control = !spawn_app_control_reader_from_env(sig_tx.clone(), control.clone());
     std::thread::Builder::new()
         .name("au-stdin-reader".into())
         .spawn(move || {
             let mut stdin = std::io::stdin();
-            let mut len_buf = [0u8; 4];
             let mut dropped_delta_frames = 0u64;
             loop {
                 if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                if stdin.read_exact(&mut len_buf).is_err() {
+                let Some(au) = read_len_prefixed_frame(&mut stdin, MAX_AU_FRAME_LEN) else {
                     break;
-                }
-                let len = u32::from_be_bytes(len_buf) as usize;
-                if len == 0 || len > 64 * 1024 * 1024 {
-                    break;
-                }
-                let mut au = vec![0u8; len];
-                if stdin.read_exact(&mut au).is_err() {
-                    break;
-                }
+                };
                 if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                if let Some(frame) = app_control_frame(&au) {
-                    match frame {
-                        AppControlFrame::Ack(ack) => control_thread.deliver_ack(ack),
-                        AppControlFrame::CaptureError(event) => {
-                            tracing::warn!(
-                                "serve-webrtc: relaying host capture error gen={}: {:?}: {}",
-                                event.gen,
-                                event.kind,
-                                event.reason
-                            );
-                            queue_status(
-                                &sig_tx,
-                                RdStatus::CaptureFailed {
-                                    capture_kind: event.kind,
-                                    reason: bounded_reason(event.reason),
-                                },
-                            );
-                        }
+                if mixed_stdin_control {
+                    if let Some(frame) = app_control_frame(&au) {
+                        relay_app_control_frame(frame, &sig_tx, &control_thread);
+                        continue;
                     }
+                } else if app_control_frame(&au).is_some() {
+                    tracing::debug!("serve-webrtc: ignoring unexpected control frame on AU stdin");
                     continue;
                 }
                 if !forward_au_latest(&au_tx, au, &mut dropped_delta_frames) {
@@ -1654,6 +1766,53 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn capture_start_error_carries_status_for_direct_send() {
+        let err = CaptureStartError::capture_failed(
+            CaptureErrorKind::StartFailed,
+            "missing grant".to_string(),
+            SessionError::Capture("missing grant".to_string()),
+        );
+        let status = err
+            .status
+            .as_ref()
+            .expect("capture start failures should carry client status");
+        let text = status
+            .to_signaling_text()
+            .expect("capture failure status should serialize");
+        let value: serde_json::Value =
+            serde_json::from_str(&text).expect("status should be valid json");
+        assert_eq!(value["type"], "status");
+        assert_eq!(value["kind"], "capture-failed");
+        assert_eq!(value["captureKind"], "start-failed");
+        assert_eq!(value["reason"], "missing grant");
+        assert!(matches!(err.error, SessionError::Capture(_)));
+    }
+
+    #[test]
+    fn app_control_stream_relays_capture_error_status() {
+        let (sig_tx, mut sig_rx) = mpsc::unbounded_channel();
+        let payload =
+            br#"{"v":1,"event":"capture-error","gen":42,"kind":"start-failed","reason":"no grant"}"#;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+        let mut cursor = std::io::Cursor::new(frame);
+        let control = ControlClient::stdout();
+
+        read_app_control_stream(&mut cursor, &sig_tx, &control);
+
+        let sent = sig_rx
+            .try_recv()
+            .expect("capture error event should be queued for signaling");
+        let value: serde_json::Value =
+            serde_json::from_str(&sent).expect("status should be valid json");
+        assert_eq!(value["type"], "status");
+        assert_eq!(value["kind"], "capture-failed");
+        assert_eq!(value["captureKind"], "start-failed");
+        assert_eq!(value["reason"], "no grant");
     }
 
     #[test]

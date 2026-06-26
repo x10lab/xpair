@@ -104,6 +104,12 @@ test("RD capture failures are forwarded as structured sidecar diagnostics", () =
   assert.match(screenServer, /handleCaptureEvent\(_ event: CaptureEngine\.CaptureEvent, generation: Generation\)/);
   assert.match(screenServer, /writeEvent\(gen: gen, kind: kind, reason: reason\)/);
   assert.match(screenServer, /"event": "capture-error"/);
+  assert.match(screenServer, /sidecarControlWriteFD/);
+  assert.match(screenServer, /sidecarControlWriteQueue/);
+  assert.match(screenServer, /"RP_AU_CONTROL_FD=3"/);
+  const controlWrite = extractFunction(screenServer, "private func writeFramedSidecarJSON");
+  assert.match(controlWrite, /sidecarControlWriteQueue\.async/);
+  assert.doesNotMatch(controlWrite, /auWriteQueue\.async/);
 });
 
 test("RD signaling token is host-generated, persisted 0600, and read by client over SSH", () => {

@@ -7,8 +7,9 @@
 // already-encoded H.264 access units from its stdin and writes framed control ops to its stdout.
 //
 // Wiring (per session):
-//   pipe A (app -> child stdin): [4B len][AU] frames plus [4B len][JSON ack/event] frames.
+//   pipe A (app -> child stdin): [4B len][AU] frames.
 //   pipe B (child stdout -> app): [4B len][JSON op] start / stop / keyframe.
+//   pipe C (app -> child fd3): [4B len][JSON ack/event] frames.
 //   child stderr (fd2): LOG_DIR/screen-serve.log (as before).
 // On start we start CaptureEngine (in-app SCK+VT capture); on stop we stop it.
 // Capture is thus per-connection — no capture (privacy/power cost) while idle.
@@ -36,10 +37,14 @@ final class ScreenServer {
     private let rdTokenByteCount = 32
     // Pipe A write end (app -> child stdin: the AU stream). -1 when not spawned.
     private var auWriteFD: Int32 = -1
+    // Pipe C write end (app -> child fd3: capture-control ACK/event frames). -1 when not spawned.
+    private var sidecarControlWriteFD: Int32 = -1
     // Pipe B read end (child stdout -> app: framed control ops). -1 when not spawned.
     private var ctlReadFD: Int32 = -1
     // Serialize writes to pipe A: SCK's sample callback runs on its own queue.
     private let auWriteQueue = DispatchQueue(label: "rp.screenserver.au-write")
+    // Separate from the AU media writer so control ACKs/events cannot sit behind media backpressure.
+    private let sidecarControlWriteQueue = DispatchQueue(label: "rp.screenserver.sidecar-control-write")
     private let auStateLock = NSLock()
     private var pendingKeyframeAU: Data?
     private var pendingDeltaAU: Data?
@@ -160,6 +165,9 @@ final class ScreenServer {
         auWriteQueue.sync {
             if auWriteFD >= 0 { close(auWriteFD); auWriteFD = -1 }
         }
+        sidecarControlWriteQueue.sync {
+            if sidecarControlWriteFD >= 0 { close(sidecarControlWriteFD); sidecarControlWriteFD = -1 }
+        }
         clearPendingAUs()
         if ctlReadFD >= 0 { close(ctlReadFD); ctlReadFD = -1 }
     }
@@ -216,20 +224,28 @@ final class ScreenServer {
             return
         }
 
-        // pipe A: app -> child stdin (AU stream + control acks). pipe B: child stdout -> app (control ops).
+        // pipe A: app -> child stdin (AU stream). pipe B: child stdout -> app (control ops).
+        // pipe C: app -> child fd3 (control acks/events), kept independent from AU media backpressure.
         var pipeA: [Int32] = [-1, -1] // [read(child fd0), write(app)]
         var pipeB: [Int32] = [-1, -1] // [read(app), write(child fd1)]
+        var pipeC: [Int32] = [-1, -1] // [read(child fd3), write(app)]
         guard pipe(&pipeA) == 0 else { log(.error, "SCREEN: pipe(A) failed errno=\(errno)"); return }
         guard pipe(&pipeB) == 0 else {
             close(pipeA[0]); close(pipeA[1])
             log(.error, "SCREEN: pipe(B) failed errno=\(errno)"); return
         }
+        guard pipe(&pipeC) == 0 else {
+            close(pipeA[0]); close(pipeA[1])
+            close(pipeB[0]); close(pipeB[1])
+            log(.error, "SCREEN: pipe(C) failed errno=\(errno)"); return
+        }
         let aRead = pipeA[0], aWrite = pipeA[1]
         let bRead = pipeB[0], bWrite = pipeB[1]
+        let cRead = pipeC[0], cWrite = pipeC[1]
 
         let argv = [bin, "serve-webrtc", "--token", "@\(RD_SESSION_TOKEN_FILE)"]
         let env = ["PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-                   "HOME=\(HOME)", "LANG=en_US.UTF-8", "RP_AU_STDIN=1"]
+                   "HOME=\(HOME)", "LANG=en_US.UTF-8", "RP_AU_STDIN=1", "RP_AU_CONTROL_FD=3"]
         var cargs = argv.map { strdup($0) }; cargs.append(nil)
         var cenv = env.map { strdup($0) }; cenv.append(nil)
         defer { cargs.forEach { free($0) }; cenv.forEach { free($0) } }
@@ -237,25 +253,28 @@ final class ScreenServer {
         var fa: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&fa)
         // fd0 = read end of pipe A (AU stream from app), fd1 = write end of pipe B (control to app),
+        // fd3 = read end of pipe C (control acks/events from app),
         // fd2 = log file (as before).
         posix_spawn_file_actions_adddup2(&fa, aRead, 0)
         posix_spawn_file_actions_adddup2(&fa, bWrite, 1)
+        posix_spawn_file_actions_adddup2(&fa, cRead, 3)
         posix_spawn_file_actions_addopen(&fa, 2, logPath, O_WRONLY | O_CREAT | O_APPEND, 0o644)
         defer { posix_spawn_file_actions_destroy(&fa) }
 
         var pid: pid_t = 0
         let rc = posix_spawn(&pid, bin, &fa, nil, cargs, cenv)
         // Close the child-side ends in the parent regardless of outcome.
-        close(aRead); close(bWrite)
+        close(aRead); close(bWrite); close(cRead)
         guard rc == 0 else {
-            close(aWrite); close(bRead)
+            close(aWrite); close(bRead); close(cWrite)
             log(.error, "SCREEN: posix_spawn failed rc=\(rc)")
             return
         }
         childPid = pid
         auWriteFD = aWrite
+        sidecarControlWriteFD = cWrite
         ctlReadFD = bRead
-        log("SCREEN: serve-webrtc spawned pid=\(pid) RP_AU_STDIN=1 token-file=\(RD_SESSION_TOKEN_FILE) (\(bin))")
+        log("SCREEN: serve-webrtc spawned pid=\(pid) RP_AU_STDIN=1 RP_AU_CONTROL_FD=3 token-file=\(RD_SESSION_TOKEN_FILE) (\(bin))")
         startControlReader(fd: bRead)
     }
 
@@ -666,10 +685,10 @@ final class ScreenServer {
         var len = UInt32(payload.count).bigEndian
         var framed = Data(bytes: &len, count: 4)
         framed.append(payload)
-        auWriteQueue.async { [weak self] in
+        sidecarControlWriteQueue.async { [weak self] in
             guard let self = self else { return }
-            guard self.auWriteFD >= 0 else { return }
-            if !self.writeAUToPipe(framed) {
+            guard self.sidecarControlWriteFD >= 0 else { return }
+            if !self.writeSidecarControlToPipe(framed) {
                 log(.warn, "SCREEN: sidecar control write failed (child gone?)")
             }
         }
@@ -718,13 +737,23 @@ final class ScreenServer {
     private func writeAUToPipe(_ data: Data) -> Bool {
         let fd = auWriteFD
         if fd < 0 { return false }
+        return writeFrameToPipe(fd: fd, data: data)
+    }
+
+    private func writeSidecarControlToPipe(_ data: Data) -> Bool {
+        let fd = sidecarControlWriteFD
+        if fd < 0 { return false }
+        return writeFrameToPipe(fd: fd, data: data)
+    }
+
+    private func writeFrameToPipe(fd: Int32, data: Data) -> Bool {
         var ok = true
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
             var off = 0
             let total = raw.count
             while off < total {
-                let w = write(fd, base + off, total - off)
+                let w = Darwin.write(fd, base + off, total - off)
                 if w > 0 {
                     off += w
                     continue

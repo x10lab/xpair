@@ -4,11 +4,11 @@
 // feeds DataChannel messages (rp-ctl / rp-move) into this helper's stdin.
 //
 // Wire format: [4-byte BE len][JSON]  per command. JSON shapes:
-//   {"t":"m","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r"}   move / drag when btn is present
-//   {"t":"d","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r"}   mouse down
-//   {"t":"u","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r"}   mouse up
+//   {"t":"m","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r","flags":<CGEventFlags raw>} move / drag
+//   {"t":"d","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r","flags":<CGEventFlags raw>} mouse down
+//   {"t":"u","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r","flags":<CGEventFlags raw>} mouse up
 //   {"t":"c","seq":N,"rx":0..1,"ry":0..1,"btn":"l"|"r"}   legacy click (move+down+up)
-//   {"t":"w","seq":N,"dx":0,"dy":0,"mode":0|1|2}          wheel / trackpad scroll
+//   {"t":"w","seq":N,"dx":0,"dy":0,"mode":0|1|2,"flags":<CGEventFlags raw>} wheel / trackpad scroll
 //   {"t":"k","seq":N,"code":<mac vk>,"flags":<CGEventFlags raw>,"action":"down"|"up"}  key
 //   {"t":"x","seq":N,"s":"composed text"}                 text via Unicode (Korean-safe)
 // Echoes one line per command to stderr: RPIN seq=<N> t=<t> ...  (for the B5 cross-check).
@@ -70,7 +70,7 @@ func buttonName(_ btn: String?) -> String {
   btn == "r" ? "r" : "l"
 }
 
-func injectMove(_ p: CGPoint, dragging btn: String? = nil) {
+func injectMove(_ p: CGPoint, dragging btn: String? = nil, flags: UInt64 = 0) {
   let button = mouseButton(btn)
   let eventType: CGEventType
   if btn == "r" {
@@ -80,11 +80,14 @@ func injectMove(_ p: CGPoint, dragging btn: String? = nil) {
   } else {
     eventType = .mouseMoved
   }
-  CGEvent(mouseEventSource: src, mouseType: eventType, mouseCursorPosition: p, mouseButton: button)?.post(tap: .cghidEventTap)
+  if let event = CGEvent(mouseEventSource: src, mouseType: eventType, mouseCursorPosition: p, mouseButton: button) {
+    event.flags = CGEventFlags(rawValue: flags)
+    event.post(tap: .cghidEventTap)
+  }
 }
 
-func injectMouse(_ p: CGPoint, down: Bool, right: Bool) {
-  injectMove(p)
+func injectMouse(_ p: CGPoint, down: Bool, right: Bool, flags: UInt64 = 0) {
+  injectMove(p, flags: flags)
   let eventType: CGEventType
   if right {
     eventType = down ? .rightMouseDown : .rightMouseUp
@@ -92,13 +95,16 @@ func injectMouse(_ p: CGPoint, down: Bool, right: Bool) {
     eventType = down ? .leftMouseDown : .leftMouseUp
   }
   let button: CGMouseButton = right ? .right : .left
-  CGEvent(mouseEventSource: src, mouseType: eventType, mouseCursorPosition: p, mouseButton: button)?.post(tap: .cghidEventTap)
+  if let event = CGEvent(mouseEventSource: src, mouseType: eventType, mouseCursorPosition: p, mouseButton: button) {
+    event.flags = CGEventFlags(rawValue: flags)
+    event.post(tap: .cghidEventTap)
+  }
 }
 
-func injectClick(_ p: CGPoint, right: Bool) {
-  injectMove(p)
-  injectMouse(p, down: true, right: right)
-  injectMouse(p, down: false, right: right)
+func injectClick(_ p: CGPoint, right: Bool, flags: UInt64 = 0) {
+  injectMove(p, flags: flags)
+  injectMouse(p, down: true, right: right, flags: flags)
+  injectMouse(p, down: false, right: right, flags: flags)
 }
 
 func wheelScale(_ mode: Int) -> Double {
@@ -114,18 +120,21 @@ func clampWheel(_ value: Double) -> Int32 {
   return Int32(bounded)
 }
 
-func injectWheel(dx: Double, dy: Double, mode: Int) {
+func injectWheel(dx: Double, dy: Double, mode: Int, flags: UInt64 = 0) {
   let scale = wheelScale(mode)
   let wheelX = clampWheel(-dx * scale)
   let wheelY = clampWheel(-dy * scale)
-  CGEvent(
+  if let event = CGEvent(
     scrollWheelEvent2Source: src,
     units: .pixel,
     wheelCount: 2,
     wheel1: wheelY,
     wheel2: wheelX,
     wheel3: 0
-  )?.post(tap: .cghidEventTap)
+  ) {
+    event.flags = CGEventFlags(rawValue: flags)
+    event.post(tap: .cghidEventTap)
+  }
 }
 func axDeleteLast() {
   guard let el = textTargetElement() else { return }
@@ -256,6 +265,11 @@ func integer(_ value: Any?) -> Int? {
   return nil
 }
 
+func inputFlags(_ value: Any?) -> UInt64 {
+  guard let raw = integer(value), raw > 0 else { return 0 }
+  return UInt64(raw)
+}
+
 func handle(_ j: [String: Any]) {
   let t = j["t"] as? String ?? "?"
   let seq = integer(j["seq"]) ?? -1
@@ -264,7 +278,7 @@ func handle(_ j: [String: Any]) {
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
       let p = point(rx, ry)
       lastPointerPoint = p
-      injectMove(p, dragging: j["btn"] as? String)
+      injectMove(p, dragging: j["btn"] as? String, flags: inputFlags(j["flags"]))
     }
   case "d":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
@@ -272,23 +286,23 @@ func handle(_ j: [String: Any]) {
       let btn = buttonName(j["btn"] as? String)
       lastPointerPoint = p
       heldButtons.insert(btn)
-      injectMouse(p, down: true, right: btn == "r")
+      injectMouse(p, down: true, right: btn == "r", flags: inputFlags(j["flags"]))
     }
   case "u":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
       let p = point(rx, ry)
       let btn = buttonName(j["btn"] as? String)
       lastPointerPoint = p
-      injectMouse(p, down: false, right: btn == "r")
+      injectMouse(p, down: false, right: btn == "r", flags: inputFlags(j["flags"]))
       heldButtons.remove(btn)
     }
   case "c":
     if let rx = number(j["rx"]), let ry = number(j["ry"]) {
-      injectClick(point(rx, ry), right: (j["btn"] as? String) == "r")
+      injectClick(point(rx, ry), right: (j["btn"] as? String) == "r", flags: inputFlags(j["flags"]))
     }
   case "w":
     if let dx = number(j["dx"]), let dy = number(j["dy"]) {
-      injectWheel(dx: dx, dy: dy, mode: integer(j["mode"]) ?? 0)
+      injectWheel(dx: dx, dy: dy, mode: integer(j["mode"]) ?? 0, flags: inputFlags(j["flags"]))
     }
   case "k":
     if let code = integer(j["code"]) {

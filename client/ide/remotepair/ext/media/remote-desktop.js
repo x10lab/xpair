@@ -724,7 +724,7 @@
     activePointerId = ev.pointerId;
     activePointerButton = btn;
     activePointerPoint = p;
-    if (sendControlInput({ t: "d", rx: p.rx, ry: p.ry, btn })) {
+    if (sendControlInput({ t: "d", rx: p.rx, ry: p.ry, btn, flags: macFlags(ev) })) {
       ev.preventDefault();
     }
   });
@@ -736,7 +736,7 @@
     if (now - lastMoveTs < MOVE_MIN_MS) return;
     const p = relativePoint(ev);
     activePointerPoint = p;
-    const msg = { t: "m", rx: p.rx, ry: p.ry };
+    const msg = { t: "m", rx: p.rx, ry: p.ry, flags: macFlags(ev) };
     if (activePointerButton) msg.btn = activePointerButton;
     if (sendMoveInput(msg)) {
       lastMoveTs = now;
@@ -750,7 +750,7 @@
     const btn = activePointerButton || pointerButton(ev);
     if (!btn) return;
     activePointerPoint = p;
-    if (sendControlInput({ t: "u", rx: p.rx, ry: p.ry, btn })) {
+    if (sendControlInput({ t: "u", rx: p.rx, ry: p.ry, btn, flags: macFlags(ev) })) {
       ev.preventDefault();
     }
     if (typeof video.releasePointerCapture === "function") {
@@ -767,7 +767,7 @@
 
   video.addEventListener("wheel", function (ev) {
     armInput();
-    if (sendControlInput({ t: "w", dx: ev.deltaX, dy: ev.deltaY, mode: ev.deltaMode })) {
+    if (sendControlInput({ t: "w", dx: ev.deltaX, dy: ev.deltaY, mode: ev.deltaMode, flags: macFlags(ev) })) {
       ev.preventDefault();
     }
   }, { passive: false });

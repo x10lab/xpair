@@ -56,11 +56,15 @@ test("serve-webrtc resolves input helper by explicit bundle/install paths and re
   assert.match(sidecar, /capture_display_id_for_input/);
   assert.match(sidecar, /on_data_channel/);
   assert.match(sidecar, /wire_input_data_channel/);
+  assert.match(sidecar, /APP_CONTROL_FD_ENV: &str = "RP_AU_CONTROL_FD"/);
+  assert.match(sidecar, /spawn_app_control_reader_from_env/);
 });
 
 test("injector supports wheel, pointer lifecycle, key lifecycle, and capture-aligned display selection", () => {
   assert.match(injector, /case "w":/);
   assert.match(injector, /injectWheel/);
+  assert.match(injector, /func inputFlags\(_ value: Any\?\) -> UInt64/);
+  assert.match(injector, /event\.flags = CGEventFlags\(rawValue: flags\)/);
   assert.match(injector, /case "d":/);
   assert.match(injector, /case "u":/);
   assert.match(injector, /rightMouseDragged|leftMouseDragged/);
@@ -111,6 +115,7 @@ test("webview gates input on helper readiness and sends down/up/drag/key-up even
   assert.match(webview, /\bt:\s*"d"/);
   assert.match(webview, /\bt:\s*"u"/);
   assert.match(webview, /\bt:\s*"m"/);
+  assert.match(webview, /flags:\s*macFlags\(ev\)/);
   assert.match(webview, /addEventListener\("keyup"/);
   assert.match(webview, /action:\s*"up"/);
 });

@@ -851,6 +851,56 @@ function runRemoteDesktopWebview() {
     );
   });
 
+  await check("webview forwards per-event modifier flags on pointer and wheel input", () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:10/?token=aaaaaaaaaaaaaaaaaaaaaaaa" });
+    const ctl = harness.peers[0].dataChannels.find((channel) => channel.label === "rp-ctl");
+    const move = harness.peers[0].dataChannels.find((channel) => channel.label === "rp-move");
+    assert.ok(ctl, "webview should create the reliable control DataChannel");
+    assert.ok(move, "webview should create the lossy move DataChannel");
+    ctl.readyState = "open";
+    move.readyState = "open";
+    harness.sockets[0].emit("message", {
+      data: JSON.stringify({ type: "status", kind: "input-ready" }),
+    });
+
+    const video = harness.elements.get("screen-video");
+    const pointerEvent = (props) => ({
+      pointerId: 3,
+      button: 0,
+      clientX: 10,
+      clientY: 20,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+      ...props,
+    });
+    const cmdShift = 0x100000 | 0x020000;
+    const allModifiers = 0x100000 | 0x020000 | 0x040000 | 0x080000;
+
+    video.emit("pointerdown", pointerEvent({ metaKey: true, shiftKey: true }));
+    video.emit("pointermove", pointerEvent({ clientX: 15, clientY: 25, metaKey: true, shiftKey: true }));
+    video.emit("pointerup", pointerEvent({ clientX: 20, clientY: 30, metaKey: true, shiftKey: true }));
+    video.emit("wheel", pointerEvent({
+      deltaX: 1,
+      deltaY: 2,
+      deltaMode: 0,
+      metaKey: true,
+      ctrlKey: true,
+      altKey: true,
+      shiftKey: true,
+    }));
+
+    const ctlMessages = ctl.sent.map((message) => JSON.parse(message));
+    const moveMessages = move.sent.map((message) => JSON.parse(message));
+    assert.strictEqual(ctlMessages.find((message) => message.t === "d").flags, cmdShift);
+    assert.strictEqual(ctlMessages.find((message) => message.t === "u").flags, cmdShift);
+    assert.strictEqual(ctlMessages.find((message) => message.t === "w").flags, allModifiers);
+    assert.strictEqual(moveMessages.find((message) => message.t === "m").flags, cmdShift);
+  });
+
   await check("webview ignores unsupported mouse buttons instead of mapping them to primary", () => {
     const harness = runRemoteDesktopWebview();
     harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:9/?token=777777777777777777777777" });
