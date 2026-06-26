@@ -918,10 +918,11 @@ const bridge = {
     // second, so it only exists while the app is RUNNING — an installed-but-not-running too-old host
     // would report no version and slip through the gate as "unknown".
     const probe =
-      // install-host puts the app in /Applications (system) OR ~/Applications; check BOTH so a
-      // correctly-installed host app is never false-flagged "missing" (which would wrongly gate onboarding).
-      'app=""; for d in "$HOME/Applications/XpairHost.app" "/Applications/XpairHost.app"; do [ -d "$d" ] && { app="$d"; break; }; done; ' +
-      'if [ -n "$app" ]; then echo RP_APP_INSTALLED=1; v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; else echo RP_APP_INSTALLED=0; fi';
+      // install-host puts the app in /Applications (system) OR ~/Applications; emit the version of
+      // EVERY copy present and let the client pick the newest (below). Both can coexist — a forced
+      // "Update host" lands in /Applications, so a stale per-user ~/Applications copy must NOT mask it
+      // (else the gate keeps reporting below_floor and onboarding stays blocked after a real update).
+      'inst=0; for d in "/Applications/XpairHost.app" "$HOME/Applications/XpairHost.app"; do [ -d "$d" ] || continue; inst=1; v="$(defaults read "$d/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; [ -n "$v" ] && echo "RP_APP_VERSION=$v"; done; [ "$inst" = 1 ] && echo RP_APP_INSTALLED=1 || echo RP_APP_INSTALLED=0';
     const r = await run("ssh", [...sshArgs, h, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
@@ -932,9 +933,14 @@ const bridge = {
     if (!installed) {
       return { installed: false, version: "", compatible: false, incompatibleKind: "", err: "Host has no Xpair host app" };
     }
+    // A host may carry copies in BOTH /Applications and ~/Applications; the gate cares about the NEWEST
+    // installed bundle (what an update produces and what will run), so take the max across whatever the
+    // probe reported. This keeps a stale per-user copy from pinning the gate to an old version.
     let version = "";
-    const m = out.match(/^RP_APP_VERSION=(.+)$/m);
-    if (m) version = m[1].trim();
+    for (const mm of out.matchAll(/^RP_APP_VERSION=(.+)$/gm)) {
+      const v = mm[1].trim();
+      if (v && (!version || compareVersions(v, version) > 0)) version = v;
+    }
     const clientV = clientVersion();
     const hostMajor = versionMajor(version);
     const clientMajor = versionMajor(clientV);
