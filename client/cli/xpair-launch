@@ -17,7 +17,7 @@
 # Usage:  xpair-launch [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|shell|codex|opencode>] [<dir>]
 #         (typically called via 'xpair launch <dir>' or a Finder Service)
 set -euo pipefail
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # ── platform portability (single codebase; the mac branch is byte-identical to prior behavior) ──
 # Branch only where the platform forces it (stat flavor); everything else is identical on every OS.
@@ -338,7 +338,7 @@ trap 'kill -- -$$ 2>/dev/null' EXIT
 
 # codex must be present on the host (resolved on the host, not the client).
 command -v codex >/dev/null 2>&1 || {
-  printf '\n[codex not found on host — install it (brew install codex) or use --engine claude]\n' >&2
+  printf '\n[codex not found on host — install it with the native Codex installer or use --engine claude]\n' >&2
   exit 11
 }
 while :; do
@@ -367,7 +367,7 @@ trap 'kill -- -$$ 2>/dev/null' EXIT
 
 # opencode must be present on the host (resolved on the host, not the client).
 command -v opencode >/dev/null 2>&1 || {
-  printf '\n[opencode not found on host — install it (brew install opencode) or use --engine claude]\n' >&2
+  printf '\n[opencode not found on host — install it with the native OpenCode installer or use --engine claude]\n' >&2
   exit 11
 }
 # Auto-approve via inline config merge (TUI has no skip-permissions flag). Merges with existing config.
@@ -723,11 +723,11 @@ LINES="$(tput lines 2>/dev/null || echo 50)"
 
 REMOTE_SCRIPT=$(cat <<EOF
 set -e
-export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
+export PATH="\$HOME/.local/bin:\$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 if [ "${RP_ENGINE}" != shell ] && ! command -v ${RP_ENGINE} >/dev/null 2>&1; then
-  printf '${RP_ENGINE} not found on %s (PATH=%s) — install it (brew install ${RP_ENGINE}) or use --engine claude\n' "\$(hostname -s)" "\$PATH" >&2
+  printf '${RP_ENGINE} not found on %s (PATH=%s) — install it with the native installer or use --engine claude\n' "\$(hostname -s)" "\$PATH" >&2
   exit 11
 fi
 # Optional ~/.claude sync (only when present — not a Xpair requirement)

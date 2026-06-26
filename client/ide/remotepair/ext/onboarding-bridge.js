@@ -117,7 +117,7 @@ function resolveTailscale() {
 }
 
 /** The standard user-tool PATH a GUI Electron app is missing (its inherited PATH is minimal). */
-const RICH_PATH = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
+const RICH_PATH = `${HOME}/.local/bin:${HOME}/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`;
 
 /** Resolve the running ssh-agent's auth socket. A GUI Electron app launched from Finder/Dock does
  *  NOT inherit SSH_AUTH_SOCK, so ssh can't reach the agent and silently falls back to a password
@@ -312,7 +312,8 @@ const SESSION_ENGINES = new Set([...ENGINES, "shell"]);
 //   shell     — no auth; uses the host account's default login shell.
 //   codex     — `codex login status` exits 0 (API key or ChatGPT login), OR ~/.codex/auth.json.
 //   opencode  — a provider env var set (ANTHROPIC_API_KEY/OPENAI_API_KEY), OR ~/.local/share/opencode/auth.json.
-const PATH_PREFIX = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
+const PATH_PREFIX =
+  'export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
 const ENGINE_PROBE = {
   claude:
     PATH_PREFIX +
@@ -341,13 +342,32 @@ const ENGINE_PROBE = {
     'else echo RP_ENGINE_INSTALLED=0; fi',
 };
 
-// Per-engine host install command (brew; npm fallback for claude where the cask/formula may lag).
+// Per-engine host install command — each engine's OFFICIAL native installer, run non-interactively.
+// No brew/npm: claude/codex land in ~/.local/bin, opencode in ~/.opencode/bin (PATH_PERSIST wires both
+// onto the host's login PATH). The installers' own rc-PATH edits are suppressed where supported
+// (opencode --no-modify-path) since PATH_PERSIST owns PATH persistence. Mirrored in EngineGuard.swift.
 const ENGINE_INSTALL = {
-  claude: 'brew install --quiet claude || npm install -g @anthropic-ai/claude-code',
+  claude: "bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'",
   shell: 'true',
-  codex: 'brew install --quiet codex',
-  opencode: 'brew install --quiet opencode',
+  codex: "bash -c 'set -o pipefail; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'",
+  opencode: "bash -c 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'",
 };
+
+// PATH persistence (engine-agnostic): write ~/.xpair/env with the canonical PATH (incl. the native
+// install dirs ~/.local/bin and ~/.opencode/bin) and source it from zsh/bash login + interactive rc
+// files via an idempotent xpair-delimited block — so a bare `claude`/`codex` resolves in the host's own
+// Terminal. Idempotent: the delimited block + sourced file are rewritten, never duplicated. Mirrored in
+// host/app/EngineGuard.swift (pathPersistScript).
+const PATH_PERSIST =
+  'set -e; ' +
+  'mkdir -p "$HOME/.xpair"; ' +
+  'printf \'%s\\n\' \'export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"\' > "$HOME/.xpair/env"; ' +
+  'for RC in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do ' +
+  'touch "$RC"; TMP="$(mktemp)"; ' +
+  'grep -vF \'# >>> xpair PATH >>>\' "$RC" | grep -vF \'. "$HOME/.xpair/env"\' | grep -vF \'# <<< xpair PATH <<<\' > "$TMP" || true; ' +
+  'cat "$TMP" > "$RC"; rm -f "$TMP"; ' +
+  '{ echo \'# >>> xpair PATH >>>\'; echo \'[ -f "$HOME/.xpair/env" ] && . "$HOME/.xpair/env"\'; echo \'# <<< xpair PATH <<<\'; } >> "$RC"; ' +
+  'done; echo RP_PATH_OK=1';
 
 // Per-engine host auth WRITER — a remote shell command that reads ONE secret line from STDIN
 // (`read -r KEY`) and persists it. The key NEVER appears on argv/log/disk on either side:
@@ -629,9 +649,11 @@ const bridge = {
     };
   },
 
-  // Engine — install `engine` on the host over SSH (brew, non-interactive). brew is non-interactive
-  // by default (no tty needed); we run it under a login shell so the host's brew is on PATH. Returns
-  // {ok, err}. Re-probe with hostEngineStatus afterwards — never trust the exit code alone.
+  // Engine — install `engine` on the host over SSH via its official native installer (non-interactive,
+  // no tty). PATH_PREFIX puts curl + the install dirs on PATH; after a non-shell install we run
+  // PATH_PERSIST so a bare `claude`/`codex` resolves in the host's own Terminal later. Returns {ok, err}.
+  // Re-probe with hostEngineStatus afterwards — never trust the exit code alone (a curl|sh exit 0 means
+  // "ran", not "binary is launch-able"). Mirrored in host/app/EngineGuard.swift.
   async installHostEngine(engine) {
     const e = String(engine || "");
     const host = String(parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
@@ -640,10 +662,10 @@ const bridge = {
       return { ok: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
     }
     if (!ENGINE_INSTALL[e]) return { ok: false, err: `unknown engine: ${e}` };
-    // Login shell so the host's brew (e.g. /opt/homebrew/bin) is on PATH; NONINTERACTIVE=1 keeps brew
-    // from prompting. The formula name differs per engine (ENGINE_INSTALL).
-    const cmd = `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; NONINTERACTIVE=1 ${ENGINE_INSTALL[e]}`;
-    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* brew can take a while */ });
+    // Run the native installer, then persist PATH (skip for shell — nothing was installed).
+    const persist = e === "shell" ? "" : ` && { ${PATH_PERSIST}; }`;
+    const cmd = `${PATH_PREFIX}${ENGINE_INSTALL[e]}${persist}`;
+    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* installer can take a while */ });
     if (r.code !== 0) {
       const s = sshResult(r, `install exited ${r.code}`);
       return { ok: false, err: s.err, state: s.state, action: s.action };
