@@ -66,8 +66,10 @@ add_gitignore() {
 # ── uninstall: process the manifest in reverse order ──
 manifest_revert() {
   [ -f "$MANIFEST" ] || { echo "manifest not found: $MANIFEST"; return 1; }
-  # tail -r = reverse order
-  tail -r "$MANIFEST" | while IFS=$'\t' read -r action a b; do
+  # Reverse the manifest portably. `tail -r` is BSD-only and fails on GNU/Linux/WSL with
+  # `tail: invalid option -- 'r'`, which aborted uninstall mid-run on non-macOS clients;
+  # awk reverses identically on both BSD and GNU.
+  awk '{ lines[NR] = $0 } END { for (i = NR; i >= 1; i--) print lines[i] }' "$MANIFEST" | while IFS=$'\t' read -r action a b; do
     case "$action" in
       FILE)      [ -e "$a" ] && rm -f "$a" && echo "  rm   $a" ;;
       TREE)      [ -e "$a" ] && rm -rf "$a" && echo "  rm -rf $a" ;;
