@@ -314,11 +314,17 @@ enum Updater {
     }
 
     private static func swapInPlace(_ newApp: String) throws {
-        let dest = "/Applications/\(APP_NAME).app"
+        // Replace the CURRENTLY-RUNNING bundle wherever it lives. Hard-coding /Applications broke
+        // ~/Applications installs (explicitly allowed by Installer.shouldSkipSelfInstall): the update
+        // either failed for lack of /Applications write permission or dropped a second copy in
+        // /Applications while the LaunchAgent kept restarting the old ~/Applications binary. The
+        // LaunchAgent points at Bundle.main, so swap into that same path.
+        let dest = Bundle.main.bundlePath
+        let destParent = (dest as NSString).deletingLastPathComponent
         runCapture("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp])
         do { try FileManager.default.removeItem(atPath: dest) }
         catch { log(.warn, "swap: could not remove existing app at \(dest) (may be absent or locked): \(error)") }
-        try FileManager.default.createDirectory(atPath: "/Applications", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: destParent, withIntermediateDirectories: true)
         try FileManager.default.moveItem(atPath: newApp, toPath: dest)
         log(.info, "swapped → \(dest)")
     }
