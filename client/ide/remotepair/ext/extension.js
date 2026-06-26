@@ -1108,7 +1108,14 @@ class NotificationPoller {
       "tail -n 20 ~/.xpair/host/notifications/queue.jsonl 2>/dev/null",
       { timeoutMs: 8000 }
     );
-    if (res.code !== 0 && res.code !== null) return; // missing file / unreachable -> quiet
+    // Distinguish "could not observe the queue" from "observed it, and it's empty/absent".
+    // Over ssh, `tail … 2>/dev/null` exits 0 when the file is read and 1 when it's missing
+    // (an empty queue — still a valid observation); ssh transport failure is 255 and
+    // spawn/timeout are negative. Only the latter group must keep the poller uninitialized;
+    // returning on a missing file too would leave `initialized` false until the file first
+    // gains content, and that first batch (e.g. the first approve-wait) would then be
+    // mistaken for startup history and suppressed.
+    if (res.code !== 0 && res.code !== 1) return; // transport failure / timeout -> quiet
     const lines = String(res.stdout).split(/\r?\n/);
     // On the very first successful poll, mark the WHOLE existing tail seen without showing
     // any of it (avoid replaying history). Captured once per poll (batch-level), and gated
