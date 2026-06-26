@@ -32,6 +32,11 @@ const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const INTERVAL_MS = 30 * 1000;
 const CONNECT_TIMEOUT = "6";
+// REMOTE_HOST must be a bare ssh host alias / hostname (mirrors HOST_RE in extension.js and
+// onboarding-bridge.js). The CLI/extension paths reject option-looking hosts before spawning
+// ssh; the heartbeat read REMOTE_HOST straight from client.env, so a stale/corrupt/hostile
+// value (e.g. one starting with `-`) would be passed to ssh as an option. Validate here too.
+const HOST_RE = /^[A-Za-z0-9._-]+$/;
 
 /** Sanitize to the host-side filename charset: every char outside [A-Za-z0-9._-] → '_'. */
 function sanitize(s) {
@@ -78,6 +83,7 @@ let _timer = null;
 function writeOnce() {
   const host = remoteHost();
   if (!host) return; // not connected yet — retry next tick.
+  if (!HOST_RE.test(host)) return; // reject option-looking / malformed hosts before ssh sees them.
   const id = clientId();
   const payload = JSON.stringify({
     name: clientHost(),
