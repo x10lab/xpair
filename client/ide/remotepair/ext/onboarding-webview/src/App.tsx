@@ -59,6 +59,39 @@ const S = {
   DONE: 8,
 } as const;
 
+const START_STEPS: Record<string, number> = {
+  welcome: S.WELCOME,
+  consent: S.CONSENT,
+  discover: S.DISCOVER,
+  connect: S.CONNECT,
+  install: S.INSTALL,
+  grant: S.GRANT,
+  engine: S.ENGINE,
+  mappings: S.MAPPINGS,
+  done: S.DONE,
+};
+
+const ENGINE_IDS = new Set<EngineId>(["claude", "shell", "codex", "opencode"]);
+
+function isEngineId(value: string): value is EngineId {
+  return ENGINE_IDS.has(value as EngineId);
+}
+
+function initialStepFromLocation() {
+  if (typeof window === "undefined") return S.WELCOME;
+  const raw = new URLSearchParams(window.location.search).get("startStep") || "";
+  if (Object.prototype.hasOwnProperty.call(START_STEPS, raw)) return START_STEPS[raw];
+  const numeric = Number(raw);
+  if (Number.isInteger(numeric) && numeric >= S.WELCOME && numeric <= S.DONE) return numeric;
+  return S.WELCOME;
+}
+
+function engineFromLocation(): EngineId {
+  if (typeof window === "undefined") return "claude";
+  const raw = new URLSearchParams(window.location.search).get("engine") || "";
+  return isEngineId(raw) ? raw : "claude";
+}
+
 type LiveState =
   | "idle"
   | "checking"
@@ -91,8 +124,7 @@ type HostAppState =
       installed: boolean;
       version: string;
       compatible: boolean;
-      // WHY incompatible — only "below_floor" (same major, too old) is safe to force-update.
-      // "major_mismatch" (different/newer major) must stay a blocking error (force = downgrade).
+      // WHY incompatible — below_floor is a safe same-major update; major_mismatch stays blocked.
       incompatibleKind: "below_floor" | "major_mismatch" | "";
       err: string;
     }
@@ -102,7 +134,10 @@ type HostPermState =
   | null;
 
 export default function App() {
-  const w = useWizard(9);
+  const [initialStep] = useState(() => initialStepFromLocation());
+  const w = useWizard(9, initialStep);
+  const startsFromSavedHost = initialStep >= S.CONNECT && initialStep <= S.ENGINE;
+  const lockConfiguredEngine = startsFromSavedHost;
 
   // onboarding_started — fired once when the onboarding webview mounts (consent-gated no-op
   // otherwise). StrictMode double-invokes effects in dev, but the production build mounts once.
@@ -236,13 +271,14 @@ export default function App() {
   }, [w.index, cancelLivenessCheck]);
 
   // Manual-entry fallback reuses the existing StepConnect machine.
-  const [manual, setManual] = useState(false);
+  const [savedHost, setSavedHost] = useState("");
+  const [manual, setManual] = useState(initialStep === S.CONNECT);
   const [host, setHost] = useState("");
   const [connState, setConnState] = useState<ConnState>("idle");
 
   // Engine selection + host-engine readiness, lifted from the Engine step so Next stays HARD-GATED
   // until the chosen engine is installed AND authenticated on the host.
-  const [engine, setEngine] = useState<EngineId>("claude");
+  const [engine, setEngine] = useState<EngineId>(() => engineFromLocation());
   const [engineReady, setEngineReady] = useState(false);
 
   // File access & mapping (unchanged step component).
@@ -255,6 +291,38 @@ export default function App() {
       .then((i) => setAccount((a) => a || i.user))
       .catch(() => {});
   }, []);
+
+  // Parachuted launches start from saved client.env state rather than a freshly discovered peer.
+  // Hydrate the smallest peer shape needed by the existing Grant/Engine back-navigation paths.
+  useEffect(() => {
+    if (!startsFromSavedHost) return;
+    let active = true;
+    void window.remotepair
+      .getConfig()
+      .then((cfg) => {
+        const hydratedHost = cfg.remoteHost.trim();
+        if (!active || !hydratedHost) return;
+        setSavedHost((current) => current || hydratedHost);
+        setHost((current) => current || hydratedHost);
+        if (initialStep === S.GRANT || initialStep === S.ENGINE) {
+          setPeer((current) =>
+            current || {
+              name: hydratedHost,
+              addrs: [hydratedHost],
+              target: hydratedHost,
+              source: "ssh",
+              sources: ["ssh"],
+              fp: null,
+              status: "reconnect",
+            },
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [initialStep, startsFromSavedHost]);
 
   // Reconnect: this client already authorized with the host (ssh-config entry) and the app is
   // installed, so there's nothing to install — just re-persist REMOTE_HOST and confirm reachability.
@@ -411,6 +479,7 @@ export default function App() {
     if (previousConnectTarget.current === connectTarget) return;
     previousConnectTarget.current = connectTarget;
     cancelLivenessCheck();
+    setSetupReady(false);
     setInstallState("idle");
   }, [connectTarget, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
@@ -430,6 +499,15 @@ export default function App() {
       hostPerms.alive &&
       hostPerms.ax &&
       hostPerms.sr);
+  const hostAppLiveFalse =
+    requiresHostPerms &&
+    !!hostApp &&
+    hostApp.target === connectTarget &&
+    hostApp.installed === true &&
+    hostApp.compatible === true &&
+    !!hostPerms &&
+    hostPerms.target === connectTarget &&
+    hostPerms.alive === false;
 
   // Once reachable on a non-setup path, probe the host app exactly once per (target, reachable) edge.
   useEffect(() => {
@@ -444,9 +522,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
 
-  // Same-major-but-below-floor is the only incompatible host state that can be repaired in-place.
-  // Different/newer-major hosts remain a blocking incompatibility because force reinstalling would
-  // downgrade them.
+  // Only safe host states can use a forced bundled host install: missing, same-major below-floor,
+  // or compatible-but-not-live. Major mismatches stay blocked to avoid downgrading a newer host.
   const canUpdateHost =
     requiresHostApp &&
     !hostAppChecking &&
@@ -455,12 +532,47 @@ export default function App() {
     hostApp.installed &&
     !hostApp.compatible &&
     hostApp.incompatibleKind === "below_floor";
+  const canRepairHost =
+    requiresHostApp &&
+    reachReady &&
+    (manual || startsFromSavedHost || isReconnect || isConnect) &&
+    !hostAppChecking &&
+    !!hostApp &&
+    hostApp.target === connectTarget &&
+    (hostApp.installed !== true ||
+      (hostApp.installed === true &&
+        hostApp.compatible !== true &&
+        hostApp.incompatibleKind === "below_floor") ||
+      hostAppLiveFalse);
+  const hostRepairKind =
+    !hostApp || hostApp.installed !== true
+      ? "missing"
+      : hostApp.compatible !== true
+      ? canUpdateHost
+        ? "update"
+        : "incompatible"
+      : "restart";
+  const manualTargetIsSavedHost = !!savedHost && connectTarget === savedHost;
+  const manualMissingNeedsFingerprint =
+    manual && !manualTargetIsSavedHost && hostRepairKind === "missing";
+  const manualMissingRepairPeer: Peer | null = connectTarget
+    ? {
+        name: connectTarget,
+        addrs: [connectTarget],
+        target: connectTarget,
+        source: "ssh",
+        sources: ["ssh"],
+        fp: null,
+        status: "setup",
+      }
+    : null;
 
-  const handleHostUpdateDone = useCallback(() => {
+  const handleHostRepairDone = useCallback(() => {
     if (!connectTarget) return;
     setInstallState("idle");
     setHostApp(null);
     setHostPerms(null);
+    setHostPermChecking(false);
     void checkHostApp(connectTarget);
   }, [checkHostApp, connectTarget]);
 
@@ -586,20 +698,31 @@ export default function App() {
       ? "Skip for now"
       : "Next";
 
-  const hostUpdatePanel = canUpdateHost ? (
-    <div className="mt-4">
-      <StepInstalling
-        isUpdate
-        host={connectTarget}
-        hostName={manual ? connectTarget : peer?.name || connectTarget}
-        currentVersion={hostApp?.version || ""}
-        requiredVersion={MIN_COMPATIBLE_HOST}
-        state={installState}
-        setState={setInstallState}
-        onDone={handleHostUpdateDone}
-        onFail={() => setInstallState("idle")}
-      />
-    </div>
+  const hostRepairPanel = canRepairHost ? (
+    <>
+      {manualMissingNeedsFingerprint && manualMissingRepairPeer && (
+        <div className="mt-4">
+          <StepSetupPassword peer={manualMissingRepairPeer} onReady={setSetupReady} />
+        </div>
+      )}
+      {(!manualMissingNeedsFingerprint || setupReady) && (
+        <div className="mt-4">
+          <StepInstalling
+            isUpdate={hostRepairKind === "update"}
+            forceInstall
+            repairKind={hostRepairKind}
+            host={connectTarget}
+            hostName={manual ? connectTarget : peer?.name || connectTarget}
+            currentVersion={hostApp?.version || ""}
+            requiredVersion={hostRepairKind === "update" ? MIN_COMPATIBLE_HOST : ""}
+            state={installState}
+            setState={setInstallState}
+            onDone={handleHostRepairDone}
+            onFail={() => setInstallState("idle")}
+          />
+        </div>
+      )}
+    </>
   ) : null;
 
   return (
@@ -626,13 +749,17 @@ export default function App() {
         // incompatible) so the user isn't staring at a silently-disabled Next.
         requiresHostApp && reachReady && hostApp && !hostAppReady && !hostAppChecking ? (
           <p className="truncate text-center text-xs text-destructive">
-            {!hostApp.installed
+            {canRepairHost
+              ? "Repair XpairHost below to continue."
+              : !hostApp.installed
               ? "Host has no Xpair host app — install it on the host."
               : hostApp.err || "Host version is incompatible with this client."}
           </p>
         ) : requiresHostPerms && reachReady && hostAppReady && !hostPermReady ? (
           <p className="truncate text-center text-xs text-destructive">
-            {hostPermChecking
+            {canRepairHost
+              ? "Repair XpairHost below to continue."
+              : hostPermChecking
               ? "Checking host permissions…"
               : hostPerms?.err ||
                 "Grant Accessibility and Screen Recording on the host to continue."}
@@ -731,17 +858,18 @@ export default function App() {
                 state={connState}
                 setState={setConnState}
                 cliBlocked={cliGateActive}
+                autoCheck={initialStep === S.CONNECT}
                 onBackToDiscovery={() => {
                   stepRef.current = S.DISCOVER;
                   w.goTo(S.DISCOVER, "prev");
                 }}
               />
-              {hostUpdatePanel}
+              {hostRepairPanel}
             </>
           ) : isReconnect ? (
             <>
               <StepReconnect peer={peer} onReady={setReconnectReady} />
-              {hostUpdatePanel}
+              {hostRepairPanel}
             </>
           ) : (
             <StepSetupPassword
@@ -769,7 +897,12 @@ export default function App() {
           <StepGrantPermissions peer={peer} user={account} onReady={setGrantReady} />
         )}
         {w.index === S.ENGINE && (
-          <StepEngine engine={engine} setEngine={setEngine} onReady={setEngineReady} />
+          <StepEngine
+            engine={engine}
+            setEngine={setEngine}
+            lockConfigured={lockConfiguredEngine}
+            onReady={setEngineReady}
+          />
         )}
         {w.index === S.MAPPINGS && (
           <StepFileAccess mappings={mappings} setMappings={setMappings} />

@@ -51,6 +51,11 @@ const NOTIFY_TYPE_SETTINGS = [
   ["Notification", "askQuestion"],
   ["SubagentStop", "subagentStop"],
   ["approve", "approval"],
+  // Manual approval WAITS (host hook emits type "approve-wait" for PermissionRequest /
+  // permission-prompt) require the user's action, so gate them on the same "approval"
+  // toggle. Without this entry the poller's enabled.has(obj.type) check silently drops
+  // every approve-wait record and the user never sees the prompt they must respond to.
+  ["approve-wait", "approval"],
 ];
 
 // v2 WebRTC signaling (shared/screen-protocol → generated contracts)
@@ -111,6 +116,10 @@ function resolveLogThreshold() {
   return LOG_LEVELS.info;
 }
 const LOG_THRESHOLD = resolveLogThreshold();
+
+function sshControlPath() {
+  return "/tmp/rp-cm-" + (process.env.RP_SSH_CM_TAG || "x") + "-%C";
+}
 
 // Local-tz ISO-8601 with offset, second precision (e.g. 2026-06-15T10:45:16+0900).
 function logTimestamp() {
@@ -340,14 +349,14 @@ function sshRun(host, remoteCmd, opts = {}) {
     `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
     "-o",
     "StrictHostKeyChecking=accept-new",
-    // ControlMaster: reuse ONE persistent connection across frames → faster polling
-    // and a single SSH-agent (1Password) authorization instead of one per frame.
-    // pid-scoped ControlPath (see spawnTunnel): a stale socket from a prior session must never
-    // collide with this one (that's what made the RD tunnel exit 255 → "signaling closed 1006").
+    // ControlMaster: reuse ONE persistent connection across probes/tunnels → faster polling
+    // and a single SSH-agent (1Password) authorization instead of one per probe. The path lives
+    // under this GUI session's temp dir and %C keys it by host/port/user, so the electron-main
+    // onboarding guard and extension-host workbench share it without a pid split.
     "-o",
     "ControlMaster=auto",
     "-o",
-    `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
+    `ControlPath=${sshControlPath()}`,
     "-o",
     "ControlPersist=300",
     host, // validated against HOST_RE; passed as its own argv element
@@ -525,18 +534,15 @@ function spawnTunnel(host, localPort, remotePort) {
   // IS the tunnel and can be killed. ControlMaster=auto reuses the existing authenticated
   // master so there's no new key prompt.
   const rport = remotePort;
-  // ControlPath is SCOPED TO THIS PROCESS (pid). A bare /tmp/rp-cm-%C is keyed only on host/port/user,
-  // so a stale socket left by a PRIOR session (master died but the file lingers — e.g. after a host
-  // reinstall or yesterday's run) collides with today's tunnel: ControlMaster=auto tries the dead
-  // master and ssh exits 255, the tunnel never forms, and RD shows "signaling closed (1006)". Adding
-  // the pid makes the path unique per IDE session, so a stale socket can never break a fresh launch,
-  // while reconnects WITHIN this session still reuse the live master (no re-auth).
+  // ControlPath is shared within one app launch via RP_SSH_CM_TAG. That lets the pre-workbench
+  // onboarding guard authenticate once and the workbench tunnel reuse the same live master, without
+  // reusing stale masters from earlier launches.
   const args = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ControlMaster=auto",
-    "-o", `ControlPath=/tmp/rp-cm-${process.pid}-%C`,
+    "-o", `ControlPath=${sshControlPath()}`,
     "-o", "ControlPersist=300",
     "-o", "ExitOnForwardFailure=yes",
     "-N",
@@ -1280,6 +1286,11 @@ class NotificationPoller {
     this.timer = null;
     this.seen = new Set(); // dedupe by ts (+type)
     this.started = false;
+    // True once the FIRST successful poll has completed. First-run suppression must NOT be
+    // derived from seen.size: if the IDE starts while the queue is empty, seen stays empty,
+    // so the first poll that later carries live notifications would be misread as first-run
+    // and drop every record — exactly the approve-wait prompts we mean to surface.
+    this.initialized = false;
   }
 
   start() {
@@ -1307,8 +1318,21 @@ class NotificationPoller {
       "tail -n 20 ~/.xpair/host/notifications/queue.jsonl 2>/dev/null",
       { timeoutMs: 8000 }
     );
-    if (res.code !== 0 && res.code !== null) return; // missing file / unreachable -> quiet
+    // Distinguish "could not observe the queue" from "observed it, and it's empty/absent".
+    // Over ssh, `tail … 2>/dev/null` exits 0 when the file is read and 1 when it's missing
+    // (an empty queue — still a valid observation); ssh transport failure is 255 and
+    // spawn/timeout are negative. Only the latter group must keep the poller uninitialized;
+    // returning on a missing file too would leave `initialized` false until the file first
+    // gains content, and that first batch (e.g. the first approve-wait) would then be
+    // mistaken for startup history and suppressed.
+    if (res.code !== 0 && res.code !== 1) return; // transport failure / timeout -> quiet
     const lines = String(res.stdout).split(/\r?\n/);
+    // On the very first successful poll, mark the WHOLE existing tail seen without showing
+    // any of it (avoid replaying history). Captured once per poll (batch-level), and gated
+    // on an explicit `initialized` flag rather than seen.size — an empty-queue startup keeps
+    // seen empty, so a size-based check would replay the first live batch as "history".
+    const firstRun = !this.initialized;
+    this.initialized = true;
     for (const line of lines) {
       const t = line.trim();
       if (!t) continue;
@@ -1321,9 +1345,6 @@ class NotificationPoller {
       if (!obj || typeof obj !== "object") continue;
       const key = `${obj.ts || ""}|${obj.type || ""}|${obj.session || ""}`;
       if (this.seen.has(key)) continue;
-      // On the very first successful poll, mark everything seen WITHOUT showing
-      // (avoid replaying history). We detect first-run by an empty seen set.
-      const firstRun = this.seen.size === 0;
       this.seen.add(key);
       if (firstRun) continue;
       if (!obj.type || !enabled.has(obj.type)) continue;
@@ -1744,15 +1765,13 @@ async function showLogs() {
 // Single-app model (spec: single-app onboarding): onboarding is hosted by the IDE MAIN process as a
 // pre-workbench window on first run — there is NO separate "Xpair Setup" Electron app to launch
 // (that 2nd process is removed). "Re-run setup" therefore makes the NEXT launch onboard again
-// (the main-process hook shows onboarding when not onboarded) and asks the user to restart, instead
-// of spawning a second app/process.
+// (the main-process hook resolves the per-launch onboarding guard) and asks the user to restart,
+// instead of spawning a second app/process.
 function runSetup() {
   log("runSetup: re-onboarding requested — main process onboards on next launch");
-  // An already-onboarded user has REMOTE_HOST + folder maps in client.env, so shouldOnboard()
-  // would return false on relaunch and skip straight to the workbench. A quit+relaunch can't carry
-  // an env var (RP_FORCE_ONBOARDING), so persist a one-shot sentinel that onboarding-main.cjs's
-  // shouldOnboard() honors (and clears on next open). Path MUST match FORCE_ONBOARDING_SENTINEL
-  // in onboarding-main.cjs.
+  // A quit+relaunch can't carry an env var (RP_FORCE_ONBOARDING), so persist a one-shot sentinel
+  // that onboarding-main.cjs's firstFailingGuard() honors (and clears on next open). Path MUST
+  // match FORCE_ONBOARDING_SENTINEL in onboarding-main.cjs.
   try {
     fs.mkdirSync(path.join(os.homedir(), ".xpair/host"), { recursive: true });
     fs.writeFileSync(path.join(os.homedir(), ".xpair/host", ".force-onboarding"), "");

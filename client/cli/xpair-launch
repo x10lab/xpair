@@ -862,7 +862,11 @@ printf '\033]2;%s\007' "$ACTUAL_SESSION"
 
 remote_attach_ssh() {
   printf 'attaching via ssh -t -> tmux session "%s" on %s ...\n' "$ACTUAL_SESSION" "$REMOTE_HOST"
-  exec ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
+  # Run WITHOUT exec: the caller is `remote_attach_ssh || ATTACH_RC=$?` followed by
+  # `choose_attach_recovery ssh`. exec would replace the launcher with ssh, so a failed
+  # ssh attach (e.g. preserved/detached session) would surface its raw exit instead of
+  # returning to the recovery UI (retry / repair / detached-session guidance).
+  ssh -t "$REMOTE_HOST" "$REMOTE_BIN/tmux-aqua -S ${AQUA_SOCK_Q} attach -d -t $(sh_quote "=$ACTUAL_SESSION")"
 }
 
 resolve_xpair_cli() {

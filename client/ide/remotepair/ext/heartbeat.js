@@ -32,6 +32,13 @@ const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const INTERVAL_MS = 30 * 1000;
 const CONNECT_TIMEOUT = "6";
+// REMOTE_HOST must be a bare ssh host alias / hostname (mirrors HOST_RE in onboarding-bridge.js).
+// The CLI/extension paths reject option-looking hosts before spawning ssh; the heartbeat read
+// REMOTE_HOST straight from client.env, so a stale/corrupt/hostile value would be passed to ssh as
+// an option. The leading `(?!-)` is essential: a bare `[A-Za-z0-9._-]+` still admits `-p2222`/`-V`
+// (the `-` is in the class), which ssh parses as an option, not the destination — defeating the
+// guard. Reject a leading dash, matching onboarding-bridge.js.
+const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 
 /** Sanitize to the host-side filename charset: every char outside [A-Za-z0-9._-] → '_'. */
 function sanitize(s) {
@@ -69,7 +76,11 @@ function parseEnv(file) {
 
 /** Read REMOTE_HOST from client.env (empty string if unset / unreadable). */
 function remoteHost() {
-  return (parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
+  const host = (parseEnv(CLIENT_ENV).REMOTE_HOST || "").trim();
+  // Validate HERE so every caller (writeOnce AND stopHeartbeat) is covered before ssh is spawned —
+  // an invalid value yields "" and callers already bail on empty. `^(?!-)` rejects option-looking
+  // hosts like `-p2222`/`-oProxyCommand=...` that ssh would parse as options, not the destination.
+  return HOST_RE.test(host) ? host : "";
 }
 
 let _timer = null;
@@ -77,7 +88,7 @@ let _timer = null;
 /** Fire one heartbeat write over SSH. Fire-and-forget; never throws, never blocks. */
 function writeOnce() {
   const host = remoteHost();
-  if (!host) return; // not connected yet — retry next tick.
+  if (!host) return; // not connected yet, or host failed validation in remoteHost() — retry next tick.
   const id = clientId();
   const payload = JSON.stringify({
     name: clientHost(),

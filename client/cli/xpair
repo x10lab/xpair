@@ -79,6 +79,10 @@ TERMINAL_APP="${TERMINAL_APP:-$( [ -d /Applications/iTerm.app ] && echo iterm2 |
 TMUXB="$LOCAL_BIN/tmux-aqua"
 RP_YES="${RP_YES:-0}"
 
+rp_ssh_control_path() {
+  printf '/tmp/rp-cm-%s-%%C' "${RP_SSH_CM_TAG:-x}"
+}
+
 # Absolute path to this CLI (for relaunch via terminal apps). Prefer LOCAL_BIN, fall back to $0.
 SELF_CLI="$LOCAL_BIN/xpair"
 [ -x "$SELF_CLI" ] || SELF_CLI="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
@@ -350,11 +354,20 @@ cmd_map() {
 }
 
 cmd_ls_json() {
-  local target host raw
+  local target host raw rc=0
   if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
     target=remote
     host="$REMOTE_HOST"
-    raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null || true)"
+    raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null)" || rc=$?
+    # ssh exit 255 == transport failure (host down / DNS / auth). The remote tmux-aqua
+    # itself exits 1 merely when no sessions exist — that is NOT a failure. Only a transport
+    # failure means the session state is unknown, so exit nonzero instead of emitting an
+    # empty list: session-list.js renders its unavailable/retry UI on a nonzero CLI exit,
+    # whereas {"sessions":[]} with exit 0 would masquerade host-down as "no sessions".
+    if [ "$rc" = 255 ]; then
+      warn "remote session listing failed — host '$REMOTE_HOST' unreachable (ssh transport)"
+      return 3
+    fi
   else
     target=local
     host=""
@@ -1775,8 +1788,9 @@ cmd_host_permissions() {
   esac; done
   [ -n "$host" ] || { printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no host"}\n'; return 0; }
   local raw
+  local cm; cm="$(rp_ssh_control_path)"
   raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
-             -o ControlMaster=no -o ControlPath=none \
+             -o ControlMaster=auto -o "ControlPath=$cm" -o ControlPersist=300 \
              -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 \
              -o StrictHostKeyChecking=accept-new -T -n "$host" \
              'cat ~/.xpair/host/logs/status.json 2>/dev/null' </dev/null 2>/dev/null)" || true
