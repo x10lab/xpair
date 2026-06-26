@@ -180,6 +180,8 @@ const SSH_STATE = Object.freeze({
   INVALID_ACCOUNT: "invalid_account",
   HOST_KEY_MISMATCH: "host_key_mismatch",
   KEY_AUTH_BLOCKED: "key_auth_blocked",
+  NEEDS_PASSWORD: "needs_password",
+  PASSWORD_DENIED: "password_denied",
   UNREACHABLE: "unreachable",
 });
 
@@ -188,6 +190,7 @@ const SSH_ACTION = Object.freeze({
   ABORT: "abort",
   RECOVER_HOST_KEY: "recover_host_key",
   APPROVE_OR_RETRY: "approve_or_retry",
+  PROMPT_PASSWORD: "prompt_password",
   RETRY: "retry",
 });
 
@@ -202,12 +205,27 @@ function sshFailureKind(err) {
   return SSH_STATE.UNREACHABLE;
 }
 
+function isRemotePublickeyDenied(err) {
+  return /Permission denied \((?=[^)]*publickey)[^)]*\)/i.test(String(err || ""));
+}
+
+function isPasswordDenied(err) {
+  const s = String(err || "");
+  return /PASSWORD_DENIED/i.test(s) || /Permission denied \((?=[^)]*password)[^)]*\)/i.test(s);
+}
+
 function sshFailureMessage(state, err) {
   if (state === SSH_STATE.HOST_KEY_MISMATCH) {
     return "SSH host key mismatch: the host identity changed. Re-confirm the fingerprint, remove the stale known_hosts entry if this is your Mac, then retry.";
   }
   if (state === SSH_STATE.KEY_AUTH_BLOCKED) {
     return "SSH key auth blocked: unlock or approve your SSH agent/key passphrase, make sure this Mac's public key is authorized on the host, then retry.";
+  }
+  if (state === SSH_STATE.NEEDS_PASSWORD) {
+    return "This host has not authorized this Mac's SSH key yet. Enter the host account password to authorize it once.";
+  }
+  if (state === SSH_STATE.PASSWORD_DENIED) {
+    return "The host account password was denied. Check it and try again.";
   }
   return err || "could not reach host over SSH";
 }
@@ -217,6 +235,7 @@ function sshActionForState(state) {
   if (state === SSH_STATE.INVALID_HOST || state === SSH_STATE.INVALID_ACCOUNT) return SSH_ACTION.ABORT;
   if (state === SSH_STATE.HOST_KEY_MISMATCH) return SSH_ACTION.RECOVER_HOST_KEY;
   if (state === SSH_STATE.KEY_AUTH_BLOCKED) return SSH_ACTION.APPROVE_OR_RETRY;
+  if (state === SSH_STATE.NEEDS_PASSWORD || state === SSH_STATE.PASSWORD_DENIED) return SSH_ACTION.PROMPT_PASSWORD;
   return SSH_ACTION.RETRY;
 }
 
@@ -264,48 +283,11 @@ function run(cmd, args, opts = {}) {
 }
 const cli = (args) => run(rpBin(), args);
 
-/** Like cli(), but supplies a ONE-SHOT account password to install-host's askpass over an INHERITED
- *  file descriptor (fd 3 → RP_ASKPASS_FD), never via argv (`ps`), an env VALUE, a log line, or disk.
- *  `xpair-askpass` reads exactly one line from that fd and feeds it to ssh's password prompt, which
- *  bootstraps the FIRST install connection when the client key is not yet authorized. install-host
- *  multiplexes the whole install over that single connection and then appends the key (ssh-copy-id),
- *  so this password is used once and every later op is key-auth. Keys remain the primary path. */
-function cliWithPassword(args, secret) {
-  return new Promise((resolve) => {
-    let out = "";
-    let err = "";
-    let child;
-    try {
-      child = cp.spawn(rpBin(), args, {
-        windowsHide: true,
-        env: spawnEnv({ RP_ASKPASS_FD: "3" }),
-        stdio: ["ignore", "pipe", "pipe", "pipe"], // fd3 = one-shot password pipe for xpair-askpass
-      });
-    } catch (e) {
-      return resolve({ code: -1, out: "", err: String(e && e.message ? e.message : e) });
-    }
-    const pwPipe = child.stdio[3];
-    if (pwPipe) {
-      pwPipe.on("error", () => {}); // EPIPE if ssh authenticates without ever needing it — benign.
-      try {
-        pwPipe.write(String(secret) + "\n");
-        pwPipe.end();
-      } catch {
-        /* write race — child already gone; ignore */
-      }
-    }
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => resolve({ code: -1, out, err: String(e.message) }));
-    child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
-  });
-}
-
 /** Like run(), but writes ONE secret line to the child's STDIN (fd 0) then closes it — for handing a
- *  secret to a remote `read -r KEY` over ssh WITHOUT it ever touching argv (`ps`), a log line, or
- *  disk. ssh forwards its own stdin to the remote command's stdin, so a single `printf '%s' "$KEY" |`
- *  isn't needed on the client side — we just pipe the line in. Used ONLY by setHostEngineAuth (the
- *  engine API key). The secret is written once and the pipe closed immediately. */
+ *  secret to a child/remote command WITHOUT it ever touching argv (`ps`), a log line, or disk. ssh
+ *  forwards its own stdin to the remote command's stdin, and install-host reads its bootstrap account
+ *  password from stdin before setting up its bash-managed askpass fd. The secret is written once and
+ *  the pipe closed immediately. */
 function runSecretStdin(cmd, args, secret) {
   return new Promise((resolve) => {
     let out = "";
@@ -332,6 +314,10 @@ function runSecretStdin(cmd, args, secret) {
     child.on("error", (e) => resolve({ code: -1, out, err: String(e.message) }));
     child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
   });
+}
+
+function cliWithPasswordStdin(args, secret) {
+  return runSecretStdin(rpBin(), [...args, "--password-stdin"], secret);
 }
 
 // --- Engine constants (claude | codex | opencode | shell) -------------------------------------
@@ -811,8 +797,8 @@ const bridge = {
   // preflight are BatchMode, publickey-only; host-key mismatch and key-agent/passphrase failures are
   // returned as explicit recovery states. An account password is accepted by installHost ONLY as a
   // one-shot bootstrap for the first connection to a host that has not yet authorized this client's
-  // key, and even then it is handed to ssh's askpass over an inherited fd (never argv/env-value/log/
-  // disk — see cliWithPassword). A key passphrase is never received or returned. Do NOT add a
+  // key, and even then it is handed to the CLI over stdin (never argv/env-value/log/disk). The CLI
+  // sets up the bash-managed askpass fd. A key passphrase is never received or returned. Do NOT add a
   // tCapture/telemetry call inside discover/installHost.
 
   // Discovery — concurrent Bonjour + Tailscale sweep via the CLI. Returns a deduped peer array
@@ -834,8 +820,8 @@ const bridge = {
   // Setup — remote install over SSH. Keys are the PRIMARY path: we preflight the key-only path and,
   // once the host trusts this client's key, every install/connect is key-auth. But the first install
   // on a host that has NOT yet authorized this client's key cannot connect with a key that isn't
-  // there yet — so when that preflight reports KEY_AUTH_BLOCKED and the user supplied an account
-  // `password`, it is handed to install-host's askpass over an inherited fd (never argv/env/disk) to
+  // there yet — so when that preflight reports a REMOTE publickey denial, the webview collects an
+  // account `password` and this bridge hands it to install-host over stdin (never argv/env/disk) to
   // bootstrap that one setup connection; install-host then appends the key (ssh-copy-id) so all later
   // ops are key-auth. `force` reinstalls over an already-installed but incompatible host app (host
   // update flow). Returns {ok,out,err,state,action}; `out` carries the redacted progress stream.
@@ -863,18 +849,20 @@ const bridge = {
     }
     const pw = String(password || "");
     const target = account ? `${account}@${h}` : h;
-    // Reachability/host-identity preflight ONLY. The key-only probe doubles as a reachability check,
-    // but its key-auth result must NOT gate the install: `xpair install-host` AUTHORIZES this client's
-    // key on the host over the setup connection (that is the whole point of install — it replaces PIN
-    // pairing). A host discovered BEFORE this client's key was added to authorized_keys returns
-    // "Permission denied (publickey)" here, so a KEY_AUTH_BLOCKED preflight must NOT dead-end first-time
-    // setup. Block only on genuine non-key failures (unreachable / host-key mismatch); a key-auth
-    // failure means "first-time" and falls through to the CLI install.
+    // Reachability/host-identity preflight ONLY. The key-only probe doubles as a reachability check.
+    // A REMOTE "Permission denied (publickey...)" means this host has not authorized the client key
+    // yet, so the webview must collect the account password for the one-shot bootstrap. LOCAL key
+    // failures (agent refused, passphrase required, unreadable key) stay on the existing key recovery
+    // path and must not consume the account password.
     let keyBlocked = false;
     const preflight = await run("ssh", [...sshProbeOpts(8), target, "true"]);
     if (preflight.code !== 0) {
+      const raw = preflight.err || preflight.out || "";
       const s = sshResult(preflight);
       if (s.state !== SSH_STATE.KEY_AUTH_BLOCKED) {
+        return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
+      }
+      if (!isRemotePublickeyDenied(raw)) {
         return { ok: false, out: "", err: s.err, state: s.state, action: s.action };
       }
       keyBlocked = true; // client key not yet authorized → bootstrap this one connection with the password.
@@ -885,13 +873,30 @@ const bridge = {
     // incompatible) host app — the CLI's --force flag overwrites the existing app and restarts the
     // host (terminating any running tmux sessions). Used by the onboarding host-update flow.
     if (force) args.push("--force");
+    if (keyBlocked && !pw) {
+      return {
+        ok: false,
+        out: "",
+        err: sshFailureMessage(SSH_STATE.NEEDS_PASSWORD),
+        state: SSH_STATE.NEEDS_PASSWORD,
+        action: SSH_ACTION.PROMPT_PASSWORD,
+      };
+    }
     // First-time (key not yet authorized) AND a password was supplied → bootstrap the setup
-    // connection via install-host's askpass (over an inherited fd). Otherwise (key already
-    // authorized, or no password given) run key-auth only; a fresh host with no password then
-    // surfaces a clear publickey error instead of silently dead-ending.
-    const r = keyBlocked && pw ? await cliWithPassword(args, pw) : await cli(args);
+    // connection via install-host --password-stdin. Otherwise the key is already authorized, so run
+    // the existing key-auth path and ignore any stale password value.
+    const r = keyBlocked && pw ? await cliWithPasswordStdin(args, pw) : await cli(args);
     if (r.code === 0) {
       return { ok: true, out: r.out, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
+    }
+    if (keyBlocked && (r.code === 7 || isPasswordDenied(`${r.err}\n${r.out}`))) {
+      return {
+        ok: false,
+        out: r.out,
+        err: sshFailureMessage(SSH_STATE.PASSWORD_DENIED),
+        state: SSH_STATE.PASSWORD_DENIED,
+        action: SSH_ACTION.PROMPT_PASSWORD,
+      };
     }
     const s = sshResult(r, "install failed");
     return { ok: false, out: r.out, err: s.err, state: s.state, action: s.action };

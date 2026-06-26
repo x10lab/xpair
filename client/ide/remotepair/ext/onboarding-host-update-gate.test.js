@@ -32,18 +32,29 @@ test("bridge installHost supports force:true and host incompatibility kinds", ()
 });
 
 test("global.d.ts exposes force installs and incompatibleKind", () => {
-  assert.match(globals, /installHost: \(opts: \{ host: string; user\?: string; force\?: boolean \}\)/);
+  assert.match(globals, /installHost: \(opts: \{ host: string; user\?: string; password\?: string; force\?: boolean \}\)/);
   assert.match(globals, /incompatibleKind: "below_floor" \| "major_mismatch" \| ""/);
 });
 
 test("StepInstalling update mode warns first and only force-installs after Update host click", () => {
   assert.match(stepInstalling, /isUpdate\?: boolean/);
-  assert.match(stepInstalling, /installHost\(isUpdate \? \{ host, force: true \} : \{ host \}\)/);
+  assert.match(stepInstalling, /force: true[\s\S]*password !== undefined \? \{ password \}/);
   assert.match(stepInstalling, /restart XpairHost/);
   assert.match(stepInstalling, /terminate any running tmux sessions on the host/);
   assert.match(stepInstalling, /minimum compatible host version is \$\{requiredVersion\} or newer/);
   assert.match(stepInstalling, /if \(isUpdate\) return;\s*\n\s*if \(started\.current\) return;/);
-  assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*Update host/);
+  assert.match(stepInstalling, /state === "idle" && !showingPassword[\s\S]*onClick=\{\(\) => runInstall\(\)\}[\s\S]*Update host/);
+});
+
+test("password bootstrap states are surfaced through bridge and StepInstalling", () => {
+  assert.match(bridge, /NEEDS_PASSWORD: "needs_password"/);
+  assert.match(bridge, /PASSWORD_DENIED: "password_denied"/);
+  assert.match(bridge, /PROMPT_PASSWORD: "prompt_password"/);
+  assert.match(bridge, /cliWithPasswordStdin\(args, pw\)/);
+  assert.match(stepInstalling, /r\.state === "needs_password"/);
+  assert.match(stepInstalling, /r\.state === "password_denied"/);
+  assert.match(stepInstalling, /I Understand/);
+  assert.match(stepInstalling, /Host account password/);
 });
 
 test("App keeps automatic host detection but removes update auto-navigation machinery", () => {

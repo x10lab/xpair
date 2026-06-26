@@ -76,8 +76,8 @@ declare global {
       sshReachable: (host: string) => Promise<{
         reachable: boolean
         err: string
-        state?: "ready" | "invalid_host" | "host_key_mismatch" | "key_auth_blocked" | "unreachable"
-        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "retry"
+        state?: "ready" | "invalid_host" | "host_key_mismatch" | "key_auth_blocked" | "needs_password" | "password_denied" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "prompt_password" | "retry"
       }>
       tailscaleStatus: () => Promise<{ installed: boolean; up: boolean }>
       // Discovery / remote-install (component ⑤). Client onboarding uses SSH key auth as the primary
@@ -87,12 +87,12 @@ declare global {
       discover: () => Promise<{ peers: Peer[]; err: string }>
       // force:true reinstalls the bundled XpairHost over an already-installed (but incompatible) host
       // app — used by the in-UI host-update flow. The host restarts (running tmux sessions die).
-      installHost: (opts: { host: string; user?: string; force?: boolean }) => Promise<{
+      installHost: (opts: { host: string; user?: string; password?: string; force?: boolean }) => Promise<{
         ok: boolean
         out: string
         err: string
-        state?: "ready" | "invalid_host" | "invalid_account" | "host_key_mismatch" | "key_auth_blocked" | "unreachable"
-        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "retry"
+        state?: "ready" | "invalid_host" | "invalid_account" | "host_key_mismatch" | "key_auth_blocked" | "needs_password" | "password_denied" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "prompt_password" | "retry"
       }>
       // Post-install TCC grant status read from the host app's status.json over SSH. AX/SR/FDA must
       // be granted on the host's own screen (macOS forbids remote grants); the install step polls

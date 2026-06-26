@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, AlertTriangle, Box, Check, Loader2, RefreshCw } from "lucide-react";
+import { AlertCircle, AlertTriangle, Box, Check, KeyRound, Loader2, RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { Peer } from "@/global";
 
 export type InstallState = "idle" | "installing" | "done" | "failed";
+type PasswordStep = "none" | "notice" | "password";
 
 type Props = {
   // Fresh-install (setup) path supplies a Peer; the update path (manual/connect/reconnect) has no
@@ -50,6 +53,9 @@ export function StepInstalling({
 }: Props) {
   const [phase, setPhase] = useState(0);
   const [err, setErr] = useState("");
+  const [passwordStep, setPasswordStep] = useState<PasswordStep>("none");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [passwordErr, setPasswordErr] = useState("");
   // Update mode passes host/hostName directly (no setup Peer); setup mode derives them from peer.
   const host = hostProp || peer?.target || peer?.addrs?.[0] || peer?.name || "";
   const name = hostName || peer?.name || host;
@@ -72,7 +78,7 @@ export function StepInstalling({
   // Run the install. Cosmetic phase advance while the single blocking CLI call runs; the real result
   // overrides it. In update mode we pass force:true so the CLI overwrites the already-installed (but
   // incompatible) host app and restarts the host.
-  const runInstall = useCallback(() => {
+  const runInstall = useCallback((password?: string) => {
     const runId = ++installRunId.current;
     const isCurrent = () => mounted.current && installRunId.current === runId;
     if (phaseTimer.current !== null) {
@@ -80,6 +86,8 @@ export function StepInstalling({
       phaseTimer.current = null;
     }
     setErr("");
+    setPasswordErr("");
+    setPasswordStep("none");
     setPhase(0);
     setState("installing");
     const adv = window.setInterval(() => {
@@ -91,14 +99,27 @@ export function StepInstalling({
       if (phaseTimer.current === adv) phaseTimer.current = null;
       window.clearInterval(adv);
     };
+    const opts = isUpdate
+      ? { host, force: true, ...(password !== undefined ? { password } : {}) }
+      : { host, ...(password !== undefined ? { password } : {}) };
     window.remotepair
-      .installHost(isUpdate ? { host, force: true } : { host })
+      .installHost(opts)
       .then((r) => {
         clearAdv();
         if (!isCurrent()) return;
         if (r.ok) {
+          setAccountPassword("");
           setPhase(PHASES.length);
           setState("done");
+        } else if (r.state === "needs_password") {
+          setAccountPassword("");
+          setPasswordStep("notice");
+          setState("idle");
+        } else if (r.state === "password_denied") {
+          setAccountPassword("");
+          setPasswordErr(r.err || "The host account password was denied. Check it and try again.");
+          setPasswordStep("password");
+          setState("idle");
         } else {
           setErr(r.err || "Install failed.");
           setState("failed");
@@ -107,10 +128,19 @@ export function StepInstalling({
       .catch((e) => {
         clearAdv();
         if (!isCurrent()) return;
+        setAccountPassword("");
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });
   }, [host, isUpdate, setState]);
+
+  const submitPassword = useCallback(() => {
+    if (!accountPassword) {
+      setPasswordErr("Enter the host account password.");
+      return;
+    }
+    runInstall(accountPassword);
+  }, [accountPassword, runInstall]);
 
   // Fresh-install (setup) mode auto-starts on mount — there's nothing on the host to destroy. Update
   // mode does NOT: forcing the reinstall restarts XpairHost and kills any running tmux sessions on
@@ -133,6 +163,7 @@ export function StepInstalling({
   }, [state, onDone]);
 
   const installing = state === "installing";
+  const showingPassword = passwordStep !== "none" && state !== "installing" && state !== "done";
 
   return (
     <div>
@@ -179,10 +210,10 @@ export function StepInstalling({
                 Updating will restart XpairHost and{" "}
                 <span className="font-semibold">terminate any running tmux sessions on the host.</span>
               </p>
-              {state === "idle" && (
+              {state === "idle" && !showingPassword && (
                 <button
                   type="button"
-                  onClick={runInstall}
+                  onClick={() => runInstall()}
                   className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 font-semibold text-amber-700 transition-colors hover:bg-amber-500/25 dark:text-amber-300"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
@@ -194,7 +225,75 @@ export function StepInstalling({
         </div>
       )}
 
-      <div className="mx-auto mt-5 max-w-sm space-y-3">
+      {showingPassword && (
+        <div className="mx-auto mt-5 max-w-sm rounded-xl border border-border bg-muted/25 p-4 text-left">
+          {passwordStep === "notice" ? (
+            <div className="space-y-3">
+              <div className="flex items-start gap-2 text-sm">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-foreground">Remote Login must be enabled on the host Mac.</p>
+                  <p className="mt-1 text-xs leading-snug text-muted-foreground">
+                    Check System Settings, General, Sharing, then turn on Remote Login for the account you use on this host.
+                  </p>
+                </div>
+              </div>
+              <Button type="button" size="sm" className="h-8" onClick={() => setPasswordStep("password")}>
+                I Understand
+              </Button>
+            </div>
+          ) : (
+            <form
+              className="space-y-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitPassword();
+              }}
+            >
+              <div className="flex items-start gap-2 text-sm">
+                <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <div className="min-w-0">
+                  <label htmlFor="xpair-account-password" className="font-semibold text-foreground">
+                    Host account password
+                  </label>
+                  <p className="mt-1 text-xs leading-snug text-muted-foreground">
+                    Used once to authorize this Mac's SSH key on {name}.
+                  </p>
+                </div>
+              </div>
+              <Input
+                id="xpair-account-password"
+                type="password"
+                value={accountPassword}
+                onChange={(e) => {
+                  setAccountPassword(e.target.value);
+                  setPasswordErr("");
+                }}
+                autoComplete="current-password"
+                autoFocus
+                className="bg-background"
+              />
+              {passwordErr && (
+                <div className="flex items-start gap-2 text-xs text-destructive">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 break-words">{passwordErr}</span>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit" size="sm" className="h-8" disabled={!accountPassword}>
+                  Continue
+                </Button>
+                <Button type="button" size="sm" variant="outline" className="h-8" onClick={onFail}>
+                  Review fingerprint
+                </Button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+
+      {!showingPassword && (
+        <div className="mx-auto mt-5 max-w-sm space-y-3">
         {PHASES.map((label, i) => {
           const done = i < phase;
           const now = i === phase && installing;
@@ -222,7 +321,8 @@ export function StepInstalling({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
 
       {state === "failed" && (
         <div className="mt-5 rounded-xl border border-destructive/30 bg-destructive/5 p-3.5 text-xs text-destructive">
@@ -238,7 +338,7 @@ export function StepInstalling({
           <div className="mt-3 flex flex-wrap gap-2 pl-6">
             <button
               type="button"
-              onClick={runInstall}
+              onClick={() => runInstall()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-destructive/10 px-3 py-1.5 font-semibold text-destructive transition-colors hover:bg-destructive/15"
             >
               {isUpdate ? "Retry update" : "Retry key auth"}

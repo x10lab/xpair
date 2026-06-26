@@ -18,7 +18,7 @@
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
-#   xpair install-host [--host <a>] [--account <u>] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
+#   xpair install-host [--host <a>] [--account <u>] [--password-stdin] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
 #   xpair doctor         Check SSH key connection, host app, tmux + guidance
 #   xpair approve [--for "<what>"] [--type "key:..|ocr:.."] [--timeout S]   Handle a blocked approval dialog
 #                              --for: which dialog (alias-tolerant)  ·  --type: how to approve — agent decides (key:<combo>|ocr:<label>)
@@ -1525,22 +1525,23 @@ print(json.dumps(out))
 PY
 }
 
-# ── C3. xpair install-host [--host <addr>] [--account <user>] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
+# ── C3. xpair install-host [--host <addr>] [--account <user>] [--password-stdin] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
 # Idempotent, integrity-verified remote install-or-repair over SSH.
 #   default: scp the locally-built, already-signed build/XpairHost.app and
 #            run shared/install.sh --role host against it (integrity by signature).
 #   --bootstrap: explicit opt-in to curl|bash; REQUIRES --sha256 of the fetched
 #                script and a pinned --ref; aborts before any host exec on mismatch.
 cmd_install_host() {
-  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0
+  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0 password_stdin=0 pw="" pwdir="" fifo="" wpid="" wdpid=""
   while [ $# -gt 0 ]; do case "$1" in
     --host)      host="${2:-}"; shift 2 ;;
     --account)   account="${2:-}"; shift 2 ;;
+    --password-stdin) password_stdin=1; shift ;;
     --bootstrap) use_bootstrap=1; shift ;;
     --sha256)    sha="${2:-}"; shift 2 ;;
     --ref)       ref="${2:-main}"; shift 2 ;;
     --force)     force=1; shift ;;   # reinstall even if an install is detected (re-setup / version swap)
-    *) echo "install-host [--host <addr>] [--account <user>] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
+    *) echo "install-host [--host <addr>] [--account <user>] [--password-stdin] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
   esac; done
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
   # Normalize a user-qualified --host (user@mac): split the user into the account so the persisted
@@ -1551,17 +1552,41 @@ cmd_install_host() {
     *@*) [ -n "$account" ] || account="${host%@*}"; host="${host##*@}" ;;
   esac
   local target="$host"; [ -n "$account" ] && target="$account@$host"
+  local askpass; askpass="$(rp_askpass_path)"
+
+  if [ "$password_stdin" = 1 ]; then
+    IFS= read -r pw || true
+    [ -n "$pw" ] || { err "empty password on stdin"; return 2; }
+    [ -n "$askpass" ] || { err "install-host requires xpair-askpass for --password-stdin"; return 1; }
+    # Generate the key before connecting so the setup connection can authorize it on the host.
+    rp_ssh_pubkey >/dev/null || { err "could not ensure client pubkey"; return 1; }
+    # Hand the account password to ssh's SSH_ASKPASS helper via a FIFO (named pipe), NOT an inherited
+    # fd: ssh closes fds >2 before exec'ing the askpass helper, so an inherited fd reaches it as EOF
+    # (verified against localhost sshd). The helper opens the FIFO by PATH, which survives the exec.
+    # The secret transits the pipe only — never argv/env-value/log/persisted-file; the 0700 dir +
+    # 0600 fifo are removed by the EXIT/INT/TERM trap below.
+    pwdir="$(mktemp -d "${TMPDIR:-/tmp}/rp-pw-XXXXXX")" || { err "mktemp failed"; return 1; }
+    chmod 700 "$pwdir"
+    fifo="$pwdir/pw.fifo"
+    mkfifo -m 600 "$fifo" || { rm -rf "$pwdir"; err "mkfifo failed"; return 1; }
+    # One-shot writer: opening a FIFO for write BLOCKS until a reader (the askpass helper) opens it,
+    # so this parks until ssh actually prompts, then delivers exactly one line. The watchdog kills the
+    # writer if ssh never reaches the password stage (it would otherwise block on open forever); it
+    # survives a SIGKILL of this shell (reparented), so the FIFO can't leak indefinitely.
+    ( printf '%s\n' "$pw" > "$fifo" ) & wpid=$!
+    ( sleep 30; kill "$wpid" 2>/dev/null ) >/dev/null 2>&1 & wdpid=$!
+    unset pw
+    export RP_ASKPASS_FIFO="$fifo"
+  fi
 
   # SSH with NO controlling TTY (stdin </dev/null). The onboarding's primary path is key-auth only:
-  # do not invoke askpass unless a caller explicitly supplied the one-shot password pipe.
-  local askpass; askpass="$(rp_askpass_path)"
+  # do not invoke askpass unless a caller explicitly supplied the one-shot password FIFO.
   local SSHENV=()
-  if [ -n "${RP_ASKPASS_FD:-}" ] && [ -n "$askpass" ]; then
+  if [ -n "${RP_ASKPASS_FIFO:-}" ] && [ -n "$askpass" ]; then
     SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0")
-    # Legacy/password-assisted callers hand us the account password on an inherited pipe FD so the
-    # askpass helper reads it from the pipe. The descriptor itself is inherited, never re-opened or
-    # written to disk.
-    SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
+    # The helper reads the account password by opening the FIFO at this PATH; the env carries only the
+    # path, never the secret. (An inherited fd does NOT survive ssh→askpass — see the FIFO setup above.)
+    SSHENV+=("RP_ASKPASS_FIFO=${RP_ASKPASS_FIFO}")
   fi
   # Multiplex the WHOLE install over ONE SSH connection: authenticate once, then reuse the master
   # for every rm/scp/install.sh. Key-auth failures now return to onboarding recovery instead of
@@ -1571,9 +1596,37 @@ cmd_install_host() {
   local RP_CM; RP_CM="$(mktemp -u "${TMPDIR:-/tmp}/rp-cm-XXXXXX")"
   local RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
                     -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
+  if [ "$password_stdin" = 1 ]; then
+    RP_SSHOPTS+=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1)
+  fi
+  # ONE combined cleanup trap on EXIT (+ INT/TERM so a parent-sent signal still cleans up; RETURN
+  # would miss those, and a second RETURN trap would clobber the first). Tears down the ControlMaster
+  # AND the password FIFO/writer/watchdog. install-host is a terminal command per invocation, so EXIT
+  # fires right after the function returns.
   # shellcheck disable=SC2064
-  trap "ssh -O exit -o 'ControlPath=$RP_CM' '$target' >/dev/null 2>&1; rm -f '$RP_CM'" RETURN
+  trap '
+    ssh -O exit -o "ControlPath=$RP_CM" "$target" >/dev/null 2>&1; rm -f "$RP_CM"
+    [ -n "${wdpid:-}" ] && kill "$wdpid" 2>/dev/null
+    [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null
+    [ -n "${pwdir:-}" ] && rm -rf "$pwdir"
+    unset RP_ASKPASS_FIFO
+  ' EXIT INT TERM
   _rp_ssh() { "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$@" </dev/null; }
+
+  if [ "$password_stdin" = 1 ]; then
+    c "authenticating to $target with the supplied account password …"
+    local auth_err
+    auth_err="$(_rp_ssh "$target" true 2>&1 >/dev/null)" || {
+      if printf '%s\n' "$auth_err" | grep -Eiq 'Permission denied|Authentication failed'; then
+        # distinct exit code (7) so the bridge maps a wrong password to PASSWORD_DENIED by CODE,
+        # not by re-grepping ssh stderr; the label is kept as a belt-and-suspenders fallback.
+        err "PASSWORD_DENIED: account password denied for $target"
+        return 7
+      fi
+      err "password bootstrap failed for $target: ${auth_err:-ssh failed}"
+      return 1
+    }
+  fi
 
   # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
   c "checking $target for an existing $APP_NAME install …"
