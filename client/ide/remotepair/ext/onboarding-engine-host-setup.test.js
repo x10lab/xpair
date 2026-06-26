@@ -32,8 +32,10 @@ test("Q0545 host setup probes, installs, authenticates, and gates supported engi
   assert.match(app, /const ENGINE_IDS = new Set<EngineId>\(\["claude", "shell", "codex", "opencode"\]\)/);
   assert.match(
     app,
-    /getConfig\(\)[\s\S]*const savedEngine = String\(cfg\.engine \|\| ""\)\.trim\(\);[\s\S]*if \(active && isEngineId\(savedEngine\)\) setEngine\(savedEngine\);/,
+    /function engineFromLocation\(\): EngineId \{[\s\S]*new URLSearchParams\(window\.location\.search\)\.get\("engine"\)[\s\S]*return isEngineId\(raw\) \? raw : "claude";/,
   );
+  assert.match(app, /const \[engine, setEngine\] = useState<EngineId>\(\(\) => engineFromLocation\(\)\)/);
+  assert.doesNotMatch(app, /setEngine\(savedEngine\)/);
 
   assert.match(stepEngine, /const ENGINES:[\s\S]*id: "claude"[\s\S]*id: "codex"[\s\S]*id: "opencode"/);
   assert.match(stepEngine, /window\.remotepair\.hostEngineStatus\(e\)/);

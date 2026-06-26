@@ -86,6 +86,12 @@ function initialStepFromLocation() {
   return S.WELCOME;
 }
 
+function engineFromLocation(): EngineId {
+  if (typeof window === "undefined") return "claude";
+  const raw = new URLSearchParams(window.location.search).get("engine") || "";
+  return isEngineId(raw) ? raw : "claude";
+}
+
 type LiveState =
   | "idle"
   | "checking"
@@ -118,8 +124,7 @@ type HostAppState =
       installed: boolean;
       version: string;
       compatible: boolean;
-      // WHY incompatible — below_floor keeps the old update wording; other incompatible states still
-      // route through the CONNECT repair panel for a force install/restart.
+      // WHY incompatible — below_floor is a safe same-major update; major_mismatch stays blocked.
       incompatibleKind: "below_floor" | "major_mismatch" | "";
       err: string;
     }
@@ -271,7 +276,7 @@ export default function App() {
 
   // Engine selection + host-engine readiness, lifted from the Engine step so Next stays HARD-GATED
   // until the chosen engine is installed AND authenticated on the host.
-  const [engine, setEngine] = useState<EngineId>("claude");
+  const [engine, setEngine] = useState<EngineId>(() => engineFromLocation());
   const [engineReady, setEngineReady] = useState(false);
 
   // File access & mapping (unchanged step component).
@@ -293,8 +298,6 @@ export default function App() {
     void window.remotepair
       .getConfig()
       .then((cfg) => {
-        const savedEngine = String(cfg.engine || "").trim();
-        if (active && isEngineId(savedEngine)) setEngine(savedEngine);
         const savedHost = cfg.remoteHost.trim();
         if (!active || !savedHost) return;
         setHost((current) => current || savedHost);
@@ -515,8 +518,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
 
-  // Same-major-but-below-floor keeps the old update wording; all other not-ready host states use
-  // the broader repair wording while running the same forced bundled host install.
+  // Only safe host states can use a forced bundled host install: missing, same-major below-floor,
+  // or compatible-but-not-live. Major mismatches stay blocked to avoid downgrading a newer host.
   const canUpdateHost =
     requiresHostApp &&
     !hostAppChecking &&
@@ -528,11 +531,15 @@ export default function App() {
   const canRepairHost =
     requiresHostApp &&
     reachReady &&
-    (manual || startsFromSavedHost) &&
+    (manual || startsFromSavedHost || isReconnect) &&
     !hostAppChecking &&
     !!hostApp &&
     hostApp.target === connectTarget &&
-    (hostApp.installed !== true || hostApp.compatible !== true || hostAppLiveFalse);
+    (hostApp.installed !== true ||
+      (hostApp.installed === true &&
+        hostApp.compatible !== true &&
+        hostApp.incompatibleKind === "below_floor") ||
+      hostAppLiveFalse);
   const hostRepairKind =
     !hostApp || hostApp.installed !== true
       ? "missing"

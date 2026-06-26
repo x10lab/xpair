@@ -63,13 +63,18 @@ function readClientEnv() {
   return env
 }
 
-function configuredRemoteHost() {
-  return (readClientEnv().REMOTE_HOST || '').trim()
+function configuredRemoteHost(env = readClientEnv()) {
+  return (env.REMOTE_HOST || '').trim()
 }
 
-function configuredEngine() {
-  const engine = (readClientEnv().ENGINE || 'claude').trim()
+function configuredEngine(env = readClientEnv()) {
+  const engine = (env.ENGINE || 'claude').trim()
   return SESSION_ENGINES.has(engine) ? engine : 'claude'
+}
+
+function configuredLocalMode(env = readClientEnv()) {
+  const localMode = String(env.LOCAL_MODE || '').trim()
+  return /^(1|true|yes|on|local)$/i.test(localMode)
 }
 
 /** Historical helper: "configured" ⇔ REMOTE_HOST is set. Folder mappings are OPTIONAL (you can
@@ -96,7 +101,8 @@ function forcedOnboardingRequested(argv = process.argv) {
 async function firstFailingGuard(argv = process.argv, probeBridge = bridge) {
   if (forcedOnboardingRequested(argv)) return START_STEP.WELCOME
 
-  const host = configuredRemoteHost()
+  const clientEnv = readClientEnv()
+  const host = configuredRemoteHost(clientEnv)
   if (!host) return START_STEP.WELCOME
 
   try {
@@ -105,6 +111,8 @@ async function firstFailingGuard(argv = process.argv, probeBridge = bridge) {
   } catch {
     return START_STEP.WELCOME
   }
+
+  if (configuredLocalMode(clientEnv)) return null
 
   try {
     const reach = await probeBridge.sshReachable(host)
@@ -130,7 +138,7 @@ async function firstFailingGuard(argv = process.argv, probeBridge = bridge) {
   }
 
   try {
-    const engine = await probeBridge.hostEngineStatus(configuredEngine())
+    const engine = await probeBridge.hostEngineStatus(configuredEngine(clientEnv))
     if (!engine || engine.installed !== true || engine.authed !== true) return START_STEP.ENGINE
   } catch {
     return START_STEP.ENGINE
@@ -238,7 +246,7 @@ function openOnboardingWindow({ electron, onComplete, startStep } = {}) {
 
   const normalizedStartStep = normalizeStartStep(startStep)
   if (normalizedStartStep) {
-    _win.loadFile(WEBVIEW_INDEX, { query: { startStep: normalizedStartStep } })
+    _win.loadFile(WEBVIEW_INDEX, { query: { startStep: normalizedStartStep, engine: configuredEngine() } })
   } else {
     _win.loadFile(WEBVIEW_INDEX)
   }

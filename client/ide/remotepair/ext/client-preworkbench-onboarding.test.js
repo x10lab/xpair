@@ -40,7 +40,7 @@ test("Q0369 client onboarding appears before the IDE workbench and only completi
   assert.match(electronMainPatch, /onComplete: \(\) => \{ this\.doOpenFirstWindow\(accessor, initialProtocolUrls\); \}/);
 
   assert.match(main, /new BrowserWindow\(\{/);
-  assert.match(main, /loadFile\(WEBVIEW_INDEX, \{ query: \{ startStep: normalizedStartStep \} \}\)/);
+  assert.match(main, /loadFile\(WEBVIEW_INDEX, \{ query: \{ startStep: normalizedStartStep, engine: configuredEngine\(\) \} \}\)/);
   assert.doesNotMatch(main, /\bapp\.quit\(/, "IDE-hosted onboarding must not use the old second-app quit/relaunch flow");
   assert.match(preload, /complete: \(\) => \{[\s\S]*ipcRenderer\.invoke\('onboarding:complete'\)/);
 
