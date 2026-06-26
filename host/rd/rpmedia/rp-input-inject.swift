@@ -136,16 +136,6 @@ func injectWheel(dx: Double, dy: Double, mode: Int, flags: UInt64 = 0) {
     event.post(tap: .cghidEventTap)
   }
 }
-func axDeleteLast() {
-  guard let el = textTargetElement() else { return }
-  var v: CFTypeRef?
-  if AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success,
-     var s = v as? String, !s.isEmpty {
-    s.removeLast()
-    AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, s as CFString)
-  }
-}
-
 let modifierKeyCodes: Set<Int> = [54, 55, 56, 58, 59, 60, 61, 62]
 var heldButtons = Set<String>()
 var heldKeys: [Int: UInt64] = [:]
@@ -189,14 +179,13 @@ func injectKey(_ code: Int, _ flags: UInt64, _ action: String) {
 
   // Text-producing keys with no modifier → AX text path (reliable + targetable),
   // matching the AX text injection used for typed characters:
-  //   Return(36)→"\n", Tab(48)→"\t", Delete/Backspace(51)→delete last char.
+  //   Return(36)→"\n", Tab(48)→"\t".
   // If Return/Tab have no AX text target, fall through to the normal keycode path
-  // so dialogs, buttons, and focus traversal still receive them.
+  // so dialogs, buttons, focus traversal, and Backspace receive native key events.
   if flags == 0 && action == "down" {
     switch code {
     case 36: if injectText("\n") { return }
     case 48: if injectText("\t") { return }
-    case 51: axDeleteLast(); return
     default: break
     }
   }

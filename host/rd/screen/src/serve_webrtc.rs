@@ -17,7 +17,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -63,6 +63,8 @@ type WsTx = SplitSink<SignalingWs, Message>;
 type WsRx = SplitStream<SignalingWs>;
 type InputTx = std::sync::mpsc::Sender<Vec<u8>>;
 type InputRx = std::sync::mpsc::Receiver<Vec<u8>>;
+
+static APP_CAPTURE_IO: OnceLock<Arc<AppCaptureIo>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct SessionToken(String);
@@ -681,9 +683,165 @@ fn read_len_prefixed_frame<R: Read>(reader: &mut R, max_len: usize) -> Option<Ve
     Some(frame)
 }
 
+struct AppCaptureSessionSink {
+    generation: u64,
+    au_tx: mpsc::Sender<Vec<u8>>,
+    sig_tx: mpsc::UnboundedSender<String>,
+}
+
+#[derive(Default)]
+struct AppCaptureRegistry {
+    current: std::sync::Mutex<Option<AppCaptureSessionSink>>,
+}
+
+impl AppCaptureRegistry {
+    fn lock_current(&self) -> std::sync::MutexGuard<'_, Option<AppCaptureSessionSink>> {
+        match self.current.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("serve-webrtc: app capture registry lock was poisoned");
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    fn register(
+        &self,
+        generation: u64,
+        au_tx: mpsc::Sender<Vec<u8>>,
+        sig_tx: mpsc::UnboundedSender<String>,
+    ) {
+        let mut current = self.lock_current();
+        if current
+            .as_ref()
+            .is_some_and(|sink| generation < sink.generation)
+        {
+            tracing::debug!(
+                "serve-webrtc: ignoring stale app capture registration gen={generation}"
+            );
+            return;
+        }
+        *current = Some(AppCaptureSessionSink {
+            generation,
+            au_tx,
+            sig_tx,
+        });
+    }
+
+    fn deregister(&self, generation: u64) {
+        let mut current = self.lock_current();
+        if current
+            .as_ref()
+            .is_some_and(|sink| sink.generation == generation)
+        {
+            *current = None;
+        }
+    }
+
+    fn current_au_tx(&self) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.lock_current().as_ref().map(|sink| sink.au_tx.clone())
+    }
+
+    fn sig_tx_for_generation(&self, generation: u64) -> Option<mpsc::UnboundedSender<String>> {
+        self.lock_current()
+            .as_ref()
+            .filter(|sink| sink.generation == generation)
+            .map(|sink| sink.sig_tx.clone())
+    }
+}
+
+struct AppCaptureIo {
+    control: ControlClient,
+    registry: Arc<AppCaptureRegistry>,
+}
+
+impl AppCaptureIo {
+    fn process_global() -> Arc<Self> {
+        APP_CAPTURE_IO
+            .get_or_init(|| Arc::new(Self::spawn_process_global()))
+            .clone()
+    }
+
+    fn spawn_process_global() -> Self {
+        let control = ControlClient::stdout();
+        let registry = Arc::new(AppCaptureRegistry::default());
+        let mixed_stdin_control =
+            !spawn_app_control_reader_from_env(registry.clone(), control.clone());
+        spawn_au_stdin_reader(registry.clone(), control.clone(), mixed_stdin_control);
+        Self { control, registry }
+    }
+
+    #[cfg(test)]
+    fn new_for_test(control: ControlClient) -> Self {
+        Self {
+            control,
+            registry: Arc::new(AppCaptureRegistry::default()),
+        }
+    }
+
+    fn control(&self) -> ControlClient {
+        self.control.clone()
+    }
+
+    fn register_session(
+        &self,
+        generation: u64,
+        au_tx: mpsc::Sender<Vec<u8>>,
+        sig_tx: mpsc::UnboundedSender<String>,
+    ) -> StdinReaderHandle {
+        self.registry.register(generation, au_tx, sig_tx);
+        StdinReaderHandle {
+            stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            generation,
+            control: self.control.clone(),
+            registry: self.registry.clone(),
+            start_info: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn relay_frame_for_test(&self, frame: AppControlFrame) {
+        relay_app_control_frame(frame, &self.registry, &self.control);
+    }
+
+    #[cfg(test)]
+    fn forward_au_for_test(&self, au: Vec<u8>, dropped_delta_frames: &mut u64) -> bool {
+        forward_app_au(&self.registry, au, dropped_delta_frames)
+    }
+}
+
+fn app_capture_io() -> Arc<AppCaptureIo> {
+    AppCaptureIo::process_global()
+}
+
+fn app_capture_control_client() -> ControlClient {
+    if std::env::var("RP_AU_STDIN").as_deref() == Ok("1") {
+        app_capture_io().control()
+    } else {
+        ControlClient::stdout()
+    }
+}
+
+fn forward_app_au(
+    registry: &AppCaptureRegistry,
+    au: Vec<u8>,
+    dropped_delta_frames: &mut u64,
+) -> bool {
+    let Some(au_tx) = registry.current_au_tx() else {
+        tracing::debug!("serve-webrtc: dropping AU with no active app capture session");
+        return true;
+    };
+    if forward_au_latest(&au_tx, au, dropped_delta_frames) {
+        true
+    } else {
+        tracing::debug!("serve-webrtc: dropping AU for closed app capture session");
+        true
+    }
+}
+
 fn relay_app_control_frame(
     frame: AppControlFrame,
-    sig_tx: &mpsc::UnboundedSender<String>,
+    registry: &AppCaptureRegistry,
     control: &ControlClient,
 ) {
     match frame {
@@ -695,25 +853,32 @@ fn relay_app_control_frame(
                 event.kind,
                 event.reason
             );
-            queue_status(
-                sig_tx,
-                RdStatus::CaptureFailed {
-                    capture_kind: event.kind,
-                    reason: bounded_reason(event.reason),
-                },
-            );
+            if let Some(sig_tx) = registry.sig_tx_for_generation(event.gen) {
+                queue_status(
+                    &sig_tx,
+                    RdStatus::CaptureFailed {
+                        capture_kind: event.kind,
+                        reason: bounded_reason(event.reason),
+                    },
+                );
+            } else {
+                tracing::debug!(
+                    "serve-webrtc: dropping stale host capture error gen={}",
+                    event.gen
+                );
+            }
         }
     }
 }
 
 fn read_app_control_stream<R: Read>(
     reader: &mut R,
-    sig_tx: &mpsc::UnboundedSender<String>,
+    registry: &AppCaptureRegistry,
     control: &ControlClient,
 ) {
     while let Some(frame) = read_len_prefixed_frame(reader, MAX_CONTROL_FRAME_LEN) {
         if let Some(frame) = app_control_frame(&frame) {
-            relay_app_control_frame(frame, sig_tx, control);
+            relay_app_control_frame(frame, registry, control);
         } else {
             tracing::debug!("serve-webrtc: ignoring non-control frame on app control fd");
         }
@@ -722,7 +887,7 @@ fn read_app_control_stream<R: Read>(
 
 #[cfg(unix)]
 fn spawn_app_control_reader_from_env(
-    sig_tx: mpsc::UnboundedSender<String>,
+    registry: Arc<AppCaptureRegistry>,
     control: ControlClient,
 ) -> bool {
     use std::os::fd::FromRawFd;
@@ -740,7 +905,7 @@ fn spawn_app_control_reader_from_env(
     let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
     match std::thread::Builder::new()
         .name("app-control-reader".into())
-        .spawn(move || read_app_control_stream(&mut file, &sig_tx, &control))
+        .spawn(move || read_app_control_stream(&mut file, &registry, &control))
     {
         Ok(_) => true,
         Err(e) => {
@@ -752,7 +917,7 @@ fn spawn_app_control_reader_from_env(
 
 #[cfg(not(unix))]
 fn spawn_app_control_reader_from_env(
-    _sig_tx: mpsc::UnboundedSender<String>,
+    _registry: Arc<AppCaptureRegistry>,
     _control: ControlClient,
 ) -> bool {
     false
@@ -979,7 +1144,7 @@ async fn serve_session(
     let capture_config = accepted.capture_config;
     let ws = accepted.ws;
     let (mut ws_tx, ws_rx) = ws.split();
-    let control = ControlClient::stdout();
+    let control = app_capture_control_client();
 
     // --- build webrtc API with H264 ---
     let mut m = MediaEngine::default();
@@ -1454,8 +1619,10 @@ impl Drop for CaffeinateGuard {
 }
 
 /// Per-session capture source: either a spawned `rp-screencap` child (default
-/// standalone mode) or an AU-from-stdin reader thread (`RP_AU_STDIN=1`, the
-/// in-app capture path). Both feed the same `au_tx`; `stop()` ends the session.
+/// standalone mode) or an app-capture registration (`RP_AU_STDIN=1`, the
+/// in-app capture path). The app-capture fd readers are process-lifetime
+/// singletons; the session handle only installs/removes the current sink and
+/// sends stop for its generation.
 enum CaptureSource {
     Child(CaptureHandle),
     Stdin(StdinReaderHandle),
@@ -1475,10 +1642,12 @@ impl CaptureSource {
         // Default (env unset): spawn rp-screencap exactly as before (standalone/dev).
         let au_stdin_mode = std::env::var("RP_AU_STDIN").as_deref() == Ok("1");
         if au_stdin_mode {
-            let handle = spawn_au_stdin_reader(au_tx, sig_tx.clone(), generation, control.clone());
+            let app_capture = app_capture_io();
+            let handle = app_capture.register_session(generation, au_tx, sig_tx.clone());
             let start_info = match control.start(generation, config).await {
                 Ok(info) => info,
                 Err(ControlError::CaptureFailed { kind, reason }) => {
+                    handle.stop();
                     let error = ControlError::CaptureFailed {
                         kind,
                         reason: reason.clone(),
@@ -1487,11 +1656,13 @@ impl CaptureSource {
                     return Err(CaptureStartError::capture_failed(kind, reason, error));
                 }
                 Err(ControlError::Superseded { gen, active_gen }) => {
+                    handle.stop();
                     return Err(CaptureStartError::without_status(
                         ControlError::Superseded { gen, active_gen }.into(),
                     ));
                 }
                 Err(e) => {
+                    handle.stop();
                     let reason = e.to_string();
                     return Err(CaptureStartError::capture_failed(
                         CaptureErrorKind::Unknown,
@@ -1537,14 +1708,15 @@ impl Drop for CaptureSource {
     }
 }
 
-/// Handle to stop the AU-from-stdin reader. The reader thread exits on EOF/error
-/// or when `stop()` flips the shared flag; `stop()` also emits a generation-
-/// bearing `stop` control op to the parent so it can stop the matching
-/// in-app CaptureEngine session.
+/// Handle for one app-capture generation. The process-lifetime reader threads
+/// outlive this handle; `stop()` removes this generation's sink and emits a
+/// generation-bearing `stop` control op to the parent so it can stop the
+/// matching in-app CaptureEngine session.
 struct StdinReaderHandle {
     stopped: Arc<std::sync::atomic::AtomicBool>,
     generation: u64,
     control: ControlClient,
+    registry: Arc<AppCaptureRegistry>,
     start_info: Option<StartedInfo>,
 }
 impl StdinReaderHandle {
@@ -1556,6 +1728,7 @@ impl StdinReaderHandle {
     fn stop(&self) {
         if !self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
             self.control.stop_noack(self.generation);
+            self.registry.deregister(self.generation);
         }
     }
 
@@ -1570,62 +1743,39 @@ impl StdinReaderHandle {
     }
 }
 
-/// Start the AU-from-stdin reader for `RP_AU_STDIN=1` mode. It reads
-/// `[4B BE len][Annex-B AU]` frames from stdin and forwards them into `au_tx`
-/// with the same bounded drop-delta policy as `spawn_screencap`'s reader thread.
+/// Start the process-lifetime AU-from-stdin reader for `RP_AU_STDIN=1` mode. It
+/// reads `[4B BE len][Annex-B AU]` frames from stdin and forwards them into the
+/// currently registered session's `au_tx` with the same bounded drop-delta
+/// policy as `spawn_screencap`'s reader thread.
 /// When `RP_AU_CONTROL_FD` is present, app control ACK/event frames are read on
 /// that separate fd so they cannot queue behind media pipe backpressure; otherwise
-/// JSON control frames on stdin remain supported as a fallback. The thread returns
-/// on EOF/error or when `stop()` is called.
+/// JSON control frames on stdin remain supported as a fallback. The thread exits
+/// only on EOF/error; session teardown is handled by registry updates.
 fn spawn_au_stdin_reader(
-    au_tx: mpsc::Sender<Vec<u8>>,
-    sig_tx: mpsc::UnboundedSender<String>,
-    generation: u64,
+    registry: Arc<AppCaptureRegistry>,
     control: ControlClient,
-) -> StdinReaderHandle {
-    tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); requesting capture start");
-
-    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stopped_thread = stopped.clone();
-    let control_thread = control.clone();
-    let mixed_stdin_control = !spawn_app_control_reader_from_env(sig_tx.clone(), control.clone());
+    mixed_stdin_control: bool,
+) {
+    tracing::info!("serve-webrtc: AU-from-stdin mode (in-app capture); starting singleton reader");
     std::thread::Builder::new()
         .name("au-stdin-reader".into())
         .spawn(move || {
             let mut stdin = std::io::stdin();
             let mut dropped_delta_frames = 0u64;
-            loop {
-                if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
-                    break;
-                }
-                let Some(au) = read_len_prefixed_frame(&mut stdin, MAX_AU_FRAME_LEN) else {
-                    break;
-                };
-                if stopped_thread.load(std::sync::atomic::Ordering::SeqCst) {
-                    break;
-                }
+            while let Some(au) = read_len_prefixed_frame(&mut stdin, MAX_AU_FRAME_LEN) {
                 if mixed_stdin_control {
                     if let Some(frame) = app_control_frame(&au) {
-                        relay_app_control_frame(frame, &sig_tx, &control_thread);
+                        relay_app_control_frame(frame, &registry, &control);
                         continue;
                     }
                 } else if app_control_frame(&au).is_some() {
                     tracing::debug!("serve-webrtc: ignoring unexpected control frame on AU stdin");
                     continue;
                 }
-                if !forward_au_latest(&au_tx, au, &mut dropped_delta_frames) {
-                    break;
-                }
+                forward_app_au(&registry, au, &mut dropped_delta_frames);
             }
         })
         .ok();
-
-    StdinReaderHandle {
-        stopped,
-        generation,
-        control,
-        start_info: None,
-    }
 }
 
 /// Handle to stop the capture/encode helper process.
@@ -1700,6 +1850,29 @@ fn spawn_screencap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::{AckOp, AckResult, ControlAck, ControlWriter};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct TestControlWriter {
+        frames: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl TestControlWriter {
+        fn frames(&self) -> Vec<Vec<u8>> {
+            self.frames.lock().expect("test writer lock").clone()
+        }
+    }
+
+    impl ControlWriter for TestControlWriter {
+        fn write_frame(&self, payload: &[u8]) -> Result<(), ControlError> {
+            self.frames
+                .lock()
+                .expect("test writer lock")
+                .push(payload.to_vec());
+            Ok(())
+        }
+    }
 
     fn request(uri: &str) -> Request {
         Request::builder()
@@ -1710,6 +1883,34 @@ mod tests {
 
     fn token(ch: char) -> String {
         std::iter::repeat(ch).take(SESSION_TOKEN_MIN_LEN).collect()
+    }
+
+    fn test_capture_config() -> CaptureConfig {
+        CaptureConfig {
+            fps: 30,
+            bitrate: 4_000_000,
+            scale: 1.0,
+        }
+    }
+
+    async fn wait_for_frames(writer: &TestControlWriter, count: usize) -> Vec<Vec<u8>> {
+        for _ in 0..50 {
+            let frames = writer.frames();
+            if frames.len() >= count {
+                return frames;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("timed out waiting for {count} control frame(s)");
+    }
+
+    fn frame_rid(frame: &[u8]) -> String {
+        let value: serde_json::Value =
+            serde_json::from_slice(frame).expect("control frame should be json");
+        value["rid"]
+            .as_str()
+            .expect("control frame should carry rid")
+            .to_string()
     }
 
     #[test]
@@ -1791,9 +1992,103 @@ mod tests {
         assert!(matches!(err.error, SessionError::Capture(_)));
     }
 
+    #[tokio::test]
+    async fn singleton_app_capture_io_routes_acks_and_aus_across_supersede() {
+        let writer = Arc::new(TestControlWriter::default());
+        let control = ControlClient::new(writer.clone());
+        let app_capture = Arc::new(AppCaptureIo::new_for_test(control.clone()));
+
+        let (au1_tx, mut au1_rx) = mpsc::channel(4);
+        let (sig1_tx, _sig1_rx) = mpsc::unbounded_channel();
+        let generation1 = app_capture.register_session(1, au1_tx, sig1_tx);
+        let start1 = {
+            let control = control.clone();
+            tokio::spawn(async move { control.start(1, test_capture_config()).await })
+        };
+        let frames = wait_for_frames(&writer, 1).await;
+        let rid1 = frame_rid(&frames[0]);
+        assert_eq!(rid1, "1-1");
+
+        let (au2_tx, mut au2_rx) = mpsc::channel(4);
+        let (sig2_tx, _sig2_rx) = mpsc::unbounded_channel();
+        let generation2 = app_capture.register_session(2, au2_tx, sig2_tx);
+        let start2 = {
+            let control = control.clone();
+            tokio::spawn(async move { control.start(2, test_capture_config()).await })
+        };
+        let frames = wait_for_frames(&writer, 2).await;
+        let rid2 = frame_rid(&frames[1]);
+        assert_eq!(rid2, "2-2", "rid counter should be process-global");
+
+        {
+            let app_capture = app_capture.clone();
+            std::thread::spawn(move || {
+                app_capture.relay_frame_for_test(AppControlFrame::Ack(ControlAck {
+                    v: 1,
+                    ack: AckOp::Start,
+                    gen: 1,
+                    rid: rid1,
+                    result: AckResult::Superseded { active_gen: 2 },
+                }));
+                app_capture.relay_frame_for_test(AppControlFrame::Ack(ControlAck {
+                    v: 1,
+                    ack: AckOp::Start,
+                    gen: 2,
+                    rid: rid2,
+                    result: AckResult::Started {
+                        display_id: Some(69734662),
+                        width: Some(2560.0),
+                        height: Some(1440.0),
+                    },
+                }));
+            })
+            .join()
+            .expect("ack relay thread should finish");
+        }
+
+        assert!(matches!(
+            start1.await.expect("start1 task should finish"),
+            Err(ControlError::Superseded {
+                gen: 1,
+                active_gen: 2
+            })
+        ));
+        let info = start2
+            .await
+            .expect("start2 task should finish")
+            .expect("generation 2 should start");
+        assert_eq!(info.display_id, Some(69734662));
+
+        let mut dropped_delta_frames = 0;
+        assert!(app_capture.forward_au_for_test(vec![0, 0, 0, 1, 0x65], &mut dropped_delta_frames));
+        assert_eq!(
+            au2_rx
+                .try_recv()
+                .expect("current generation should receive AU"),
+            vec![0, 0, 0, 1, 0x65]
+        );
+        assert!(au1_rx.try_recv().is_err());
+
+        generation1.stop();
+        assert!(app_capture.forward_au_for_test(vec![0, 0, 0, 1, 0x41], &mut dropped_delta_frames));
+        assert_eq!(
+            au2_rx
+                .try_recv()
+                .expect("stale stop must not clear newer generation"),
+            vec![0, 0, 0, 1, 0x41]
+        );
+
+        generation2.stop();
+        assert!(app_capture.forward_au_for_test(vec![0, 0, 0, 1, 0x41], &mut dropped_delta_frames));
+        assert!(au2_rx.try_recv().is_err());
+    }
+
     #[test]
     fn app_control_stream_relays_capture_error_status() {
         let (sig_tx, mut sig_rx) = mpsc::unbounded_channel();
+        let (au_tx, _au_rx) = mpsc::channel(1);
+        let registry = AppCaptureRegistry::default();
+        registry.register(42, au_tx, sig_tx);
         let payload =
             br#"{"v":1,"event":"capture-error","gen":42,"kind":"start-failed","reason":"no grant"}"#;
         let mut frame = Vec::new();
@@ -1802,7 +2097,7 @@ mod tests {
         let mut cursor = std::io::Cursor::new(frame);
         let control = ControlClient::stdout();
 
-        read_app_control_stream(&mut cursor, &sig_tx, &control);
+        read_app_control_stream(&mut cursor, &registry, &control);
 
         let sent = sig_rx
             .try_recv()

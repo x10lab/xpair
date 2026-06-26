@@ -954,6 +954,41 @@ function runRemoteDesktopWebview() {
     assert.strictEqual(sampler.cleared, true, "cancel should stop the stats sampler");
   });
 
+  await check("webview resets reconnect budget after decoded recovery", () => {
+    const harness = runRemoteDesktopWebview();
+    harness.sendWindowMessage({ type: "v2Connect", signalUrl: "ws://127.0.0.1:8/?token=888888888888888888888888" });
+
+    function markDecoded(peer) {
+      const video = harness.elements.get("screen-video");
+      video.readyState = 2;
+      peer.ontrack({ streams: [{}] });
+    }
+
+    function forceReconnect(peer, cycle) {
+      markDecoded(peer);
+      peer.connectionState = "disconnected";
+      peer.onconnectionstatechange();
+      const grace = latestTimerByDelay(harness.timers, 3000);
+      assert.ok(grace, `cycle ${cycle} should arm disconnected grace`);
+      grace();
+      const retry = latestTimerByDelay(harness.timers, 500);
+      assert.ok(retry, `cycle ${cycle} should retry as a fresh first attempt`);
+      retry();
+    }
+
+    for (let i = 0; i < 6; i += 1) {
+      const peer = harness.peers[harness.peers.length - 1];
+      forceReconnect(peer, i + 1);
+    }
+
+    assert.strictEqual(harness.peers.length, 7, "six recovered blips should not exhaust the reconnect budget");
+    assert.strictEqual(
+      harness.posted.filter((message) => message.type === "v2Error").length,
+      0,
+      "recovered blips should not become terminal errors"
+    );
+  });
+
   await check("webview status errors stay visible after first frame", () => {
     const script = fs.readFileSync(path.join(__dirname, "media", "remote-desktop.js"), "utf8");
     assert.match(script, /failureOverlayMessage\(m\.failureKind \|\| m\.kind \|\| "reach"/);

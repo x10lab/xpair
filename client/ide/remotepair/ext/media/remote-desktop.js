@@ -560,10 +560,15 @@
       clearV2DisconnectedTimer();
     };
 
+    const markRecoverySucceeded = () => {
+      v2ReconnectAttempt = 0;
+    };
+
     const handlePeerState = (state, reason) => {
       if (!isCurrent()) return;
       if (state === "connected" || state === "completed") {
         clearPeerRecoveryGrace();
+        if (haveFrame) markRecoverySucceeded();
         return;
       }
       if (state === "disconnected") {
@@ -578,6 +583,7 @@
     const markFirstFrame = () => {
       if (!isCurrent() || haveFrame) return;
       haveFrame = true;
+      markRecoverySucceeded();
       clearV2FirstFrameTimer();
       hideOverlay();
       if (!v2FirstFrameReported) {
