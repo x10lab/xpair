@@ -155,6 +155,28 @@ test("Q0473/Q0493/Q0494 per-launch guard parachutes to the first failing step", 
       }),
     })), "connect");
     assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostAppStatus: async () => ({
+        installed: false,
+        version: "",
+        compatible: false,
+        incompatibleKind: "",
+        err: "missing",
+      }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostAppStatus: async () => {
+        throw new Error("host app probe failed");
+      },
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostPermissions: async () => ({ alive: false, ax: true, sr: true, fda: false, err: "dead" }),
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
+      hostPermissions: async () => {
+        throw new Error("permission probe failed");
+      },
+    })), "connect");
+    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
       hostPermissions: async () => ({ alive: true, ax: false, sr: true, fda: false, err: "" }),
     })), "grant");
     assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({

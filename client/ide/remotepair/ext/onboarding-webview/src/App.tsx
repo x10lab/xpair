@@ -71,6 +71,12 @@ const START_STEPS: Record<string, number> = {
   done: S.DONE,
 };
 
+const ENGINE_IDS = new Set<EngineId>(["claude", "shell", "codex", "opencode"]);
+
+function isEngineId(value: string): value is EngineId {
+  return ENGINE_IDS.has(value as EngineId);
+}
+
 function initialStepFromLocation() {
   if (typeof window === "undefined") return S.WELCOME;
   const raw = new URLSearchParams(window.location.search).get("startStep") || "";
@@ -112,8 +118,8 @@ type HostAppState =
       installed: boolean;
       version: string;
       compatible: boolean;
-      // WHY incompatible — only "below_floor" (same major, too old) is safe to force-update.
-      // "major_mismatch" (different/newer major) must stay a blocking error (force = downgrade).
+      // WHY incompatible — below_floor keeps the old update wording; other incompatible states still
+      // route through the CONNECT repair panel for a force install/restart.
       incompatibleKind: "below_floor" | "major_mismatch" | "";
       err: string;
     }
@@ -287,6 +293,8 @@ export default function App() {
     void window.remotepair
       .getConfig()
       .then((cfg) => {
+        const savedEngine = String(cfg.engine || "").trim();
+        if (active && isEngineId(savedEngine)) setEngine(savedEngine);
         const savedHost = cfg.remoteHost.trim();
         if (!active || !savedHost) return;
         setHost((current) => current || savedHost);
@@ -484,6 +492,15 @@ export default function App() {
       hostPerms.alive &&
       hostPerms.ax &&
       hostPerms.sr);
+  const hostAppLiveFalse =
+    requiresHostPerms &&
+    !!hostApp &&
+    hostApp.target === connectTarget &&
+    hostApp.installed === true &&
+    hostApp.compatible === true &&
+    !!hostPerms &&
+    hostPerms.target === connectTarget &&
+    hostPerms.alive === false;
 
   // Once reachable on a non-setup path, probe the host app exactly once per (target, reachable) edge.
   useEffect(() => {
@@ -498,9 +515,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiresHostApp, reachReady, connectTarget]);
 
-  // Same-major-but-below-floor is the only incompatible host state that can be repaired in-place.
-  // Different/newer-major hosts remain a blocking incompatibility because force reinstalling would
-  // downgrade them.
+  // Same-major-but-below-floor keeps the old update wording; all other not-ready host states use
+  // the broader repair wording while running the same forced bundled host install.
   const canUpdateHost =
     requiresHostApp &&
     !hostAppChecking &&
@@ -509,12 +525,29 @@ export default function App() {
     hostApp.installed &&
     !hostApp.compatible &&
     hostApp.incompatibleKind === "below_floor";
+  const canRepairHost =
+    requiresHostApp &&
+    reachReady &&
+    (manual || startsFromSavedHost) &&
+    !hostAppChecking &&
+    !!hostApp &&
+    hostApp.target === connectTarget &&
+    (hostApp.installed !== true || hostApp.compatible !== true || hostAppLiveFalse);
+  const hostRepairKind =
+    !hostApp || hostApp.installed !== true
+      ? "missing"
+      : hostApp.compatible !== true
+      ? canUpdateHost
+        ? "update"
+        : "incompatible"
+      : "restart";
 
-  const handleHostUpdateDone = useCallback(() => {
+  const handleHostRepairDone = useCallback(() => {
     if (!connectTarget) return;
     setInstallState("idle");
     setHostApp(null);
     setHostPerms(null);
+    setHostPermChecking(false);
     void checkHostApp(connectTarget);
   }, [checkHostApp, connectTarget]);
 
@@ -640,17 +673,19 @@ export default function App() {
       ? "Skip for now"
       : "Next";
 
-  const hostUpdatePanel = canUpdateHost ? (
+  const hostRepairPanel = canRepairHost ? (
     <div className="mt-4">
       <StepInstalling
-        isUpdate
+        isUpdate={hostRepairKind === "update"}
+        forceInstall
+        repairKind={hostRepairKind}
         host={connectTarget}
         hostName={manual ? connectTarget : peer?.name || connectTarget}
         currentVersion={hostApp?.version || ""}
-        requiredVersion={MIN_COMPATIBLE_HOST}
+        requiredVersion={hostRepairKind === "update" ? MIN_COMPATIBLE_HOST : ""}
         state={installState}
         setState={setInstallState}
-        onDone={handleHostUpdateDone}
+        onDone={handleHostRepairDone}
         onFail={() => setInstallState("idle")}
       />
     </div>
@@ -680,13 +715,17 @@ export default function App() {
         // incompatible) so the user isn't staring at a silently-disabled Next.
         requiresHostApp && reachReady && hostApp && !hostAppReady && !hostAppChecking ? (
           <p className="truncate text-center text-xs text-destructive">
-            {!hostApp.installed
+            {canRepairHost
+              ? "Repair XpairHost below to continue."
+              : !hostApp.installed
               ? "Host has no Xpair host app — install it on the host."
               : hostApp.err || "Host version is incompatible with this client."}
           </p>
         ) : requiresHostPerms && reachReady && hostAppReady && !hostPermReady ? (
           <p className="truncate text-center text-xs text-destructive">
-            {hostPermChecking
+            {canRepairHost
+              ? "Repair XpairHost below to continue."
+              : hostPermChecking
               ? "Checking host permissions…"
               : hostPerms?.err ||
                 "Grant Accessibility and Screen Recording on the host to continue."}
@@ -791,12 +830,12 @@ export default function App() {
                   w.goTo(S.DISCOVER, "prev");
                 }}
               />
-              {hostUpdatePanel}
+              {hostRepairPanel}
             </>
           ) : isReconnect ? (
             <>
               <StepReconnect peer={peer} onReady={setReconnectReady} />
-              {hostUpdatePanel}
+              {hostRepairPanel}
             </>
           ) : (
             <StepSetupPassword

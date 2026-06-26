@@ -14,6 +14,8 @@ const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
 
+if (!process.env.RP_SSH_CM_TAG) process.env.RP_SSH_CM_TAG = String(process.pid)
+
 const bridge = require('./onboarding-bridge.js')
 let telemetry = null
 try { telemetry = require('./telemetry.js') } catch { /* telemetry optional */ }
@@ -113,16 +115,18 @@ async function firstFailingGuard(argv = process.argv, probeBridge = bridge) {
 
   try {
     const app = await probeBridge.hostAppStatus(host)
-    if (!app || app.installed !== true || app.compatible !== true) return START_STEP.CONNECT
+    if (!app || app.installed !== true) return START_STEP.CONNECT
+    if (app.compatible !== true) return START_STEP.CONNECT
   } catch {
     return START_STEP.CONNECT
   }
 
   try {
     const perms = await probeBridge.hostPermissions({ host })
-    if (!perms || perms.alive !== true || perms.ax !== true || perms.sr !== true) return START_STEP.GRANT
+    if (!perms || perms.alive !== true) return START_STEP.CONNECT
+    if (perms.ax !== true || perms.sr !== true) return START_STEP.GRANT
   } catch {
-    return START_STEP.GRANT
+    return START_STEP.CONNECT
   }
 
   try {

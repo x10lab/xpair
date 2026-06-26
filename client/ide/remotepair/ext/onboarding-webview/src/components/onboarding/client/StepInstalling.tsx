@@ -5,12 +5,14 @@ import type { Peer } from "@/global";
 export type InstallState = "idle" | "installing" | "done" | "failed";
 
 type Props = {
-  // Fresh-install (setup) path supplies a Peer; the update path (manual/connect/reconnect) has no
+  // Fresh-install (setup) path supplies a Peer; the repair path (manual/connect/reconnect) has no
   // setup Peer, so it passes host/hostName explicitly. One of {peer} or {host} must be present.
   peer?: Peer;
-  // Update mode: the host app is already installed but below MIN_COMPATIBLE_HOST. Reuses this step's
-  // installHost progress UI but with force:true (overwrite the existing app) + a tmux-kill warning.
+  // Repair mode: force-installs the bundled host over a missing/incompatible/dead host app and
+  // restarts it. The below-floor update case keeps the existing update wording via repairKind.
   isUpdate?: boolean;
+  forceInstall?: boolean;
+  repairKind?: "missing" | "update" | "restart" | "incompatible";
   // Explicit host/display name + version context for update mode (no Peer to derive them from).
   host?: string;
   hostName?: string;
@@ -39,6 +41,8 @@ const PHASES = [
 export function StepInstalling({
   peer,
   isUpdate = false,
+  forceInstall = false,
+  repairKind: repairKindProp,
   host: hostProp,
   hostName,
   currentVersion,
@@ -53,6 +57,32 @@ export function StepInstalling({
   // Update mode passes host/hostName directly (no setup Peer); setup mode derives them from peer.
   const host = hostProp || peer?.target || peer?.addrs?.[0] || peer?.name || "";
   const name = hostName || peer?.name || host;
+  const repairMode = isUpdate || forceInstall;
+  const repairKind = repairKindProp || (isUpdate ? "update" : "incompatible");
+  const repairTitle =
+    repairKind === "missing"
+      ? "Installing the host"
+      : repairKind === "restart"
+      ? "Restarting the host"
+      : repairKind === "update"
+      ? "Updating the host"
+      : "Repairing the host";
+  const repairIdle =
+    repairKind === "missing"
+      ? `XpairHost is missing on ${name}.`
+      : repairKind === "restart"
+      ? `XpairHost on ${name} is installed but not running.`
+      : repairKind === "update"
+      ? `XpairHost on ${name} needs an update.`
+      : `XpairHost on ${name} is incompatible with this client.`;
+  const repairButton =
+    repairKind === "missing"
+      ? "Install host"
+      : repairKind === "restart"
+      ? "Restart host"
+      : repairKind === "update"
+      ? "Update host"
+      : "Repair host";
   const mounted = useRef(false);
   const installRunId = useRef(0);
   const phaseTimer = useRef<number | null>(null);
@@ -70,8 +100,8 @@ export function StepInstalling({
   }, []);
 
   // Run the install. Cosmetic phase advance while the single blocking CLI call runs; the real result
-  // overrides it. In update mode we pass force:true so the CLI overwrites the already-installed (but
-  // incompatible) host app and restarts the host.
+  // overrides it. In repair mode we pass force:true so the CLI overwrites/reinstalls the host app and
+  // restarts it.
   const runInstall = useCallback(() => {
     const runId = ++installRunId.current;
     const isCurrent = () => mounted.current && installRunId.current === runId;
@@ -92,7 +122,7 @@ export function StepInstalling({
       window.clearInterval(adv);
     };
     window.remotepair
-      .installHost(isUpdate ? { host, force: true } : { host })
+      .installHost(repairMode ? { host, force: true } : { host })
       .then((r) => {
         clearAdv();
         if (!isCurrent()) return;
@@ -100,7 +130,7 @@ export function StepInstalling({
           setPhase(PHASES.length);
           setState("done");
         } else {
-          setErr(r.err || "Install failed.");
+          setErr(r.err || (repairMode ? "Repair failed." : "Install failed."));
           setState("failed");
         }
       })
@@ -110,19 +140,18 @@ export function StepInstalling({
         setErr(String(e && e.message ? e.message : e));
         setState("failed");
       });
-  }, [host, isUpdate, setState]);
+  }, [host, repairMode, setState]);
 
-  // Fresh-install (setup) mode auto-starts on mount — there's nothing on the host to destroy. Update
-  // mode does NOT: forcing the reinstall restarts XpairHost and kills any running tmux sessions on
-  // the host, so the user must read the warning and click "Update host" first. Their click IS the
-  // consent.
+  // Fresh-install (setup) mode auto-starts on mount. Repair mode does NOT: forcing the reinstall
+  // restarts XpairHost and kills any running tmux sessions on the host, so the user must read the
+  // warning and click first. Their click IS the consent.
   const started = useRef(false);
   useEffect(() => {
-    if (isUpdate) return;
+    if (repairMode) return;
     if (started.current) return;
     started.current = true;
     runInstall();
-  }, [isUpdate, runInstall]);
+  }, [repairMode, runInstall]);
 
   // Success → advance to Grant. Failure stays here with explicit key-auth recovery actions.
   useEffect(() => {
@@ -138,20 +167,20 @@ export function StepInstalling({
     <div>
       <div className="flex flex-col items-center text-center">
         <div className="mb-3 flex h-13 w-13 items-center justify-center rounded-full bg-primary/10 text-primary">
-          {isUpdate ? <RefreshCw className="h-5 w-5" /> : <Box className="h-5 w-5" />}
+          {repairMode ? <RefreshCw className="h-5 w-5" /> : <Box className="h-5 w-5" />}
         </div>
         <h2 className="text-xl font-semibold tracking-tight text-foreground">
-          {isUpdate ? "Updating the host" : "Setting up the host"}
+          {repairMode ? repairTitle : "Setting up the host"}
         </h2>
         <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">
-          {isUpdate
+          {repairMode
             ? state === "failed"
-              ? `Couldn't update XpairHost on ${name}.`
+              ? `Couldn't repair XpairHost on ${name}.`
               : state === "done"
-              ? `XpairHost is updated on ${name}.`
+              ? `XpairHost is ready on ${name}.`
               : state === "idle"
-              ? `XpairHost on ${name} needs an update.`
-              : `Updating XpairHost on ${name} over SSH.`
+              ? repairIdle
+              : `Repairing XpairHost on ${name} over SSH.`
             : state === "failed"
             ? `Couldn't finish setting up ${name}.`
             : state === "done"
@@ -160,23 +189,32 @@ export function StepInstalling({
         </p>
       </div>
 
-      {/* Update mode: the host app is already installed but too old. Make the consequence explicit —
-          forcing the reinstall restarts XpairHost and kills any running tmux sessions on the host.
+      {/* Repair mode: force-installing restarts XpairHost and can kill running host sessions.
           The user's click to start IS the consent to that. */}
-      {isUpdate && state !== "done" && (
+      {repairMode && state !== "done" && (
         <div className="mx-auto mt-4 max-w-sm rounded-xl border border-amber-500/30 bg-amber-500/5 p-3.5 text-xs text-amber-700 dark:text-amber-400">
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="min-w-0 space-y-1">
               <p className="font-semibold">
-                XpairHost is already installed
-                {currentVersion ? ` (version ${currentVersion})` : ""} but too old
-                {requiredVersion
-                  ? `; the minimum compatible host version is ${requiredVersion} or newer`
-                  : ""}.
+                {repairKind === "missing"
+                  ? `XpairHost is missing on ${name}.`
+                  : repairKind === "restart"
+                  ? `XpairHost is installed on ${name} but not running.`
+                  : repairKind === "update"
+                  ? `XpairHost is already installed${
+                      currentVersion ? ` (version ${currentVersion})` : ""
+                    } but too old${
+                      requiredVersion
+                        ? `; the minimum compatible host version is ${requiredVersion} or newer`
+                        : ""
+                    }.`
+                  : `XpairHost is installed${
+                      currentVersion ? ` (version ${currentVersion})` : ""
+                    } but incompatible with this client.`}
               </p>
               <p>
-                Updating will restart XpairHost and{" "}
+                Repairing will restart XpairHost and{" "}
                 <span className="font-semibold">terminate any running tmux sessions on the host.</span>
               </p>
               {state === "idle" && (
@@ -186,7 +224,7 @@ export function StepInstalling({
                   className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 font-semibold text-amber-700 transition-colors hover:bg-amber-500/25 dark:text-amber-300"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  Update host
+                  {repairButton}
                 </button>
               )}
             </div>
@@ -229,9 +267,9 @@ export function StepInstalling({
           <div className="flex items-start gap-2">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="min-w-0 break-words">
-              {err || (isUpdate ? "Update failed." : "Install failed.")}{" "}
-              {isUpdate
-                ? "The host app was not updated. Make sure the host is reachable and try again."
+              {err || (repairMode ? "Repair failed." : "Install failed.")}{" "}
+              {repairMode
+                ? "The host app was not repaired. Make sure the host is reachable and try again."
                 : "Key auth did not complete. Make sure Remote Login is on, this host is reachable, and the fingerprint still matches."}
             </span>
           </div>
@@ -241,14 +279,14 @@ export function StepInstalling({
               onClick={runInstall}
               className="inline-flex items-center gap-1.5 rounded-lg bg-destructive/10 px-3 py-1.5 font-semibold text-destructive transition-colors hover:bg-destructive/15"
             >
-              {isUpdate ? "Retry update" : "Retry key auth"}
+              {repairMode ? "Retry repair" : "Retry key auth"}
             </button>
             <button
               type="button"
               onClick={onFail}
               className="inline-flex items-center gap-1.5 rounded-lg bg-muted/60 px-3 py-1.5 font-semibold text-muted-foreground transition-colors hover:bg-muted"
             >
-              {isUpdate ? "Back" : "Review fingerprint"}
+              {repairMode ? "Back" : "Review fingerprint"}
             </button>
           </div>
         </div>

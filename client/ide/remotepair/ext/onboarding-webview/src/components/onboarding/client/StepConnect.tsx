@@ -145,12 +145,12 @@ export function StepConnect({
   };
 
   useEffect(() => {
-    if (!autoCheck || autoCheckStarted.current || state !== "idle" || !host.trim()) return;
+    if (!autoCheck || autoCheckStarted.current || state !== "idle" || !host.trim() || cliBlocked) return;
     autoCheckStarted.current = true;
     void check();
     // check intentionally stays local to this component; the ref guarantees one auto-run per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoCheck, host, state]);
+  }, [autoCheck, host, state, cliBlocked]);
 
   return (
     <div>

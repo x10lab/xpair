@@ -36,14 +36,16 @@ test("global.d.ts exposes force installs and incompatibleKind", () => {
   assert.match(globals, /incompatibleKind: "below_floor" \| "major_mismatch" \| ""/);
 });
 
-test("StepInstalling update mode warns first and only force-installs after Update host click", () => {
+test("StepInstalling repair mode warns first and only force-installs after a repair click", () => {
   assert.match(stepInstalling, /isUpdate\?: boolean/);
-  assert.match(stepInstalling, /installHost\(isUpdate \? \{ host, force: true \} : \{ host \}\)/);
+  assert.match(stepInstalling, /forceInstall\?: boolean/);
+  assert.match(stepInstalling, /repairKind\?: "missing" \| "update" \| "restart" \| "incompatible"/);
+  assert.match(stepInstalling, /installHost\(repairMode \? \{ host, force: true \} : \{ host \}\)/);
   assert.match(stepInstalling, /restart XpairHost/);
   assert.match(stepInstalling, /terminate any running tmux sessions on the host/);
   assert.match(stepInstalling, /minimum compatible host version is \$\{requiredVersion\} or newer/);
-  assert.match(stepInstalling, /if \(isUpdate\) return;\s*\n\s*if \(started\.current\) return;/);
-  assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*Update host/);
+  assert.match(stepInstalling, /if \(repairMode\) return;\s*\n\s*if \(started\.current\) return;/);
+  assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*\{repairButton\}/);
 });
 
 test("App keeps automatic host detection but removes update auto-navigation machinery", () => {
@@ -59,35 +61,49 @@ test("App keeps automatic host detection but removes update auto-navigation mach
   assert.doesNotMatch(app, /w\.goTo\(S\.INSTALL, "next"\)/);
 });
 
-test("below-floor hosts render an inline Update host button instead of navigating", () => {
+test("not-ready saved or manual hosts render an inline repair button instead of navigating", () => {
+  assert.match(
+    app,
+    /const hostAppLiveFalse =[\s\S]*hostApp\.installed === true &&[\s\S]*hostApp\.compatible === true &&[\s\S]*hostPerms\.alive === false/,
+  );
+  assert.match(
+    app,
+    /const canRepairHost =[\s\S]*reachReady &&[\s\S]*\(manual \|\| startsFromSavedHost\) &&[\s\S]*\(hostApp\.installed !== true \|\| hostApp\.compatible !== true \|\| hostAppLiveFalse\)/,
+  );
+  assert.match(
+    app,
+    /const hostRepairPanel = canRepairHost \? \([\s\S]*<StepInstalling[\s\S]*forceInstall[\s\S]*repairKind=\{hostRepairKind\}[\s\S]*host=\{connectTarget\}/,
+  );
+  assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
+});
+
+test("below-floor hosts keep update wording while other incompatible hosts still repair", () => {
   assert.match(
     app,
     /const canUpdateHost =[\s\S]*hostApp\.installed &&[\s\S]*!hostApp\.compatible &&[\s\S]*hostApp\.incompatibleKind === "below_floor"/,
   );
   assert.match(
     app,
-    /const hostUpdatePanel = canUpdateHost \? \([\s\S]*<StepInstalling\s*isUpdate[\s\S]*host=\{connectTarget\}[\s\S]*requiredVersion=\{MIN_COMPATIBLE_HOST\}/,
+    /hostApp\.compatible !== true[\s\S]*\? canUpdateHost[\s\S]*\? "update"[\s\S]*: "incompatible"/,
   );
-  assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
-});
-
-test("major-mismatch hosts stay blocked with an error and no update button", () => {
-  assert.match(app, /hostApp\.incompatibleKind === "below_floor"/);
-  assert.doesNotMatch(app, /hostApp\.incompatibleKind === "major_mismatch"[\s\S]*<StepInstalling\s*isUpdate/);
   assert.match(
     app,
-    /requiresHostApp && reachReady && hostApp && !hostAppReady && !hostAppChecking[\s\S]*hostApp\.err \|\| "Host version is incompatible with this client\."/,
+    /requiredVersion=\{hostRepairKind === "update" \? MIN_COMPATIBLE_HOST : ""\}/,
   );
 });
 
-test("successful inline update performs one hostAppStatus re-probe and opens the existing Next gate", () => {
+test("successful inline repair performs hostAppStatus and liveness re-probes before opening Next", () => {
   assert.match(
     app,
-    /const handleHostUpdateDone = useCallback\(\(\) => \{[\s\S]*setInstallState\("idle"\);[\s\S]*setHostApp\(null\);[\s\S]*void checkHostApp\(connectTarget\);/,
+    /const handleHostRepairDone = useCallback\(\(\) => \{[\s\S]*setInstallState\("idle"\);[\s\S]*setHostApp\(null\);[\s\S]*setHostPerms\(null\);[\s\S]*setHostPermChecking\(false\);[\s\S]*void checkHostApp\(connectTarget\);/,
   );
   assert.match(
     app,
     /const hostAppReady =[\s\S]*hostApp\.target === connectTarget &&[\s\S]*hostApp\.installed &&[\s\S]*hostApp\.compatible/,
+  );
+  assert.match(
+    app,
+    /hostPermissions\(\{ host: connectTarget \}\)/,
   );
   assert.match(app, /const connectReady = reachReady && hostAppReady && hostPermReady/);
   assert.match(app, /!connectReady \|\| hostAppChecking/);

@@ -113,7 +113,7 @@ function resolveLogThreshold() {
 const LOG_THRESHOLD = resolveLogThreshold();
 
 function sshControlPath() {
-  return path.join(os.tmpdir() || "/tmp", "rp-cm-%C");
+  return path.join(os.tmpdir() || "/tmp", `rp-cm-${process.env.RP_SSH_CM_TAG || "x"}-%C`);
 }
 
 // Local-tz ISO-8601 with offset, second precision (e.g. 2026-06-15T10:45:16+0900).
@@ -529,9 +529,9 @@ function spawnTunnel(host, localPort, remotePort) {
   // IS the tunnel and can be killed. ControlMaster=auto reuses the existing authenticated
   // master so there's no new key prompt.
   const rport = remotePort;
-  // ControlPath is shared across the GUI login session, not scoped to this Node pid. That lets the
-  // pre-workbench onboarding guard authenticate once and the workbench tunnel reuse the same live
-  // master, while os.tmpdir() keeps old global /tmp sockets out of the normal path.
+  // ControlPath is shared within one app launch via RP_SSH_CM_TAG. That lets the pre-workbench
+  // onboarding guard authenticate once and the workbench tunnel reuse the same live master, without
+  // reusing stale masters from earlier launches.
   const args = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
