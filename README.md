@@ -85,7 +85,7 @@ curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/install-cl
 
 It downloads the chosen `Xpair.app` and strips its Gatekeeper quarantine with `xattr` — exactly what the cask does in its postflight (Homebrew's `--no-quarantine`), so the self-signed app opens without the "unidentified developer" block.
 
-Prefer Homebrew? The cask currently tracks the pinned `0.5.0aN` **pre-release** line (matching the `--prerelease` curl path, not the stable-default path):
+Prefer Homebrew? The cask follows the **stable** line — the same channel as the default `curl` install above (alpha builds come from the `--prerelease` one-liner, not the cask). No stable Xpair release exists on the renamed asset line yet, so the cask is interim-pinned to the latest `0.5.0aN` pre-release; `brew upgrade` moves you onto stable the moment it ships:
 
 ```bash
 brew tap x10lab/xpair https://github.com/x10lab/xpair && brew install --cask xpair
