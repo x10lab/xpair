@@ -40,6 +40,8 @@ test("Q0545 host setup probes, installs, authenticates, and gates supported engi
   assert.match(bridge, /const host = String\(parseEnv\(CLIENT_ENV\)\.REMOTE_HOST \|\| ""\)\.trim\(\)/);
   assert.match(bridge, /const probe = ENGINE_PROBE\[e\]/);
   assert.match(bridge, /run\("ssh", \[\.\.\.sshProbeOpts\(6\), host, probe\]\)/);
+  assert.match(bridge, /const PATH_PERSIST =/);
+  assert.match(bridge, /# >>> xpair PATH >>>/);
   assert.match(bridge, /if \(!ENGINE_INSTALL\[e\]\) return \{ ok: false, err: `unknown engine: \$\{e\}` \}/);
   assert.match(bridge, /run\("ssh", \[\.\.\.sshProbeOpts\(20\), host, cmd\]/);
   assert.match(bridge, /const r = await runSecretStdin\("ssh", \[\.\.\.sshProbeOpts\(15\), host, writer\], apiKey\)/);
@@ -47,6 +49,7 @@ test("Q0545 host setup probes, installs, authenticates, and gates supported engi
   assert.match(hostEngineGuard, /static func isKnown\(_ engine: String\) -> Bool \{\s*engine == "claude" \|\| engine == "codex" \|\| engine == "opencode"\s*\}/);
   assert.match(hostEngineGuard, /static func status\(_ engine: String\) -> Status/);
   assert.match(hostEngineGuard, /static func install\(_ engine: String\) -> Result/);
+  assert.match(hostEngineGuard, /private static let pathPersistScript/);
   assert.match(hostEngineGuard, /static func setAuth\(_ engine: String, key: String\) -> Result/);
   assert.match(hostEngineGuard, /static func persist\(_ engine: String\) -> Result/);
 });
