@@ -354,11 +354,20 @@ cmd_map() {
 }
 
 cmd_ls_json() {
-  local target host raw
+  local target host raw rc=0
   if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
     target=remote
     host="$REMOTE_HOST"
-    raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null || true)"
+    raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null)" || rc=$?
+    # ssh exit 255 == transport failure (host down / DNS / auth). The remote tmux-aqua
+    # itself exits 1 merely when no sessions exist — that is NOT a failure. Only a transport
+    # failure means the session state is unknown, so exit nonzero instead of emitting an
+    # empty list: session-list.js renders its unavailable/retry UI on a nonzero CLI exit,
+    # whereas {"sessions":[]} with exit 0 would masquerade host-down as "no sessions".
+    if [ "$rc" = 255 ]; then
+      warn "remote session listing failed — host '$REMOTE_HOST' unreachable (ssh transport)"
+      return 3
+    fi
   else
     target=local
     host=""

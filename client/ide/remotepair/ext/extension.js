@@ -51,6 +51,11 @@ const NOTIFY_TYPE_SETTINGS = [
   ["Notification", "askQuestion"],
   ["SubagentStop", "subagentStop"],
   ["approve", "approval"],
+  // Manual approval WAITS (host hook emits type "approve-wait" for PermissionRequest /
+  // permission-prompt) require the user's action, so gate them on the same "approval"
+  // toggle. Without this entry the poller's enabled.has(obj.type) check silently drops
+  // every approve-wait record and the user never sees the prompt they must respond to.
+  ["approve-wait", "approval"],
 ];
 
 // v2 WebRTC signaling (shared/screen-protocol → generated contracts)
@@ -1281,6 +1286,11 @@ class NotificationPoller {
     this.timer = null;
     this.seen = new Set(); // dedupe by ts (+type)
     this.started = false;
+    // True once the FIRST successful poll has completed. First-run suppression must NOT be
+    // derived from seen.size: if the IDE starts while the queue is empty, seen stays empty,
+    // so the first poll that later carries live notifications would be misread as first-run
+    // and drop every record — exactly the approve-wait prompts we mean to surface.
+    this.initialized = false;
   }
 
   start() {
@@ -1308,8 +1318,21 @@ class NotificationPoller {
       "tail -n 20 ~/.xpair/host/notifications/queue.jsonl 2>/dev/null",
       { timeoutMs: 8000 }
     );
-    if (res.code !== 0 && res.code !== null) return; // missing file / unreachable -> quiet
+    // Distinguish "could not observe the queue" from "observed it, and it's empty/absent".
+    // Over ssh, `tail … 2>/dev/null` exits 0 when the file is read and 1 when it's missing
+    // (an empty queue — still a valid observation); ssh transport failure is 255 and
+    // spawn/timeout are negative. Only the latter group must keep the poller uninitialized;
+    // returning on a missing file too would leave `initialized` false until the file first
+    // gains content, and that first batch (e.g. the first approve-wait) would then be
+    // mistaken for startup history and suppressed.
+    if (res.code !== 0 && res.code !== 1) return; // transport failure / timeout -> quiet
     const lines = String(res.stdout).split(/\r?\n/);
+    // On the very first successful poll, mark the WHOLE existing tail seen without showing
+    // any of it (avoid replaying history). Captured once per poll (batch-level), and gated
+    // on an explicit `initialized` flag rather than seen.size — an empty-queue startup keeps
+    // seen empty, so a size-based check would replay the first live batch as "history".
+    const firstRun = !this.initialized;
+    this.initialized = true;
     for (const line of lines) {
       const t = line.trim();
       if (!t) continue;
@@ -1322,9 +1345,6 @@ class NotificationPoller {
       if (!obj || typeof obj !== "object") continue;
       const key = `${obj.ts || ""}|${obj.type || ""}|${obj.session || ""}`;
       if (this.seen.has(key)) continue;
-      // On the very first successful poll, mark everything seen WITHOUT showing
-      // (avoid replaying history). We detect first-run by an empty seen set.
-      const firstRun = this.seen.size === 0;
       this.seen.add(key);
       if (firstRun) continue;
       if (!obj.type || !enabled.has(obj.type)) continue;
