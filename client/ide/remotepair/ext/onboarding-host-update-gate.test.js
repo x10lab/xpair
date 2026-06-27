@@ -38,7 +38,7 @@ test("bridge installHost supports force:true and host incompatibility kinds", ()
 });
 
 test("global.d.ts exposes force installs and incompatibleKind", () => {
-  assert.match(globals, /installHost: \(opts: \{ host: string; user\?: string; force\?: boolean \}\)/);
+  assert.match(globals, /installHost: \(opts: \{ host: string; user\?: string; password\?: string; force\?: boolean \}\)/);
   assert.match(globals, /incompatibleKind: "below_floor" \| "major_mismatch" \| ""/);
 });
 
@@ -47,7 +47,8 @@ test("StepInstalling repair mode warns first and only force-installs non-restart
   assert.match(stepInstalling, /forceInstall\?: boolean/);
   assert.match(stepInstalling, /repairKind\?: "missing" \| "update" \| "restart" \| "incompatible"/);
   assert.match(stepInstalling, /const useForce = repairMode && repairKind !== "restart";/);
-  assert.match(stepInstalling, /installHost\(useForce \? \{ host, force: true \} : \{ host \}\)/);
+  // installHost is opts-based now: force from useForce, plus the optional one-shot password.
+  assert.match(stepInstalling, /useForce \? \{ force: true \}[\s\S]*password !== undefined \? \{ password \}/);
   assert.match(stepInstalling, /restart XpairHost/);
   assert.match(stepInstalling, /terminate any running tmux sessions on the host/);
   assert.match(stepInstalling, /without reinstalling it/);
@@ -57,7 +58,18 @@ test("StepInstalling repair mode warns first and only force-installs non-restart
   );
   assert.match(stepInstalling, /minimum compatible host version is \$\{requiredVersion\} or newer/);
   assert.match(stepInstalling, /if \(repairMode\) return;\s*\n\s*if \(started\.current\) return;/);
-  assert.match(stepInstalling, /state === "idle" &&[\s\S]*onClick=\{runInstall\}[\s\S]*\{repairButton\}/);
+  assert.match(stepInstalling, /state === "idle" && !showingPassword[\s\S]*onClick=\{\(\) => runInstall\(\)\}[\s\S]*\{repairButton\}/);
+});
+
+test("password bootstrap states are surfaced through bridge and StepInstalling", () => {
+  assert.match(bridge, /NEEDS_PASSWORD: "needs_password"/);
+  assert.match(bridge, /PASSWORD_DENIED: "password_denied"/);
+  assert.match(bridge, /PROMPT_PASSWORD: "prompt_password"/);
+  assert.match(bridge, /cliWithPasswordStdin\(args, pw\)/);
+  assert.match(stepInstalling, /r\.state === "needs_password"/);
+  assert.match(stepInstalling, /r\.state === "password_denied"/);
+  assert.match(stepInstalling, /I Understand/);
+  assert.match(stepInstalling, /Host account password/);
 });
 
 test("App keeps automatic host detection but removes update auto-navigation machinery", () => {

@@ -77,8 +77,8 @@ declare global {
       sshReachable: (host: string) => Promise<{
         reachable: boolean
         err: string
-        state?: "ready" | "invalid_host" | "host_key_mismatch" | "key_auth_blocked" | "unreachable"
-        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "retry"
+        state?: "ready" | "invalid_host" | "host_key_mismatch" | "key_auth_blocked" | "needs_password" | "password_denied" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "prompt_password" | "retry"
       }>
       tailscaleStatus: () => Promise<{ installed: boolean; up: boolean }>
       // Discovery / remote-install (component ⑤). Client onboarding uses SSH key auth as the primary
@@ -86,14 +86,15 @@ declare global {
       // and the bridge uses BatchMode/publickey-only probes. Failures return explicit recovery states
       // (host-key mismatch, key-agent/passphrase failure) instead of password or pairing-code entry.
       discover: () => Promise<{ peers: Peer[]; err: string }>
-      // force:true reinstalls the bundled XpairHost over a missing/incompatible/below-floor host app.
-      // Restart repairs intentionally omit force so the CLI only kickstarts/opens the existing app.
-      installHost: (opts: { host: string; user?: string; force?: boolean }) => Promise<{
+      // force:true reinstalls the bundled XpairHost over a missing/incompatible/below-floor host app
+      // (restart repairs omit force so the CLI only kickstarts/opens the existing app). password is a
+      // one-shot used only to bootstrap the first connection to a host that hasn't authorized the key.
+      installHost: (opts: { host: string; user?: string; password?: string; force?: boolean }) => Promise<{
         ok: boolean
         out: string
         err: string
-        state?: "ready" | "invalid_host" | "invalid_account" | "host_key_mismatch" | "key_auth_blocked" | "unreachable"
-        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "retry"
+        state?: "ready" | "invalid_host" | "invalid_account" | "host_key_mismatch" | "key_auth_blocked" | "needs_password" | "password_denied" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "prompt_password" | "retry"
       }>
       // Post-install TCC grant status read from the host app's status.json over SSH. AX/SR/FDA must
       // be granted on the host's own screen (macOS forbids remote grants); the install step polls

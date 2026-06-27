@@ -34,7 +34,20 @@ emit_secret() {
   unset _secret 2>/dev/null || true
 }
 
-# ── Path 1: inherited FD (no argv/env/file exposure) ──
+# ── Path 1: FIFO by path (no argv/env-value/disk exposure) ──
+# Preferred handoff: the caller writes ONE line to a private FIFO and passes its PATH here. Unlike an
+# inherited fd, a path-opened FIFO survives ssh's exec of this helper (ssh closes fds >2 first), so
+# this is the mechanism that actually works through ssh→askpass. The env holds only the path.
+if [ -n "${RP_ASKPASS_FIFO:-}" ]; then
+  [ -p "$RP_ASKPASS_FIFO" ] || { printf 'xpair-askpass: RP_ASKPASS_FIFO is not a fifo\n' >&2; exit 2; }
+  _secret=""
+  IFS= read -r _secret < "$RP_ASKPASS_FIFO" || { printf 'xpair-askpass: no secret on fifo\n' >&2; exit 3; }
+  [ -n "$_secret" ] || { printf 'xpair-askpass: empty secret\n' >&2; exit 3; }
+  emit_secret "$_secret"
+  exit 0
+fi
+
+# ── Path 2 (legacy/no-op through ssh): inherited FD — kept only for direct (non-ssh) callers ──
 if [ -n "${RP_ASKPASS_FD:-}" ]; then
   case "$RP_ASKPASS_FD" in
     (''|*[!0-9]*) printf 'xpair-askpass: bad RP_ASKPASS_FD\n' >&2; exit 2 ;;

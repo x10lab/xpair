@@ -18,7 +18,7 @@
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
-#   xpair install-host [--host <a>] [--account <u>] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
+#   xpair install-host [--host <a>] [--account <u>] [--password-stdin] [--bootstrap --sha256 <hex> --ref <r>]   Idempotent integrity-verified remote install/repair (scp signed .app; opt-in pinned curl|bash).
 #   xpair doctor         Check SSH key connection, host app, tmux + guidance
 #   xpair approve [--for "<what>"] [--type "key:..|ocr:.."] [--timeout S]   Handle a blocked approval dialog
 #                              --for: which dialog (alias-tolerant)  ·  --type: how to approve — agent decides (key:<combo>|ocr:<label>)
@@ -1161,14 +1161,24 @@ cmd_self_update() {
   c "self-update ← $repo@$ref"
   local tmp; tmp="$(mktemp -d)" || { warn "mktemp failed"; return 1; }
   local got=0 f
-  for f in xpair xpair-launch hangul-romanize; do
+  for f in xpair xpair-launch hangul-romanize xpair-askpass; do
     curl -fsSL "$base/$f" -o "$tmp/$f" 2>/dev/null && [ -s "$tmp/$f" ] && got=$((got+1))
   done
   # logging.sh lives in shared/, not client/ — fetch separately so a flat client loop won't 404.
   local shared_base="https://raw.githubusercontent.com/$repo/$ref/shared"
   curl -fsSL "$shared_base/logging.sh" -o "$tmp/logging.sh" 2>/dev/null && [ -s "$tmp/logging.sh" ] && got=$((got+1))
   [ "$got" -ge 2 ] || { warn "download failed (got=$got) — check network/repo"; rm -rf "$tmp"; return 1; }
-  [ -s "$tmp/xpair" ]        && { chmod +x "$tmp/xpair";        mv "$tmp/xpair" "$SELF_CLI" && ok "CLI → $SELF_CLI"; }
+  # The new CLI's --password-stdin FIFO bootstrap REQUIRES the RP_ASKPASS_FIFO-aware xpair-askpass
+  # (resolved as a CLI sibling). Install them ATOMICALLY: never land the new CLI without the matching
+  # helper — a partial fetch (CLI ok, askpass missing) would otherwise leave password bootstrap broken.
+  # Install askpass first, then the CLI, and skip the CLI update entirely if the helper isn't present.
+  if [ -s "$tmp/xpair" ] && [ -s "$tmp/xpair-askpass" ]; then
+    chmod +x "$tmp/xpair" "$tmp/xpair-askpass"
+    mv "$tmp/xpair-askpass" "$(dirname "$SELF_CLI")/xpair-askpass" && ok "askpass → $(dirname "$SELF_CLI")/xpair-askpass"
+    mv "$tmp/xpair" "$SELF_CLI" && ok "CLI → $SELF_CLI"
+  elif [ -s "$tmp/xpair" ]; then
+    warn "skipped CLI update: xpair-askpass download incomplete — the FIFO password bootstrap needs both; re-run self-update"
+  fi
   [ -s "$tmp/xpair-launch" ] && { chmod +x "$tmp/xpair-launch"; mkdir -p "$(dirname "$LAUNCHER")"; mv "$tmp/xpair-launch" "$LAUNCHER" && ok "launcher → $LAUNCHER"; }
   [ -s "$tmp/hangul-romanize" ]    && { chmod +x "$tmp/hangul-romanize";    mkdir -p "$RP_DIR/bin"; mv "$tmp/hangul-romanize" "$RP_DIR/bin/hangul-romanize"; }
   [ -s "$tmp/logging.sh" ]         && { mkdir -p "$RP_DIR/bin"; mv "$tmp/logging.sh" "$RP_DIR/bin/logging.sh" && ok "logger → $RP_DIR/bin/logging.sh"; }
@@ -1538,22 +1548,23 @@ print(json.dumps(out))
 PY
 }
 
-# ── C3. xpair install-host [--host <addr>] [--account <user>] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
+# ── C3. xpair install-host [--host <addr>] [--account <user>] [--password-stdin] [--bootstrap [--sha256 <hex>] [--ref <r>]] ──
 # Idempotent, integrity-verified remote install-or-repair over SSH.
 #   default: scp the locally-built, already-signed build/XpairHost.app and
 #            run shared/install.sh --role host against it (integrity by signature).
 #   --bootstrap: explicit opt-in to curl|bash; REQUIRES --sha256 of the fetched
 #                script and a pinned --ref; aborts before any host exec on mismatch.
 cmd_install_host() {
-  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0
+  local host="${REMOTE_HOST:-}" account="" use_bootstrap=0 sha="" ref="main" force=0 password_stdin=0 pw="" pwdir="" fifo="" wpid=""
   while [ $# -gt 0 ]; do case "$1" in
     --host)      host="${2:-}"; shift 2 ;;
     --account)   account="${2:-}"; shift 2 ;;
+    --password-stdin) password_stdin=1; shift ;;
     --bootstrap) use_bootstrap=1; shift ;;
     --sha256)    sha="${2:-}"; shift 2 ;;
     --ref)       ref="${2:-main}"; shift 2 ;;
     --force)     force=1; shift ;;   # reinstall even if an install is detected (re-setup / version swap)
-    *) echo "install-host [--host <addr>] [--account <user>] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
+    *) echo "install-host [--host <addr>] [--account <user>] [--password-stdin] [--force] [--bootstrap --sha256 <hex> --ref <r>]" >&2; return 2 ;;
   esac; done
   [ -n "$host" ] || { err "install-host requires --host (or a configured REMOTE_HOST)"; return 2; }
   # Normalize a user-qualified --host (user@mac): split the user into the account so the persisted
@@ -1564,17 +1575,42 @@ cmd_install_host() {
     *@*) [ -n "$account" ] || account="${host%@*}"; host="${host##*@}" ;;
   esac
   local target="$host"; [ -n "$account" ] && target="$account@$host"
+  local askpass; askpass="$(rp_askpass_path)"
+
+  if [ "$password_stdin" = 1 ]; then
+    IFS= read -r pw || true
+    [ -n "$pw" ] || { err "empty password on stdin"; return 2; }
+    [ -n "$askpass" ] || { err "install-host requires xpair-askpass for --password-stdin"; return 1; }
+    # Generate the key before connecting so the setup connection can authorize it on the host.
+    rp_ssh_pubkey >/dev/null || { err "could not ensure client pubkey"; return 1; }
+    # Hand the account password to ssh's SSH_ASKPASS helper via a FIFO (named pipe), NOT an inherited
+    # fd: ssh closes fds >2 before exec'ing the askpass helper, so an inherited fd reaches it as EOF
+    # (verified against localhost sshd). The helper opens the FIFO by PATH, which survives the exec.
+    # The secret transits the pipe only — never argv/env-value/log/persisted-file; the 0700 dir +
+    # 0600 fifo are removed by the EXIT/INT/TERM trap below.
+    pwdir="$(mktemp -d "${TMPDIR:-/tmp}/rp-pw-XXXXXX")" || { err "mktemp failed"; return 1; }
+    chmod 700 "$pwdir"
+    fifo="$pwdir/pw.fifo"
+    mkfifo -m 600 "$fifo" || { rm -rf "$pwdir"; err "mkfifo failed"; return 1; }
+    # One-shot writer: opening a FIFO for write BLOCKS until a reader (the askpass helper) opens it,
+    # so this parks until ssh actually prompts, then delivers exactly one line. Do NOT add a fixed
+    # timeout watchdog: a slow host (slow sshd/PAM before the prompt) could outlast it, and killing
+    # the only writer makes the later askpass `read < fifo` block forever on open → a hung install.
+    # The writer's lifetime is bounded by ssh instead: when ssh exits (auth done, denied, or
+    # ConnectTimeout) the function returns and the RETURN trap below kills this writer.
+    ( printf '%s\n' "$pw" > "$fifo" ) & wpid=$!
+    unset pw
+    export RP_ASKPASS_FIFO="$fifo"
+  fi
 
   # SSH with NO controlling TTY (stdin </dev/null). The onboarding's primary path is key-auth only:
-  # do not invoke askpass unless a caller explicitly supplied the one-shot password pipe.
-  local askpass; askpass="$(rp_askpass_path)"
+  # do not invoke askpass unless a caller explicitly supplied the one-shot password FIFO.
   local SSHENV=()
-  if [ -n "${RP_ASKPASS_FD:-}" ] && [ -n "$askpass" ]; then
+  if [ -n "${RP_ASKPASS_FIFO:-}" ] && [ -n "$askpass" ]; then
     SSHENV=(env "SSH_ASKPASS=$askpass" "SSH_ASKPASS_REQUIRE=force" "DISPLAY=:0")
-    # Legacy/password-assisted callers hand us the account password on an inherited pipe FD so the
-    # askpass helper reads it from the pipe. The descriptor itself is inherited, never re-opened or
-    # written to disk.
-    SSHENV+=("RP_ASKPASS_FD=${RP_ASKPASS_FD}")
+    # The helper reads the account password by opening the FIFO at this PATH; the env carries only the
+    # path, never the secret. (An inherited fd does NOT survive ssh→askpass — see the FIFO setup above.)
+    SSHENV+=("RP_ASKPASS_FIFO=${RP_ASKPASS_FIFO}")
   fi
   # Multiplex the WHOLE install over ONE SSH connection: authenticate once, then reuse the master
   # for every rm/scp/install.sh. Key-auth failures now return to onboarding recovery instead of
@@ -1584,9 +1620,58 @@ cmd_install_host() {
   local RP_CM; RP_CM="$(mktemp -u "${TMPDIR:-/tmp}/rp-cm-XXXXXX")"
   local RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
                     -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
+  if [ "$password_stdin" = 1 ]; then
+    # Force account-password auth for the bootstrap, EXPLICITLY overriding a user's ~/.ssh/config that
+    # might disable it (PasswordAuthentication no / BatchMode yes) — otherwise askpass is never invoked
+    # and setup fails right after collecting the password. PubkeyAuthentication=no so a passphrase key
+    # can't consume the secret; NumberOfPasswordPrompts=1 because the FIFO carries exactly one line.
+    RP_SSHOPTS+=(-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no
+                 -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=yes
+                 -o BatchMode=no -o NumberOfPasswordPrompts=1)
+  fi
+  # ONE combined cleanup trap on RETURN — fires on every function return (normal + error) while the
+  # locals it needs (RP_CM, target, …) are STILL IN SCOPE. (An EXIT trap runs after the function has
+  # returned, so under `set -u` those now-unbound locals would abort the trap and turn a successful
+  # install into a nonzero exit.) Tears down the ControlMaster AND the password FIFO/writer/watchdog.
+  # A hard parent SIGKILL can't run this, but the reparented watchdog still kills the writer and
+  # ControlPersist expires the master, so nothing leaks indefinitely.
+  # Every line is best-effort (|| true): under `set -e`, a wrong/early-failed password leaves no
+  # ControlMaster socket so `ssh -O exit` returns nonzero — without the guard the trap would abort
+  # before cleaning up AND clobber the function's explicit status (e.g. the password-denied return 7).
   # shellcheck disable=SC2064
-  trap "ssh -O exit -o 'ControlPath=$RP_CM' '$target' >/dev/null 2>&1; rm -f '$RP_CM'" RETURN
+  trap '
+    ssh -O exit -o "ControlPath=$RP_CM" "$target" >/dev/null 2>&1 || true; rm -f "$RP_CM" || true
+    { [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null; } || true
+    { [ -n "${pwdir:-}" ] && rm -rf "$pwdir"; } || true
+    unset RP_ASKPASS_FIFO || true
+  ' RETURN
   _rp_ssh() { "${SSHENV[@]}" ssh "${RP_SSHOPTS[@]}" "$@" </dev/null; }
+
+  if [ "$password_stdin" = 1 ]; then
+    c "authenticating to $target with the supplied account password …"
+    local auth_err
+    auth_err="$(_rp_ssh "$target" true 2>&1 >/dev/null)" || {
+      if printf '%s\n' "$auth_err" | grep -Eiq 'Permission denied|Authentication failed'; then
+        # distinct exit code (7) so the bridge maps a wrong password to PASSWORD_DENIED by CODE,
+        # not by re-grepping ssh stderr; the label is kept as a belt-and-suspenders fallback.
+        err "PASSWORD_DENIED: account password denied for $target"
+        return 7
+      fi
+      err "password bootstrap failed for $target: ${auth_err:-ssh failed}"
+      return 1
+    }
+    # Auth succeeded → the ControlMaster is up and the one-shot FIFO is already consumed. Retire the
+    # askpass wiring so every later scp/ssh in this install reuses the master and, if it ever drops
+    # mid-step, fails cleanly instead of invoking askpass and blocking forever on the writerless FIFO.
+    { [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null; } || true
+    SSHENV=()
+    unset RP_ASKPASS_FIFO
+    # Drop the password-forcing options too: install-host authorizes the client key over this same
+    # connection, so any later step that has to re-establish the master should use key auth (the
+    # password is spent and the FIFO is gone). Reset RP_SSHOPTS to the plain multiplexed base.
+    RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
+                -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
+  fi
 
   # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
   c "checking $target for an existing $APP_NAME install …"
