@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use xpair::attach;
 use xpair::config;
+use xpair::discover;
 use xpair::doctor;
 use xpair::host_permissions;
 use xpair::install_host;
@@ -64,6 +65,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "doctor" => doctor::run(&args[1..]),
+        "discover" => discover::run(&args[1..]),
         "launch" => launch::run(&args[1..]),
         "open-gui" => open_gui::run(&args[1..]),
         "attach" => attach::run(&args[1..]),
@@ -106,7 +108,7 @@ fn print_help() {
     }
     println!();
     println!(
-        "(native Rust client — port in progress; most verbs work today; onboard/discover/approve/self-update remaining)"
+        "(native Rust client — port in progress; most verbs work today; onboard/approve/self-update remaining)"
     );
 }
 

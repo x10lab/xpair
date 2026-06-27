@@ -15,6 +15,7 @@
 
 pub mod attach;
 pub mod config;
+pub mod discover;
 pub mod doctor;
 pub mod host_permissions;
 pub mod install_host;
