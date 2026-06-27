@@ -37,7 +37,13 @@ test("Q0369 client onboarding appears before the IDE workbench and only completi
   assert.match(electronMainPatch, /typeof ob\.resolveOnboarding === 'function'/);
   assert.match(electronMainPatch, /const handled = await ob\.resolveOnboarding\(/);
   assert.match(electronMainPatch, /return \[\];/);
-  assert.match(electronMainPatch, /onComplete: \(\) => \{ this\.doOpenFirstWindow\(accessor, initialProtocolUrls\); \}/);
+  assert.match(electronMainPatch, /onComplete: \(\) => \{ this\.doOpenFirstWindow\(initialProtocolUrls\); \}/);
+  // The ServicesAccessor is valid only during the synchronous openFirstWindow call, but onComplete
+  // fires after the onboarding await — so the services are captured up front and doOpenFirstWindow
+  // reads the stored fields, never a (by-then dead) accessor.
+  assert.match(electronMainPatch, /this\.windowsMainService = accessor\.get\(IWindowsMainService\);/);
+  assert.match(electronMainPatch, /private async doOpenFirstWindow\(initialProtocolUrls/);
+  assert.doesNotMatch(electronMainPatch, /doOpenFirstWindow\(accessor,/);
 
   assert.match(main, /new BrowserWindow\(\{/);
   assert.match(main, /loadFile\(WEBVIEW_INDEX, \{ query: \{ startStep: normalizedStartStep, engine: configuredEngine\(\) \} \}\)/);
