@@ -122,11 +122,20 @@ const RICH_PATH = `${HOME}/.local/bin:${HOME}/.opencode/bin:/opt/homebrew/bin:/u
 
 /** Resolve the running ssh-agent's auth socket. A GUI Electron app launched from Finder/Dock does
  *  NOT inherit SSH_AUTH_SOCK, so ssh can't reach the agent and silently falls back to a password
- *  prompt even when key auth would succeed in a terminal. On macOS the system ssh-agent socket is a
- *  stable launchd path under /tmp/com.apple.launchd.*; recover it so probes use key auth. Returns
- *  the socket path, or "" if none is found (caller simply omits SSH_AUTH_SOCK then). */
+ *  prompt even when key auth would succeed in a terminal. Recover it so probes use key auth. Returns
+ *  the socket path, or "" if none is found (caller simply omits SSH_AUTH_SOCK then).
+ *
+ *  Order: an inherited env value wins; else the 1Password SSH agent (extremely common — keys
+ *  configured as `IdentityFile ~/.ssh/*.pub` are held there, and the system launchd agent below can
+ *  NOT sign them, which silently broke host connect/update for 1Password users); else the macOS
+ *  system launchd agent. */
 function sshAuthSock() {
   if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
+  // 1Password SSH agent — fixed socket under the app's Group Container.
+  try {
+    const op = path.join(HOME, "Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+    if (fs.existsSync(op)) return op;
+  } catch { /* not installed — fall through */ }
   try {
     // macOS: the system agent socket lives in a per-boot dir named like
     // /private/tmp/com.apple.launchd.XXXX/Listeners — find the newest one.
