@@ -51,5 +51,5 @@ index d886313c..3368da50 100644
 +	}
 +
 +	private async doOpenFirstWindow(initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
-+		const windowsMainService = this.windowsMainService;
++		const windowsMainService = this.windowsMainService!;
  
