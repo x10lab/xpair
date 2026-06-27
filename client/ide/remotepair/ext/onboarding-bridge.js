@@ -125,17 +125,25 @@ const RICH_PATH = `${HOME}/.local/bin:${HOME}/.opencode/bin:/opt/homebrew/bin:/u
  *  prompt even when key auth would succeed in a terminal. Recover it so probes use key auth. Returns
  *  the socket path, or "" if none is found (caller simply omits SSH_AUTH_SOCK then).
  *
- *  Order: an inherited env value wins; else the 1Password SSH agent (extremely common — keys
- *  configured as `IdentityFile ~/.ssh/*.pub` are held there, and the system launchd agent below can
- *  NOT sign them, which silently broke host connect/update for 1Password users); else the macOS
- *  system launchd agent. */
+ *  Order: an EXPLICIT non-system SSH_AUTH_SOCK (a deliberately forwarded/custom agent) wins; else
+ *  the 1Password SSH agent if its socket is present (extremely common — keys configured as
+ *  `IdentityFile ~/.ssh/*.pub` are held there, and the system launchd agent can NOT sign them);
+ *  else whatever the env held; else the macOS system launchd agent discovered on disk.
+ *
+ *  Subtlety: a GUI app does NOT inherit a useful SSH_AUTH_SOCK — launchd injects the macOS *system*
+ *  ssh-agent socket (/var/run|/private/tmp/com.apple.launchd.<id>/Listeners), which holds no
+ *  1Password keys. So that auto-injected value must NOT short-circuit the 1Password lookup, or host
+ *  connect/update silently fails for 1Password users (the reported "update host" loop). */
 function sshAuthSock() {
-  if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
+  const env = process.env.SSH_AUTH_SOCK || "";
+  const isSystemAgent = /\/com\.apple\.launchd\.[^/]+\/Listeners$/.test(env);
+  if (env && !isSystemAgent) return env; // explicit/custom agent → respect it
   // 1Password SSH agent — fixed socket under the app's Group Container.
   try {
     const op = path.join(HOME, "Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
     if (fs.existsSync(op)) return op;
   } catch { /* not installed — fall through */ }
+  if (env) return env; // system agent, no 1Password → use what we were given
   try {
     // macOS: the system agent socket lives in a per-boot dir named like
     // /private/tmp/com.apple.launchd.XXXX/Listeners — find the newest one.
