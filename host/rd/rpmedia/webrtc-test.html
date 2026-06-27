@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- Standalone WebRTC viewer for verifying `screen serve-webrtc`.
+     Open in a browser while the sidecar runs:  serve-webrtc --port 8890
+     The host screen should appear in the <video>. This is also the reference
+     for the xpair-ext webview port (v2/WebRTC mode). -->
+<html>
+<head><meta charset="utf-8"><title>Xpair WebRTC test</title>
+<style>html,body{margin:0;background:#111;color:#ccc;font:13px monospace}
+#v{width:100vw;height:90vh;object-fit:contain;background:#000}
+#log{height:10vh;overflow:auto;padding:4px}</style></head>
+<body>
+<video id="v" autoplay muted playsinline></video>
+<div id="log"></div>
+<script>
+const url = new URLSearchParams(location.search).get('ws') || 'ws://127.0.0.1:8890';
+const log = m => { const d=document.getElementById('log'); d.innerHTML += m+'<br>'; d.scrollTop=d.scrollHeight; console.log(m); };
+const v = document.getElementById('v');
+const pc = new RTCPeerConnection({ iceServers: [] }); // host-candidate only (LAN/loopback)
+pc.addTransceiver('video', { direction: 'recvonly' });
+pc.ontrack = e => { log('ontrack: rendering stream'); v.srcObject = e.streams[0]; };
+pc.oniceconnectionstatechange = () => log('ice: ' + pc.iceConnectionState);
+pc.onconnectionstatechange = () => log('pc: ' + pc.connectionState);
+
+const ws = new WebSocket(url);
+pc.onicecandidate = e => {
+  if (e.candidate) ws.send(JSON.stringify({
+    type: 'candidate', candidate: e.candidate.candidate,
+    sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex }));
+};
+ws.onopen = () => log('signaling connected: ' + url);
+ws.onclose = () => log('signaling closed');
+ws.onerror = () => log('signaling error');
+ws.onmessage = async ev => {
+  const m = JSON.parse(ev.data);
+  if (m.type === 'offer') {
+    log('offer received');
+    await pc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+    const ans = await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+    ws.send(JSON.stringify({ type: 'answer', sdp: ans.sdp }));
+    log('answer sent');
+  } else if (m.type === 'candidate') {
+    try { await pc.addIceCandidate({ candidate: m.candidate, sdpMid: m.sdpMid, sdpMLineIndex: m.sdpMLineIndex }); }
+    catch (e) { log('addIceCandidate err: ' + e); }
+  }
+};
+</script>
+</body>
+</html>

@@ -17,9 +17,10 @@ jobs:
           fail=0
           for f in shared/bootstrap.sh \
                    shared/install.sh shared/uninstall.sh shared/config.sh shared/lib.sh shared/sync-setup.sh \
-                   client/remote-pair client/remote-pair-launch \
+                   client/cli/xpair client/cli/xpair-launch client/cli/xpair-askpass \
+                   client/cli/xpair-desktop client/cli/xpair-mount client/cli/xpair-editor \
                    host/build-host.sh host/build-tmux-aqua.sh host/make-signing-cert.sh \
-                   host/remote-pair-approve-router.sh; do
+                   host/xpair-approve-router.sh; do
             [ -f "$f" ] || continue
             if bash -n "$f"; then echo "ok  $f"; else echo "FAIL $f"; fail=1; fi
           done
@@ -30,7 +31,7 @@ jobs:
 
       - name: Swift compile-check (RemotePairHost, no signing)
         run: |
-          xcrun swiftc -O host/RemotePairHost/*.swift -o "$RUNNER_TEMP/rphost-compilecheck" \
-            || xcrun swiftc -O -sdk "$(xcrun --show-sdk-path)" -target arm64-apple-macos13.0 \
-                 host/RemotePairHost/*.swift -o "$RUNNER_TEMP/rphost-compilecheck"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          # Compile via SwiftPM (mirrors build-host.sh: `swift build --package-path host -c release`)
+          swift build --package-path host -c release
           echo "RemotePairHost compiles ✓"

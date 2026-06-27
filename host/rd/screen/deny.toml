@@ -1,0 +1,78 @@
+# cargo-deny configuration — dependency license firewall for screen.
+#
+# screen is pure first-party code, licensed AGPL-3.0-or-later
+# (dual-licensable — we own the copyright). To keep that dual-licensing option,
+# every DEPENDENCY must stay permissive (MIT/Apache/etc.): we cannot sell a
+# commercial license for copyleft code we don't own. So — permissive-only
+# allow-list for deps; AGPL is allowed ONLY for our own crate (exception below).
+#
+# Run:  cargo-deny check licenses
+#       cargo-deny check bans
+#       cargo-deny check            # all checks
+
+[graph]
+# Evaluate the dependency graph for the host target we actually ship.
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+]
+all-features = false
+
+[licenses]
+# Permissive allow-list only. Anything not on this list is rejected.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",          # weak-copyleft, file-level; permitted (not viral like GPL)
+    "CC0-1.0",          # public-domain dedication, common for small crates
+    # Public-domain-equivalent licenses. They appear in the tree only as an
+    # OR-alternative alongside MIT (e.g. byteorder/memchr/aho-corasick =
+    # "Unlicense OR MIT"; adler2 = "0BSD OR MIT OR Apache-2.0"), pulled in by
+    # the v1a WebSocket stack (`tungstenite`) and `image`. cargo-deny would
+    # already pick the MIT branch, but listing them explicitly removes any
+    # ambiguity and keeps the allow-list a faithful inventory of the tree.
+    "0BSD",             # public-domain-equivalent (adler2)
+    "Unlicense",        # public-domain-equivalent (byteorder, memchr, aho-corasick)
+]
+# Copyleft licenses are NOT in `allow`, so they are denied by default.
+# We do not need a separate `deny` list for them, but `confidence-threshold`
+# keeps SPDX matching strict so a GPL crate cannot slip through as "unknown".
+confidence-threshold = 0.93
+# A handful of foundational crates ship a license file with no machine-readable
+# SPDX. Clarify them explicitly rather than loosening the global policy.
+# (None required for the current tree; add entries here if cargo-deny reports
+#  an "unlicensed" crate that is in fact permissive.)
+exceptions = [
+    # Our own crate is AGPL-3.0; allow it here so cargo-deny passes while the
+    # permissive-only policy still applies to every dependency.
+    { name = "screen", allow = ["AGPL-3.0-or-later"] },
+]
+
+# r-efi (a transitive UEFI crate) is "MIT OR Apache-2.0 OR LGPL-2.1-or-later".
+# The OR means we can take MIT/Apache-2.0; cargo-deny resolves this to a
+# permitted license automatically, so no clarification entry is needed.
+
+[bans]
+# The permissive-only license allow-list above already rejects any copyleft
+# (GPL/AGPL/…) dependency, so no per-crate name bans are needed. This engine is
+# pure first-party code with permissive dependencies only.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[advisories]
+# Security advisories are not part of the license firewall, but keep the section
+# present so `cargo-deny check` runs end to end. Yank/vuln handling is advisory.
+yanked = "warn"
+
+[sources]
+# Only crates.io is trusted as a source for this crate.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

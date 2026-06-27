@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<!--
+  Xpair — FULL patched VSCodium workbench (composed surface mockup)
+  ============================================================================
+  Self-contained, Lovable-readable HTML+CSS. NO <script>, NO external deps.
+
+  Composed from three already-built surface mockups (read-only source of truth):
+    mockups/activity-rail.html        -> the slim 30px text-only Activity Bar rail
+    mockups/sessions-sidebar.html     -> the Sessions sidebar (manager + picker + bottom panel)
+    mockups/remote-desktop-panel.html -> the Remote Desktop webview body (live state)
+
+  ARCHITECTURE (verified from real code):
+    The Remote Desktop is a webview created with
+      vscode.window.createWebviewPanel(..., { viewColumn: ViewColumn.Active,
+                                              retainContextWhenHidden: true })
+    and is AUTO-OPENED on activate() via panel.reveal(). Therefore the
+    Remote Desktop occupies the EDITOR AREA (center) as the primary/active
+    editor tab — it is NOT a side panel and NOT a placeholder. The editor
+    area's default content IS the live host screen.
+
+  Left -> right layout:
+    [.part.activitybar  ~30px, text-only vertical rail]
+      -> [.part.sidebar  Sessions: manager + New Session picker]
+        -> [.part.editor  Remote Desktop webview as the active editor tab]
+           (optional bottom panel: Attached / Detached / History session cards)
+
+  Token preamble (:root) is included ONCE (identical across all three sources).
+  Class collisions resolved — see the COMPOSE NOTES block at the end of the style sheet.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xpair — Patched Workbench</title>
+<style>
+/* ============================================================
+   Xpair surface mockup preamble — shared design tokens
+   Values from VSCode "Default Dark Modern" theme palette.
+   (Included ONCE — identical at the top of every source file.)
+   ============================================================ */
+:root{
+  /* typography */
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --vscode-editor-font-family: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+
+  /* base text + icons */
+  --vscode-foreground: #cccccc;
+  --vscode-icon-foreground: #cccccc;
+
+  /* focus + borders */
+  --vscode-focusBorder: #0078d4;
+  --vscode-widget-border: #313131;
+
+  /* widgets / popovers */
+  --vscode-editorWidget-background: #202020;
+
+  /* activity bar */
+  --vscode-activityBar-foreground: #d7d7d7;
+  --vscode-activityBar-inactiveForeground: #868686;
+
+  /* lists + toolbars (hover states) */
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  /* links */
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+
+  /* scrollbar */
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+
+  /* convenience tokens used by the base / mockup chrome */
+  --rp-bg: #1f1f1f;
+  --rp-sidebar-bg: #181818;
+  --rp-editor-bg: #1e1e1e;
+}
+
+/* ---- minimal base layer ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+body{
+  background: var(--rp-bg, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   WORKBENCH SHELL — single composed frame.
+   Replaces all three per-file scaffolding shells
+   (.rp-mock-shell / .mockup-shell / .mock-page). Real workbench
+   parts (.part.activitybar / .part.sidebar / .part.editor /
+   .part.panel) nest inside.
+   ============================================================ */
+.monaco-workbench{
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background: var(--rp-bg);
+}
+
+/* macOS-style window title bar so the shot reads as a real app window */
+.rp-titlebar{
+  flex: 0 0 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: #2d2d2d;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.rp-titlebar .traffic{ display: flex; gap: 8px; }
+.rp-titlebar .traffic i{ width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.rp-titlebar .traffic i.r{ background: #ff5f57; }
+.rp-titlebar .traffic i.y{ background: #febc2e; }
+.rp-titlebar .traffic i.g{ background: #28c840; }
+.rp-titlebar .rp-title{
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 12px;
+  color: var(--vscode-activityBar-inactiveForeground);
+  letter-spacing: .02em;
+}
+.rp-titlebar .rp-title b{ color: var(--vscode-foreground); font-weight: 600; }
+
+/* the row that holds rail + sidebar + editor area */
+.rp-workbench-row{
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* status bar pinned to the bottom of the shell */
+.rp-statusbar{
+  flex: 0 0 22px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 10px;
+  background: #181818;
+  border-top: 1px solid var(--vscode-widget-border);
+  font-size: 11px;
+  color: var(--vscode-activityBar-inactiveForeground);
+  user-select: none;
+}
+.rp-statusbar .seg{ display: flex; align-items: center; gap: 6px; }
+.rp-statusbar .seg .dot{ width: 7px; height: 7px; border-radius: 50%; background: #2ea043; }
+.rp-statusbar .seg .dot.idle{ background: #868686; }
+.rp-statusbar .spacer{ margin-left: auto; }
+.rp-statusbar code{
+  font-family: var(--vscode-editor-font-family);
+  color: var(--vscode-textLink-foreground);
+}
+
+/* ============================================================
+   SURFACE 1 — Xpair custom Activity Bar / slim rail
+   (from activity-rail.html — activitybarpart.css + activityaction.css)
+   The activity-bar CSS variables the workbench injects at runtime are
+   pinned to the Xpair slim-rail values:
+       --activity-bar-width        : 30px   (ActivitybarPart.ACTIVITYBAR_WIDTH)
+       --activity-bar-action-height: 48px
+   ============================================================ */
+.monaco-workbench .part.activitybar{
+  --activity-bar-width: 30px;            /* Xpair: was 48px (icon rail) */
+  --activity-bar-action-height: 48px;
+
+  width: var(--activity-bar-width, 30px);
+  height: 100%;
+  font-family: var(--vscode-workbench-activitybar-font-family, inherit);
+  font-size: var(--vscode-workbench-activitybar-font-size, 11px);
+
+  /* mockup framing: dark tone + right divider */
+  background: var(--rp-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  flex: 0 0 auto;
+}
+
+.monaco-workbench .part.activitybar > .content{
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.monaco-workbench .part.activitybar > .content > .composite-bar{
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.monaco-workbench .part.activitybar > .content > .global-activity{
+  flex: 0 0 auto;
+}
+
+.monaco-workbench .activitybar > .content .monaco-action-bar{
+  width: 100%;
+  height: 100%;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .actions-container{
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  height: 100%;
+}
+
+.monaco-workbench .activitybar > .content .composite-bar > .monaco-action-bar .action-item::after{
+  position: absolute;
+  content: '';
+  width: var(--activity-bar-width, 30px);
+  height: 2px;
+  display: none;
+  background-color: transparent;
+  box-sizing: border-box;
+}
+
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item{
+  position: relative;
+  z-index: 1;
+  display: flex;
+  overflow: hidden;
+  width: var(--activity-bar-width, 30px);
+  height: var(--activity-bar-action-height, 48px);
+  margin-right: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-label:not(.codicon){
+  font-size: 15px;
+  line-height: var(--activity-bar-action-height, 48px);
+  padding: 0 0 0 var(--activity-bar-width, 30px);
+}
+
+/* Xpair: text-only activity bar rail (Sessions / Browser / Settings).
+   icon:false -> suppress the glyph, show the rotated text label. */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item:not(.icon) .action-label.codicon::before{
+  display: none !important;
+}
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item:not(.icon) .action-label{
+  font-family: var(--vscode-font-family);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  box-sizing: border-box;
+  color: var(--vscode-foreground);
+
+  /* thin vertical text rail: reads bottom-to-top, upright + readable */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: auto;
+  padding: 6px 0;
+}
+
+/* "+" rail action appended after the container list */
+.monaco-workbench .activitybar > .content .remotepair-rail-add{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: var(--activity-bar-action-height, 48px);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--vscode-activityBar-inactiveForeground, var(--vscode-foreground));
+  box-sizing: border-box;
+  user-select: none;
+}
+.monaco-workbench .activitybar > .content .remotepair-rail-add:hover,
+.monaco-workbench .activitybar > .content .remotepair-rail-add:focus{
+  color: var(--vscode-activityBar-foreground, var(--vscode-foreground));
+  outline: none;
+}
+
+/* hover on any rail item */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item:hover .action-label{
+  color: var(--vscode-activityBar-foreground);
+}
+
+/* active/checked composite: brighter + 2px accent on the rail's left edge */
+.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item.checked .action-label{
+  color: var(--vscode-activityBar-foreground);
+  font-weight: 600;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .active-item-indicator{
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item.checked .active-item-indicator{
+  background: var(--vscode-activityBar-foreground);
+}
+
+/* the count badge — scoped to the rail so it never collides with the
+   Remote Desktop .badge or the panel-tab .badge. */
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .badge{
+  position: absolute;
+  top: 6px;
+  right: 2px;
+  display: none;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .badge.has-content{
+  display: block;
+}
+.monaco-workbench .activitybar > .content .monaco-action-bar .action-item .badge .badge-content{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  border-radius: 20px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  color: #ffffff;                 /* ACTIVITY_BAR_BADGE_FOREGROUND */
+  background-color: #0078d4;      /* ACTIVITY_BAR_BADGE_BACKGROUND */
+}
+
+/* ============================================================
+   SURFACE 2 — Sessions sidebar (from sessions-sidebar.html)
+   remotePairSessions.css + remotePairSessionManager.css, plus the
+   minimal sidebar chrome reconstructed there. The fat 48px
+   .activitybar scaffolding from that file is DROPPED (we use the
+   real slim rail above instead).
+   ============================================================ */
+
+/* .part.sidebar shell hosting the Sessions view container */
+.monaco-workbench .part.sidebar{
+  flex: 0 0 300px;
+  min-width: 220px;
+  background: var(--rp-sidebar-bg);
+  border-right: 1px solid var(--vscode-widget-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Composite/view title bar — "SESSIONS" + the "+" navigation action */
+.composite-title{
+  flex: 0 0 35px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 20px;
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: .04em;
+  color: var(--vscode-foreground);
+  opacity: .8;
+}
+.composite-title .title-label{ flex: 1 1 auto; }
+.composite-title .actions{ display: flex; align-items: center; gap: 2px; }
+.composite-title .action-item{
+  width: 28px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 5px;
+  color: var(--vscode-icon-foreground);
+  cursor: pointer;
+}
+.composite-title .action-item:hover{ background: var(--vscode-toolbar-hoverBackground); }
+
+/* remotePairSessions.css — sidebar chrome + custom "+" (New Session) overlay */
+.monaco-workbench .remotepair-terminal-sidebar{
+  position: relative;
+}
+.monaco-workbench .remotepair-terminal-sidebar .editor-actions{
+  display: none !important;
+}
+.monaco-workbench .remotepair-sessions-add{
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  z-index: 12;
+  width: 24px;
+  height: 24px;
+  line-height: 22px;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 400;
+  cursor: pointer;
+  border-radius: 5px;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  user-select: none;
+}
+.monaco-workbench .remotepair-sessions-add:hover,
+.monaco-workbench .remotepair-sessions-add:focus{
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  outline: none;
+}
+
+/* Embedded EditorPart inside the sidebar: tab strip + body.
+   These .embedded-* / .editor-tabs / .editor-tab / .editor-body classes are
+   the sidebar's reconstructed editor chrome. They are reused, AS-IS, for the
+   MAIN editor area too (single shared chrome — see COMPOSE NOTES). */
+.embedded-editor{
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--rp-bg);
+}
+.editor-tabs{
+  flex: 0 0 35px;
+  display: flex;
+  align-items: stretch;
+  background: var(--rp-sidebar-bg);
+  border-bottom: 1px solid var(--vscode-widget-border);
+  overflow: hidden;
+}
+.editor-tab{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  max-width: 160px;
+  font-size: 13px;
+  color: var(--vscode-activityBar-inactiveForeground);
+  border-right: 1px solid var(--vscode-widget-border);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.editor-tab .tab-label{ overflow: hidden; text-overflow: ellipsis; }
+.editor-tab .tab-close{
+  font-size: 14px; opacity: 0; width: 16px; text-align: center; border-radius: 4px;
+}
+.editor-tab:hover .tab-close{ opacity: .7; }
+.editor-tab.active{
+  color: var(--vscode-foreground);
+  background: var(--rp-bg);
+  border-top: 1px solid var(--vscode-focusBorder);
+}
+.editor-tab.active .tab-close{ opacity: .7; }
+.editor-body{ flex: 1 1 auto; min-height: 0; position: relative; overflow: auto; }
+
+/* remotePairSessionManager.css — bottom-panel session tabs */
+.monaco-workbench .remotepair-session-manager{
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 8px 12px;
+  overflow: hidden;
+}
+.monaco-workbench .remotepair-session-row{
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+  scrollbar-width: thin;
+}
+.monaco-workbench .remotepair-session-row::-webkit-scrollbar{ height: 6px; }
+.monaco-workbench .remotepair-session-row::-webkit-scrollbar-thumb{ background: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.4)); border-radius: 3px; }
+
+.monaco-workbench .remotepair-session-card{
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-width: 120px;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  user-select: none;
+}
+.monaco-workbench .remotepair-session-card .remotepair-session-card-label{
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.monaco-workbench .remotepair-session-card:hover,
+.monaco-workbench .remotepair-session-card:focus{
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  outline: none;
+}
+.monaco-workbench .remotepair-session-card.remotepair-session-card-active{
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  outline: 1px solid var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  outline-offset: -1px;
+}
+.monaco-workbench .remotepair-session-card .remotepair-session-card-close{
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 14px;
+  line-height: 18px;
+  opacity: 0;
+  cursor: pointer;
+  color: inherit;
+}
+.monaco-workbench .remotepair-session-card:hover .remotepair-session-card-close,
+.monaco-workbench .remotepair-session-card:focus .remotepair-session-card-close,
+.monaco-workbench .remotepair-session-card.remotepair-session-card-active .remotepair-session-card-close{
+  opacity: 0.8;
+}
+.monaco-workbench .remotepair-session-card .remotepair-session-card-close:hover{
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  border-radius: 4px;
+}
+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly{
+  cursor: default;
+  opacity: 0.6;
+}
+.monaco-workbench .remotepair-session-card.remotepair-session-card-readonly:hover{
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  border-color: var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
+}
+.monaco-workbench .remotepair-session-empty{
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-style: italic;
+  opacity: 0.45;
+  user-select: none;
+}
+
+/* status dot + host badge used inside session cards (sample affordance) */
+.rp-status-dot{
+  flex: 0 0 auto;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 8px;
+  background: #3fb950; /* attached / live */
+}
+.rp-status-dot.detached{ background: #d29922; }
+.rp-host-badge{
+  flex: 0 0 auto;
+  margin-right: 8px;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(77, 170, 252, 0.18);
+  color: var(--vscode-textLink-foreground);
+  letter-spacing: .02em;
+}
+
+/* Picker root inline styles mirror remotePairSessionPicker.ts createEditor();
+   no extra class rules needed (see inline styles on the DOM below). */
+
+/* Inline codicon glyph sizing for the SVG icons used as close "X" / "+" / "add" */
+.codicon{ display: inline-flex; align-items: center; justify-content: center; }
+.codicon svg{ width: 1em; height: 1em; display: block; fill: currentColor; }
+.remotepair-session-card-close.codicon svg{ width: 14px; height: 14px; }
+.remotepair-sessions-add .codicon svg,
+.composite-title .action-item .codicon svg{ width: 16px; height: 16px; }
+
+/* ============================================================
+   MAIN EDITOR AREA — the .part.editor that hosts the Remote
+   Desktop webview as the active editor tab. Shares the .editor-*
+   chrome above; the body is the Remote Desktop surface (below).
+   ============================================================ */
+.monaco-workbench .part.editor{
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--rp-editor-bg);
+}
+/* the editor-group region (tabs + active body) */
+.monaco-workbench .part.editor > .editor-group{
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* tab device/broadcast glyph for the Remote Desktop tab */
+.editor-tab .tab-glyph{
+  flex: 0 0 auto;
+  width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: inherit;
+}
+.editor-tab .tab-glyph svg{ width: 14px; height: 14px; fill: currentColor; display: block; }
+.editor-tab.active .tab-glyph{ color: var(--vscode-textLink-foreground); }
+/* widen the Remote Desktop tab a little so its full title fits */
+.editor-tab.rp-rd-tab{ max-width: 260px; }
+
+/* the editor body that holds the Remote Desktop webview, black-filled */
+.monaco-workbench .part.editor .editor-body{
+  background: #000;
+}
+
+/* ============================================================
+   SURFACE 3 — Remote Desktop webview body (from remote-desktop-panel.html)
+   ext/media/remote-desktop.css. In production these rules apply to the
+   webview's <html>/<body>; here they apply inside the editor body via
+   #stage / .rp-stage-host, which is sized to fill the editor body.
+   ============================================================ */
+#stage,
+.rp-stage-host{
+  position: relative;
+  width: 100%;
+  height: 100%;        /* fill the editor body (was 100vh in the standalone) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  background: #000;
+}
+
+#screen{
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  cursor: crosshair;
+  display: block;
+}
+
+#overlay,
+.overlay{
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.72);
+  pointer-events: none;
+}
+#overlay.hidden,
+.overlay.hidden{ display: none; }
+
+#overlay-title,
+.overlay-title{
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  opacity: 0.95;
+}
+#overlay-msg,
+.overlay-msg{
+  max-width: 80%;
+  white-space: pre-line;
+  opacity: 0.8;
+  line-height: 1.4;
+}
+
+/* NOTE: the Remote Desktop "view-only" pill uses .badge. It is scoped here
+   under #stage / .rp-stage-host (see selectors) and via the .rp-stage-host
+   prefix below so it never collides with the rail badge (scoped under
+   .activitybar) or the panel-tab badge (scoped under .panel-tab). */
+.rp-stage-host #badge,
+.rp-stage-host .badge,
+#stage #badge,
+#stage .badge{
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+.rp-stage-host #badge.on,
+.rp-stage-host .badge.on,
+#stage .badge.on{
+  background: #2ea043;
+  color: #fff;
+}
+.rp-stage-host #badge.off,
+.rp-stage-host .badge.off,
+#stage .badge.off{
+  background: #313131;
+  color: #9d9d9d;
+}
+
+#screen-canvas{
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  cursor: crosshair;
+  display: none; /* hidden until v1 activates */
+}
+
+#screen-video,
+.screen-video{
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  cursor: crosshair;
+  display: block; /* shipped JS sets display:block on init */
+}
+
+#mode-badge,
+.mode-badge{
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  opacity: 0.75;
+  pointer-events: none;
+  user-select: none;
+  font-family: var(--vscode-editor-font-family);
+}
+#mode-badge.mode-v1,
+.mode-badge.mode-v1{
+  background: #3794ff;  /* var(--vscode-charts-blue) */
+  color: #fff;
+}
+#mode-badge.mode-v0,
+.mode-badge.mode-v0{
+  background: #313131;
+  color: #9d9d9d;
+}
+
+/* spinner used inside the connecting overlay */
+.rp-spinner{
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: rp-spin 0.9s linear infinite;
+  margin-bottom: 2px;
+}
+@keyframes rp-spin{ to{ transform: rotate(360deg); } }
+
+/* A faux desktop frame standing in for the live H.264 <video> stream so the
+   editor area shows real content under the badges (from remote-desktop-panel.html). */
+.faux-desktop{
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 20% 0%, #1b2740 0%, #0c1018 55%, #060809 100%);
+  display: block;
+}
+.faux-desktop .menubar{
+  height: 26px;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 14px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.faux-desktop .menubar .apple{ font-weight: 700; opacity: 0.85; }
+.faux-desktop .win{
+  position: absolute;
+  border-radius: 8px;
+  background: rgba(20, 22, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.faux-desktop .win .titlebar{
+  height: 26px;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.faux-desktop .win .titlebar i{
+  width: 11px; height: 11px; border-radius: 50%; display: inline-block;
+}
+.faux-desktop .win .titlebar i.r{ background: #ff5f57; }
+.faux-desktop .win .titlebar i.y{ background: #febc2e; }
+.faux-desktop .win .titlebar i.g{ background: #28c840; }
+.faux-desktop .win .titlebar .wt{
+  margin-left: 8px; font-size: 11px; color: rgba(255,255,255,0.55);
+  font-family: var(--vscode-editor-font-family);
+}
+.faux-desktop .win .body{
+  padding: 14px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(220, 230, 245, 0.82);
+  white-space: pre;
+}
+.faux-desktop .win .body .kw{ color: #c586c0; }
+.faux-desktop .win .body .fn{ color: #4daafc; }
+.faux-desktop .win .body .st{ color: #ce9178; }
+.faux-desktop .win .body .cm{ color: #6a9955; }
+
+.win-1{ top: 56px; left: 48px; width: 54%; }
+.win-2{ bottom: 40px; right: 56px; width: 38%; }
+
+/* ============================================================
+   BOTTOM PANEL — Xpair Session Manager.
+   Three Panel view containers as composite tabs: Attached / Detached /
+   History. The Attached tab is active. (.part.panel chrome reconstructed
+   from sessions-sidebar.html.)
+   ============================================================ */
+.monaco-workbench .part.panel{
+  flex: 0 0 138px;
+  border-top: 1px solid var(--vscode-widget-border);
+  background: var(--rp-bg);
+  display: flex;
+  flex-direction: column;
+}
+.panel-tabs{
+  flex: 0 0 35px;
+  display: flex;
+  align-items: stretch;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+.panel-tab{
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--vscode-activityBar-inactiveForeground);
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+.panel-tab:hover{ color: var(--vscode-foreground); }
+.panel-tab.active{
+  color: var(--vscode-foreground);
+  border-bottom-color: var(--vscode-foreground);
+}
+.panel-tab .badge{
+  margin-left: 6px;
+  font-size: 10px;
+  min-width: 16px;
+  text-align: center;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  opacity: .8;
+}
+.panel-body{ flex: 1 1 auto; min-height: 0; }
+
+/* ============================================================
+   COMPOSE NOTES — class collisions resolved
+   ----------------------------------------------------------------
+   1) :root token preamble — included ONCE (byte-identical across all
+      three source files). Added two extra tokens used inline by the
+      sources: --vscode-editor-font-family and --rp-editor-bg.
+   2) Shells dropped — .rp-mock-shell (rail), .mockup-shell/.mockup-main
+      (sessions), .mock-page/.mock-grid/.mock-card (RD) all replaced by a
+      single .monaco-workbench column shell + .rp-workbench-row.
+   3) .activitybar — sessions-sidebar.html shipped a FAT 48px scaffolding
+      .activitybar/.ab-item. DROPPED. The real slim 30px .part.activitybar
+      rail from activity-rail.html is used instead.
+   4) .badge — collided 3 ways: rail count badge, RD "view-only" pill, and
+      panel-tab count. Each is now scoped: rail under
+      ".activitybar > .content ... .action-item .badge"; RD under
+      "#stage/.rp-stage-host .badge"; panel under ".panel-tab .badge".
+      The RD selectors were tightened (added #stage/.rp-stage-host prefix)
+      to guarantee isolation when all three live on one page.
+   5) .editor-tabs/.editor-tab/.editor-body — single shared editor chrome,
+      reused by BOTH the sidebar's embedded EditorPart and the MAIN editor
+      area. No rename needed; behaviour is identical in both contexts.
+   6) RD #stage/.rp-stage-host — height changed from 100vh to 100% so it
+      fills the editor body instead of the whole viewport (this is exactly
+      what the production webview does inside the editor panel).
+   ============================================================ */
+</style>
+</head>
+
+<body class="monaco-workbench">
+
+  <!-- =======================================================
+       Window title bar (mockup chrome)
+       ======================================================= -->
+  <div class="rp-titlebar">
+    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="rp-title"><b>Xpair</b> — Remote Desktop · gh-mac-m1</div>
+    <div style="width:54px"></div><!-- balance the traffic lights -->
+  </div>
+
+  <!-- =======================================================
+       Workbench row: rail + sidebar + editor area
+       ======================================================= -->
+  <div class="rp-workbench-row">
+
+    <!-- ===================================================
+         ACTIVITY BAR :: the slim Xpair text-only rail
+         (activity-rail.html). Allowlist: Sessions + Browser;
+         Settings sits in the bottom global bar (Accounts removed).
+         =================================================== -->
+    <div class="part activitybar" role="none" aria-label="Active View Switcher">
+      <div class="content">
+
+        <!-- stacked view-container composites -->
+        <div class="composite-bar">
+          <div class="monaco-action-bar vertical" role="toolbar">
+            <ul class="actions-container" role="tablist" aria-label="Active View Switcher">
+
+              <!-- Sessions :: Xpair-owned container (active/checked) -->
+              <li class="action-item icon-text checked"
+                  role="tab" aria-selected="true" title="Sessions">
+                <a class="action-label codicon codicon-terminal"
+                   role="button" tabindex="0" aria-label="Sessions">Sessions</a>
+                <span class="badge has-content" aria-hidden="true">
+                  <span class="badge-content">3</span>
+                </span>
+                <div class="active-item-indicator"></div>
+              </li>
+
+              <!-- Browser :: Explorer container, retitled "Browser" -->
+              <li class="action-item icon-text"
+                  role="tab" aria-selected="false" title="Browser">
+                <a class="action-label codicon codicon-files"
+                   role="button" tabindex="0" aria-label="Browser">Browser</a>
+                <span class="badge" aria-hidden="true">
+                  <span class="badge-content"></span>
+                </span>
+                <div class="active-item-indicator"></div>
+              </li>
+
+            </ul>
+          </div>
+        </div>
+
+        <!-- GlobalCompositeBar :: bottom-pinned. Accounts removed; only the
+             global "Manage" action remains, retitled "Settings", text label. -->
+        <div class="global-activity">
+          <div class="monaco-action-bar vertical" role="toolbar">
+            <ul class="actions-container" role="none">
+              <li class="action-item icon-text" role="button" title="Settings">
+                <a class="action-label codicon codicon-settings-gear"
+                   role="button" tabindex="0" aria-label="Settings">Settings</a>
+                <div class="active-item-indicator"></div>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <!-- end .part.activitybar -->
+
+    <!-- ===================================================
+         SIDEBAR :: Sessions view container (sessions-sidebar.html)
+         .remotepair-terminal-sidebar embeds an EditorPart whose first
+         editor is the New Session picker; running sessions open as
+         terminal tabs alongside it.
+         =================================================== -->
+    <div class="part sidebar" aria-label="Sessions">
+
+      <!-- Composite/view title row: "Sessions" + "+" navigation action -->
+      <div class="composite-title">
+        <span class="title-label">Sessions</span>
+        <div class="actions">
+          <!-- id: remotepair.terminalSidebar.newSession · Codicon.add -->
+          <div class="action-item" role="button" tabindex="0" title="New Session" aria-label="New Session">
+            <span class="codicon codicon-add" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Embedded EditorPart: container tagged .remotepair-terminal-sidebar + .part.editor -->
+      <div class="remotepair-terminal-sidebar embedded-editor">
+
+        <!-- Editor tab strip: New Session picker active; a running session tab beside it -->
+        <div class="editor-tabs">
+          <div class="editor-tab active" role="tab" aria-selected="true" title="New Session">
+            <span class="tab-label">New Session</span>
+            <span class="tab-close codicon codicon-close" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+            </span>
+          </div>
+          <div class="editor-tab" role="tab" title="claude · gh-mac-m1">
+            <span class="tab-label">claude · gh-mac-m1</span>
+            <span class="tab-close codicon codicon-close" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <!-- Editor body: the active editor is the in-tab New Session picker.
+             DOM + inline styles mirror remotePairSessionPicker.ts createEditor() exactly.
+             PICKER_CARDS = Claude (remote) / Shell / Codex / Gemini -->
+        <div class="editor-body">
+          <div class="remotepair-session-picker"
+               style="height:100%;width:100%;overflow:auto;padding:16px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;">
+
+            <div style="font-size:13px;font-weight:600;opacity:0.8;margin-bottom:4px;">Start a session</div>
+
+            <div role="button" tabindex="0"
+                 style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+              <div style="font-weight:600;font-size:13px;">Claude (remote)</div>
+              <div style="font-size:11px;opacity:0.65;margin-top:2px;">mosh + tmux + claude on the host</div>
+            </div>
+
+            <div role="button" tabindex="0"
+                 style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+              <div style="font-weight:600;font-size:13px;">Shell</div>
+              <div style="font-size:11px;opacity:0.65;margin-top:2px;">local zsh</div>
+            </div>
+
+            <div role="button" tabindex="0"
+                 style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+              <div style="font-weight:600;font-size:13px;">Codex</div>
+              <div style="font-size:11px;opacity:0.65;margin-top:2px;">codex CLI</div>
+            </div>
+
+            <div role="button" tabindex="0"
+                 style="border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--vscode-editorWidget-background, transparent);">
+              <div style="font-weight:600;font-size:13px;">Gemini</div>
+              <div style="font-size:11px;opacity:0.65;margin-top:2px;">gemini CLI</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- end .part.sidebar -->
+
+    <!-- ===================================================
+         EDITOR AREA (center) :: the Remote Desktop webview is the
+         active editor tab. AUTO-OPENED at activate() via panel.reveal().
+         The editor area's default content IS the live host screen.
+         =================================================== -->
+    <div class="part editor">
+      <div class="editor-group">
+
+        <!-- Editor tab strip: Remote Desktop active + a secondary terminal tab -->
+        <div class="editor-tabs">
+          <div class="editor-tab rp-rd-tab active" role="tab" aria-selected="true"
+               title="Remote Desktop — gh-mac-m1">
+            <!-- device / broadcast glyph (codicon-broadcast style) -->
+            <span class="tab-glyph codicon codicon-broadcast" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM4.6 3.1l.9.9a4 4 0 0 0 0 6l-.9.9a5.3 5.3 0 0 1 0-7.8zm6.8 0a5.3 5.3 0 0 1 0 7.8l-.9-.9a4 4 0 0 0 0-6l.9-.9zM2.7 1.2l.9.9a6.7 6.7 0 0 0 0 11.8l-.9.9A8 8 0 0 1 2.7 1.2zm10.6 0a8 8 0 0 1 0 13.6l-.9-.9a6.7 6.7 0 0 0 0-11.8l.9-.9z"/></svg>
+            </span>
+            <span class="tab-label">Remote Desktop — gh-mac-m1</span>
+            <span class="tab-close codicon codicon-close" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+            </span>
+          </div>
+
+          <div class="editor-tab" role="tab" title="claude · gh-mac-m1">
+            <span class="tab-glyph codicon codicon-terminal" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M2 3h12v10H2V3zm1 1v8h10V4H3zm1.3 1.6.7-.7L7.4 7.6 5 9.9l-.7-.7L6 7.6 4.3 5.6zM8 9h3v1H8V9z"/></svg>
+            </span>
+            <span class="tab-label">claude · gh-mac-m1</span>
+            <span class="tab-close codicon codicon-close" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <!-- Editor body = the Remote Desktop webview content (remote-desktop-panel.html).
+             Shipped DOM: #stage > #screen-video + #overlay + #badge + #mode-badge.
+             Shown in the LIVE state (a frame has arrived; overlay is .hidden). -->
+        <div class="editor-body">
+          <div class="rp-stage-host" id="stage" tabindex="0">
+
+            <!-- Stand-in for the decoded H.264 <video id="screen-video"> stream -->
+            <div class="screen-video faux-desktop" role="img" aria-label="Remote host desktop, view-only">
+              <div class="menubar">
+                <span class="apple"></span>
+                <span>Finder</span><span>Edit</span><span>View</span><span>Window</span>
+                <span style="margin-left:auto">10:24</span>
+              </div>
+              <div class="win win-1">
+                <div class="titlebar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="wt">serve_webrtc.rs</span></div>
+<div class="body"><span class="cm">// host/rd/screen/src/serve_webrtc.rs</span>
+<span class="kw">pub async fn</span> <span class="fn">serve</span>(cfg: Config) -&gt; Result&lt;()&gt; {
+    <span class="kw">let</span> track = <span class="fn">h264_track</span>(<span class="st">"screen0"</span>);
+    pc.<span class="fn">add_track</span>(track).<span class="kw">await</span>?;
+    <span class="fn">log</span>::<span class="fn">info</span>!(<span class="st">"peer connected"</span>);
+}</div>
+              </div>
+              <div class="win win-2">
+                <div class="titlebar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="wt">zsh</span></div>
+<div class="body"><span class="cm">$ xpair status</span>
+host    <span class="fn">online</span>
+stream  <span class="fn">webrtc/h264</span>
+fps     <span class="fn">58</span>
+input   view-only</div>
+              </div>
+            </div>
+
+            <!-- overlay present in DOM but .hidden once a frame arrives -->
+            <div class="overlay hidden" id="overlay">
+              <div class="overlay-title">Xpair</div>
+              <div class="overlay-msg">Connecting to host…</div>
+            </div>
+
+            <!-- mode-badge: transport class (left) -->
+            <div class="mode-badge mode-v1" title="WebRTC transport">webrtc</div>
+            <!-- view-only badge (right): permanently view-only, no remote input -->
+            <div class="badge off" id="badge" title="View-only (no remote control)">view-only</div>
+          </div>
+        </div>
+
+        <!-- ===================================================
+             BOTTOM PANEL :: Xpair Session Manager
+             Composite tabs: Attached / Detached / History.
+             Attached tab is active (one horizontally-scrolling card row).
+             =================================================== -->
+        <div class="part panel">
+          <div class="panel-tabs" role="tablist" aria-label="Sessions">
+            <div class="panel-tab active" role="tab" aria-selected="true">
+              Attached <span class="badge">3</span>
+            </div>
+            <div class="panel-tab" role="tab">
+              Detached <span class="badge">1</span>
+            </div>
+            <div class="panel-tab" role="tab">
+              History
+            </div>
+          </div>
+
+          <div class="panel-body">
+            <!-- Active = Attached category view -->
+            <div class="remotepair-session-manager">
+              <div class="remotepair-session-row">
+
+                <!-- Host session — the active, revealed terminal -->
+                <div class="remotepair-session-card remotepair-session-card-active"
+                     role="button" tabindex="0" title="claude · gh-mac-m1">
+                  <span class="rp-status-dot" title="attached"></span>
+                  <span class="rp-host-badge">HOST</span>
+                  <span class="remotepair-session-card-label">claude · gh-mac-m1</span>
+                  <span class="remotepair-session-card-close codicon codicon-close"
+                        role="button" title="Close Session" aria-label="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+
+                <!-- A named shell session -->
+                <div class="remotepair-session-card"
+                     role="button" tabindex="0" title="shell · api-refactor">
+                  <span class="rp-status-dot" title="attached"></span>
+                  <span class="remotepair-session-card-label">shell · api-refactor</span>
+                  <span class="remotepair-session-card-close codicon codicon-close"
+                        role="button" title="Close Session" aria-label="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+
+                <!-- A codex session -->
+                <div class="remotepair-session-card"
+                     role="button" tabindex="0" title="codex · review-pass">
+                  <span class="rp-status-dot" title="attached"></span>
+                  <span class="remotepair-session-card-label">codex · review-pass</span>
+                  <span class="remotepair-session-card-close codicon codicon-close"
+                        role="button" title="Close Session" aria-label="Close Session">
+                    <svg viewBox="0 0 16 16"><path d="M8 8.7 3.3 13.4l-.7-.7L7.3 8 2.6 3.3l.7-.7L8 7.3l4.7-4.7.7.7L8.7 8l4.7 4.7-.7.7L8 8.7z"/></svg>
+                  </span>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- end .part.panel -->
+
+      </div>
+    </div>
+    <!-- end .part.editor -->
+
+  </div>
+  <!-- end .rp-workbench-row -->
+
+  <!-- =======================================================
+       Status bar (mockup chrome)
+       ======================================================= -->
+  <div class="rp-statusbar">
+    <span class="seg"><span class="dot"></span>Host online</span>
+    <span class="seg">webrtc/h264 · 58 fps</span>
+    <span class="seg">view-only</span>
+    <span class="spacer"></span>
+    <span class="seg">3 attached</span>
+    <span class="seg"><code>gh-mac-m1</code></span>
+  </div>
+
+</body>
+</html>

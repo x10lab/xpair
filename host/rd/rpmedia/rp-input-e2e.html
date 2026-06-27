@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- Standalone E2E harness for the v2 INPUT path: connects to serve-webrtc,
+     receives the host-created rp-ctl/rp-move DataChannels, captures
+     mouse/key/Korean and sends them. Pair with serve-webrtc started with
+     RP_INPUT_INJECT=/tmp/rp-logstub.py to verify the full client->DC->host-stdin
+     chain (no disruptive real injection). Mirrors remote-desktop.js capture. -->
+<html><head><meta charset="utf-8"><title>rp input e2e</title>
+<style>html,body{margin:0;height:100%}#stage{width:100vw;height:100vh;background:#123}
+#cap{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0}</style></head>
+<body>
+<div id="stage" tabindex="0"><div id="cap" contenteditable="true"></div></div>
+<script>
+const url = new URLSearchParams(location.search).get('ws') || 'ws://127.0.0.1:8890';
+const stage = document.getElementById('stage'), cap = document.getElementById('cap');
+const log = m => { console.log('[e2e] ' + m); };
+let ctlDC=null, moveDC=null, seq=0, inputEnabled=true, haveFrame=true;
+const MAC_VK={KeyS:1,KeyA:0,Enter:36,Escape:53,ArrowLeft:123};
+function macFlags(e){let f=0;if(e.metaKey)f|=0x100000;if(e.shiftKey)f|=0x20000;if(e.ctrlKey)f|=0x40000;if(e.altKey)f|=0x80000;return f;}
+function send(dc,o){if(!dc||dc.readyState!=='open')return;o.seq=++seq;dc.send(JSON.stringify(o));}
+function rel(e){const r=stage.getBoundingClientRect();return{rx:(e.clientX-r.left)/r.width,ry:(e.clientY-r.top)/r.height};}
+
+const pc=new RTCPeerConnection({iceServers:[]});
+pc.addTransceiver('video',{direction:'recvonly'});
+pc.ondatachannel=e=>{const d=e.channel;if(d.label==='rp-ctl')ctlDC=d;else if(d.label==='rp-move')moveDC=d;d.onopen=()=>log('dc open '+d.label);};
+pc.onconnectionstatechange=()=>log('pc '+pc.connectionState);
+
+let lastMoveTs=0;const MOVE_MIN_MS=1000/60; // ≤60Hz throttle (matches remote-desktop.js)
+stage.addEventListener('mousemove',e=>{if(!moveDC||moveDC.readyState!=='open')return;const now=Date.now();if(now-lastMoveTs<MOVE_MIN_MS)return;if(moveDC.bufferedAmount>65536)return;lastMoveTs=now;const c=rel(e);send(moveDC,{t:'m',rx:c.rx,ry:c.ry});});
+stage.addEventListener('mousedown',e=>{if(!ctlDC)return;cap.focus();const c=rel(e);send(ctlDC,{t:'c',rx:c.rx,ry:c.ry,btn:e.button===2?'r':'l'});});
+document.addEventListener('keydown',e=>{if(!ctlDC)return;if(e.isComposing||e.keyCode===229)return;const mod=e.metaKey||e.ctrlKey||e.altKey;const printable=e.key&&e.key.length===1;if(printable&&!mod)return;const code=MAC_VK[e.code];if(code===undefined)return;e.preventDefault();send(ctlDC,{t:'k',code,flags:macFlags(e)});});
+cap.addEventListener('compositionend',e=>{if(!ctlDC)return;if(e.data)send(ctlDC,{t:'x',s:e.data});cap.textContent='';});
+cap.addEventListener('input',e=>{if(!ctlDC)return;cap.textContent='';if(e.isComposing)return;if(e.inputType==='insertText'&&e.data)send(ctlDC,{t:'x',s:e.data});});
+
+const ws=new WebSocket(url);
+pc.onicecandidate=e=>{if(e.candidate)ws.send(JSON.stringify({type:'candidate',candidate:e.candidate.candidate,sdpMid:e.candidate.sdpMid,sdpMLineIndex:e.candidate.sdpMLineIndex}));};
+ws.onopen=()=>log('ws open');
+ws.onmessage=async ev=>{const m=JSON.parse(ev.data);
+  if(m.type==='offer'){await pc.setRemoteDescription({type:'offer',sdp:m.sdp});const a=await pc.createAnswer();await pc.setLocalDescription(a);ws.send(JSON.stringify({type:'answer',sdp:a.sdp}));log('answered');}
+  else if(m.type==='candidate'){try{await pc.addIceCandidate({candidate:m.candidate,sdpMid:m.sdpMid,sdpMLineIndex:m.sdpMLineIndex});}catch(_e){}}};
+// test hook: fire a Korean compositionend (real IME hard to script)
+window.fireKorean=s=>{cap.focus();cap.dispatchEvent(new CompositionEvent('compositionend',{data:s}));};
+window.fireKeyRaw=(code,flags)=>{if(ctlDC&&ctlDC.readyState==='open')ctlDC.send(JSON.stringify({t:'k',code,flags:flags||0,seq:++seq}));};
+</script></body></html>

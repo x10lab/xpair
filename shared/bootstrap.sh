@@ -1,94 +1,106 @@
 #!/usr/bin/env bash
-# bootstrap.sh — RemotePair 원샷 설치.  처음 쓰는 사람용.
+# bootstrap.sh — Xpair one-shot install.  For first-time users.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ghyeongl/remote-pair/main/shared/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/x10lab/xpair/main/shared/bootstrap.sh | bash
 #
-# 하는 일(순서대로, 멱등) — glue(CLI/approve/Service/런처) 설치만. 앱 바이너리는 Homebrew 가 공급:
-#   1) prereq 점검 (macOS / git)
-#   2) repo clone 또는 update  → $REMOTE_PAIR_SRC (기본 ~/.local/share/remote-pair)
-#   3) glue+native 설치 + sync (shared/install.sh — manifest 가역)
-#   4) ⚠ host: 수동 1회 손쉬운사용/화면기록 권한 토글 안내 (macOS 가 자동화 불가)
+# What it does (in order, idempotent) — installs glue (CLI/approve/Service/launcher) only. App binaries are supplied by Homebrew:
+#   1) prereq check (macOS / git)
+#   2) repo clone or update  → $XPAIR_SRC (default ~/.local/share/xpair)
+#   3) glue+native install + sync (shared/install.sh — manifest reversible)
+#   4) ⚠ host: one-time manual Accessibility/Screen Recording permission toggle guidance (macOS cannot automate this)
 #
-# 호스트 앱(RemotePairHost.app)은 Homebrew 가 공급: brew install --cask remote-pair-host.
-# 이 스크립트는 앱을 빌드/설치하지 않는다 — 소스 빌드는 메인테이너 스크립트(host/build-*.sh) 영역.
+# The host app (XpairHost.app) is supplied by Homebrew: brew install --cask xpair-host.
+# This script does not build/install the app — source builds belong to the maintainer scripts (host/build-*.sh).
 #
-# 비대화 환경변수(파이프 설치 시 권장):
+# Non-interactive environment variables (recommended for piped installs):
 #   REMOTE_HOST=my-mac  SYNC_URL=git@github.com:me/claude.git  RP_ORG=com.acme  SKIP_SYNC=1  BRANCH=main
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/ghyeongl/remote-pair.git}"
-SRC="${REMOTE_PAIR_SRC:-$HOME/.local/share/remote-pair}"
+REPO_URL="${REPO_URL:-https://github.com/x10lab/xpair.git}"
+SRC="${XPAIR_SRC:-${REMOTE_PAIR_SRC:-$HOME/.local/share/xpair}}"
 BRANCH="${BRANCH:-main}"
 ROLE="${ROLE:-both}"     # host | client | both
 
 c()    { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
-warn() { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-# 파이프(curl|bash)에서도 사용자 입력을 받으려면 /dev/tty 사용
+
+# Source the shared logger (installed by shared/install.sh); no-op fallback keeps warn() safe
+# during the bootstrap clone phase before logging.sh is present.
+# shellcheck disable=SC1090
+[ -f "${RP_DIR:-$HOME/.xpair/host}/bin/logging.sh" ] && . "${RP_DIR:-$HOME/.xpair/host}/bin/logging.sh"
+type rp_log >/dev/null 2>&1 || { rp_log(){ :; }; log_info(){ :; }; log_warn(){ printf '%s\n' "$*" >&2; }; log_error(){ printf '%s\n' "$*" >&2; }; warn(){ printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }; }
+# Use /dev/tty so user input still works under a pipe (curl|bash)
 ask()  { local q="$1" v=""; { printf '%s' "$q" > /dev/tty; read -r v < /dev/tty; } 2>/dev/null || true; printf '%s' "$v"; }
 
-# ── 1. prereq ── (빌드 없음 → git 만 필수. 앱은 brew cask)
-c "prereq 점검 (role=$ROLE)"
-[ "$(uname -s)" = "Darwin" ] || die "macOS 전용입니다 (현재: $(uname -s))"
-command -v git >/dev/null   || die "git 없음 — xcode-select --install 후 다시 시도"
-command -v mosh >/dev/null   || warn "mosh 없음 — 원격 attach 시 ssh 로 폴백됨 (brew install mosh 권장)"
+# ── 1. prereq ── (no build → only git is required. The app is a brew cask)
+c "prereq check (role=$ROLE)"
+[ "$(uname -s)" = "Darwin" ] || die "macOS only (current: $(uname -s))"
+command -v git >/dev/null   || die "git not found — run xcode-select --install and try again"
+command -v mosh >/dev/null   || warn "mosh not found — client attach falls back to ssh (brew install mosh on the client for resilient reconnect; the host gets mosh-server from XpairHost.app)"
 ok "prereq OK"
 
 # ── 2. clone / update ──
 if [ -d "$SRC/.git" ]; then
   c "repo update → $SRC"
-  git -C "$SRC" fetch -q origin "$BRANCH" && git -C "$SRC" checkout -q "$BRANCH" && git -C "$SRC" pull -q --ff-only origin "$BRANCH" || warn "update 실패 — 기존 소스로 진행"
+  git -C "$SRC" fetch -q origin "$BRANCH" && git -C "$SRC" checkout -q "$BRANCH" && git -C "$SRC" pull -q --ff-only origin "$BRANCH" || warn "update failed — proceeding with existing source"
 else
   c "repo clone → $SRC"
   mkdir -p "$(dirname "$SRC")"
-  git clone -q --branch "$BRANCH" "$REPO_URL" "$SRC" || die "clone 실패: $REPO_URL"
+  git clone -q --branch "$BRANCH" "$REPO_URL" "$SRC" || die "clone failed: $REPO_URL"
 fi
 cd "$SRC"
-ok "소스 준비: $SRC ($(git rev-parse --short HEAD))"
+ok "source ready: $SRC ($(git rev-parse --short HEAD))"
 
-# ── 3. 설치 ── (glue 만; 앱 빌드는 메인테이너 host/build-*.sh 영역)
-# client/both 는 attach 대상 REMOTE_HOST 가 필요. sync 는 opt-in(SYNC_URL 줄 때만).
+# ── 3. install ── (glue only; app builds belong to the maintainer host/build-*.sh)
+# client/both need a REMOTE_HOST to attach to. sync is opt-in (only when SYNC_URL is given).
 if [ "$ROLE" != host ] && [ -z "${REMOTE_HOST:-}" ]; then
-  REMOTE_HOST="$(ask '원격 host (mosh/ssh 대상, 단일 머신이면 빈칸 Enter): ')"
+  REMOTE_HOST="$(ask 'Remote host (mosh/ssh target, leave blank and press Enter for a single machine): ')"
 fi
 export REMOTE_HOST SYNC_URL="${SYNC_URL:-}"
 INSTALL_ARGS=(--role "$ROLE")
 [ -n "$SYNC_URL" ] && INSTALL_ARGS+=(--with-sync)
-c "설치 (install.sh --role $ROLE$([ -n "$SYNC_URL" ] && echo ' --with-sync'))"
+c "install (install.sh --role $ROLE$([ -n "$SYNC_URL" ] && echo ' --with-sync'))"
 ./shared/install.sh "${INSTALL_ARGS[@]}"
 
-# ── host: RemotePairHost.app 보장 (Homebrew cask) ──
-if [ "$ROLE" != client ] \
-   && [ ! -d "$HOME/Applications/RemotePairHost.app" ] && [ ! -d /Applications/RemotePairHost.app ]; then
+# ── host: ensure cliclick (click primitive) + XpairHost.app (cask) ──
+# cliclick = the InputServer's click injector. It is not in the cask bundle (not installed on CI runners), so ensure it via brew on the host.
+#   Without it the click primitive fails at runtime (keys go through osascript, so they are unaffected).
+if [ "$ROLE" != client ]; then
   if command -v brew >/dev/null; then
-    c "RemotePairHost.app 설치 (Homebrew cask)"
-    brew tap ghyeongl/remote-pair https://github.com/ghyeongl/remote-pair 2>/dev/null || true
-    brew install --cask remote-pair-host || warn "cask 설치 실패 — 수동: brew install --cask remote-pair-host"
+    command -v cliclick >/dev/null || { c "install cliclick (click primitive)"; brew install cliclick || warn "cliclick install failed — manual: brew install cliclick"; }
+    # ensure cask (only when the app is not present yet)
+    if [ ! -d "$HOME/Applications/XpairHost.app" ] && [ ! -d /Applications/XpairHost.app ]; then
+      c "install XpairHost.app (Homebrew cask)"
+      brew tap x10lab/xpair https://github.com/x10lab/xpair 2>/dev/null || true
+      brew trust x10lab/xpair 2>/dev/null || true   # trust the third-party tap (recent brew security gate)
+      brew install --cask xpair-host \
+        || warn "cask install failed — manual: brew trust x10lab/xpair && brew install --cask xpair-host"
+    fi
   else
-    warn "Homebrew 없음 — 앱 설치에 필요. 먼저 Homebrew 를 깔고 이 스크립트를 다시 실행하세요:"
+    warn "Homebrew not found — required to install the app (cask) + cliclick. Install Homebrew first, then run this again:"
     cat <<'EOF' >&2
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   (https://brew.sh) — 설치 후 다시 실행하면 앱(cask)까지 자동으로 깝니다.
+   (https://brew.sh) — after installing it, run this again and the app (cask) + cliclick will be installed automatically.
 EOF
   fi
 fi
 
-# ── 4. 수동 권한 단계 안내 (host/both; macOS 자동화 불가) ──
+# ── 4. manual permission step guidance (host/both; macOS cannot automate this) ──
 echo
-ok "설치 완료."
+ok "install complete."
 if [ "$ROLE" != client ]; then
-  warn "마지막 1회 수동 단계 — macOS 가 자동화 못 하는 부분 (SIP+non-MDM):"
+  warn "Final one-time manual step — the part macOS cannot automate (SIP+non-MDM):"
   cat <<EOF
-   System Settings → 개인정보 보호 및 보안 에서 RemotePairHost 를 켜라:
-     • 손쉬운 사용 (Accessibility)  : RemotePairHost ON
-     • 화면 기록 (Screen Recording) : RemotePairHost ON
-   (목록에 없으면 + 로  ~/Applications/RemotePairHost.app  추가)
-   토글 후:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.remote-pair-host}
+   In System Settings → Privacy & Security, turn on XpairHost:
+     • Accessibility  : XpairHost ON
+     • Screen Recording : XpairHost ON
+   (if it is not listed, add  /Applications/XpairHost.app  with +)
+   After toggling:  launchctl kickstart -k gui/\$(id -u)/${BUNDLE_PREFIX:-${RP_ORG:-com.x10lab}.xpair-host}
 EOF
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
   echo
-  ok "이후: 'remote-pair status' / 'remote-pair host'."
+  ok "next: 'xpair status' / 'xpair host'."
 else
-  ok "client 설치 완료 — Finder 폴더 우클릭 → 빠른 동작 → Launch Remote Pair. ('remote-pair doctor' 로 SSH 점검)"
+  ok "client install complete — right-click a folder in Finder → Quick Actions → Launch Xpair. (run 'xpair doctor' to check SSH)"
 fi

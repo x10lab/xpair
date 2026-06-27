@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# t_04_target — 타깃 결정 로직(로컬 vs 원격) 검증.
+# t_04_target — verifies the target-decision logic (local vs remote).
 #
-# 관측 방법: MLOG 의 mock 호출 로그로 판단.
-#   로컬 경로 → tmux-aqua|…|has-session / new-session 호출,  ssh| 없음
-#   원격 경로 → ssh|…|true (reach) 및 mosh| 호출
+# Observation method: judged from MLOG's mock call log.
+#   local path → tmux-aqua|…|has-session / new-session calls, no ssh|
+#   remote path → ssh|…|true (reach) and mosh| calls
 #
-# 한계: 인터랙티브 '2'→로컬 선택은 /dev/tty 없는 환경에선 pty 없이 불가 — 검증하지 않음.
+# Limitation: the interactive '2'→local choice cannot be exercised without a pty in an
+# environment lacking /dev/tty — not verified.
 cd "$(dirname "$0")"; . ./lib.sh
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 1: REMOTE_HOST="" (빈 값) → 강제 로컬
+# Scenario 1: REMOTE_HOST="" (empty value) → forced local
 # ────────────────────────────────────────────────────────────
 SBX_REMOTE_HOST="" new_sandbox
 make_all_mocks
@@ -17,27 +18,27 @@ MOCK_HASSESSION=0 MOCK_CLIENTS="" MOCK_SESS_EXISTS="" \
   run_launcher "$SBX"
 
 it "target/empty-remote-host→local"
-assert_contains "$MLOG" "tmux-aqua" "tmux-aqua 호출(로컬 경로)"
-assert_absent   "$MLOG" "ssh|"      "ssh 미호출(로컬 경로)"
+assert_contains "$MLOG" "tmux-aqua" "tmux-aqua called (local path)"
+assert_absent   "$MLOG" "ssh|"      "ssh not called (local path)"
 
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 2: REMOTE_HOST 설정 + --local 강제 → 로컬
+# Scenario 2: REMOTE_HOST set + --local forced → local
 # ────────────────────────────────────────────────────────────
-new_sandbox   # SBX_REMOTE_HOST 미설정 → 기본 test-host 사용
+SBX_ROLE=both new_sandbox   # default test-host; both-role → --local uses the local tmux-aqua path
 make_all_mocks
 MOCK_HASSESSION=0 MOCK_CLIENTS="" MOCK_SESS_EXISTS="" \
   run_launcher --local "$SBX"
 
 it "target/remote-host+--local→local"
-assert_contains "$MLOG" "tmux-aqua" "tmux-aqua 호출(--local 강제)"
-assert_absent   "$MLOG" "ssh|"      "ssh 미호출(--local 강제)"
+assert_contains "$MLOG" "tmux-aqua" "tmux-aqua called (--local forced)"
+assert_absent   "$MLOG" "ssh|"      "ssh not called (--local forced)"
 
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 3: REMOTE_HOST 설정 + --remote + MOCK_DIRCHECK=__YES__ → 원격
+# Scenario 3: REMOTE_HOST set + --remote + MOCK_DIRCHECK=__YES__ → remote
 # ────────────────────────────────────────────────────────────
 new_sandbox
 make_all_mocks
@@ -45,13 +46,13 @@ MOCK_REACH=ok MOCK_DIRCHECK=__YES__ \
   run_launcher --remote "$SBX"
 
 it "target/remote-host+--remote→remote"
-assert_contains "$MLOG" "ssh|"  "ssh reach 호출(원격 경로)"
-assert_contains "$MLOG" "mosh|" "mosh attach 호출(원격 경로)"
+assert_contains "$MLOG" "ssh|"  "ssh reach called (remote path)"
+assert_contains "$MLOG" "mosh|" "mosh attach called (remote path)"
 
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 4: REMOTE_HOST 설정 + RP_YES=1 (--local/--remote 없음) → 원격, 프롬프트 없음
+# Scenario 4: REMOTE_HOST set + RP_YES=1 (no --local/--remote) → remote, no prompt
 # ────────────────────────────────────────────────────────────
 new_sandbox
 make_all_mocks
@@ -59,15 +60,15 @@ MOCK_REACH=ok MOCK_DIRCHECK=__YES__ RP_YES=1 \
   run_launcher "$SBX"
 
 it "target/rp-yes→remote-no-prompt"
-assert_contains "$MLOG" "ssh|"  "ssh reach 호출(RP_YES 원격)"
-assert_contains "$MLOG" "mosh|" "mosh attach 호출(RP_YES 원격)"
-assert_absent   "$RP_OUT" "select" "RP_YES=1 이면 프롬프트 미출력"
+assert_contains "$MLOG" "ssh|"  "ssh reach called (RP_YES remote)"
+assert_contains "$MLOG" "mosh|" "mosh attach called (RP_YES remote)"
+assert_absent   "$RP_OUT" "select" "no prompt emitted when RP_YES=1"
 
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 5: REMOTE_HOST 설정 + 플래그 없음 + tty 없음 → ask()=""→remote 기본
-# (테스트 환경에는 tty 없음 → read </dev/tty 실패 → ans="" → 기본 remote)
+# Scenario 5: REMOTE_HOST set + no flags + no tty → ask()=""→remote default
+# (the test environment has no tty → read </dev/tty fails → ans="" → defaults to remote)
 # New prompt format: "Launch claude for "<proj>":" with "session _N  (state)" annotation.
 # ────────────────────────────────────────────────────────────
 new_sandbox
@@ -76,8 +77,8 @@ MOCK_REACH=ok MOCK_DIRCHECK=__YES__ \
   run_launcher "$SBX"
 
 it "target/no-tty-no-flags→remote-default"
-assert_contains "$MLOG" "ssh|"  "ssh reach 호출(no-tty 원격 기본)"
-assert_contains "$MLOG" "mosh|" "mosh attach 호출(no-tty 원격 기본)"
+assert_contains "$MLOG" "ssh|"  "ssh reach called (no-tty remote default)"
+assert_contains "$MLOG" "mosh|" "mosh attach called (no-tty remote default)"
 
 it "target/prompt-contains-session-annotation"
 # The interactive prompt is printed to stdout before ask() reads /dev/tty.
@@ -96,7 +97,7 @@ esac
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 6: _remote_next_n via MLOG — _remote_next_n reused in RN loop
+# Scenario 6: _remote_next_n via MLOG — _remote_next_n reused in RN loop
 # No live mosh-clients → RN=1 → remote session created as _1
 # ────────────────────────────────────────────────────────────
 new_sandbox
@@ -114,7 +115,7 @@ assert_contains "$SSH_SCRIPT" "_1" "remote setup script targets session _1"
 cleanup_sandbox
 
 # ────────────────────────────────────────────────────────────
-# 시나리오 7: _local_next_n reused in launch_local — _N=2 when _1 has client
+# Scenario 7: _local_next_n reused in launch_local — _N=2 when _1 has client
 # (mirrors t_05 scenario 3 but verifies the refactored helper path)
 # ────────────────────────────────────────────────────────────
 SBX_REMOTE_HOST="" new_sandbox

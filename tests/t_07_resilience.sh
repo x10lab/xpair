@@ -1,121 +1,111 @@
 #!/usr/bin/env bash
-# t_07_resilience — reach 실패/tailscale exit-node/로컬 폴백 + dir-check 강건성.
+# t_07_resilience — remote-first resilience: reach failure / dir-check robustness.
+#
+# Decision 6 (docs/verification/decisions-round1.md, round 2): REMOTE-FIRST, NO auto local fallback.
+#   On a remote reach/dir-check failure WITHOUT explicit local mode the launcher MUST:
+#     • NOT silently launch a local tmux session (no tmux-aqua/tmux `new-session`)
+#     • NOT mutate Tailscale (no `tailscale set --exit-node`); in fact it never calls tailscale at all
+#     • surface a connect-required / "please connect" message on stderr and exit non-zero
+#   Local is allowed ONLY via an EXPLICIT local mode (--local). These scenarios run WITHOUT --local,
+#   so the contract is: surface, don't fall back.
 cd "$(dirname "$0")"; . ./lib.sh
 
-# ── 공통 헬퍼: sleep mock (dir-check 재시도 sleep 1 / tailscale sleep 2 단축) ──
+# ── Common helper: sleep mock (shortens dir-check retry sleep 1) ──
 _install_sleep_mock() {
   printf '#!/bin/bash\nexit 0\n' > "$MOCKBIN/sleep"
   chmod +x "$MOCKBIN/sleep"
 }
 
-# tailscale mock 교체 — lib.sh 의 기본 mock 은 default value 안의 `}` 가 `${...}` 를 조기 닫아
-# MOCK_TS_JSON 값 뒤에 `}}` 가 붙는 bash 파싱 버그가 있다. 덮어쓰기로 수정.
-# 동작: status → $MOCKBIN/ts_json.txt 내용(또는 '{"Peer":{}}') 출력; set → 로깅 후 noop.
-_install_tailscale_mock() {
-  local ts_json="${1:-}"
-  # JSON 을 파일에 저장 — 쉘 변수 확장/따옴표 문제 완전 우회
-  if [ -n "$ts_json" ]; then
-    printf '%s' "$ts_json" > "$MOCKBIN/ts_json.txt"
-  else
-    printf '{"Peer":{}}' > "$MOCKBIN/ts_json.txt"
-  fi
-  local ts_file="$MOCKBIN/ts_json.txt"
-  cat > "$MOCKBIN/tailscale" <<TSMOCK
-#!/bin/bash
-{ printf '%s' "\$(basename "\$0")"; for a in "\$@"; do printf '|%s' "\$a"; done; printf '\\n'; } >> "\$MOCKLOG"
-case "\$1" in
-  status) cat "$ts_file" ;;
-  set) : ;;
-esac
-exit 0
-TSMOCK
-  chmod +x "$MOCKBIN/tailscale"
-}
-
-# sudo mock — 첫 인자를 그대로 실행(PATH=$MOCKBIN 포함). 런처의 `sudo tailscale set` 대응.
-_install_sudo_mock() {
-  cat > "$MOCKBIN/sudo" <<'SUDO'
-#!/bin/bash
-{ printf '%s' "sudo"; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$MOCKLOG"
-# PATH 에 MOCKBIN 포함해 mock 바이너리를 찾도록
-export PATH="$MOCKBIN:$PATH"
-exec "$@"
-SUDO
-  chmod +x "$MOCKBIN/sudo"
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 시나리오 1: reach 실패 + tailscale 부재 → stderr 경고 + 로컬 폴백
+# Scenario 1: reach failure, tailscale CLI absent, no explicit local mode
+#   → connect-required message, NO local fallback, NO tailscale mutation. (decision 6)
 # ─────────────────────────────────────────────────────────────────────────────
-new_sandbox
-# tailscale 제외 — command -v tailscale 가 실패하도록
+SBX_ROLE=both new_sandbox
+# Exclude tailscale from the mock set — proves the launcher never shells out to tailscale.
 make_all_mocks ssh mosh tmux tmux-aqua claude hangul-romanize launchctl open tput
 _install_sleep_mock
-# 프로젝트 디렉터리를 SBX 아래 생성
 mkdir -p "$SBX/myproject"
 MOCK_REACH=fail MOCK_HASSESSION=0 \
   run_launcher --remote "$SBX/myproject"
 
-it "s1/reach-fail-no-tailscale: tailscale CLI 없음 경고"
-assert_contains "$RP_ERR" "tailscale" "stderr 에 tailscale 언급"
+it "s1/reach-fail: connect-required message on stderr"
+assert_contains "$RP_ERR" "please connect" "stderr asks the user to (re)connect"
 
-it "s1/reach-fail-no-tailscale: 로컬 폴백 (tmux-aqua new-session)"
-assert_contains "$MLOG" "new-session" "로컬 new-session 호출됨"
+it "s1/reach-fail: NO silent local fallback (no new-session)"
+assert_absent "$MLOG" "new-session" "no local tmux/tmux-aqua session created"
 
-it "s1/reach-fail-no-tailscale: mosh 미호출"
-assert_absent "$MLOG" "mosh|" "mosh 미호출 확인"
+it "s1/reach-fail: tailscale CLI is never invoked"
+assert_absent "$MLOG" "tailscale|" "no tailscale call at all"
+
+it "s1/reach-fail: mosh not called (remote attach never reached)"
+assert_absent "$MLOG" "mosh|" "confirm mosh not called"
+
+it "s1/reach-fail: exits non-zero (remote unreachable, rc=20)"
+assert_rc "$RP_RC" 20 "reach failure exit code"
 
 cleanup_sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 시나리오 2: reach 실패 + tailscale 있음 + online exit-node → set 후 여전히 실패 → 로컬 폴백
+# Scenario 2: reach failure WITH tailscale present (online exit-node available)
+#   → launcher still must NOT mutate tailscale and must NOT fall back to local. (decision 6)
+#   This is the explicit anti-regression of the old "set exit-node + local fallback" behavior.
 # ─────────────────────────────────────────────────────────────────────────────
-new_sandbox
+SBX_ROLE=both new_sandbox
 make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
 _install_sleep_mock
-_install_sudo_mock
-TS_JSON='{"Peer":{"k":{"ExitNodeOption":true,"Online":true,"DNSName":"exit.example.ts.net."}}}'
-_install_tailscale_mock "$TS_JSON"
+# An online, selectable exit-node is available — the OLD code would have set it; the new code must not.
+MOCK_TS_JSON='{"Peer":{"k":{"ExitNodeOption":true,"Online":true,"DNSName":"exit.example.ts.net."}}}'
 mkdir -p "$SBX/myproject"
 
 MOCK_REACH=fail MOCK_HASSESSION=0 \
   run_launcher --remote "$SBX/myproject"
 
-it "s2/exit-node-set: tailscale set --exit-node 호출됨"
-assert_contains "$MLOG" "tailscale|set|--exit-node=exit.example.ts.net" "exit-node 설정 호출"
+it "s2/reach-fail-with-tailscale: NO 'tailscale set --exit-node' mutation"
+assert_absent "$MLOG" "tailscale|set" "exit-node is never configured"
 
-it "s2/exit-node-set: 로컬 폴백 (tmux-aqua new-session)"
-assert_contains "$MLOG" "new-session" "로컬 new-session 호출됨"
+it "s2/reach-fail-with-tailscale: stderr states tailscale won't be changed"
+assert_contains "$RP_ERR" "Tailscale" "stderr explains it won't touch Tailscale settings"
 
-it "s2/exit-node-set: mosh 미호출"
-assert_absent "$MLOG" "mosh|" "mosh 미호출 확인"
+it "s2/reach-fail-with-tailscale: NO silent local fallback (no new-session)"
+assert_absent "$MLOG" "new-session" "no local session created"
+
+it "s2/reach-fail-with-tailscale: mosh not called"
+assert_absent "$MLOG" "mosh|" "confirm mosh not called"
+
+it "s2/reach-fail-with-tailscale: exits non-zero (rc=20)"
+assert_rc "$RP_RC" 20 "reach failure exit code"
 
 cleanup_sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 시나리오 3: reach fail-then-ok (tailscale 후 복구) + dir-check ok → 원격(mosh) 진행
+# Scenario 3: reach ok + dir-check ok → proceed remotely (mosh). (still-valid happy path)
 # ─────────────────────────────────────────────────────────────────────────────
 new_sandbox
-make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
+make_all_mocks ssh mosh tmux tmux-aqua claude hangul-romanize launchctl open tput
 _install_sleep_mock
-_install_sudo_mock
-TS_JSON='{"Peer":{"k":{"ExitNodeOption":true,"Online":true,"DNSName":"exit.example.ts.net."}}}'
-_install_tailscale_mock "$TS_JSON"
 mkdir -p "$SBX/myproject"
 
-# 2번째 reach 부터 ok → tailscale set 후 재시도 성공 → 원격 진행
-MOCK_REACH=fail-then-ok MOCK_REACH_OKAT=2 MOCK_DIRCHECK=__YES__ \
+MOCK_REACH=ok MOCK_DIRCHECK=__YES__ \
   run_launcher --remote "$SBX/myproject"
 
-it "s3/fail-then-ok: 원격 진행 (mosh 호출)"
-assert_contains "$MLOG" "mosh|" "mosh 호출 확인 (원격 attach)"
+it "s3/reach-ok: proceeds remotely (mosh call)"
+assert_contains "$MLOG" "mosh|" "confirm mosh call (remote attach)"
+
+# Note: the remote tmux session IS created via the ssh setup script (which legitimately contains
+# `tm new-session` on the host), so we do NOT assert absence of new-session here — that would conflate
+# the remote host-side create with a local fallback. The decision-6 "no local fallback" invariant is
+# asserted on the FAILURE paths (s1/s2/s4) where ssh setup is never reached.
+
+it "s3/reach-ok: never falls back to a LOCAL tmux-aqua session (no local new-session call)"
+assert_absent "$MLOG" "tmux-aqua|-S|/tmp/aqua-tmux.sock|new-session" "no local aqua session created"
 
 cleanup_sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 시나리오 4: dir-check ssherr (3회 실패) → 로컬 폴백 + stderr 에 3-retry 언급
+# Scenario 4: dir-check ssherr (3 failures), no explicit local mode
+#   → connect-required message, NO local fallback, NO tailscale mutation. (decision 6)
 # ─────────────────────────────────────────────────────────────────────────────
-new_sandbox
+SBX_ROLE=both new_sandbox
 make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
 _install_sleep_mock
 mkdir -p "$SBX/myproject"
@@ -123,19 +113,28 @@ mkdir -p "$SBX/myproject"
 MOCK_REACH=ok MOCK_DIRCHECK=ssherr MOCK_HASSESSION=0 \
   run_launcher --remote "$SBX/myproject"
 
-it "s4/dir-ssherr: 로컬 폴백 (tmux-aqua new-session)"
-assert_contains "$MLOG" "new-session" "로컬 new-session 호출됨"
+it "s4/dir-ssherr: NO silent local fallback (no new-session)"
+assert_absent "$MLOG" "new-session" "no local session created"
 
-it "s4/dir-ssherr: mosh 미호출"
-assert_absent "$MLOG" "mosh|" "mosh 미호출 확인"
+it "s4/dir-ssherr: tailscale set --exit-node never called"
+assert_absent "$MLOG" "tailscale|set" "no exit-node mutation"
 
-it "s4/dir-ssherr: stderr 에 3회 재시도 언급"
-assert_contains "$RP_ERR" "3" "3-retry 언급 확인"
+it "s4/dir-ssherr: mosh not called"
+assert_absent "$MLOG" "mosh|" "confirm mosh not called"
+
+it "s4/dir-ssherr: connect-required message on stderr"
+assert_contains "$RP_ERR" "please connect" "stderr asks the user to (re)connect"
+
+it "s4/dir-ssherr: stderr mentions the 3 ssh retries"
+assert_contains "$RP_ERR" "3" "confirm 3-retry mention"
+
+it "s4/dir-ssherr: exits non-zero (dir-check failure, rc=21)"
+assert_rc "$RP_RC" 21 "dir-check ssh failure exit code"
 
 cleanup_sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 시나리오 5: dir missing + RP_YES=1 → ssh mkdir 후 원격 진행
+# Scenario 5: dir missing + RP_YES=1 → ssh mkdir then proceed remotely (still-valid)
 # ─────────────────────────────────────────────────────────────────────────────
 new_sandbox
 make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
@@ -145,13 +144,13 @@ mkdir -p "$SBX/myproject"
 MOCK_REACH=ok MOCK_DIRCHECK=__NO__ RP_YES=1 \
   run_launcher --remote "$SBX/myproject"
 
-it "s5/dir-missing-yes: ssh mkdir 호출"
-assert_contains "$MLOG" "mkdir" "ssh mkdir 호출 확인"
+it "s5/dir-missing-yes: ssh mkdir call"
+assert_contains "$MLOG" "mkdir" "confirm ssh mkdir call"
 
 cleanup_sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 시나리오 6: dir missing + 비대화(no tty, no RP_YES) → ask="" → n → die rc=5
+# Scenario 6: dir missing + non-interactive (no tty, no RP_YES) → ask="" → n → die rc=5 (still-valid)
 # ─────────────────────────────────────────────────────────────────────────────
 new_sandbox
 make_all_mocks ssh mosh tmux tmux-aqua claude tailscale hangul-romanize launchctl open tput
@@ -161,8 +160,8 @@ mkdir -p "$SBX/myproject"
 MOCK_REACH=ok MOCK_DIRCHECK=__NO__ \
   run_launcher --remote "$SBX/myproject"
 
-it "s6/dir-missing-decline: rc=5 (디렉터리 생성 거부)"
-assert_rc "$RP_RC" 5 "취소 → exit 5"
+it "s6/dir-missing-decline: rc=5 (directory creation declined)"
+assert_rc "$RP_RC" 5 "decline → exit 5"
 
 cleanup_sandbox
 

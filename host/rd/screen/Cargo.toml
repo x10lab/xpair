@@ -1,0 +1,108 @@
+[package]
+name = "screen"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "License-clean screen-capture sidecar for Xpair Remote Desktop (v1 high-performance path). v1a: continuous-capture WebSocket JPEG frame server; v1b (webrtc + VideoToolbox HW encode) TODO."
+repository = "https://github.com/x10lab/xpair"
+publish = false
+
+# ---------------------------------------------------------------------------
+# DEPENDENCY LICENSE POLICY: PERMISSIVE ONLY (MIT / Apache-2.0 / BSD / ISC).
+# Xpair is AGPL-3.0-or-later; deps stay permissive (no copyleft) to keep dual-licensing.
+# The AGPL firewall is enforced by deny.toml (cargo-deny check licenses).
+# ---------------------------------------------------------------------------
+[dependencies]
+# macOS screen capture.
+#
+# Capture-crate selection (all permissive — see deny.toml):
+#   * scap (MIT)             — tried first per the original plan, but its
+#                              ScreenCaptureKit backend (cidre) runs `xcodebuild`
+#                              in build.rs, which fails on broken Xcode toolchains.
+#                              It did NOT build cleanly on this machine.
+#   * screencapturekit (MIT) — viable alternative, stream-oriented API.
+#   * xcap (Apache-2.0)      — CHOSEN. Simple synchronous one-shot API
+#                              (`Monitor::all()` -> `monitor.capture_image()`),
+#                              no xcodebuild dependency, built cleanly on
+#                              macOS arm64, and is Apache-2.0 (permissive).
+# xcap re-exports the `image` crate, so encode/decode versions stay in lockstep.
+xcap = "0.9.6"
+# CLI subcommands. MIT/Apache-2.0.
+clap = { version = "4", features = ["derive"] }
+# Frame encode. MIT/Apache-2.0. Pinned to the same minor series xcap
+# re-exports (0.25) to avoid type skew across the boundary.
+#   * png  — single-shot `capture` subcommand.
+#   * jpeg — continuous `serve` subcommand (smaller frames + a quality knob).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# WebSocket transport for the v1a `serve` path. `tungstenite` is the pure-Rust,
+# SYNCHRONOUS WebSocket implementation (MIT). We drive it over std
+# `TcpListener` + threads so we do NOT pull in an async runtime (tokio) for this
+# first cut. No TLS feature (loopback-only bind; ssh -L provides the encryption).
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+# Structured logging. MIT. `tracing` is the facade (error!/warn!/info!/debug!
+# macros); `tracing-subscriber` provides the Layer/Registry plumbing and the
+# `env-filter` feature (REMOTEPAIR_LOG/RUST_LOG verbosity control). We do NOT
+# pull `tracing-appender` (time-based only) — the unified bracket line format and
+# size-based rotate-on-open live in a small custom Layer + writer in `log.rs`.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter"] }
+# Advisory file lock for the rotate-on-open critical section (flock(2)).
+libc = "0.2"
+# Crash reporting (MIT). Gated behind the `crash-report` feature (on by default;
+# disable with --no-default-features to drop it entirely). Crashes-ONLY: the AGPL
+# Rust core never speaks PostHog/product-analytics (telemetry stays in the
+# permissively-licensed client/host layers). Feature selection rationale:
+#   * default-features=false drops the heavy `reqwest`+`tokio` transport (this
+#     sidecar is sync; pulling an async runtime here is wasteful).
+#   * `curl` transport — uses system libcurl + the OS TLS stack. Unlike the
+#     `ureq` transport it does NOT pull `webpki-roots`/`webpki-root-certs`
+#     (CDLA-Permissive-2.0), which are absent from deny.toml's allow-list, so
+#     the whole tree stays inside the permissive firewall (cargo-deny clean).
+#   * `panic` + `backtrace` — capture Rust panics with a symbolicated backtrace.
+#   * `contexts` — OS/device context (server_name is force-cleared in log.rs).
+sentry = { version = "0.48", default-features = false, features = ["backtrace", "contexts", "panic", "curl"], optional = true }
+# Strict OUTBOUND PII scrubber (crash-report only). `regex` (MIT/Apache-2.0) is
+# already in the tree transitively via `sentry-backtrace`; declaring it as a
+# direct, `crash-report`-gated optional dep lets `log.rs` `use regex::Regex`
+# without relying on an implicit transitive crate, and keeps the
+# `--no-default-features` (license-firewall) build free of it. The scrubber is
+# entirely `#[cfg(feature = "crash-report")]`, so this never adds surface to the
+# Sentry-less fallback. `serde_json` (already an optional dep below for webrtc)
+# is also enabled by `crash-report` so the scrubber can walk `contexts`/`extra`
+# string leaves (it is already pulled by `sentry-core`).
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl"], optional = true }
+webrtc = { version = "0.17.1", optional = true }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"], optional = true }
+tokio-util = { version = "0.7.18", features = ["rt"], optional = true }
+tokio-tungstenite = { version = "0.29.0", optional = true }
+futures-util = { version = "0.3.32", optional = true }
+bytes = { version = "1.11.1", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0.150", optional = true }
+thiserror = { version = "2.0.18", optional = true }
+
+[features]
+# Crash reporting via Sentry. ON by default so a shipped sidecar reports panics
+# (remote send still gated at runtime on `crash_report_consent` — default OFF =>
+# zero network calls). Build with `--no-default-features` to compile the crate
+# with no Sentry code/deps at all (license firewall fallback).
+default = ["crash-report"]
+# `dep:regex` + `dep:serde_json` back the strict outbound PII scrubber in
+# `log.rs::scrub_outbound`/`scrub_event` (IPv4/IPv6, broad absolute paths,
+# `*.ts.net`, and contexts/extra leaf walking). Both are already in the Sentry
+# subtree, so this pins them as direct deps without enlarging the shipped tree.
+crash-report = ["dep:sentry", "dep:regex", "dep:serde_json"]
+# v1b transport: webrtc-rs (MIT/Apache-2.0, UDP/RTP) carrying VideoToolbox H.264.
+# UDP is mandatory — TCP/WebSocket head-of-line blocking stalls a screen stream
+# on any lost packet. Enabling this pulls webrtc + a tokio runtime (the v1a
+# `serve` path stays sync and unaffected).
+webrtc = ["dep:webrtc", "dep:tokio", "dep:tokio-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:bytes", "dep:serde", "dep:serde_json", "dep:thiserror"]
+tokio-tungstenite = ["dep:tokio-tungstenite"]
+futures-util = ["dep:futures-util"]
+bytes = ["dep:bytes"]
+serde = ["dep:serde"]
+serde_json = ["dep:serde_json"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"

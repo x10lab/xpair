@@ -1,40 +1,40 @@
-# remote-pair-launch ↔ claude-iterm-launch 동일성 감사
+# xpair-launch ↔ claude-iterm-launch Equivalence Audit
 
-신규 `client/remote-pair-launch` 가 레퍼런스 `~/.claude/bin/claude-iterm-launch` 의 모든 동작을 재현하는지(1:1 연결 모델) 항목별로 검증한 결과. 테스트 근거: `tests/t_*.sh` (총 116 assertion, fail 0).
+Item-by-item verification of whether the new `client/cli/xpair-launch` reproduces every behavior of the reference `~/.claude/bin/claude-iterm-launch` (1:1 connection model). Test evidence: `tests/t_*.sh` (116 assertions total, 0 failures).
 
-## 동작 매핑표
+## Behavior Mapping Table
 
-| # | 레퍼런스 동작 | 신규 | 판정 | 테스트 |
+| # | Reference behavior | New | Verdict | Test |
 |---|---|---|---|---|
-| 1 | 에러로그 + stderr tee + 실패 시 pause | 동일 (로그 경로만 `$RP_DIR/logs/claude-launch.err.log` 로 네임스페이스 이전) | **SAME** | t_08 s1,s3 |
-| 2 | `_readable`: ASCII 그대로 / 비ASCII→haiku 번역+캐시 / hangul-romanize 폴백 / 원본 | 동일 (캐시 `$RP_DIR/session-names`) | **SAME** | t_03 |
-| 3 | `_proj_base` = 읽기쉬운이름(≤15) + 경로해시(5) | 동일 | **SAME** | t_03 |
-| 4 | host-prefix 세션명 `<host>_<base>`, `[.:]`→`_` | 동일 | **SAME** | t_03 |
-| 5 | respawn 루프 + `--resume`(기기별 last-session) + `CL_CONTINUE` | 동일 | **SAME** | t_05 s1,s3,s4 |
-| 6 | 3-way: 없음→생성+continue / detached→`attach -d` take-over / attached→`_N` fresh | 동일 | **SAME** | t_05 s1-4 |
-| 7 | 일반 tmux 폴백 | 동일 | **SAME** | t_05 s5 |
-| 8 | 타깃 선택 (m1=로컬, 그외 프롬프트 [1]remote/[2]local) | 일반화: REMOTE_HOST 빈값/==local→로컬, `--local/--remote`, `RP_YES`→remote, 프롬프트 | **SAME** (+RP_YES 비대화 추가) | t_04 |
-| 9 | reach + tailscale exit-node 자동설정 + 로컬 폴백 | 동일 | **SAME** | t_07 s1-3 |
-| 10 | dir-check 3회 재시도(마커) + 생성 프롬프트 + 로컬 폴백 | 동일 | **SAME** | t_07 s4-6 |
-| 11 | 좀비 탭 정리 | 동일 | **SAME** | t_08 s4 (kill 경로는 헤드리스 한계) |
-| 12 | 원격 setup: 서버 기동보장→세션생성→base64 respawn 주입 | 동일 (앱/번들명 `RemotePairHost`/`com.x10lab.remote-pair-host` 로 적응) | **SAME** | t_06 s1,3,6 |
-| 13 | mosh attach 절대경로 + `on_tab_close` detach trap + ssh -t 폴백 | 동일 | **SAME** | t_06 s4,5 |
+| 1 | Error log + stderr tee + pause on failure | Same (only the log path is namespaced to `$RP_DIR/logs/claude-launch.err.log`) | **SAME** | t_08 s1,s3 |
+| 2 | `_readable`: ASCII as-is / non-ASCII → haiku translation + cache / hangul-romanize fallback / original | Same (cache `$RP_DIR/session-names`) | **SAME** | t_03 |
+| 3 | `_proj_base` = readable name (≤15) + path hash (5) | Same | **SAME** | t_03 |
+| 4 | host-prefix session name `<host>_<base>`, `[.:]` → `_` | Same | **SAME** | t_03 |
+| 5 | respawn loop + `--resume` (per-machine last-session) + `CL_CONTINUE` | Same | **SAME** | t_05 s1,s3,s4 |
+| 6 | 3-way: none → create + continue / detached → `attach -d` take-over / attached → `_N` fresh | Same | **SAME** | t_05 s1-4 |
+| 7 | Plain tmux fallback | Same | **SAME** | t_05 s5 |
+| 8 | Target selection (m1 = local, otherwise prompt [1]remote/[2]local) | Generalized: REMOTE_HOST empty / == local → local, `--local/--remote`, `RP_YES` → remote, prompt | **SAME** (+RP_YES non-interactive added) | t_04 |
+| 9 | reach + tailscale exit-node auto-config + local fallback | Same | **SAME** | t_07 s1-3 |
+| 10 | dir-check 3-attempt retry (marker) + creation prompt + local fallback | Same | **SAME** | t_07 s4-6 |
+| 11 | Zombie tab cleanup | Same | **SAME** | t_08 s4 (the kill path is a headless limitation) |
+| 12 | Remote setup: ensure server is running → create session → base64 respawn injection | Same (adapted to app/bundle names `XpairHost` / `com.x10lab.xpair-host`) | **SAME** | t_06 s1,3,6 |
+| 13 | mosh attach absolute path + `on_tab_close` detach trap + ssh -t fallback | Same | **SAME** | t_06 s4,5 |
 
-## 의도된 차이 (DIVERGENCE — 복원 안 함)
+## Intended Differences (DIVERGENCE — Not Restored)
 
-| 항목 | 레퍼런스 | 신규 | 이유 |
+| Item | Reference | New | Reason |
 |---|---|---|---|
-| 경로 매핑 (FOLDER_MAPS) | 없음(동일경로 가정) | **신규 기능** (client↔host 절대경로 상이 대응) | 외부 sync 환경 지원. t_02 |
-| `~/.claude` sync | 무거운 병렬(M1 bg + 락 + index.lock 자가치유) | 경량 best-effort 1줄 | sync 디커플(opt-in). [[launcher-1to1-decision]] |
-| 로컬 aqua 사용 | 비-m1 머신에선 AQUA 비활성(`AQUA=""`) → 항상 일반 tmux | tmux-aqua 있으면 로컬도 aqua 사용 | 새 구조는 host 역할이 m1 고정이 아님 — 더 일반적 |
-| presize | COLS/LINES 계산하지만 new-session 에 미적용(死 코드) | `new-session -x/-y` 로 실제 적용 | 레퍼런스 의도 실현(개선) |
-| 세션 공유 | (없음 — 단일 attach take-over) | (없음 — 1:1 유지) | 사용자 결정: multi-attach 폐기, 레퍼런스와 동일한 1:1 |
+| Path mapping (FOLDER_MAPS) | None (assumes identical paths) | **New feature** (handles differing absolute paths between client ↔ host) | Supports external sync environments. t_02 |
+| `~/.claude` sync | Heavy parallel (M1 bg + lock + index.lock self-healing) | Lightweight best-effort one-liner | Decouples sync (opt-in). [[launcher-1to1-decision]] |
+| Local aqua usage | On non-m1 machines AQUA is disabled (`AQUA=""`) → always plain tmux | If tmux-aqua is present, local also uses aqua | The new structure does not fix the host role to m1 — more general |
+| presize | Computes COLS/LINES but does not apply them to new-session (dead code) | Actually applied via `new-session -x/-y` | Realizes the reference's intent (improvement) |
+| Session sharing | (None — single attach take-over) | (None — 1:1 maintained) | User decision: drop multi-attach, keep the same 1:1 as the reference |
 
-## 발견·수정한 버그 (ralph 중)
+## Bugs Found and Fixed (during ralph)
 
-1. **`exec tm_local attach`** (line ~200) — `exec` 는 셸 함수를 실행 못 함 → 로컬 aqua take-over attach 가 깨짐. → `exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d ...` 로 수정. (t_00/t_05 가 검출)
-2. **mosh `$REMOTE_BIN/tmux-aqua`** (ralph 직전) — mosh `--` 는 비셸 exec 라 리터럴 `$HOME` 미전개 → tmux-aqua 못 찾음. → 절대경로(`"$HOME/.local/bin/tmux-aqua"`)로 수정. (t_06 s4 가 회귀 가드)
+1. **`exec tm_local attach`** (line ~200) — `exec` cannot run a shell function → local aqua take-over attach breaks. → Fixed to `exec "$LOCAL_BIN/tmux-aqua" -S "$AQUA_SOCK" attach -d ...`. (detected by t_00/t_05)
+2. **mosh `$REMOTE_BIN/tmux-aqua`** (just before ralph) — mosh `--` is a non-shell exec, so the literal `$HOME` is not expanded → tmux-aqua cannot be found. → Fixed to an absolute path built from the **ssh-resolved REMOTE home** (`"$REMOTE_HOME/.local/bin/tmux-aqua"`, and `--server=$REMOTE_HOME/.local/bin/mosh-server`). The remote script emits `__HOME__:$HOME` (login shell expands it remotely); the client parses it into `REMOTE_HOME` (falling back to the client `$HOME`). This is correct even when the remote SSH account differs from the client user — it no longer assumes remote home == client home. (regression guarded by t_06 s4, where the mock supplies a remote home distinct from the client `$HOME`)
 
-## 결론
-- UNINTENTIONAL gap: **0**. 레퍼런스의 모든 핵심 동작이 SAME 또는 의도된 개선으로 매핑됨.
-- 헤드리스 미검증(한계): 인터랙티브 mosh attach 실화면, AX 합성입력 실동작, on_tab_close 실트리거, 좀비 kill 실경로 → 사람이 터미널/VNC 로 확인 필요.
+## Conclusion
+- UNINTENTIONAL gap: **0**. Every core behavior of the reference maps to either SAME or an intended improvement.
+- Headless-unverified (limitations): interactive mosh attach on a real screen, AX synthetic-input real behavior, on_tab_close real trigger, zombie kill real path → a human needs to confirm via terminal/VNC.

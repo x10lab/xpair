@@ -1,0 +1,7 @@
+target/
+.DS_Store
+*.h264
+context/
+
+# OMC runtime state
+.omc/

@@ -1,0 +1,14 @@
+{
+  "_generated": "DO NOT EDIT — generated from monorepo shared/ by generate-contracts.mjs",
+  "screen": {
+    "v1aPort": 8889,
+    "v2SignalPort": 8890,
+    "remoteInputSupported": true
+  },
+  "identity": {
+    "product": "Xpair",
+    "urlProtocol": "xpair",
+    "ideBundleId": "com.x10lab.xpair"
+  },
+  "version": "0.1.0"
+}
