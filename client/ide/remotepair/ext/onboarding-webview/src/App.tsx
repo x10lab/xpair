@@ -45,7 +45,7 @@ const STEP_TITLES = [
 ];
 
 // Warning copy only. Keep in sync with onboarding-bridge.js MIN_COMPATIBLE_HOST.
-const MIN_COMPATIBLE_HOST = "0.5.0a49";
+const MIN_COMPATIBLE_HOST = "0.5.0a51";
 
 const S = {
   WELCOME: 0,

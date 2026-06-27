@@ -80,12 +80,13 @@ function versionMajor(v) {
 
 /** The OLDEST host version this client can talk to. **BUMP THIS** whenever a host↔client
  *  protocol/interface changes incompatibly — e.g. the a49 RD session-token requirement made
- *  rd-session-token and serve-webrtc --token mandatory. A same-major host that is OLDER than this
- *  connects today but fails subtly (black RD, "signaling closed 1006", etc.); gating it at
- *  onboarding with a clear "update the host" message is far better than a silent breakage. A host
- *  >= this is accepted. INVARIANT: the host cask (Casks/xpair-host.rb) must ship a version >= this
- *  floor, or a cask-installed host is (correctly) rejected as too old. */
-const MIN_COMPATIBLE_HOST = "0.5.0a49";
+ *  rd-session-token and serve-webrtc --token mandatory, and a51 reworked the RD screen/control
+ *  channel (serve_webrtc rewrite + new control.rs + rp-input-inject) this client now drives, so an
+ *  a50-or-older host fails subtly (black RD / no input / "signaling closed 1006"). A same-major host
+ *  OLDER than this connects today but breaks; gating it at onboarding with a clear "update the host"
+ *  message is far better than a silent breakage. A host >= this is accepted. INVARIANT: the host cask
+ *  (Casks/xpair-host.rb) must ship a version >= this floor, AND App.tsx's mirror must stay in sync. */
+const MIN_COMPATIBLE_HOST = "0.5.0a51";
 
 /** Compare two "X.Y.Z" or "X.Y.ZaN" version strings → -1 | 0 | 1 (a<b | a==b | a>b).
  *  The alpha suffix sorts BELOW the same release: 0.5.0a44 < 0.5.0a45 < 0.5.0 (a released X.Y.Z

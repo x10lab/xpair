@@ -100,7 +100,7 @@ test("input protocol hardening releases held state and preserves ordering", () =
 });
 
 test("RD token requirement bumps the onboarding host compatibility floor", () => {
-  assert.match(onboardingBridge, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
+  assert.match(onboardingBridge, /const MIN_COMPATIBLE_HOST = "0\.5\.0a51"/);
   assert.match(onboardingBridge, /a49 RD session-token requirement/);
   assert.match(onboardingBridge, /rd-session-token and serve-webrtc --token mandatory/);
 });

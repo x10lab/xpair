@@ -34,7 +34,7 @@ test("bridge installHost supports force:true and host incompatibility kinds", ()
   assert.match(bridge, /if \(force\) args\.push\("--force"\)/);
   assert.match(bridge, /incompatibleKind = "major_mismatch"/);
   assert.match(bridge, /incompatibleKind = "below_floor"/);
-  assert.match(bridge, /MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
+  assert.match(bridge, /MIN_COMPATIBLE_HOST = "0\.5\.0a51"/);
 });
 
 test("global.d.ts exposes force installs and incompatibleKind", () => {
@@ -103,7 +103,7 @@ test("safe saved, manual, reconnect, or connect hosts render an inline repair bu
     app,
     /const hostRepairPanel = canRepairHost \? \([\s\S]*<StepInstalling[\s\S]*forceInstall[\s\S]*repairKind=\{hostRepairKind\}[\s\S]*host=\{connectTarget\}/,
   );
-  assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a49"/);
+  assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a51"/);
 });
 
 test("manual changed-target missing-app repair shows fingerprint/key prep before the install panel", () => {
