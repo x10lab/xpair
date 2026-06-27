@@ -339,14 +339,19 @@ function cliWithPasswordStdin(args, secret) {
   return runSecretStdin(rpBin(), [...args, "--password-stdin"], secret);
 }
 
-/** True only when the installed CLI actually understands install-host --password-stdin. The xpair CLI
- *  is a bash script on disk, so read it and look for the flag — cliReady() only proves `xpair status`
- *  runs, which an old (pre-password-stdin) CLI also passes. Conservative: unreadable/bare-PATH → false. */
+/** True only when the FULL password-bootstrap toolchain is present: the installed CLI understands
+ *  install-host --password-stdin AND its sibling xpair-askpass supports the FIFO (RP_ASKPASS_FIFO)
+ *  handoff. Both are bash scripts on disk, so read them and look for the markers — cliReady() only
+ *  proves `xpair status` runs, which an old toolchain also passes. Conservative: unreadable → false. */
 function cliSupportsPasswordStdin() {
   const bin = rpBinAbs();
   if (!bin) return false;
   try {
-    return fs.readFileSync(bin, "utf8").includes("--password-stdin");
+    if (!fs.readFileSync(bin, "utf8").includes("--password-stdin")) return false;
+    // xpair-askpass ships next to the CLI (rp_askpass_path resolves it as a sibling). A CLI that
+    // knows the flag but an old askpass that can't read the FIFO would still dead-end the bootstrap.
+    const askpass = path.join(path.dirname(bin), "xpair-askpass");
+    return fs.readFileSync(askpass, "utf8").includes("RP_ASKPASS_FIFO");
   } catch {
     return false;
   }
@@ -865,9 +870,11 @@ const bridge = {
     // Accept `user@host` typed into the host field — the documented way to set a remote login that
     // differs from the local user. HOST_RE rejects `@`, so split it here (an explicit `user` wins)
     // before validation; the CLI install-host then authenticates/normalizes as account@host.
-    if (!account && h.includes("@")) {
+    if (h.includes("@")) {
       const at = h.indexOf("@");
-      account = h.slice(0, at);
+      // An explicit account wins, but the `@`-prefix must be stripped from the host either way —
+      // otherwise HOST_RE would reject the host even when a separate login was supplied.
+      if (!account) account = h.slice(0, at);
       h = h.slice(at + 1);
     }
     if (!validHost(h)) {
@@ -935,12 +942,14 @@ const bridge = {
       // cliReady() only proves `xpair status` runs, so verify the flag is actually supported before
       // relying on it — an old CLI would just print its usage error and dead-end first-time setup.
       if (!cliSupportsPasswordStdin()) {
+        // NOT a needs_password/prompt state — that would loop the user back to the password form.
+        // Surface it as a plain failure so the UI shows the "update the CLI" message + a retry.
         return {
           ok: false,
           out: "",
           err: "The installed xpair CLI is too old for first-time password setup. Update it (run `xpair self-update`, or reinstall the client) and try again.",
-          state: SSH_STATE.NEEDS_PASSWORD,
-          action: SSH_ACTION.PROMPT_PASSWORD,
+          state: SSH_STATE.UNREACHABLE,
+          action: SSH_ACTION.RETRY,
         };
       }
       r = await cliWithPasswordStdin(args, pw);

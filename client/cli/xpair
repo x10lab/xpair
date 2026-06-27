@@ -1666,6 +1666,11 @@ cmd_install_host() {
     { [ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null; } || true
     SSHENV=()
     unset RP_ASKPASS_FIFO
+    # Drop the password-forcing options too: install-host authorizes the client key over this same
+    # connection, so any later step that has to re-establish the master should use key auth (the
+    # password is spent and the FIFO is gone). Reset RP_SSHOPTS to the plain multiplexed base.
+    RP_SSHOPTS=(-o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=accept-new
+                -o ControlMaster=auto -o "ControlPath=$RP_CM" -o ControlPersist=120)
   fi
 
   # ── 1. Idempotency: detect an existing install (cmd_doctor-style probe :650) ──
