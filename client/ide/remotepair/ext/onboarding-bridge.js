@@ -22,6 +22,8 @@ const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
 const SSH_KNOWN_HOSTS = path.join(HOME, ".ssh", "known_hosts");
 const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const ACCOUNT_RE = /^(?!-)[A-Za-z0-9._-]+$/;
+const EFFECTIVE_KNOWN_HOSTS_FILES = new Map();
+let sshEphemeralKnownHostsDir;
 
 function validHost(host) {
   return HOST_RE.test(String(host || "").trim());
@@ -176,23 +178,51 @@ function sshControlPath() {
 }
 
 function sshEphemeralKnownHostsPath() {
-  const dir = path.join(os.tmpdir(), "rp-kh-" + (process.env.RP_SSH_CM_TAG || "x"));
-  try {
+  if (sshEphemeralKnownHostsDir === undefined) {
+    let dir = null;
     try {
-      fs.mkdirSync(dir, { mode: 0o700 });
-    } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
-      const stat = fs.lstatSync(dir);
-      const ownedByUs = typeof process.getuid !== "function" || stat.uid === process.getuid();
-      const privateMode = (stat.mode & 0o077) === 0;
-      if (!stat.isDirectory() || !ownedByUs || !privateMode) {
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.mkdirSync(dir, { mode: 0o700 });
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "rp-kh-"));
+      sshEphemeralKnownHostsDir = dir;
+      process.on("exit", () => {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      });
+    } catch {
+      sshEphemeralKnownHostsDir = null;
+    }
+  }
+  return sshEphemeralKnownHostsDir ? path.join(sshEphemeralKnownHostsDir, "known_hosts") : null;
+}
+
+function effectiveKnownHostsFiles(host) {
+  const h = String(host || "").trim();
+  if (!h) return null;
+  if (EFFECTIVE_KNOWN_HOSTS_FILES.has(h)) return EFFECTIVE_KNOWN_HOSTS_FILES.get(h);
+  try {
+    const out = cp.execFileSync("ssh", ["-G", h], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!out) {
+      EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
+      return null;
+    }
+    const seen = new Set();
+    const files = [];
+    for (const line of String(out).split("\n")) {
+      const m = line.match(/^\s*(userknownhostsfile|globalknownhostsfile)\s+(.+?)\s*$/i);
+      if (!m) continue;
+      for (const file of m[2].split(/\s+/).filter(Boolean)) {
+        if (seen.has(file)) continue;
+        seen.add(file);
+        files.push(file);
       }
     }
-    fs.chmodSync(dir, 0o700);
-    return path.join(dir, "known_hosts");
+    const result = files.length ? files : null;
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, result);
+    return result;
   } catch {
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
     return null;
   }
 }
@@ -201,11 +231,19 @@ function sshConfigDoubleQuote(s) {
   return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-function sshUserKnownHostsFileOption() {
+function sshUserKnownHostsFileOption(host) {
   const ephemeral = sshEphemeralKnownHostsPath();
-  return ephemeral
-    ? `${sshConfigDoubleQuote(ephemeral)} ${sshConfigDoubleQuote(SSH_KNOWN_HOSTS)}`
-    : sshConfigDoubleQuote(SSH_KNOWN_HOSTS);
+  const defaults = [
+    SSH_KNOWN_HOSTS,
+    path.join(HOME, ".ssh", "known_hosts2"),
+    "/etc/ssh/ssh_known_hosts",
+    "/etc/ssh/ssh_known_hosts2",
+  ];
+  const files = effectiveKnownHostsFiles(host) || defaults;
+  return [ephemeral, ...files]
+    .filter((file) => typeof file === "string" && file.length > 0)
+    .map(sshConfigDoubleQuote)
+    .join(" ");
 }
 
 function shSingleQuote(s) {
@@ -217,6 +255,8 @@ function shPathQuotePreserveHome(p) {
   if (s === "~") return "~";
   if (s === "~/") return "~/";
   if (s.startsWith("~/")) return "~/" + shSingleQuote(s.slice(2));
+  const m = s.match(/^(~[A-Za-z0-9._-]*)(?:\/(.*))?$/);
+  if (m) return m[2] === undefined ? m[1] : `${m[1]}/${shSingleQuote(m[2])}`;
   return shSingleQuote(s);
 }
 
@@ -226,7 +266,7 @@ function shPathQuotePreserveHome(p) {
  *  install preflight: fingerprint-confirmed key auth is the primary path. ControlMaster is shared
  *  within one app launch via RP_SSH_CM_TAG so probes/tunnels multiplex over one authenticated SSH
  *  master without reusing a previous launch's stale master. */
-function sshProbeOpts(connectTimeout = 5) {
+function sshProbeOpts(host, connectTimeout = 5) {
   const opts = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${connectTimeout}`,
@@ -239,7 +279,7 @@ function sshProbeOpts(connectTimeout = 5) {
     "-o", "PasswordAuthentication=no",
     "-o", "KbdInteractiveAuthentication=no",
     "-o", "NumberOfPasswordPrompts=0",
-    "-o", `UserKnownHostsFile=${sshUserKnownHostsFileOption()}`,
+    "-o", `UserKnownHostsFile=${sshUserKnownHostsFileOption(host)}`,
     "-o", "StrictHostKeyChecking=accept-new",
   ];
   try {
@@ -702,7 +742,7 @@ const bridge = {
         action: SSH_ACTION.ABORT,
       };
     }
-    const r = await run("ssh", [...sshProbeOpts(5), h, "true"]);
+    const r = await run("ssh", [...sshProbeOpts(h, 5), h, "true"]);
     return sshResult(r);
   },
 
@@ -749,7 +789,7 @@ const bridge = {
     }
     const probe = ENGINE_PROBE[e];
     if (!probe) return { installed: false, authed: false, version: "", err: `unknown engine: ${e}` };
-    const r = await run("ssh", [...sshProbeOpts(6), host, probe]);
+    const r = await run("ssh", [...sshProbeOpts(host, 6), host, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
       return {
@@ -794,7 +834,7 @@ const bridge = {
     // Run the native installer, then persist PATH (skip for shell — nothing was installed).
     const persist = e === "shell" ? "" : ` && { ${PATH_PERSIST}; }`;
     const cmd = `${PATH_PREFIX}${ENGINE_INSTALL[e]}${persist}`;
-    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* installer can take a while */ });
+    const r = await run("ssh", [...sshProbeOpts(host, 20), host, cmd], { /* installer can take a while */ });
     if (r.code !== 0) {
       const s = sshResult(r, `install exited ${r.code}`);
       return { ok: false, err: s.err, state: s.state, action: s.action };
@@ -821,7 +861,7 @@ const bridge = {
     // The remote command reads the key from stdin (`read -r KEY`) — the key never appears on argv.
     // We pipe it over ssh's stdin via runSecretStdin (fd0), not fd3, since ssh forwards fd0 to the
     // remote shell directly.
-    const r = await runSecretStdin("ssh", [...sshProbeOpts(15), host, writer], apiKey);
+    const r = await runSecretStdin("ssh", [...sshProbeOpts(host, 15), host, writer], apiKey);
     if (r.code !== 0) {
       const s = sshResult(r, `auth write exited ${r.code}`);
       return { ok: false, err: s.err, state: s.state, action: s.action };
@@ -845,7 +885,7 @@ const bridge = {
     if (!validHost(host)) {
       return { exists: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
     }
-    const r = await run("ssh", [...sshProbeOpts(5), host, "test -e " + shPathQuotePreserveHome(p)]);
+    const r = await run("ssh", [...sshProbeOpts(host, 5), host, "test -e " + shPathQuotePreserveHome(p)]);
     if (r.code === 0) return { exists: true, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
     const s = sshResult(r);
     return { exists: false, err: s.err, state: s.state, action: s.action };
@@ -971,7 +1011,7 @@ const bridge = {
     // failures (agent refused, passphrase required, unreadable key) stay on the existing key recovery
     // path and must not consume the account password.
     let keyBlocked = false;
-    const preflight = await run("ssh", [...sshProbeOpts(8), target, "true"]);
+    const preflight = await run("ssh", [...sshProbeOpts(target, 8), target, "true"]);
     if (preflight.code !== 0) {
       const raw = preflight.err || preflight.out || "";
       const s = sshResult(preflight);
@@ -1119,7 +1159,7 @@ const bridge = {
         action: SSH_ACTION.ABORT,
       };
     }
-    const sshArgs = sshProbeOpts(6);
+    const sshArgs = sshProbeOpts(h, 6);
     // Resolve the host version that will actually serve the RD session, in priority order:
     //   1. RUNNING version — ~/.xpair/host/logs/status.json. The app rewrites it every second, so a FRESH
     //      file means the app is up and its `version` is the live process version. After an on-disk update
