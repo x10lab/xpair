@@ -124,7 +124,10 @@ enum EngineGuard {
             "case \"${SHELL:-}\" in *zsh) RC=\"$HOME/.zshrc\";; *bash) RC=\"$HOME/.bashrc\";; *) RC=\"$HOME/.zshrc\";; esac; " +
             "touch \"$RC\"; chmod 600 \"$RC\" 2>/dev/null || true; " +
             "TMP=\"$(mktemp)\"; " +
-            "grep -v \"# >>> xpair \(varName) >>>\" \"$RC\" | grep -v \"export \(varName)=\" | grep -v \"# <<< xpair \(varName) <<<\" > \"$TMP\" || true; " +
+            // Drop ONLY the prior Xpair-managed block (markers + the line between), never a user's own
+            // `export VAR=` outside our block — a blanket grep would silently delete it. (Mirror of
+            // onboarding-bridge.js rcExportWriter.)
+            "awk -v b=\"# >>> xpair \(varName) >>>\" -v e=\"# <<< xpair \(varName) <<<\" '$0==b{skip=1;next} $0==e{skip=0;next} skip!=1' \"$RC\" > \"$TMP\" || true; " +
             "mv \"$TMP\" \"$RC\"; " +
             "{ echo \"# >>> xpair \(varName) >>>\"; printf 'export \(varName)=%s\\n' \"$KEY\"; echo \"# <<< xpair \(varName) <<<\"; } >> \"$RC\"; " +
             "echo RP_AUTH_OK=1"

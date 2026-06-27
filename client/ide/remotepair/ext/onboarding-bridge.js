@@ -445,7 +445,10 @@ function rcExportWriter(varName) {
     'case "${SHELL:-}" in *zsh) RC="$HOME/.zshrc";; *bash) RC="$HOME/.bashrc";; *) RC="$HOME/.zshrc";; esac; ' +
     'touch "$RC"; chmod 600 "$RC" 2>/dev/null || true; ' +
     'TMP="$(mktemp)"; ' +
-    'grep -v "# >>> xpair ' + varName + ' >>>" "$RC" | grep -v "export ' + varName + '=" | grep -v "# <<< xpair ' + varName + ' <<<" > "$TMP" || true; ' +
+    // Drop ONLY the previous Xpair-managed block (the lines between, and including, the markers) —
+    // NOT every `export VAR=` line. A blanket grep would silently delete a user's own hand-maintained
+    // export that lives outside our block. awk skips the delimited region and keeps everything else.
+    'awk -v b="# >>> xpair ' + varName + ' >>>" -v e="# <<< xpair ' + varName + ' <<<" \'$0==b{skip=1;next} $0==e{skip=0;next} skip!=1\' "$RC" > "$TMP" || true; ' +
     'mv "$TMP" "$RC"; ' +
     '{ echo "# >>> xpair ' + varName + ' >>>"; printf \'export ' + varName + '=%s\\n\' "$KEY"; echo "# <<< xpair ' + varName + ' <<<"; } >> "$RC"; ' +
     'echo RP_AUTH_OK=1'
