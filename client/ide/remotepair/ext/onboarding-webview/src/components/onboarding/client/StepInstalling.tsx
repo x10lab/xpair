@@ -66,6 +66,10 @@ export function StepInstalling({
   const [err, setErr] = useState("");
   const [passwordStep, setPasswordStep] = useState<PasswordStep>("none");
   const [accountPassword, setAccountPassword] = useState("");
+  // Optional host login for the password bootstrap. Blank = same as the local Mac username (the
+  // common case → no `user` forced, so an ssh-config alias's User still applies). Filled only when
+  // the host login differs; passed as `user` ONLY on the password submit, never on auto/update.
+  const [accountLogin, setAccountLogin] = useState("");
   const [passwordErr, setPasswordErr] = useState("");
   // Update mode passes host/hostName directly (no setup Peer); setup mode derives them from peer.
   const host = hostProp || peer?.target || peer?.addrs?.[0] || peer?.name || "";
@@ -119,7 +123,7 @@ export function StepInstalling({
   // the non-force CLI path so an existing app is only kickstarted/opened. On a first-time host that
   // hasn't authorized this client's key, the CLI returns needs_password and we re-run with the
   // account password to bootstrap that one connection.
-  const runInstall = useCallback((password?: string) => {
+  const runInstall = useCallback((password?: string, accountArg?: string) => {
     const runId = ++installRunId.current;
     const isCurrent = () => mounted.current && installRunId.current === runId;
     if (phaseTimer.current !== null) {
@@ -145,10 +149,12 @@ export function StepInstalling({
     // `user` would either be redundant or, worse, override an ssh-config alias's configured `User`.
     // A host whose login differs is addressed by typing `user@host` (the bridge/CLI normalize that to
     // --account); the alias's SSH config `User` otherwise applies.
+    const acct = (accountArg || "").trim();
     const opts = {
       host,
       ...(useForce ? { force: true } : {}),
       ...(password !== undefined ? { password } : {}),
+      ...(acct ? { user: acct } : {}),
     };
     window.remotepair
       .installHost(opts)
@@ -187,8 +193,8 @@ export function StepInstalling({
       setPasswordErr("Enter the host account password.");
       return;
     }
-    runInstall(accountPassword);
-  }, [accountPassword, runInstall]);
+    runInstall(accountPassword, accountLogin);
+  }, [accountPassword, accountLogin, runInstall]);
 
   // Fresh-install (setup) mode auto-starts on mount. Repair mode does NOT: the user clicks to start
   // the forced reinstall/update or the non-force restart.
@@ -310,6 +316,27 @@ export function StepInstalling({
                 submitPassword();
               }}
             >
+              <div className="min-w-0">
+                <label htmlFor="xpair-account-login" className="text-sm font-semibold text-foreground">
+                  Host login
+                </label>
+                <p className="mt-1 text-xs leading-snug text-muted-foreground">
+                  Leave blank if it matches your Mac username; set it if your login on {name} differs.
+                </p>
+                <Input
+                  id="xpair-account-login"
+                  type="text"
+                  value={accountLogin}
+                  onChange={(e) => {
+                    setAccountLogin(e.target.value);
+                    setPasswordErr("");
+                  }}
+                  autoComplete="username"
+                  spellCheck={false}
+                  placeholder="(same as this Mac)"
+                  className="mt-1.5 bg-background"
+                />
+              </div>
               <div className="flex items-start gap-2 text-sm">
                 <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                 <div className="min-w-0">
@@ -343,7 +370,21 @@ export function StepInstalling({
                 <Button type="submit" size="sm" className="h-8" disabled={!accountPassword}>
                   Continue
                 </Button>
-                <Button type="button" size="sm" variant="outline" className="h-8" onClick={onFail}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8"
+                  onClick={() => {
+                    // Clear local password state first — the inline repair panel's onFail only sets
+                    // installState back to "idle" (it doesn't unmount), so without this the form would
+                    // stay visible (showingPassword still true) and the user would be stuck on it.
+                    setPasswordStep("none");
+                    setAccountPassword("");
+                    setPasswordErr("");
+                    onFail();
+                  }}
+                >
                   Review fingerprint
                 </Button>
               </div>

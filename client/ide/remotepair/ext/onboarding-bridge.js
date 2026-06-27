@@ -339,6 +339,19 @@ function cliWithPasswordStdin(args, secret) {
   return runSecretStdin(rpBin(), [...args, "--password-stdin"], secret);
 }
 
+/** True only when the installed CLI actually understands install-host --password-stdin. The xpair CLI
+ *  is a bash script on disk, so read it and look for the flag — cliReady() only proves `xpair status`
+ *  runs, which an old (pre-password-stdin) CLI also passes. Conservative: unreadable/bare-PATH → false. */
+function cliSupportsPasswordStdin() {
+  const bin = rpBinAbs();
+  if (!bin) return false;
+  try {
+    return fs.readFileSync(bin, "utf8").includes("--password-stdin");
+  } catch {
+    return false;
+  }
+}
+
 // --- Engine constants (claude | codex | opencode | shell) -------------------------------------
 // Agent engines run ON THE HOST; these drive the host-side install/auth-check/auth-set guards.
 // `shell` is a valid session engine (plain login shell, no install/auth guard), so it is only a
@@ -916,7 +929,24 @@ const bridge = {
     // First-time (key not yet authorized) AND a password was supplied → bootstrap the setup
     // connection via install-host --password-stdin. Otherwise the key is already authorized, so run
     // the existing key-auth path and ignore any stale password value.
-    const r = keyBlocked && pw ? await cliWithPasswordStdin(args, pw) : await cli(args);
+    let r;
+    if (keyBlocked && pw) {
+      // An upgraded IDE can sit on an OLD ~/.local/bin/xpair that predates --password-stdin;
+      // cliReady() only proves `xpair status` runs, so verify the flag is actually supported before
+      // relying on it — an old CLI would just print its usage error and dead-end first-time setup.
+      if (!cliSupportsPasswordStdin()) {
+        return {
+          ok: false,
+          out: "",
+          err: "The installed xpair CLI is too old for first-time password setup. Update it (run `xpair self-update`, or reinstall the client) and try again.",
+          state: SSH_STATE.NEEDS_PASSWORD,
+          action: SSH_ACTION.PROMPT_PASSWORD,
+        };
+      }
+      r = await cliWithPasswordStdin(args, pw);
+    } else {
+      r = await cli(args);
+    }
     if (r.code === 0) {
       return { ok: true, out: r.out, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
     }
