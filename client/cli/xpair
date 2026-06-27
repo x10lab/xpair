@@ -1677,7 +1677,11 @@ cmd_install_host() {
   c "checking $target for an existing $APP_NAME install …"
   if [ "$force" != 1 ] && _rp_ssh -o BatchMode=yes "$target" "[ -d ~/Applications/$APP_NAME.app ] || [ -d /Applications/$APP_NAME.app ]" 2>/dev/null; then
     ok "$APP_NAME already installed on $target → re-registering (no reinstall)"
-    _rp_ssh "$target" "launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX 2>/dev/null || open -a $APP_NAME 2>/dev/null || true" 2>/dev/null || true
+    # Kill any running instance first — a Finder/Dock (`open -a`) launch is NOT service-managed, so a
+    # bare kickstart (which restarts only the service) and `open -a` (a no-op when already running)
+    # both leave the stale process holding the socket with its older in-memory version. pkill it so
+    # the restart binds the on-disk bundle (KeepAlive respawns it; else kickstart/open below does).
+    _rp_ssh "$target" "pkill -f /$APP_NAME.app/Contents/MacOS/$APP_NAME 2>/dev/null; sleep 1; launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX 2>/dev/null || open -a $APP_NAME 2>/dev/null || true" 2>/dev/null || true
   else
     # ── 2. Install with integrity ──
     # repo_root: the INSTALLED CLI (~/.local/bin/xpair) is a COPY, so $0/../.. is $HOME — NOT

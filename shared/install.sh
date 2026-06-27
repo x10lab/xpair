@@ -221,6 +221,13 @@ P
 </dict></plist>
 P
       U=$(id -u)
+      # Replace any already-running instance — INCLUDING a Finder/Dock (`open -a`) launch that launchd
+      # does not manage — so the (re)started LaunchAgent binds THIS freshly-installed on-disk bundle.
+      # `bootstrap`/`kickstart` alone restart only the *service*; a GUI-launched process keeps holding
+      # the socket and its older in-memory version, so an on-disk upgrade silently never takes effect
+      # (running version stays old, the client keeps gating it as below-floor → "update host" loop).
+      pkill -f "/${APP_NAME}.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true
+      sleep 1
       launchctl bootstrap "gui/$U" "$app_plist" 2>/dev/null || launchctl kickstart -k "gui/$U/${APP_LABEL}" 2>/dev/null || true
       record LAUNCHCTL "$APP_LABEL" "$app_plist"
       launchctl bootstrap "gui/$U" "$wd_plist" 2>/dev/null || true
