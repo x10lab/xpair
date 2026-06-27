@@ -11,7 +11,7 @@ index d886313c..3368da50 100644
  import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
  import { VSBuffer } from '../../base/common/buffer.js';
  import { toErrorMessage } from '../../base/common/errorMessage.js';
-@@ -1321,6 +1323,35 @@ export class CodeApplication extends Disposable {
+@@ -1321,6 +1323,34 @@ export class CodeApplication extends Disposable {
  	}
  
  	private async openFirstWindow(accessor: ServicesAccessor, initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
