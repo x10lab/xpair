@@ -20,6 +20,12 @@ const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
 const SSH_KNOWN_HOSTS = path.join(HOME, ".ssh", "known_hosts");
+const SSH_KNOWN_HOSTS_DEFAULTS = [
+  SSH_KNOWN_HOSTS,
+  path.join(HOME, ".ssh", "known_hosts2"),
+  "/etc/ssh/ssh_known_hosts",
+  "/etc/ssh/ssh_known_hosts2",
+];
 const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const ACCOUNT_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const EFFECTIVE_KNOWN_HOSTS_FILES = new Map();
@@ -195,7 +201,7 @@ function sshEphemeralKnownHostsPath() {
 
 function effectiveKnownHostsFiles(host) {
   const h = String(host || "").trim();
-  if (!h) return null;
+  if (!h) return [];
   if (EFFECTIVE_KNOWN_HOSTS_FILES.has(h)) return EFFECTIVE_KNOWN_HOSTS_FILES.get(h);
   try {
     const out = cp.execFileSync("ssh", ["-G", h], {
@@ -204,26 +210,32 @@ function effectiveKnownHostsFiles(host) {
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (!out) {
-      EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
-      return null;
+      EFFECTIVE_KNOWN_HOSTS_FILES.set(h, []);
+      return [];
     }
     const seen = new Set();
     const files = [];
     for (const line of String(out).split("\n")) {
       const m = line.match(/^\s*(userknownhostsfile|globalknownhostsfile)\s+(.+?)\s*$/i);
       if (!m) continue;
-      for (const file of m[2].split(/\s+/).filter(Boolean)) {
-        if (seen.has(file)) continue;
-        seen.add(file);
-        files.push(file);
+      let acc = "";
+      for (const token of m[2].split(/\s+/).filter(Boolean)) {
+        acc = acc ? `${acc} ${token}` : token;
+        let exists = false;
+        try { exists = fs.existsSync(acc); } catch { exists = false; }
+        if (!exists) continue;
+        if (!seen.has(acc)) {
+          seen.add(acc);
+          files.push(acc);
+        }
+        acc = "";
       }
     }
-    const result = files.length ? files : null;
-    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, result);
-    return result;
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, files);
+    return files;
   } catch {
-    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
-    return null;
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, []);
+    return [];
   }
 }
 
@@ -233,15 +245,14 @@ function sshConfigDoubleQuote(s) {
 
 function sshUserKnownHostsFileOption(host) {
   const ephemeral = sshEphemeralKnownHostsPath();
-  const defaults = [
-    SSH_KNOWN_HOSTS,
-    path.join(HOME, ".ssh", "known_hosts2"),
-    "/etc/ssh/ssh_known_hosts",
-    "/etc/ssh/ssh_known_hosts2",
-  ];
-  const files = effectiveKnownHostsFiles(host) || defaults;
-  return [ephemeral, ...files]
+  const seen = new Set();
+  return [ephemeral, ...effectiveKnownHostsFiles(host), ...SSH_KNOWN_HOSTS_DEFAULTS]
     .filter((file) => typeof file === "string" && file.length > 0)
+    .filter((file) => {
+      if (seen.has(file)) return false;
+      seen.add(file);
+      return true;
+    })
     .map(sshConfigDoubleQuote)
     .join(" ");
 }
