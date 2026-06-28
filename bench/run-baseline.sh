@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST_BIN="${HOME}/.xpair/host/bin/screen"
+# Honor an exported HOST_BIN (custom serve-webrtc build) like run-impaired.sh/grid.sh,
+# so the baseline/variance side of an experiment uses the SAME binary under test rather
+# than silently falling back to the deployed ~/.xpair/host/bin/screen.
+HOST_BIN="${HOST_BIN:-${HOME}/.xpair/host/bin/screen}"
 
 PORT="${PORT:-8890}"
 DURATION="${DURATION:-60}"

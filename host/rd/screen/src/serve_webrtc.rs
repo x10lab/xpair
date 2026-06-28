@@ -461,7 +461,20 @@ fn bitrate_change_exceeds_hysteresis(was: u32, now: u32) -> bool {
         return false;
     }
     let denom = was.max(1) as f32;
-    ((now as f32 - was as f32).abs() / denom) > ABR_WRITE_HYSTERESIS
+    // `>=`, not `>`: a clean raise uses RAISE_FACTOR=1.05, i.e. exactly a 5% change,
+    // and ABR_WRITE_HYSTERESIS is also 0.05 — with `>` an exactly-5% raise updates the
+    // logged target but never actuates the encoder until a *later* raise compounds past
+    // 5%. The boundary change must write.
+    ((now as f32 - was as f32).abs() / denom) >= ABR_WRITE_HYSTERESIS
+}
+
+/// Whether a missing/stale ReceiverReport should be read as congestion starvation
+/// (→ drive the encoder toward MIN). Only when we're ACTIVELY producing frames: a
+/// static screen makes SCK stop emitting frames, so the receiver legitimately has
+/// nothing to RR. Treating that idle gap as 100% loss would crater the encoder to MIN
+/// and resume motion at the lowest bitrate. So require `screen_changed` too.
+fn abr_starved(no_recent_rr: bool, screen_changed: bool, elapsed_past_cut: bool) -> bool {
+    no_recent_rr && screen_changed && elapsed_past_cut
 }
 
 /// Locate a helper binary that sits **next to this executable** (the bundle
@@ -2085,20 +2098,25 @@ fn spawn_abr_controller(
                     let no_recent_rr = last_rr
                         .map(|last_rr| now.duration_since(last_rr) > ABR_NO_RR_CUT_AFTER)
                         .unwrap_or(true);
-                    let loss = match (loss_rr, no_recent_rr) {
-                        (Some(loss), false) => Some(loss),
-                        _ if now.duration_since(started) >= ABR_NO_RR_CUT_AFTER => Some(1.0),
-                        _ => None,
-                    };
 
                     let frames = frame_counter.load(Ordering::Relaxed);
                     let screen_changed = frames != last_frames;
                     last_frames = frames;
 
+                    // A stale RR is only congestion when we're actively sending frames;
+                    // on a static screen SCK emits nothing so RR silence is benign.
+                    let elapsed_past_cut = now.duration_since(started) >= ABR_NO_RR_CUT_AFTER;
+                    let starved = abr_starved(no_recent_rr, screen_changed, elapsed_past_cut);
+                    let loss = match (loss_rr, no_recent_rr) {
+                        (Some(loss), false) => Some(loss),
+                        _ if starved => Some(1.0),
+                        _ => None,
+                    };
+
                     raise_streak = abr_raise_streak_next(raise_streak, loss, nack_rate, &cfg);
 
                     let mut next_bps =
-                        if no_recent_rr && now.duration_since(started) >= ABR_NO_RR_CUT_AFTER {
+                        if starved {
                             min_bps
                         } else if nack_rate >= cfg.nack_hi {
                             abr_next_bps(
@@ -2443,6 +2461,28 @@ mod tests {
         assert_eq!(abr_raise_streak_next(2, Some(0.02), 0.0, &cfg), 0);
         assert_eq!(abr_raise_streak_next(2, Some(0.01), 5.0, &cfg), 0);
         assert_eq!(abr_raise_streak_next(2, None, 0.0, &cfg), 0);
+    }
+
+    #[test]
+    fn abr_starved_requires_active_frames() {
+        // idle screen (no frame change) => not starved even when RR is stale & elapsed
+        assert!(!abr_starved(true, false, true));
+        // actively sending frames + stale RR + past cut window => starved
+        assert!(abr_starved(true, true, true));
+        // recent RR => not starved
+        assert!(!abr_starved(false, true, true));
+        // not yet past the cut window => not starved
+        assert!(!abr_starved(true, true, false));
+    }
+
+    #[test]
+    fn bitrate_change_writes_on_exact_five_percent_raise() {
+        // RAISE_FACTOR=1.05 yields an exactly-5% change; ABR_WRITE_HYSTERESIS=0.05.
+        // The boundary must actuate (>=), else a single clean raise never reaches the
+        // encoder.
+        assert!(bitrate_change_exceeds_hysteresis(600_000, 630_000)); // exactly +5%
+        assert!(!bitrate_change_exceeds_hysteresis(600_000, 600_000)); // no change
+        assert!(!bitrate_change_exceeds_hysteresis(600_000, 610_000)); // <5% held
     }
 
     fn frame_rid(frame: &[u8]) -> String {
