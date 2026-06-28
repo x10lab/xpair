@@ -47,9 +47,32 @@ Establish: launch host → programmatic client receives H.264 → dump getStats 
   Record baseline 3× with stddev.
 
 ### Slice 4 — candidate fixes (host, via CI pre-release) + autoresearch loop
-- PLI cooldown → NACK/RTX → adaptive bitrate (serve_webrtc.rs / CaptureEngine).
+- PLI cooldown → ~~NACK/RTX~~ → adaptive bitrate / FEC (serve_webrtc.rs / CaptureEngine).
 - Loop: codex implements fix → CI prerelease → install on M1 → score vs baseline
   beyond stddev, SSIM gate satisfied. Plus qualitative blind-A/B on top-N.
+
+#### Findings (2026-06-28 autoresearch)
+- **NACK/RTX is already on and saturated.** Host registers
+  `register_default_interceptors` (serve_webrtc.rs:1160) → webrtc-rs NACK
+  responder retransmits every dropped packet. Proxy stats from real runs show
+  `retransmitsPassed == dropped` (burst: 138/138, 108/108; loss: 11/11). The
+  doc's "bursts need NACK/RTX" is therefore *already satisfied*; do NOT build it.
+- **The benchmark was saturated.** The relay dropped only the first send of each
+  seq and passed all retransmits, so NACK/RTX trivially recovered everything —
+  the only injected penalty was recovery latency, not information loss. Burst
+  still gate-failed on coverage purely from decoder freeze during the retransmit
+  RTT.
+- **Fix applied (instrument, no host rebuild):** added `RETX_LOSS` to the relay
+  (`bench/proxy/relay.js`) — probability a retransmit is *also* dropped, keyed
+  deterministically by `(normSeq, attempt)`. Default 0 = old behavior. With
+  `RETX_LOSS>0` there is real residual loss NACK can't defeat, so candidate fixes
+  (FEC, adaptive bitrate, jitter buffer) finally have signal to climb.
+- **PLI cooldown A/B (RETX_LOSS=0):** loss cd0=0.478 vs cd150/250=0.500 (faint,
+  within single-run noise), cd400=0.475; burst all coverage-gate-fail at every
+  cd. Re-run with `RETX_LOSS≈0.3` (live, M1-when-away) to see a real signal.
+- **Next candidate:** adaptive bitrate (fewer packets/frame under loss → smaller
+  hit probability per frame) or FEC, since residual loss is the real challenge.
+  Design = Claude, host implementation = codex, build = CI/m4.
 
 ## Telemetry note
 `collectVideoStats` in the production webview emits only

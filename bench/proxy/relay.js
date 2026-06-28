@@ -44,6 +44,10 @@ function readConfig(env = process.env) {
     fragBytes: envNumber("FRAG_BYTES", 1100, env),
     fragLoss: envNumber("FRAG_LOSS", loss > 0 ? loss : 1, env),
     rtcpLoss: envNumber("RTCP_LOSS", 0, env),
+    // Residual loss: probability a retransmit is ALSO dropped, modeling real
+    // networks where recovery packets are lost too. Default 0 = retransmits
+    // always pass (NACK/RTX trivially recovers), which saturates the benchmark.
+    retxLoss: envNumber("RETX_LOSS", 0, env),
     burstSchedule: parseBurstSchedule(env.BURST_SCHEDULE || ""),
     statsPath: env.PROXY_STATS ? path.resolve(env.PROXY_STATS) : defaultStatsPath(),
   };
@@ -144,6 +148,7 @@ function createStats(config) {
     droppedByProfile: {},
     uniqueSeqsDropped: 0,
     retransmitsPassed: 0,
+    retransmitsDropped: 0,
     bursts: [],
     notes: [
       "The first RTP media sender is treated as host-side; the other learned endpoint is treated as client-side.",
@@ -288,7 +293,16 @@ class Impairer {
       this.stats.uniqueSeqsDropped = this.droppedSeqs.size;
       return { drop: true, delayMs: 0, reason: selectedProfile, normSeq };
     }
-    if (selectedProfile && count > 1) this.stats.retransmitsPassed += 1;
+    if (count > 1) {
+      if (!this.isPassthrough() && this.config.retxLoss > 0 &&
+        seededFloat(this.config.seed, `retx:${normSeq}:${count}`) < this.config.retxLoss) {
+        this.droppedSeqs.add(normSeq);
+        this.stats.uniqueSeqsDropped = this.droppedSeqs.size;
+        this.stats.retransmitsDropped += 1;
+        return { drop: true, delayMs: 0, reason: "retxLoss", normSeq };
+      }
+      if (selectedProfile) this.stats.retransmitsPassed += 1;
+    }
     return { drop: false, delayMs, reason: null, normSeq };
   }
 }

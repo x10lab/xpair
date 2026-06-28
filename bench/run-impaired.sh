@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST_BIN="${HOME}/.xpair/host/bin/screen"
+HOST_BIN="${HOST_BIN:-${HOME}/.xpair/host/bin/screen}"
 
 PORT="${PORT:-8890}"
 PROXY_PORT="${PROXY_PORT:-8891}"
@@ -95,6 +95,7 @@ GE_LOSS_BAD="${GE_LOSS_BAD:-}" \
 FRAG_BYTES="${FRAG_BYTES:-}" \
 FRAG_LOSS="${FRAG_LOSS:-}" \
 RTCP_LOSS="${RTCP_LOSS:-}" \
+RETX_LOSS="${RETX_LOSS:-}" \
 BURST_SCHEDULE="${BURST_SCHEDULE:-}" \
 node "${ROOT}/proxy/relay.js" &
 RELAY_PID="$!"

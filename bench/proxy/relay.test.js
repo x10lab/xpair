@@ -86,6 +86,33 @@ assert.equal(classifyPacket(rtpPacket(7)).seq, 7);
 assert.deepEqual(droppedSeqs("same-seed"), droppedSeqs("same-seed"));
 assert.notDeepEqual(droppedSeqs("same-seed"), droppedSeqs("other-seed"));
 
+// Residual loss (RETX_LOSS): retransmits can also be dropped, so NACK/RTX no
+// longer trivially recovers. retxLoss=1 drops every retransmit too.
+{
+  const cfg = config({ profile: "loss", loss: 1, retxLoss: 1 });
+  const stats = createStats(cfg);
+  const impairer = new Impairer(cfg, stats);
+  const packet = rtpPacket(2200);
+  assert.equal(impairer.decide(classifyPacket(packet), DIR_HOST_TO_CLIENT, packet.length).drop, true);
+  const retx = impairer.decide(classifyPacket(packet), DIR_HOST_TO_CLIENT, packet.length);
+  assert.equal(retx.drop, true);
+  assert.equal(retx.reason, "retxLoss");
+  assert.equal(stats.retransmitsPassed, 0);
+  assert.equal(stats.retransmitsDropped, 1);
+}
+
+// retxLoss=0 (default) keeps the old behavior: retransmits always pass.
+{
+  const cfg = config({ profile: "loss", loss: 1, retxLoss: 0 });
+  const stats = createStats(cfg);
+  const impairer = new Impairer(cfg, stats);
+  const packet = rtpPacket(2300);
+  impairer.decide(classifyPacket(packet), DIR_HOST_TO_CLIENT, packet.length);
+  assert.equal(impairer.decide(classifyPacket(packet), DIR_HOST_TO_CLIENT, packet.length).drop, false);
+  assert.equal(stats.retransmitsPassed, 1);
+  assert.equal(stats.retransmitsDropped, 0);
+}
+
 {
   const cfg = config({ profile: "burst", seed: "burst-seed", geP: 0.7, geR: 0.05, geLossBad: 1 });
   const impairer = new Impairer(cfg, createStats(cfg));
