@@ -337,6 +337,8 @@ struct AbrCfg {
     interval: Duration,
     loss_lo: f32,
     loss_hi: f32,
+    raise_after: usize,
+    raise_factor: f32,
     nack_lo: f32,
     nack_hi: f32,
 }
@@ -347,6 +349,10 @@ impl AbrCfg {
             interval: env_duration_ms("RP_ABR_INTERVAL_MS", 1500),
             loss_lo: env_f32("RP_ABR_LOSS_LO", 0.02),
             loss_hi: env_f32("RP_ABR_LOSS_HI", 0.10),
+            // Raise only after RP_ABR_RAISE_AFTER consecutive clean ABR intervals (default 3).
+            raise_after: env_usize("RP_ABR_RAISE_AFTER", 3).max(1),
+            // RP_ABR_RAISE_FACTOR is intentionally gentler than the cut factor (default 1.05).
+            raise_factor: env_f32("RP_ABR_RAISE_FACTOR", 1.05).max(1.0),
             // NACK thresholds are RTP sequence numbers NACKed per second.
             nack_lo: env_f32("RP_ABR_NACK_LO", 5.0),
             nack_hi: env_f32("RP_ABR_NACK_HI", 50.0),
@@ -393,10 +399,38 @@ fn env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn abr_raise_tick_clean(loss_rr: f32, nack_rate: f32, cfg: &AbrCfg) -> bool {
+    loss_rr < cfg.loss_lo && nack_rate < cfg.nack_lo
+}
+
+fn abr_raise_streak_next(
+    current: usize,
+    loss_rr: Option<f32>,
+    nack_rate: f32,
+    cfg: &AbrCfg,
+) -> usize {
+    if loss_rr
+        .map(|loss| abr_raise_tick_clean(loss, nack_rate, cfg))
+        .unwrap_or(false)
+    {
+        current.saturating_add(1)
+    } else {
+        0
+    }
+}
+
 fn abr_next_bps(
     cur: u32,
     loss_rr: f32,
     nack_rate: f32,
+    raise_streak: usize,
     min: u32,
     max: u32,
     cfg: &AbrCfg,
@@ -405,8 +439,8 @@ fn abr_next_bps(
     let cur = cur.clamp(min, max);
     if loss_rr >= cfg.loss_hi || nack_rate >= cfg.nack_hi {
         ((cur as f32) * 0.80).round() as u32
-    } else if loss_rr < cfg.loss_lo && nack_rate < cfg.nack_lo {
-        ((cur as f32) * 1.10).round() as u32
+    } else if abr_raise_tick_clean(loss_rr, nack_rate, cfg) && raise_streak >= cfg.raise_after {
+        ((cur as f32) * cfg.raise_factor).round() as u32
     } else {
         cur
     }
@@ -2005,10 +2039,12 @@ fn spawn_abr_controller(
     let max_bps = env_u32("RP_ABR_MAX_BPS", spawn_bps).min(spawn_bps);
     let min_bps = env_u32("RP_ABR_MIN_BPS", 150_000).min(max_bps);
     tracing::info!(
-        "serve-webrtc: ABR enabled interval={}ms loss_lo={} loss_hi={} nack_lo={}/s nack_hi={}/s min={}bps max={}bps actuation={}",
+        "serve-webrtc: ABR enabled interval={}ms loss_lo={} loss_hi={} raise_after={} raise_factor={} nack_lo={}/s nack_hi={}/s min={}bps max={}bps actuation={}",
         cfg.interval.as_millis(),
         cfg.loss_lo,
         cfg.loss_hi,
+        cfg.raise_after,
+        cfg.raise_factor,
         cfg.nack_lo,
         cfg.nack_hi,
         min_bps,
@@ -2021,6 +2057,7 @@ fn spawn_abr_controller(
         let mut sent_bps = spawn_bps;
         let mut last_frames = frame_counter.load(Ordering::Relaxed);
         let mut last_cut_at: Option<Instant> = None;
+        let mut raise_streak = 0usize;
         let mut tick = tokio::time::interval(cfg.interval);
         loop {
             tokio::select! {
@@ -2049,6 +2086,8 @@ fn spawn_abr_controller(
                     let screen_changed = frames != last_frames;
                     last_frames = frames;
 
+                    raise_streak = abr_raise_streak_next(raise_streak, loss, nack_rate, &cfg);
+
                     let mut next_bps =
                         if no_recent_rr && now.duration_since(started) >= ABR_NO_RR_CUT_AFTER {
                             min_bps
@@ -2057,12 +2096,21 @@ fn spawn_abr_controller(
                                 target_bps,
                                 loss.unwrap_or(0.0),
                                 nack_rate,
+                                raise_streak,
                                 min_bps,
                                 max_bps,
                                 &cfg,
                             )
                         } else if let Some(loss) = loss {
-                            abr_next_bps(target_bps, loss, nack_rate, min_bps, max_bps, &cfg)
+                            abr_next_bps(
+                                target_bps,
+                                loss,
+                                nack_rate,
+                                raise_streak,
+                                min_bps,
+                                max_bps,
+                                &cfg,
+                            )
                         } else {
                             target_bps
                         };
@@ -2082,7 +2130,7 @@ fn spawn_abr_controller(
 
                     let logged_loss = loss.unwrap_or(f32::NAN);
                     tracing::info!(
-                        "serve-webrtc: ABR tick loss_rr={logged_loss:.3} nack_rate={nack_rate:.1} target={next_bps}bps"
+                        "serve-webrtc: ABR tick loss_rr={logged_loss:.3} nack_rate={nack_rate:.1} raise_streak={raise_streak} target={next_bps}bps"
                     );
                     if next_bps != target_bps {
                         let was = target_bps;
@@ -2278,25 +2326,37 @@ mod tests {
             interval: Duration::from_millis(1500),
             loss_lo: 0.02,
             loss_hi: 0.10,
+            raise_after: 3,
+            raise_factor: 1.05,
             nack_lo: 5.0,
             nack_hi: 50.0,
         }
     }
 
     #[test]
-    fn abr_next_bps_raises_below_low_loss_and_clamps_to_max() {
+    fn abr_next_bps_holds_clean_tick_below_raise_threshold() {
         let cfg = test_abr_cfg();
 
         assert_eq!(
-            abr_next_bps(1_000_000, 0.01, 0.0, 150_000, 2_000_000, &cfg),
-            1_100_000
+            abr_next_bps(1_000_000, 0.01, 0.0, 2, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_raises_at_streak_threshold_and_clamps_to_max() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 0.0, 3, 150_000, 2_000_000, &cfg),
+            1_050_000
         );
         assert_eq!(
-            abr_next_bps(1_950_000, 0.0, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_950_000, 0.0, 0.0, 3, 150_000, 2_000_000, &cfg),
             2_000_000
         );
         assert_eq!(
-            abr_next_bps(2_000_000, 0.0, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(2_000_000, 0.0, 0.0, 3, 150_000, 2_000_000, &cfg),
             2_000_000
         );
     }
@@ -2306,15 +2366,15 @@ mod tests {
         let cfg = test_abr_cfg();
 
         assert_eq!(
-            abr_next_bps(1_000_000, 0.02, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.02, 0.0, 3, 150_000, 2_000_000, &cfg),
             1_000_000
         );
         assert_eq!(
-            abr_next_bps(1_000_000, 0.05, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.05, 0.0, 3, 150_000, 2_000_000, &cfg),
             1_000_000
         );
         assert_eq!(
-            abr_next_bps(1_000_000, 0.0, 5.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.0, 5.0, 3, 150_000, 2_000_000, &cfg),
             1_000_000
         );
     }
@@ -2324,15 +2384,15 @@ mod tests {
         let cfg = test_abr_cfg();
 
         assert_eq!(
-            abr_next_bps(1_000_000, 0.10, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.10, 0.0, 0, 150_000, 2_000_000, &cfg),
             800_000
         );
         assert_eq!(
-            abr_next_bps(180_000, 0.50, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(180_000, 0.50, 0.0, 0, 150_000, 2_000_000, &cfg),
             150_000
         );
         assert_eq!(
-            abr_next_bps(150_000, 1.0, 0.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(150_000, 1.0, 0.0, 0, 150_000, 2_000_000, &cfg),
             150_000
         );
     }
@@ -2342,11 +2402,11 @@ mod tests {
         let cfg = test_abr_cfg();
 
         assert_eq!(
-            abr_next_bps(1_000_000, 0.0, 50.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.0, 50.0, 0, 150_000, 2_000_000, &cfg),
             800_000
         );
         assert_eq!(
-            abr_next_bps(1_000_000, 0.01, 250.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.01, 250.0, 0, 150_000, 2_000_000, &cfg),
             800_000
         );
     }
@@ -2356,13 +2416,24 @@ mod tests {
         let cfg = test_abr_cfg();
 
         assert_eq!(
-            abr_next_bps(1_000_000, 0.01, 4.9, 150_000, 2_000_000, &cfg),
-            1_100_000
+            abr_next_bps(1_000_000, 0.01, 4.9, 3, 150_000, 2_000_000, &cfg),
+            1_050_000
         );
         assert_eq!(
-            abr_next_bps(1_000_000, 0.01, 5.0, 150_000, 2_000_000, &cfg),
+            abr_next_bps(1_000_000, 0.01, 5.0, 3, 150_000, 2_000_000, &cfg),
             1_000_000
         );
+    }
+
+    #[test]
+    fn abr_raise_streak_resets_on_dirty_tick() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(abr_raise_streak_next(0, Some(0.01), 4.9, &cfg), 1);
+        assert_eq!(abr_raise_streak_next(1, Some(0.01), 4.9, &cfg), 2);
+        assert_eq!(abr_raise_streak_next(2, Some(0.02), 0.0, &cfg), 0);
+        assert_eq!(abr_raise_streak_next(2, Some(0.01), 5.0, &cfg), 0);
+        assert_eq!(abr_raise_streak_next(2, None, 0.0, &cfg), 0);
     }
 
     fn frame_rid(frame: &[u8]) -> String {
