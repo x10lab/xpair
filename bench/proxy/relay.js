@@ -374,16 +374,15 @@ class Relay {
     this.host = null;
     this.peerA = null;
     this.peerB = null;
+    this.seen = new Map(); // endpointKey -> { endpoint, seq }; recency for client pick
+    this.seq = 0;
     this.exiting = false;
   }
 
-  isMediaEndpoint(ep) {
-    if (!ep) return false;
-    const k = endpointKey(ep);
-    return (this.host && endpointKey(this.host) === k) ||
-      (this.client && endpointKey(this.client) === k);
-  }
-
+  // Bootstrap-only endpoint slots: relay STUN/DTLS symmetrically BEFORE media roles are
+  // known. Once an RTP packet identifies the host, forwarding switches to strict
+  // role-based routing (routeDestination), so these slots no longer decide where media
+  // goes — a stale connectivity-check endpoint parked here can't misroute media.
   learnPeer(rinfo) {
     const key = endpointKey(rinfo);
     if (this.peerA && endpointKey(this.peerA) === key) return "peerA";
@@ -396,24 +395,6 @@ class Relay {
       this.peerB = endpointObject(rinfo);
       return "peerB";
     }
-    // Both slots full. A peer that gathered more than one host candidate (Wi-Fi +
-    // VPN/IPv6) can fill these with an early connectivity-check pair that ICE never
-    // nominates; the actually-selected port then arrives here and, with a hard
-    // `return null`, would never be forwarded → a zero-traffic/mismeasured run.
-    // Once media roles are assigned the two media endpoints are sacred; until then,
-    // let a newer endpoint evict a not-yet-confirmed-media slot so the nominated pair
-    // can still be learned.
-    if (!this.isMediaEndpoint(this.peerA)) {
-      console.error(`relay: re-learning peerA ${endpointKey(this.peerA)} -> ${key}`);
-      this.peerA = endpointObject(rinfo);
-      return "peerA";
-    }
-    if (!this.isMediaEndpoint(this.peerB)) {
-      console.error(`relay: re-learning peerB ${endpointKey(this.peerB)} -> ${key}`);
-      this.peerB = endpointObject(rinfo);
-      return "peerB";
-    }
-    console.error(`relay: dropping extra endpoint ${key} (both media slots locked)`);
     return null;
   }
 
@@ -423,12 +404,53 @@ class Relay {
     return null;
   }
 
-  assignMediaRoles(source, destination) {
-    if (this.host || this.client || !source || !destination) return;
-    this.host = source;
-    this.client = destination;
-    this.stats.endpoints.host = this.host;
-    this.stats.endpoints.client = this.client;
+  recordSeen(rinfo) {
+    this.seq += 1;
+    this.seen.set(endpointKey(rinfo), { endpoint: endpointObject(rinfo), seq: this.seq });
+  }
+
+  // Most-recently-active endpoint other than `exceptKey`. Picking the client by recency
+  // means an obsolete connectivity-check endpoint that has gone quiet is never chosen
+  // over the live peer that keeps exchanging RTCP during media.
+  mostRecentOther(exceptKey) {
+    let best = null;
+    let bestSeq = -1;
+    for (const [k, v] of this.seen) {
+      if (k === exceptKey) continue;
+      if (v.seq > bestSeq) { bestSeq = v.seq; best = v.endpoint; }
+    }
+    return best;
+  }
+
+  // Only the host sends RTP (the client transceiver is recvonly), so the RTP source IS
+  // the host; the client is the live non-host endpoint. Assigning roles by packet
+  // semantics — not by "whatever filled the other bootstrap slot" — is what prevents
+  // media being routed to a stale endpoint when ICE gathered more than two candidates.
+  updateRoles(source, isRtp) {
+    const key = endpointKey(source);
+    if (isRtp && !this.host) {
+      this.host = source;
+      this.stats.endpoints.host = source;
+      const other = this.mostRecentOther(key);
+      if (other) {
+        this.client = other;
+        this.stats.endpoints.client = other;
+      }
+    }
+    if (this.host && !this.client && endpointKey(this.host) !== key) {
+      this.client = source;
+      this.stats.endpoints.client = source;
+    }
+  }
+
+  routeDestination(source, peer) {
+    if (this.host && this.client) {
+      const k = endpointKey(source);
+      if (k === endpointKey(this.host)) return this.client;
+      if (k === endpointKey(this.client)) return this.host;
+      return null; // media phase: ignore unknown extra endpoints, never misroute
+    }
+    return this.destinationForPeer(peer); // bootstrap: symmetric STUN/DTLS relay
   }
 
   directionFor(source) {
@@ -439,10 +461,11 @@ class Relay {
 
   handleMessage(buffer, rinfo) {
     const source = endpointObject(rinfo);
+    this.recordSeen(rinfo);
     const peer = this.learnPeer(rinfo);
     const packet = classifyPacket(buffer);
-    const destination = this.destinationForPeer(peer);
-    if (packet.className === CLASS_RTP) this.assignMediaRoles(source, destination);
+    this.updateRoles(source, packet.className === CLASS_RTP);
+    const destination = this.routeDestination(source, peer);
     const direction = this.directionFor(source) || DIR_UNKNOWN;
     addCounter(this.stats, direction, packet.className, "total");
     if (!destination) return;
@@ -515,9 +538,11 @@ module.exports = {
   DIR_HOST_TO_CLIENT,
   DIR_UNKNOWN,
   Impairer,
+  Relay,
   SeqNormalizer,
   classifyPacket,
   createStats,
+  endpointKey,
   readConfig,
   seededFloat,
 };

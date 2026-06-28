@@ -328,6 +328,8 @@ final class ScreenServer {
             applyStop(gen: gen, rid: rid)
         case let .keyframeOp(gen, rid):
             applyKeyframe(gen: gen, rid: rid)
+        case let .bitrateOp(gen, _, bitrate):
+            applyBitrate(gen: gen, bitrate: bitrate)
         case let .startCompleted(gen, info):
             applyStartCompleted(gen: gen, info: info)
         case let .startFailed(gen, kind, reason):
@@ -437,6 +439,17 @@ final class ScreenServer {
         } else {
             writeAck(gen: gen, rid: rid, op: .keyframe, result: .accepted)
         }
+    }
+
+    private func applyBitrate(gen: Generation, bitrate: Int) {
+        // No-ack runtime ABR actuation: only retarget the live encoder for the active
+        // generation; a stale/non-running gen is ignored best-effort (like keyframe).
+        guard case let .running(active) = state, active == gen else {
+            log("SCREEN: ignoring bitrate op for non-active generation=\(gen.raw) active=\(String(describing: state.activeGen?.raw))")
+            return
+        }
+        log("SCREEN: control bitrate -> retarget encoder generation=\(gen.raw) bitrate=\(bitrate)")
+        captureEngine.setBitrate(bitrate)
     }
 
     private func applyStartCompleted(gen: Generation, info: StartedInfo) {
@@ -570,6 +583,9 @@ final class ScreenServer {
             return .stopOp(gen: gen, rid: message.rid)
         case "keyframe":
             return .keyframeOp(gen: gen, rid: message.rid)
+        case "bitrate":
+            guard let bitrate = message.bitrate else { return nil }
+            return .bitrateOp(gen: gen, rid: message.rid, bitrate: bitrate)
         default:
             return nil
         }

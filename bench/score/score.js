@@ -121,7 +121,13 @@ function scoreRun(client, proxy, baselineVariance = null, options = {}) {
     finiteNumber(client.run && client.run.fps) ??
     30;
   const decodedFps = finiteNumber(summary.decodedFps) ?? finiteNumber(summary.decodedFramesPerSecond) ?? 0;
-  const freezeRatio = Math.max(0, Math.min(1, finiteNumber(summary.freezeRatio) ?? 0));
+  // freezeRatio is the PRIMARY freeze metric and a positively-weighted scoring term
+  // (freeze: WEIGHTS.freeze * (1 - freezeRatio)). When it is absent/null (e.g. a
+  // browser/build where summarizeSamples couldn't compute it), coercing to 0 would
+  // award the FULL freeze term to a run that never measured freezes. Track it as
+  // missing and hard-gate the run as invalid instead of crediting it.
+  const freezeRatioRaw = finiteNumber(summary.freezeRatio);
+  const freezeRatio = Math.max(0, Math.min(1, freezeRatioRaw ?? 0));
   const recovery = computeRecovery(client, proxy && proxy.bursts, {
     expectedFps,
     recoverFrac: finiteNumber(options.recoverFrac),
@@ -134,6 +140,7 @@ function scoreRun(client, proxy, baselineVariance = null, options = {}) {
   const e2eBase = finiteNumber(options.e2eBase) ?? finiteNumber(inputValue(client, "e2eBase"));
 
   const missing = [];
+  if (freezeRatioRaw === null) missing.push("freezeRatio");
   if (pliRate === null) missing.push("pliRate");
   if (cpuSlope === null) missing.push("cpuSlope");
   if (qp === null) missing.push("qp");
@@ -167,10 +174,12 @@ function scoreRun(client, proxy, baselineVariance = null, options = {}) {
   const coverage = expectedFps > 0 ? decodedFps / expectedFps : 0;
   const gates = {
     passed: true,
+    freezeTelemetry: freezeRatioRaw !== null,
     ssim: ssim === null ? "absent" : ssim >= SSIM_FLOOR,
     coverage: coverage >= COVERAGE_FLOOR,
     axisA: "not-applicable",
   };
+  if (!gates.freezeTelemetry) gates.passed = false;
   if (ssim !== null && ssim < SSIM_FLOOR) gates.passed = false;
   if (!gates.coverage) gates.passed = false;
 

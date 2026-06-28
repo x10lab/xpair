@@ -74,6 +74,15 @@ function testCoverageHardGate() {
   assert.equal(record.score, HARD_GATE_SCORE);
 }
 
+function testFreezeTelemetryHardGate() {
+  // decodedFps=30 keeps the coverage gate green so freezeTelemetry is the only fail.
+  const record = scoreRun(client({ summary: { durationMs: 2000, decodedFps: 30, packetsLost: 0 } }), proxy());
+  assert.equal(record.gates.freezeTelemetry, false);
+  assert.equal(record.gates.passed, false);
+  assert.equal(record.score, HARD_GATE_SCORE);
+  assert.ok(record.missing.includes("freezeRatio"));
+}
+
 function testSsimHardGate() {
   const record = scoreRun(client(), proxy(), null, { ssim: 0.9 });
   assert.equal(record.gates.ssim, false);
@@ -134,6 +143,7 @@ const tests = [
   testNormUsesBaselineStddev,
   testCompositeMathAndMissing,
   testCoverageHardGate,
+  testFreezeTelemetryHardGate,
   testSsimHardGate,
   testAxisAGatePassthrough,
   testAxisATimeBasedSuspected,

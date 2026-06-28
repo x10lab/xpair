@@ -9,9 +9,11 @@ const {
   CLASS_STUN,
   DIR_HOST_TO_CLIENT,
   Impairer,
+  Relay,
   SeqNormalizer,
   classifyPacket,
   createStats,
+  endpointKey,
 } = require("./relay");
 
 function stunPacket() {
@@ -202,6 +204,29 @@ assert.notDeepEqual(droppedSeqs("same-seed"), droppedSeqs("other-seed"));
   assert.equal(normalizer.normalize(65535), 1);
   assert.equal(normalizer.normalize(0), 2);
   assert.equal(normalizer.normalize(1), 3);
+}
+
+{
+  // Multi-endpoint routing: a stale connectivity-check endpoint fills a bootstrap slot
+  // before the ICE-nominated client. Media (RTP, which only the host sends) must route
+  // to the live client by role, never to the stale endpoint parked in a peer slot.
+  const relay = new Relay(config({ profile: "passthrough" }));
+  const sent = [];
+  relay.socket = { send: (_buf, port, address) => sent.push(`${address}:${port}`) };
+  const stale = { address: "127.0.0.1", port: 6000 };
+  const realClient = { address: "127.0.0.1", port: 7000 };
+  const host = { address: "127.0.0.1", port: 5000 };
+
+  relay.handleMessage(stunPacket(), stale);        // bootstrap: peerA = stale
+  relay.handleMessage(stunPacket(), realClient);   // bootstrap: peerB = real client
+  relay.handleMessage(stunPacket(), host);         // slots full; host not parked
+  relay.handleMessage(rtcpPacket(), realClient);   // real client stays most-recently-active
+
+  sent.length = 0;
+  relay.handleMessage(rtpPacket(1), host);         // first RTP => host locks, client by recency
+  assert.equal(endpointKey(relay.host), "127.0.0.1:5000");
+  assert.equal(endpointKey(relay.client), "127.0.0.1:7000");
+  assert.deepEqual(sent, ["127.0.0.1:7000"], `media must go only to the live client, got ${sent.join(",")}`);
 }
 
 console.log("relay.test ok");

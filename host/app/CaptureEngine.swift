@@ -227,6 +227,23 @@ final class CaptureEngine {
         }
     }
 
+    /// Retarget the encoder's average bitrate at runtime (ABR actuation). Called from
+    /// another thread (ScreenServer's control reader) on a no-ack `bitrate` control op.
+    /// Best-effort: applied on the SCK sample queue (where the VT session lives); a
+    /// no-op if there is no session yet — the next ensureEncoder() uses the new value.
+    func setBitrate(_ bitrate: Int) {
+        sampleQueue.async { [weak self] in
+            guard let self = self else { return }
+            let safe = max(100_000, bitrate)
+            self.bitrate = safe
+            guard let sess = self.session else { return }
+            VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: safe as CFNumber)
+            // DataRateLimits is [bytes, seconds]: cap the 1s window to the new bitrate/8.
+            let limits = [safe / 8, 1] as CFArray
+            VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
+        }
+    }
+
     // ---- VT encoder (created once we know dimensions) ----
     private func ensureEncoder(_ w: Int, _ h: Int) {
         if session != nil { return }

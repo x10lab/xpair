@@ -1938,7 +1938,7 @@ impl CaptureSource {
     fn bitrate_control(&self) -> Option<AbrActuator> {
         match self {
             CaptureSource::Child(h) => h.bitrate_control(),
-            CaptureSource::Stdin(_) => None,
+            CaptureSource::Stdin(h) => Some(h.bitrate_control()),
         }
     }
 }
@@ -1971,6 +1971,10 @@ impl StdinReaderHandle {
             self.control.stop_noack(self.generation);
             self.registry.deregister(self.generation);
         }
+    }
+
+    fn bitrate_control(&self) -> AbrActuator {
+        AbrActuator::control(self.control.clone(), self.generation)
     }
 
     async fn capture_display_id_for_input(&mut self) -> Result<Option<u32>, String> {
@@ -2019,22 +2023,50 @@ fn spawn_au_stdin_reader(
         .ok();
 }
 
+/// Where ABR pushes a new target bitrate. `Pipe` writes `bitrate <bps>\n` to a
+/// spawned rp-screencap child's stdin (standalone path); `Control` sends a no-ack
+/// `bitrate` control op to the parent app's in-process CaptureEngine encoder
+/// (app-capture / `RP_AU_STDIN=1` path).
 #[derive(Clone)]
-struct AbrActuator {
-    stdin: Arc<Mutex<std::process::ChildStdin>>,
+enum AbrActuator {
+    Pipe(Arc<Mutex<std::process::ChildStdin>>),
+    Control {
+        control: ControlClient,
+        generation: u64,
+    },
 }
 
 impl AbrActuator {
-    fn new(stdin: Arc<Mutex<std::process::ChildStdin>>) -> Self {
-        Self { stdin }
+    fn pipe(stdin: Arc<Mutex<std::process::ChildStdin>>) -> Self {
+        Self::Pipe(stdin)
+    }
+
+    fn control(control: ControlClient, generation: u64) -> Self {
+        Self::Control {
+            control,
+            generation,
+        }
     }
 
     fn set_bitrate(&self, bps: u32) -> bool {
-        let line = format!("bitrate {bps}\n");
-        self.stdin
-            .lock()
-            .map(|mut stdin| stdin.write_all(line.as_bytes()).is_ok())
-            .unwrap_or(false)
+        match self {
+            Self::Pipe(stdin) => {
+                let line = format!("bitrate {bps}\n");
+                stdin
+                    .lock()
+                    .map(|mut stdin| stdin.write_all(line.as_bytes()).is_ok())
+                    .unwrap_or(false)
+            }
+            Self::Control {
+                control,
+                generation,
+            } => {
+                // Fire-and-forget: the app applies the new bitrate best-effort on
+                // its encoder session; there is no ack to wait on.
+                control.bitrate_noack(*generation, bps);
+                true
+            }
+        }
     }
 }
 
@@ -2065,12 +2097,11 @@ fn spawn_abr_controller(
         actuator.is_some()
     );
     if actuator.is_none() {
-        // App-capture (RP_AU_STDIN=1) reads pre-encoded AUs from the host app's
-        // CaptureEngine, which this process cannot retarget — there is no bitrate
-        // control op on that path. Be honest that ABR is observe-only here rather
-        // than implying it is throttling the encoder under congestion.
+        // No bitrate actuator wired for this capture path, so this process cannot
+        // retarget the encoder. Be honest that ABR is observe-only here rather than
+        // implying it is throttling the encoder under congestion.
         tracing::warn!(
-            "serve-webrtc: ABR has no bitrate actuator on this capture path (app-capture/stdin); running OBSERVE-ONLY — encoder bitrate will NOT change under congestion"
+            "serve-webrtc: ABR has no bitrate actuator on this capture path; running OBSERVE-ONLY — encoder bitrate will NOT change under congestion"
         );
     }
     tokio::spawn(async move {
@@ -2199,7 +2230,7 @@ impl CaptureHandle {
     fn bitrate_control(&self) -> Option<AbrActuator> {
         self.control_stdin
             .as_ref()
-            .map(|stdin| AbrActuator::new(stdin.clone()))
+            .map(|stdin| AbrActuator::pipe(stdin.clone()))
     }
 }
 
@@ -2327,6 +2358,20 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("timed out waiting for {count} control frame(s)");
+    }
+
+    #[test]
+    fn control_actuator_writes_bitrate_frame() {
+        let writer = Arc::new(TestControlWriter::default());
+        let control = ControlClient::new(writer.clone());
+        let actuator = AbrActuator::control(control, 42);
+        assert!(actuator.set_bitrate(1_500_000));
+        let frames = writer.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            String::from_utf8(frames[0].clone()).expect("utf8"),
+            r#"{"v":1,"op":"bitrate","gen":42,"rid":"42-1","bitrate":1500000}"#
+        );
     }
 
     #[test]
