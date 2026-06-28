@@ -100,6 +100,27 @@ Establish: launch host → programmatic client receives H.264 → dump getStats 
   point both (a) may ship as a better default and (b) defines the target an
   adaptive policy (codex, via CI) should switch to under detected loss.
 
+#### Findings (2026-06-28, cont'd 2) — congestion collapse is the real bug
+- **Lowering bitrate does NOT help under pure random/burst loss** (3× grid:
+  4M decFps ~18 > 2M ~14.8; scale<1.0 broke the deployed encoder, decFps ~4).
+  NACK/RTX recovers loss independent of bitrate, so ABR-down is pointless here.
+- **But under a bandwidth cap the host suffers congestion collapse.** 3× grid on
+  passthrough + BW_KBPS (stream ≈ 570 kbps):
+  - none → score 0.500, decFps 23.7 (clean)
+  - 500k → gate-fail, decFps 0.2, injLoss 83%, **totalRTP 2347** (fwd ~410)
+  - 300k → gate-fail, decFps 0.3, **totalRTP 6674**
+  - 200k → gate-fail, decFps 0.1, **totalRTP 11918 (10× the clean count)**
+  The RTP count balloons because cap-drops → NACK → retransmit → those also
+  exceed the cap → more NACK = a **retransmission storm** that amplifies
+  congestion. NACK/RTX makes congestion *worse*.
+- **Root cause:** the host has **no send-side congestion control / pacing** — it
+  emits at the encoder's rate regardless of the path, and the default NACK
+  responder storms a saturated link. This is the genuine, high-value bug.
+- **Fix = adaptive bitrate (ABR), congestion-triggered.** Lower the encoder
+  target to fit the link so the overflow (and the NACK storm) disappears. Trigger
+  on **sustained loss / retransmits-not-helping (congestion)**, NOT transient loss
+  (which NACK recovers — keep bitrate high there). This is the key discriminator.
+
 ## Adaptive bitrate design — RustDesk reference (port structure, drive from loss)
 RustDesk `src/server/video_qos.rs` is a sender-side **delay-based** QoS controller
 (TCP transport → no loss visibility). We replicate its *structure* but drive it
