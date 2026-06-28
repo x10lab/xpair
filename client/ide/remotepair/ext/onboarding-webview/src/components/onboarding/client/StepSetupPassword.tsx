@@ -6,6 +6,8 @@ import { FingerprintPanel } from "./FingerprintPanel";
 type Props = {
   peer: Peer;
   onReady: (ready: boolean) => void;
+  onFingerprint?: (fp: string | null) => void;
+  error?: string;
 };
 
 type KeyState = "preparing" | "ready" | "failed";
@@ -17,7 +19,7 @@ type KeyState = "preparing" | "ready" | "failed";
  * agent/passphrase is locked or the host does not trust this key yet, the bridge returns an explicit
  * recovery state and the user can unlock/authorize the key before retrying.
  */
-export function StepSetupPassword({ peer, onReady }: Props) {
+export function StepSetupPassword({ peer, onReady, onFingerprint, error = "" }: Props) {
   const host = peer.target || peer.addrs[0] || peer.name;
   const [fp, setFp] = useState<string | null>(peer.fp ?? null);
   const [fpErr, setFpErr] = useState("");
@@ -29,6 +31,10 @@ export function StepSetupPassword({ peer, onReady }: Props) {
     setFp(peer.fp ?? null);
     setFpErr("");
   }, [host, peer.fp]);
+
+  useEffect(() => {
+    onFingerprint?.(fp);
+  }, [fp, onFingerprint]);
 
   useEffect(() => {
     let alive = true;
@@ -122,9 +128,9 @@ export function StepSetupPassword({ peer, onReady }: Props) {
 
       <FingerprintPanel host={peer.name} fp={fp} firstTime />
 
-      {(keyState === "failed" || fpErr || !fp) && (
+      {(keyState === "failed" || fpErr || error || !fp) && (
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
-          {keyState === "preparing" && !fpErr ? (
+          {keyState === "preparing" && !fpErr && !error ? (
             <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
           ) : (
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -134,6 +140,8 @@ export function StepSetupPassword({ peer, onReady }: Props) {
               ? "Could not prepare the client SSH key. If your key agent or passphrase is locked, unlock it; otherwise check ~/.ssh permissions, then retry onboarding."
               : fpErr
               ? fpErr
+              : error
+              ? error
               : "Fetching the host fingerprint. Continue after it is available and matches the host."}
           </span>
         </div>

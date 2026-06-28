@@ -107,6 +107,7 @@ declare global {
         err: string
       }>
       hostKeyFingerprint: (host: string) => Promise<{ fp: string; err: string }>
+      pinHostKey: (host: string, expectedFp: string) => Promise<{ ok: boolean; err: string; state?: string; action?: string }>
       // Telemetry (consent-gated PostHog; no-ops until opt-in).
       tCapture: (event: string, props?: Record<string, unknown>) => Promise<{ ok: boolean }>
       tCatalog: () => Promise<{
