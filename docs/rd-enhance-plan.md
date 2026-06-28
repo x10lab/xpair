@@ -121,6 +121,36 @@ Establish: launch host → programmatic client receives H.264 → dump getStats 
   on **sustained loss / retransmits-not-helping (congestion)**, NOT transient loss
   (which NACK recovers — keep bitrate high there). This is the key discriminator.
 
+#### RESULT (2026-06-29) — ABR mitigates congestion collapse ✅
+Implemented congestion-triggered ABR (env-gated `RP_ABR`, off by default):
+controller in serve_webrtc.rs driven by **NACK rate** (RR fraction_lost
+under-reports congestion — reads ~0 intermittently at 85% real loss; NACK storm
+is the reliable signal, hundreds/s under congestion), cuts ×0.80 on
+nack≥`RP_ABR_NACK_HI`, raises ×`RP_ABR_RAISE_FACTOR`(1.05) only after
+`RP_ABR_RAISE_AFTER`(3) consecutive clean intervals; min/max clamp, no-RR
+circuit breaker, 5% write hysteresis. Actuation: host writes `bitrate <bps>` to
+rp-screencap stdin → live `VTSessionSetProperty(AverageBitRate/DataRateLimits)`.
+
+Measured (passthrough + leaky-bucket BW cap, 3× each, **decFps** — the valid
+congestion metric; the bench's score gate-fails here only because it scores under
+passthrough+Axis-A which asserts ~0 loss):
+
+| cap | ABR off | ABR on | eff.loss off→on |
+|-----|---------|--------|------------------|
+| 450 kbps | 6.1±0.5 | **15.6±0.5** (cov 0.52) | 75%→30% |
+| 350 kbps | 4.6±0.1 | **9.7±4.8** | 84%→39% |
+| 250 kbps | 0.7±0.4 | **7.0±1.7** | 93%→77% |
+
+→ 2.5–10× decoded-framerate recovery; at moderate congestion (450) usable
+framerate is fully restored (coverage > 0.5). Default build unaffected (RP_ABR
+off). Build path: m4 `cargo build --features webrtc` for the `screen` binary
+(fast iteration, pairs with the a2-signed rp-screencap that has the control
+reader + TCC); full signed app via CI `release.yml`.
+
+Follow-ups (optional): less-noisy convergence at tight caps; a bench "congestion"
+scoring mode (skip Axis-A, score decFps/coverage directly); cut a CI release with
+ABR present-but-off and merge.
+
 ## Adaptive bitrate design — RustDesk reference (port structure, drive from loss)
 RustDesk `src/server/video_qos.rs` is a sender-side **delay-based** QoS controller
 (TCP transport → no loss visibility). We replicate its *structure* but drive it
