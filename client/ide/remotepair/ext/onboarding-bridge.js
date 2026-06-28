@@ -29,6 +29,7 @@ const SSH_KNOWN_HOSTS_DEFAULTS = [
 const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const ACCOUNT_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const EFFECTIVE_KNOWN_HOSTS_FILES = new Map();
+const EFFECTIVE_WRITABLE_KNOWN_HOSTS = new Map();
 let sshEphemeralKnownHostsDir;
 
 function validHost(host) {
@@ -251,6 +252,35 @@ function effectiveKnownHostsFiles(host) {
   }
 }
 
+function expandHomePath(p) {
+  const s = String(p || "");
+  if (s === "~") return HOME;
+  if (s.startsWith("~/")) return path.join(HOME, s.slice(2));
+  return s;
+}
+
+async function effectiveWritableKnownHosts(host) {
+  const h = String(host || "").trim();
+  if (!h) return SSH_KNOWN_HOSTS;
+  if (EFFECTIVE_WRITABLE_KNOWN_HOSTS.has(h)) return EFFECTIVE_WRITABLE_KNOWN_HOSTS.get(h);
+  const r = await run("ssh", ["-G", h]);
+  if (r.code !== 0 || !r.out) {
+    EFFECTIVE_WRITABLE_KNOWN_HOSTS.set(h, SSH_KNOWN_HOSTS);
+    return SSH_KNOWN_HOSTS;
+  }
+  for (const line of String(r.out || "").split("\n")) {
+    const m = line.match(/^\s*userknownhostsfile\s+(.+?)\s*$/i);
+    if (!m) continue;
+    const first = m[1].split(/\s+/).filter(Boolean)[0] || "";
+    if (!first) break;
+    const target = first.toLowerCase() === "none" ? "none" : expandHomePath(first);
+    EFFECTIVE_WRITABLE_KNOWN_HOSTS.set(h, target);
+    return target;
+  }
+  EFFECTIVE_WRITABLE_KNOWN_HOSTS.set(h, SSH_KNOWN_HOSTS);
+  return SSH_KNOWN_HOSTS;
+}
+
 function sshConfigDoubleQuote(s) {
   return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -349,32 +379,34 @@ async function hostKeyLinesFromScan(host) {
   return knownHostsKeyLines(r.out);
 }
 
-async function reconcileDurableHostKey(host, line) {
+async function reconcileDurableHostKey(host, line, targetFile) {
   const identity = keyIdentity(line);
   if (!identity) return { ok: false, err: "could not read host key to pin" };
-  const r = await run("ssh-keygen", ["-F", String(host), "-f", SSH_KNOWN_HOSTS]);
+  const target = targetFile || SSH_KNOWN_HOSTS;
+  const confirmedType = identity.split(/\s+/, 1)[0] || "";
+  const r = await run("ssh-keygen", ["-F", String(host), "-f", target]);
   const durableLines = knownHostsKeyLines(r.out);
   if (durableLines.length) {
     const identities = durableLines.map(keyIdentity).filter(Boolean);
-    if (identities.some((known) => known !== identity)) {
+    const sameTypeIdentities = identities.filter((known) => known.split(/\s+/, 1)[0] === confirmedType);
+    if (sameTypeIdentities.some((known) => known !== identity)) {
       return hostKeyMismatch("a different host key is already trusted for this host");
     }
-    if (identities.some((known) => known === identity)) return { ok: true, err: "" };
-    return hostKeyMismatch("a different host key is already trusted for this host");
+    if (sameTypeIdentities.some((known) => known === identity)) return { ok: true, err: "" };
   }
 
-  const sshDir = path.dirname(SSH_KNOWN_HOSTS);
+  const sshDir = path.dirname(target);
   fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(sshDir, 0o700); } catch { /* best effort */ }
   let prefix = "";
   try {
-    const existing = fs.readFileSync(SSH_KNOWN_HOSTS, "utf8");
+    const existing = fs.readFileSync(target, "utf8");
     if (existing && !existing.endsWith("\n")) prefix = "\n";
   } catch {
     /* file may not exist yet */
   }
-  fs.appendFileSync(SSH_KNOWN_HOSTS, `${prefix}${line}\n`);
-  try { fs.chmodSync(SSH_KNOWN_HOSTS, 0o600); } catch { /* best effort */ }
+  fs.appendFileSync(target, `${prefix}${line}\n`);
+  try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
   return { ok: true, err: "" };
 }
 
@@ -1262,15 +1294,18 @@ const bridge = {
     }
   },
 
-  // TOFU confirm — pin the exact ed25519 host key fingerprint the user confirmed into durable
-  // ~/.ssh/known_hosts. Probes learn first-seen keys in an app-launch ephemeral known_hosts file;
-  // this bridges the confirmed key into the durable store so later CLI/RD SSH flows do not re-TOFU.
+  // TOFU confirm — pin the exact ed25519 host key fingerprint the user confirmed into the effective
+  // durable UserKnownHostsFile. Probes learn first-seen keys in an app-launch ephemeral known_hosts
+  // file; this bridges the confirmed key into the durable store so later CLI/RD SSH flows do not
+  // re-TOFU.
   async pinHostKey(host, expectedFp) {
     const h = String(host || "").trim();
     if (!validHost(h)) {
       return { ok: false, err: invalidHost(h), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
     }
     if (!expectedFp) return { ok: false, err: "no fingerprint to confirm" };
+    const targetFile = await effectiveWritableKnownHosts(h);
+    if (String(targetFile).toLowerCase() === "none") return { ok: true, err: "" };
 
     let lines = await hostKeyLinesFromEphemeral(h);
     let line = preferEd25519(lines);
@@ -1287,7 +1322,20 @@ const bridge = {
     if (fp !== String(expectedFp)) {
       return hostKeyMismatch("host key does not match the confirmed fingerprint");
     }
-    return reconcileDurableHostKey(h, line);
+    return reconcileDurableHostKey(h, line, targetFile);
+  },
+
+  async hasDurableHostKey(host) {
+    const h = String(host || "").trim();
+    if (!validHost(h)) return { ok: false, present: false, err: invalidHost(h) };
+    const targetFile = await effectiveWritableKnownHosts(h);
+    if (String(targetFile).toLowerCase() === "none") return { ok: true, present: false, err: "" };
+    const r = await run("ssh-keygen", ["-F", h, "-f", targetFile]);
+    const present = knownHostsKeyLines(r.out).length > 0;
+    if (!present && /No such file or directory|Cannot stat/i.test(r.err || "")) {
+      return { ok: true, present: false, err: "" };
+    }
+    return { ok: r.code === 0 || !present, present, err: r.code === 0 || !present ? "" : r.err };
   },
 
   // Host-app hard guard (Connect / Reconnect step): being able to SSH to the host (reachable) is NOT

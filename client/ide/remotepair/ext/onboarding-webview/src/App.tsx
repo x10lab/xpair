@@ -265,6 +265,13 @@ export default function App() {
   const [setupPinning, setSetupPinning] = useState(false);
   const [setupPinnedKey, setSetupPinnedKey] = useState("");
   const setupPinningRef = useRef(false);
+  const [durableHostKey, setDurableHostKey] = useState<{
+    target: string;
+    present: boolean;
+    err: string;
+  } | null>(null);
+  const [durableHostKeyChecking, setDurableHostKeyChecking] = useState(false);
+  const durableHostKeyProbeId = useRef(0);
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
@@ -358,6 +365,9 @@ export default function App() {
       setSetupPinnedKey("");
       setupPinningRef.current = false;
       setSetupPinning(false);
+      durableHostKeyProbeId.current += 1;
+      setDurableHostKey(null);
+      setDurableHostKeyChecking(false);
       setConnState("idle");
       hostAppProbeId.current += 1;
       setHostApp(null);
@@ -382,6 +392,9 @@ export default function App() {
     setSetupPinnedKey("");
     setupPinningRef.current = false;
     setSetupPinning(false);
+    durableHostKeyProbeId.current += 1;
+    setDurableHostKey(null);
+    setDurableHostKeyChecking(false);
     hostAppProbeId.current += 1;
     setHostApp(null);
     setHostAppChecking(false);
@@ -507,6 +520,9 @@ export default function App() {
     setSetupPinnedKey("");
     setupPinningRef.current = false;
     setSetupPinning(false);
+    durableHostKeyProbeId.current += 1;
+    setDurableHostKey(null);
+    setDurableHostKeyChecking(false);
     setInstallState("idle");
   }, [connectTarget, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
@@ -579,10 +595,10 @@ export default function App() {
         ? "update"
         : "incompatible"
       : "restart";
-  const manualTargetIsSavedHost = !!savedHost && connectTarget === savedHost;
-  const manualMissingNeedsFingerprint =
-    manual && !manualTargetIsSavedHost && hostRepairKind === "missing";
-  const manualMissingRepairPeer: Peer | null = connectTarget
+  const missingRepairNeedsHostKey =
+    hostRepairKind === "missing" &&
+    (manual || startsFromSavedHost || isReconnect || isConnect || !!savedHost);
+  const missingRepairPeer: Peer | null = connectTarget
     ? {
         name: connectTarget,
         addrs: [connectTarget],
@@ -593,6 +609,35 @@ export default function App() {
         status: "setup",
       }
     : null;
+
+  useEffect(() => {
+    if (!canRepairHost || !missingRepairNeedsHostKey || !connectTarget) {
+      durableHostKeyProbeId.current += 1;
+      setDurableHostKey(null);
+      setDurableHostKeyChecking(false);
+      return;
+    }
+
+    const probeId = ++durableHostKeyProbeId.current;
+    setDurableHostKeyChecking(true);
+    void window.remotepair
+      .hasDurableHostKey(connectTarget)
+      .then((r) => {
+        if (durableHostKeyProbeId.current !== probeId) return;
+        setDurableHostKey({
+          target: connectTarget,
+          present: !!r.ok && !!r.present,
+          err: r.err || "",
+        });
+      })
+      .catch((e) => {
+        if (durableHostKeyProbeId.current !== probeId) return;
+        setDurableHostKey({ target: connectTarget, present: false, err: String(e) });
+      })
+      .finally(() => {
+        if (durableHostKeyProbeId.current === probeId) setDurableHostKeyChecking(false);
+      });
+  }, [canRepairHost, missingRepairNeedsHostKey, connectTarget]);
 
   const handleHostRepairDone = useCallback(() => {
     if (!connectTarget) return;
@@ -778,22 +823,28 @@ export default function App() {
       ? "Skip for now"
       : "Next";
 
+  const durableEntryVerified =
+    missingRepairNeedsHostKey &&
+    durableHostKey?.target === connectTarget &&
+    durableHostKey.present;
   const repairHostKeyPinned =
-    !manualMissingNeedsFingerprint || setupPinnedKey === setupPinKey(connectTarget, setupFp);
+    !missingRepairNeedsHostKey ||
+    durableEntryVerified ||
+    setupPinnedKey === setupPinKey(connectTarget, setupFp);
 
   const hostRepairPanel = canRepairHost ? (
     <>
-      {manualMissingNeedsFingerprint && manualMissingRepairPeer && (
+      {missingRepairNeedsHostKey && !durableEntryVerified && missingRepairPeer && (
         <div className="mt-4">
           <StepSetupPassword
-            peer={manualMissingRepairPeer}
+            peer={missingRepairPeer}
             onReady={setSetupReady}
             onFingerprint={setSetupFp}
             error={setupPinErr}
           />
         </div>
       )}
-      {manualMissingNeedsFingerprint && setupReady && !repairHostKeyPinned && (
+      {missingRepairNeedsHostKey && setupReady && !repairHostKeyPinned && (
         <div className="mx-auto mt-4 max-w-sm rounded-xl border border-border bg-muted/25 p-3.5 text-xs text-muted-foreground">
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -802,15 +853,24 @@ export default function App() {
               <p className="mt-1 leading-snug">
                 Xpair will pin the confirmed fingerprint for {connectTarget}.
               </p>
+              {durableHostKey?.target === connectTarget && durableHostKey.err ? (
+                <p className="mt-1 leading-snug text-destructive">{durableHostKey.err}</p>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
                 className="mt-2 h-8 gap-1.5"
-                disabled={setupPinning}
+                disabled={setupPinning || durableHostKeyChecking}
                 onClick={() => void pinConfirmedHostKey(connectTarget, setupFp)}
               >
-                {setupPinning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                {setupPinning ? "Pinning…" : "Trust host key"}
+                {setupPinning || durableHostKeyChecking ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                {setupPinning
+                  ? "Pinning…"
+                  : durableHostKeyChecking
+                  ? "Checking…"
+                  : "Trust host key"}
               </Button>
             </div>
           </div>
