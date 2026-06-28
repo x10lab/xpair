@@ -25,10 +25,19 @@ let startCode = Data([0,0,0,1])
 // ---- VT encoder (created once we know dimensions) ----
 final class Enc {
   let fps: Int
-  let bitrate: Int
+  var bitrate: Int
   var session: VTCompressionSession?
   var au = Data()
   init(fps: Int, bitrate: Int) { self.fps = fps; self.bitrate = bitrate }
+  func applyBitrate(_ bps: Int) {
+    bitrate = bps
+    guard let sess = session else { return }
+    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: bps as CFNumber)
+    let bytesPerSecond = max(1, bps / 8)
+    let limits = [bytesPerSecond as CFNumber, 1 as CFNumber] as CFArray
+    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
+    FileHandle.standardError.write("rp-screencap: bitrate \(bps)bps\n".data(using:.utf8)!)
+  }
   func ensure(_ w: Int, _ h: Int) {
     if session != nil { return }
     var s: VTCompressionSession?
@@ -44,12 +53,41 @@ final class Enc {
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (self.fps * 2) as CFNumber)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: self.bitrate as CFNumber)
+    let bytesPerSecond = max(1, self.bitrate / 8)
+    let limits = [bytesPerSecond as CFNumber, 1 as CFNumber] as CFArray
+    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: self.fps as CFNumber)
     VTCompressionSessionPrepareToEncodeFrames(sess)
     session = sess
   }
 }
 let enc = Enc(fps: argFps, bitrate: argBr)
+
+func startControlReader() -> DispatchSourceRead {
+  let source = DispatchSource.makeReadSource(fileDescriptor: FileHandle.standardInput.fileDescriptor, queue: DispatchQueue(label: "rp.control"))
+  var buffer = ""
+  source.setEventHandler {
+    let data = FileHandle.standardInput.availableData
+    if data.isEmpty {
+      source.cancel()
+      return
+    }
+    if let text = String(data: data, encoding: .utf8) {
+      buffer.append(text)
+      while let nl = buffer.firstIndex(of: "\n") {
+        let line = String(buffer[..<nl]).trimmingCharacters(in: .whitespacesAndNewlines)
+        buffer.removeSubrange(...nl)
+        let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+        if parts.count == 2, parts[0] == "bitrate", let bps = Int(parts[1]), bps > 0 {
+          enc.applyBitrate(bps)
+        }
+      }
+    }
+  }
+  source.resume()
+  return source
+}
+let controlReader = startControlReader()
 
 func appendParamSets(_ fmt: CMFormatDescription) {
   var count = 0
