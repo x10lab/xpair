@@ -319,6 +319,13 @@ enum Session {
     Connected(ConnectedSession),
 }
 
+fn pli_should_force(last: Option<Instant>, now: Instant, cooldown: Duration) -> bool {
+    if cooldown == Duration::from_millis(0) {
+        return true;
+    }
+    last.map_or(true, |last| now.duration_since(last) >= cooldown)
+}
+
 /// Locate a helper binary that sits **next to this executable** (the bundle
 /// `Contents/Helpers/` layout). `current_exe()` is `canonicalize()`d first so a
 /// symlinked launch path (e.g. `~/.xpair/host/bin/screen` → bundle Helpers) is
@@ -1189,16 +1196,38 @@ async fn serve_session(
         tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
             use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+            let pli_cooldown = std::env::var("RP_PLI_COOLDOWN_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_millis)
+                .unwrap_or_default();
+            let mut last_forced: Option<Instant> = None;
+            let mut suppressed_plis = 0u64;
             while let Ok((packets, _attrs)) = rtp_sender.read_rtcp().await {
                 for pkt in packets {
                     let any = pkt.as_any();
                     if any.downcast_ref::<PictureLossIndication>().is_some()
                         || any.downcast_ref::<FullIntraRequest>().is_some()
                     {
-                        tracing::info!("serve-webrtc: RTCP PLI/FIR -> requesting keyframe");
-                        control.keyframe_noack(seq);
+                        let now = Instant::now();
+                        if pli_should_force(last_forced, now, pli_cooldown) {
+                            tracing::info!("serve-webrtc: RTCP PLI/FIR -> requesting keyframe");
+                            control.keyframe_noack(seq);
+                            last_forced = Some(now);
+                        } else if let Some(last) = last_forced {
+                            suppressed_plis += 1;
+                            tracing::debug!(
+                                "serve-webrtc: RTCP PLI/FIR suppressed by cooldown ({}ms since last IDR)",
+                                now.duration_since(last).as_millis()
+                            );
+                        }
                     }
                 }
+            }
+            if suppressed_plis > 0 {
+                tracing::info!(
+                    "serve-webrtc: RTCP reader suppressed {suppressed_plis} PLI/FIR keyframe request(s) by cooldown"
+                );
             }
             tracing::info!("serve-webrtc: RTCP reader ended (sender closed)");
         });
@@ -1902,6 +1931,25 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("timed out waiting for {count} control frame(s)");
+    }
+
+    #[test]
+    fn pli_cooldown_decision_forces_only_after_cooldown() {
+        let now = Instant::now();
+        let cooldown = Duration::from_millis(200);
+
+        assert!(pli_should_force(None, now, cooldown));
+        assert!(pli_should_force(Some(now), now, Duration::from_millis(0)));
+        assert!(!pli_should_force(
+            Some(now),
+            now + Duration::from_millis(199),
+            cooldown
+        ));
+        assert!(pli_should_force(
+            Some(now),
+            now + Duration::from_millis(200),
+            cooldown
+        ));
     }
 
     fn frame_rid(frame: &[u8]) -> String {
