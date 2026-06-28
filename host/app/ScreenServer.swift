@@ -244,8 +244,13 @@ final class ScreenServer {
         let cRead = pipeC[0], cWrite = pipeC[1]
 
         let argv = [bin, "serve-webrtc", "--token", "@\(RD_SESSION_TOKEN_FILE)"]
-        let env = ["PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        var env = ["PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
                    "HOME=\(HOME)", "LANG=en_US.UTF-8", "RP_AU_STDIN=1", "RP_AU_CONTROL_FD=3"]
+        // Forward RP_ABR* from the host app's env: the sidecar's abr_enabled() reads RP_ABR,
+        // so without this ABR is always off in the product path (fixed env doesn't inherit it).
+        for (key, value) in ProcessInfo.processInfo.environment where key.hasPrefix("RP_ABR") {
+            env.append("\(key)=\(value)")
+        }
         var cargs = argv.map { strdup($0) }; cargs.append(nil)
         var cenv = env.map { strdup($0) }; cenv.append(nil)
         defer { cargs.forEach { free($0) }; cenv.forEach { free($0) } }

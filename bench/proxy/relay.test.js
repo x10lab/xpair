@@ -229,4 +229,29 @@ assert.notDeepEqual(droppedSeqs("same-seed"), droppedSeqs("other-seed"));
   assert.deepEqual(sent, ["127.0.0.1:7000"], `media must go only to the live client, got ${sent.join(",")}`);
 }
 
+{
+  // RTX retransmits arrive on their OWN ssrc, not by reusing the primary seq. They must
+  // be handled as retransmissions: never dropped by the primary loss profile.
+  const cfg = config({ profile: "loss", loss: 1, retxLoss: 0 });
+  const imp = new Impairer(cfg, createStats(cfg));
+  const primary = { className: CLASS_RTP, seq: 100, ssrc: 0xaaaa };
+  const rtx = { className: CLASS_RTP, seq: 5, ssrc: 0xbbbb };
+  assert.equal(imp.decide(primary, DIR_HOST_TO_CLIENT, 1000).drop, true, "primary dropped by loss=1");
+  const d = imp.decide(rtx, DIR_HOST_TO_CLIENT, 1000);
+  assert.equal(d.drop, false, "RTX must not be dropped by the primary loss profile");
+}
+
+{
+  // RETX_LOSS drops the RTX stream and accounts it as a retransmit, not a primary drop.
+  const cfg = config({ profile: "loss", loss: 0, retxLoss: 1 });
+  const stats = createStats(cfg);
+  const imp = new Impairer(cfg, stats);
+  imp.decide({ className: CLASS_RTP, seq: 1, ssrc: 0x1111 }, DIR_HOST_TO_CLIENT, 500); // primary
+  const d = imp.decide({ className: CLASS_RTP, seq: 9, ssrc: 0x2222 }, DIR_HOST_TO_CLIENT, 500); // rtx
+  assert.equal(d.drop, true);
+  assert.equal(d.reason, "retxLoss");
+  assert.equal(stats.retransmitsDropped, 1);
+  assert.equal(stats.uniqueSeqsDropped, 0, "RTX drop must not pollute the primary seq space");
+}
+
 console.log("relay.test ok");

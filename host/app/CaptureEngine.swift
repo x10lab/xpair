@@ -63,6 +63,9 @@ final class CaptureEngine {
     // pixel buffer and re-encode it as an IDR on wall-clock cadence or PLI/FIR demand.
     // These fields are touched only on sampleQueue.
     private var forceKeyframeFlag = false
+    // Set once a runtime ABR bitrate command arrives. Gates the hard DataRateLimits cap
+    // so ABR-off captures keep VideoToolbox's stock AverageBitRate-only behavior.
+    private var bitrateOverridden = false
     private var lastPixelBuffer: CVPixelBuffer?
     private var encodedFrameIndex: Int64 = 0
     private var lastKeyframeTime: CFTimeInterval = 0
@@ -236,6 +239,7 @@ final class CaptureEngine {
             guard let self = self else { return }
             let safe = max(100_000, bitrate)
             self.bitrate = safe
+            self.bitrateOverridden = true
             guard let sess = self.session else { return }
             VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: safe as CFNumber)
             // DataRateLimits is [bytes, seconds]: cap the 1s window to the new bitrate/8.
@@ -272,6 +276,14 @@ final class CaptureEngine {
         VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
         VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (self.fps * 2) as CFNumber)
         VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: self.bitrate as CFNumber)
+        // Mirror setBitrate's hard 1s cap so a bitrate set before the session existed
+        // (which only stored self.bitrate) is honored once the session is created. Only
+        // when a runtime bitrate override actually arrived — ABR-off captures keep
+        // VideoToolbox's stock AverageBitRate-only behavior (no hard burst cap).
+        if self.bitrateOverridden {
+            let limits = [self.bitrate / 8, 1] as CFArray
+            VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
+        }
         VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: self.fps as CFNumber)
         VTCompressionSessionPrepareToEncodeFrames(sess)
         session = sess

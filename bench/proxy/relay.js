@@ -202,6 +202,7 @@ class Impairer {
     this.stats = stats;
     this.normalizer = new SeqNormalizer();
     this.sendCounts = new Map();
+    this.primarySsrc = null; // first host→client RTP ssrc; others are RTX retransmits
     this.droppedSeqs = new Set();
     this.geStates = [];
     this.linkFreeAtMs = 0; // leaky-bucket: time the bottleneck link is next idle
@@ -307,8 +308,34 @@ class Impairer {
       return { drop: false, delayMs: 0, reason: null, normSeq: null };
     }
 
-    // Reached only for host→client RTP (guarded above): this is media. Anchor the
-    // marked-burst schedule to the first such packet.
+    // Reached only for host→client RTP (guarded above). Identify the RTX retransmission
+    // stream by SSRC: RFC 4588 RTX retransmits carry their OWN ssrc and seq, so they
+    // never reuse the primary media sequence. Detecting retransmits by seq-reuse (the
+    // count>1 path below) misses them entirely, AND worse, the primary loss profile
+    // would drop them as if they were first transmissions. The first host→client RTP
+    // ssrc is the primary media stream; any other host→client RTP ssrc is RTX.
+    const ssrc = typeof packet.ssrc === "number" ? packet.ssrc : null;
+    if (this.primarySsrc === null && ssrc !== null) this.primarySsrc = ssrc;
+    const isRtx = ssrc !== null && this.primarySsrc !== null && ssrc !== this.primarySsrc;
+    if (isRtx) {
+      // A real retransmission: apply RETX_LOSS (residual retransmit loss) but NEVER the
+      // primary loss profile, and keep it out of the primary seq space. Still subject to
+      // the bandwidth cap (retransmits consume real link capacity).
+      if (!this.isPassthrough() && this.config.retxLoss > 0 &&
+        seededFloat(this.config.seed, `rtx:${ssrc}:${packet.seq}`) < this.config.retxLoss) {
+        this.stats.retransmitsDropped += 1;
+        return { drop: true, delayMs: 0, reason: "retxLoss", normSeq: null };
+      }
+      const bwRtx = this.bandwidthDecision(length, Date.now());
+      if (bwRtx.drop) {
+        this.stats.bandwidthDropped += 1;
+        return { drop: true, delayMs: 0, reason: "bandwidth", normSeq: null };
+      }
+      this.stats.retransmitsPassed += 1;
+      return { drop: false, delayMs: bwRtx.delayMs, reason: null, normSeq: null };
+    }
+
+    // Primary media stream. Anchor the marked-burst schedule to its first packet.
     if (this.mediaStartMs === null) this.anchorBursts(Date.now());
     const normSeq = this.normalizer.normalize(packet.seq);
     const count = (this.sendCounts.get(normSeq) || 0) + 1;

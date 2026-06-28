@@ -69,6 +69,10 @@ final class Enc {
   }
 }
 let enc = Enc(fps: argFps, bitrate: argBr)
+// The encoder (Enc.ensure / VTCompressionSessionEncodeFrame) runs on the SCK
+// sample-output queue. applyBitrate touches the same enc.session/enc.bitrate, so
+// it must run on this same queue to avoid a data race with encoding.
+let sckQueue = DispatchQueue(label: "rp.sck")
 
 func startControlReader() -> DispatchSourceRead {
   let source = DispatchSource.makeReadSource(fileDescriptor: FileHandle.standardInput.fileDescriptor, queue: DispatchQueue(label: "rp.control"))
@@ -86,7 +90,7 @@ func startControlReader() -> DispatchSourceRead {
         buffer.removeSubrange(...nl)
         let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
         if parts.count == 2, parts[0] == "bitrate", let bps = Int(parts[1]), bps > 0 {
-          enc.applyBitrate(bps)
+          sckQueue.async { enc.applyBitrate(bps) }
         }
       }
     }
@@ -180,7 +184,7 @@ SCShareableContent.getWithCompletionHandler { content, err in
   cfg.showsCursor = true
   let stream = SCStream(filter: filter, configuration: cfg, delegate: nil)
   do {
-    try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: DispatchQueue(label: "rp.sck"))
+    try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sckQueue)
     stream.startCapture { e in
       if let e = e { die("startCapture failed (Screen Recording grant?): \(e)") }
       FileHandle.standardError.write("rp-screencap: SCK \(cfg.width)x\(cfg.height) @\(argFps)fps capturing\n".data(using:.utf8)!)
