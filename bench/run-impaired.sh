@@ -96,6 +96,8 @@ FRAG_BYTES="${FRAG_BYTES:-}" \
 FRAG_LOSS="${FRAG_LOSS:-}" \
 RTCP_LOSS="${RTCP_LOSS:-}" \
 RETX_LOSS="${RETX_LOSS:-}" \
+BW_KBPS="${BW_KBPS:-}" \
+BW_BUFFER_MS="${BW_BUFFER_MS:-}" \
 BURST_SCHEDULE="${BURST_SCHEDULE:-}" \
 node "${ROOT}/proxy/relay.js" &
 RELAY_PID="$!"

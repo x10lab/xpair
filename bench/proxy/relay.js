@@ -48,6 +48,13 @@ function readConfig(env = process.env) {
     // networks where recovery packets are lost too. Default 0 = retransmits
     // always pass (NACK/RTX trivially recovers), which saturates the benchmark.
     retxLoss: envNumber("RETX_LOSS", 0, env),
+    // Bandwidth cap (leaky bucket) on host->client RTP, modeling a rate-limited
+    // bottleneck link. Default 0 = unlimited. When the queue would exceed
+    // bwBufferMs the packet is tail-dropped (congestion loss). This is the
+    // regime where adaptive bitrate actually helps (sending > link rate spirals);
+    // pure random loss does not exercise ABR because NACK/RTX recovers it.
+    bwKbps: envNumber("BW_KBPS", 0, env),
+    bwBufferMs: envNumber("BW_BUFFER_MS", 300, env),
     burstSchedule: parseBurstSchedule(env.BURST_SCHEDULE || ""),
     statsPath: env.PROXY_STATS ? path.resolve(env.PROXY_STATS) : defaultStatsPath(),
   };
@@ -149,6 +156,7 @@ function createStats(config) {
     uniqueSeqsDropped: 0,
     retransmitsPassed: 0,
     retransmitsDropped: 0,
+    bandwidthDropped: 0,
     bursts: [],
     notes: [
       "The first RTP media sender is treated as host-side; the other learned endpoint is treated as client-side.",
@@ -196,6 +204,7 @@ class Impairer {
     this.sendCounts = new Map();
     this.droppedSeqs = new Set();
     this.geStates = [];
+    this.linkFreeAtMs = 0; // leaky-bucket: time the bottleneck link is next idle
     this.startedAtMs = Date.parse(stats.startedAt);
     this.bursts = (config.burstSchedule || []).map((burst) => {
       const startMs = this.startedAtMs + burst.startOffsetMs;
@@ -303,7 +312,29 @@ class Impairer {
       }
       if (selectedProfile) this.stats.retransmitsPassed += 1;
     }
-    return { drop: false, delayMs, reason: null, normSeq };
+    // Bandwidth cap applies to every forwarded packet (incl. retransmits, which
+    // consume real link capacity → congestion spiral under tight caps).
+    const bw = this.bandwidthDecision(length, Date.now());
+    if (bw.drop) {
+      this.droppedSeqs.add(normSeq);
+      this.stats.uniqueSeqsDropped = this.droppedSeqs.size;
+      this.stats.bandwidthDropped += 1;
+      return { drop: true, delayMs: 0, reason: "bandwidth", normSeq };
+    }
+    return { drop: false, delayMs: delayMs + bw.delayMs, reason: null, normSeq };
+  }
+
+  // Leaky-bucket bottleneck: a packet of `size` bytes takes size*8/bwKbps ms to
+  // clear the link. If it would queue longer than bwBufferMs, the buffer overflows
+  // and the packet is tail-dropped. Returns {drop} or an added queueing delay.
+  bandwidthDecision(size, nowMs) {
+    if (!this.config.bwKbps || this.config.bwKbps <= 0) return { drop: false, delayMs: 0 };
+    const txMs = (size * 8) / this.config.bwKbps; // bytes*8 bits / (kbits/s) = ms
+    const startTx = Math.max(nowMs, this.linkFreeAtMs);
+    const queueMs = startTx - nowMs;
+    if (queueMs > this.config.bwBufferMs) return { drop: true, delayMs: 0 };
+    this.linkFreeAtMs = startTx + txMs;
+    return { drop: false, delayMs: Math.round(queueMs + txMs) };
   }
 }
 

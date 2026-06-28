@@ -101,6 +101,36 @@ assert.notDeepEqual(droppedSeqs("same-seed"), droppedSeqs("other-seed"));
   assert.equal(stats.retransmitsDropped, 1);
 }
 
+// Bandwidth cap (leaky bucket): saturating the link queues then tail-drops.
+{
+  const cfg = config({ profile: "passthrough", bwKbps: 1000, bwBufferMs: 100 });
+  const stats = createStats(cfg);
+  const impairer = new Impairer(cfg, stats);
+  // 1000 kbps = 125 bytes/ms. A 1250-byte packet takes 10ms to clear.
+  // bandwidthDecision is time-based; drive it with explicit nowMs for determinism.
+  const d0 = impairer.bandwidthDecision(1250, 1000); // link idle -> only txMs delay
+  assert.equal(d0.drop, false);
+  assert.equal(d0.delayMs, 10);
+  // Immediately enqueue many more at the same instant: queue grows until overflow.
+  let drops = 0, passes = 0;
+  for (let i = 0; i < 50; i += 1) {
+    const d = impairer.bandwidthDecision(1250, 1000);
+    if (d.drop) drops += 1; else passes += 1;
+  }
+  assert.ok(drops > 0, "tight bandwidth + burst must tail-drop");
+  // buffer 100ms / 10ms per pkt ~= 10 packets queued before overflow
+  assert.ok(passes <= 11 && passes >= 8, `expected ~10 queued, got ${passes}`);
+}
+
+// Bandwidth disabled (default) never drops or delays.
+{
+  const cfg = config({ profile: "passthrough", bwKbps: 0 });
+  const impairer = new Impairer(cfg, createStats(cfg));
+  const d = impairer.bandwidthDecision(1250, 1000);
+  assert.equal(d.drop, false);
+  assert.equal(d.delayMs, 0);
+}
+
 // retxLoss=0 (default) keeps the old behavior: retransmits always pass.
 {
   const cfg = config({ profile: "loss", loss: 1, retxLoss: 0 });
