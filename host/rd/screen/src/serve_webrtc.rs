@@ -304,7 +304,7 @@ struct NegotiatingSession {
     capture_config: CaptureConfig,
     control: ControlClient,
     cancel: CancellationToken,
-    abr_loss: Arc<Mutex<AbrLossState>>,
+    abr_loss: Arc<Mutex<AbrSignalState>>,
     abr_frames: Arc<AtomicU64>,
 }
 
@@ -337,6 +337,8 @@ struct AbrCfg {
     interval: Duration,
     loss_lo: f32,
     loss_hi: f32,
+    nack_lo: f32,
+    nack_hi: f32,
 }
 
 impl AbrCfg {
@@ -345,14 +347,19 @@ impl AbrCfg {
             interval: env_duration_ms("RP_ABR_INTERVAL_MS", 1500),
             loss_lo: env_f32("RP_ABR_LOSS_LO", 0.02),
             loss_hi: env_f32("RP_ABR_LOSS_HI", 0.10),
+            // NACK thresholds are RTP sequence numbers NACKed per second.
+            nack_lo: env_f32("RP_ABR_NACK_LO", 5.0),
+            nack_hi: env_f32("RP_ABR_NACK_HI", 50.0),
         }
     }
 }
 
 #[derive(Default)]
-struct AbrLossState {
+struct AbrSignalState {
     last_loss: Option<f32>,
     last_rr: Option<Instant>,
+    preferred_media_ssrc: Option<u32>,
+    nack_count: u64,
 }
 
 fn abr_enabled() -> bool {
@@ -386,17 +393,33 @@ fn env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-fn abr_next_bps(cur: u32, loss: f32, min: u32, max: u32, cfg: &AbrCfg) -> u32 {
+fn abr_next_bps(
+    cur: u32,
+    loss_rr: f32,
+    nack_rate: f32,
+    min: u32,
+    max: u32,
+    cfg: &AbrCfg,
+) -> u32 {
     let min = min.min(max);
     let cur = cur.clamp(min, max);
-    if loss < cfg.loss_lo {
-        ((cur as f32) * 1.10).round() as u32
-    } else if loss < cfg.loss_hi {
-        cur
-    } else {
+    if loss_rr >= cfg.loss_hi || nack_rate >= cfg.nack_hi {
         ((cur as f32) * 0.80).round() as u32
+    } else if loss_rr < cfg.loss_lo && nack_rate < cfg.nack_lo {
+        ((cur as f32) * 1.10).round() as u32
+    } else {
+        cur
     }
     .clamp(min, max)
+}
+
+fn nack_sequence_count(
+    nack: &webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack,
+) -> u64 {
+    nack.nacks
+        .iter()
+        .map(|pair| pair.packet_list().len() as u64)
+        .sum()
 }
 
 fn bitrate_change_exceeds_hysteresis(was: u32, now: u32) -> bool {
@@ -1264,7 +1287,7 @@ async fn serve_session(
         .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .map_err(SessionError::from)?;
-    let abr_loss = Arc::new(Mutex::new(AbrLossState::default()));
+    let abr_loss = Arc::new(Mutex::new(AbrSignalState::default()));
     let abr_frames = Arc::new(AtomicU64::new(0));
 
     // RTCP reader: the client sends PictureLossIndication / FullIntraRequest when it
@@ -1281,6 +1304,7 @@ async fn serve_session(
             use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
             use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
             use webrtc::rtcp::receiver_report::ReceiverReport;
+            use webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
             let pli_cooldown = std::env::var("RP_PLI_COOLDOWN_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
@@ -1308,15 +1332,37 @@ async fn serve_session(
                         }
                     }
                     if let Some(rr) = any.downcast_ref::<ReceiverReport>() {
-                        if let Some(loss) = rr
-                            .reports
-                            .iter()
-                            .map(|report| report.fraction_lost as f32 / 256.0)
-                            .max_by(|a, b| a.total_cmp(b))
-                        {
+                        let selected = if let Ok(state) = abr_loss.lock() {
+                            state.preferred_media_ssrc.and_then(|ssrc| {
+                                rr.reports.iter().find(|report| report.ssrc == ssrc)
+                            })
+                        } else {
+                            None
+                        }
+                        .or_else(|| {
+                            if rr.reports.len() == 1 {
+                                rr.reports.first()
+                            } else {
+                                rr.reports.iter().max_by(|a, b| {
+                                    a.fraction_lost.cmp(&b.fraction_lost)
+                                })
+                            }
+                        });
+                        if let Some(report) = selected {
+                            let loss = report.fraction_lost as f32 / 256.0;
                             if let Ok(mut state) = abr_loss.lock() {
                                 state.last_loss = Some(loss);
                                 state.last_rr = Some(Instant::now());
+                                state.preferred_media_ssrc.get_or_insert(report.ssrc);
+                            }
+                        }
+                    }
+                    if let Some(nack) = any.downcast_ref::<TransportLayerNack>() {
+                        let count = nack_sequence_count(nack);
+                        if count > 0 {
+                            if let Ok(mut state) = abr_loss.lock() {
+                                state.preferred_media_ssrc = Some(nack.media_ssrc);
+                                state.nack_count = state.nack_count.saturating_add(count);
                             }
                         }
                     }
@@ -1948,7 +1994,7 @@ impl AbrActuator {
 fn spawn_abr_controller(
     spawn_bps: u32,
     actuator: Option<AbrActuator>,
-    loss_state: Arc<Mutex<AbrLossState>>,
+    signal_state: Arc<Mutex<AbrSignalState>>,
     frame_counter: Arc<AtomicU64>,
     cancel: CancellationToken,
 ) {
@@ -1959,10 +2005,12 @@ fn spawn_abr_controller(
     let max_bps = env_u32("RP_ABR_MAX_BPS", spawn_bps).min(spawn_bps);
     let min_bps = env_u32("RP_ABR_MIN_BPS", 150_000).min(max_bps);
     tracing::info!(
-        "serve-webrtc: ABR enabled interval={}ms loss_lo={} loss_hi={} min={}bps max={}bps actuation={}",
+        "serve-webrtc: ABR enabled interval={}ms loss_lo={} loss_hi={} nack_lo={}/s nack_hi={}/s min={}bps max={}bps actuation={}",
         cfg.interval.as_millis(),
         cfg.loss_lo,
         cfg.loss_hi,
+        cfg.nack_lo,
+        cfg.nack_hi,
         min_bps,
         max_bps,
         actuator.is_some()
@@ -1979,37 +2027,45 @@ fn spawn_abr_controller(
                 _ = cancel.cancelled() => break,
                 _ = tick.tick() => {
                     let now = Instant::now();
-                    let loss = loss_state
+                    let (loss_rr, last_rr, nacks) = signal_state
                         .lock()
-                        .ok()
-                        .and_then(|state| match (state.last_loss, state.last_rr) {
-                            (Some(loss), Some(last_rr)) if now.duration_since(last_rr) <= ABR_NO_RR_CUT_AFTER => Some(loss),
-                            _ if now.duration_since(started) >= ABR_NO_RR_CUT_AFTER => Some(1.0),
-                            _ => None,
-                        });
-                    let Some(loss) = loss else {
-                        continue;
+                        .map(|mut state| {
+                            let nacks = state.nack_count;
+                            state.nack_count = 0;
+                            (state.last_loss, state.last_rr, nacks)
+                        })
+                        .unwrap_or((None, None, 0));
+                    let nack_rate = nacks as f32 / cfg.interval.as_secs_f32();
+                    let no_recent_rr = last_rr
+                        .map(|last_rr| now.duration_since(last_rr) > ABR_NO_RR_CUT_AFTER)
+                        .unwrap_or(true);
+                    let loss = match (loss_rr, no_recent_rr) {
+                        (Some(loss), false) => Some(loss),
+                        _ if now.duration_since(started) >= ABR_NO_RR_CUT_AFTER => Some(1.0),
+                        _ => None,
                     };
 
                     let frames = frame_counter.load(Ordering::Relaxed);
                     let screen_changed = frames != last_frames;
                     last_frames = frames;
 
-                    let mut next_bps = if now.duration_since(started) >= ABR_NO_RR_CUT_AFTER {
-                        let no_recent_rr = loss_state
-                            .lock()
-                            .ok()
-                            .and_then(|state| state.last_rr)
-                            .map(|last_rr| now.duration_since(last_rr) > ABR_NO_RR_CUT_AFTER)
-                            .unwrap_or(true);
-                        if no_recent_rr {
+                    let mut next_bps =
+                        if no_recent_rr && now.duration_since(started) >= ABR_NO_RR_CUT_AFTER {
                             min_bps
+                        } else if nack_rate >= cfg.nack_hi {
+                            abr_next_bps(
+                                target_bps,
+                                loss.unwrap_or(0.0),
+                                nack_rate,
+                                min_bps,
+                                max_bps,
+                                &cfg,
+                            )
+                        } else if let Some(loss) = loss {
+                            abr_next_bps(target_bps, loss, nack_rate, min_bps, max_bps, &cfg)
                         } else {
-                            abr_next_bps(target_bps, loss, min_bps, max_bps, &cfg)
-                        }
-                    } else {
-                        abr_next_bps(target_bps, loss, min_bps, max_bps, &cfg)
-                    };
+                            target_bps
+                        };
                     if next_bps > target_bps && !screen_changed {
                         next_bps = target_bps;
                     }
@@ -2024,11 +2080,15 @@ fn spawn_abr_controller(
                         last_cut_at = Some(now);
                     }
 
+                    let logged_loss = loss.unwrap_or(f32::NAN);
+                    tracing::info!(
+                        "serve-webrtc: ABR tick loss_rr={logged_loss:.3} nack_rate={nack_rate:.1} target={next_bps}bps"
+                    );
                     if next_bps != target_bps {
                         let was = target_bps;
                         target_bps = next_bps;
                         tracing::info!(
-                            "serve-webrtc: ABR: loss={loss:.3} target={target_bps}bps (was {was})"
+                            "serve-webrtc: ABR: loss_rr={logged_loss:.3} nack_rate={nack_rate:.1} target={target_bps}bps (was {was})"
                         );
                     }
                     if bitrate_change_exceeds_hysteresis(sent_bps, target_bps) {
@@ -2218,6 +2278,8 @@ mod tests {
             interval: Duration::from_millis(1500),
             loss_lo: 0.02,
             loss_hi: 0.10,
+            nack_lo: 5.0,
+            nack_hi: 50.0,
         }
     }
 
@@ -2225,26 +2287,82 @@ mod tests {
     fn abr_next_bps_raises_below_low_loss_and_clamps_to_max() {
         let cfg = test_abr_cfg();
 
-        assert_eq!(abr_next_bps(1_000_000, 0.01, 150_000, 2_000_000, &cfg), 1_100_000);
-        assert_eq!(abr_next_bps(1_950_000, 0.0, 150_000, 2_000_000, &cfg), 2_000_000);
-        assert_eq!(abr_next_bps(2_000_000, 0.0, 150_000, 2_000_000, &cfg), 2_000_000);
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 0.0, 150_000, 2_000_000, &cfg),
+            1_100_000
+        );
+        assert_eq!(
+            abr_next_bps(1_950_000, 0.0, 0.0, 150_000, 2_000_000, &cfg),
+            2_000_000
+        );
+        assert_eq!(
+            abr_next_bps(2_000_000, 0.0, 0.0, 150_000, 2_000_000, &cfg),
+            2_000_000
+        );
     }
 
     #[test]
     fn abr_next_bps_holds_inside_loss_band() {
         let cfg = test_abr_cfg();
 
-        assert_eq!(abr_next_bps(1_000_000, 0.02, 150_000, 2_000_000, &cfg), 1_000_000);
-        assert_eq!(abr_next_bps(1_000_000, 0.05, 150_000, 2_000_000, &cfg), 1_000_000);
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.02, 0.0, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.05, 0.0, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.0, 5.0, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
     }
 
     #[test]
     fn abr_next_bps_cuts_above_high_loss_and_clamps_to_min() {
         let cfg = test_abr_cfg();
 
-        assert_eq!(abr_next_bps(1_000_000, 0.10, 150_000, 2_000_000, &cfg), 800_000);
-        assert_eq!(abr_next_bps(180_000, 0.50, 150_000, 2_000_000, &cfg), 150_000);
-        assert_eq!(abr_next_bps(150_000, 1.0, 150_000, 2_000_000, &cfg), 150_000);
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.10, 0.0, 150_000, 2_000_000, &cfg),
+            800_000
+        );
+        assert_eq!(
+            abr_next_bps(180_000, 0.50, 0.0, 150_000, 2_000_000, &cfg),
+            150_000
+        );
+        assert_eq!(
+            abr_next_bps(150_000, 1.0, 0.0, 150_000, 2_000_000, &cfg),
+            150_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_cuts_on_high_nack_rate_even_when_rr_loss_is_low() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.0, 50.0, 150_000, 2_000_000, &cfg),
+            800_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 250.0, 150_000, 2_000_000, &cfg),
+            800_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_raises_only_when_rr_and_nacks_are_clean() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 4.9, 150_000, 2_000_000, &cfg),
+            1_100_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 5.0, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
     }
 
     fn frame_rid(frame: &[u8]) -> String {
