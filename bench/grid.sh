@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Canonical bench grid runner: N conditions x REPS repeats, validity-retry on the
+# zero-traffic flake, mean+/-std aggregation. Reads JSON via fs.readFileSync (NOT
+# require) to avoid the "relative path treated as node_module" trap.
+#
+# Define conditions in the CONDS array below (one per line):
+#   "label|PROFILE|SEED|BITRATE|SCALE|EXTRA_ENV..."
+# EXTRA_ENV is space-separated VAR=val passed to run-impaired (GE_P=.. LOSS=.. RETX_LOSS=..).
+#
+# Env: REPS (default 3), DURATION (20), CONTENT (motion). Host build via HOST_BIN.
+set -uo pipefail
+ROOT="/Users/ghyeong/Spaces/Work/Devs/Env-X10lab/xpair/fix/rd-enhance/bench"
+cd "$ROOT"
+export HOST_BIN="${HOST_BIN:-$HOME/rd-enh/screen-pli}"
+export RP_SCREENCAP="${RP_SCREENCAP:-$HOME/.xpair/host/bin/rp-screencap}"
+export PATH="/opt/homebrew/bin:$PATH"
+REPS="${REPS:-3}"; DURATION="${DURATION:-20}"; CONTENT="${CONTENT:-motion}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="out/grid-$STAMP.tsv"
+LOG="out/grid-$STAMP.log"
+mkdir -p out
+echo -e "label\trep\tscore\tgate\tdecFps\tcoverage\tfreezeRatio\tinjLoss\tbitrate\tscale" > "$OUT"
+port=9300; pport=9400
+
+# CONDS: edit this list per experiment.
+CONDS=(
+  "br4000_s100|burst|burstcal|4000000|1.0|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
+  "br2000_s100|burst|burstcal|2000000|1.0|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
+  "br2000_s075|burst|burstcal|2000000|0.75|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
+  "br1000_s050|burst|burstcal|1000000|0.5|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
+)
+
+for cond in "${CONDS[@]}"; do
+  IFS='|' read -r label profile seed bitrate scale extra <<<"$cond"
+  for rep in $(seq 1 "$REPS"); do
+    for a in 1 2 3; do
+      port=$((port+1)); pport=$((pport+1))
+      echo ">>> $label rep=$rep attempt=$a port=$port (br=$bitrate scale=$scale)" >&2
+      env PROFILE="$profile" SEED="$seed" CONTENT="$CONTENT" DURATION="$DURATION" \
+        BITRATE="$bitrate" SCALE="$scale" PORT="$port" PROXY_PORT="$pport" \
+        RP_PLI_COOLDOWN_MS=0 $extra \
+        "$ROOT/run-impaired.sh" >/dev/null 2>>"$LOG"
+      c="$ROOT/$(ls -t out/impaired-$profile-*.json | head -1)"
+      x="$ROOT/$(ls -t out/proxy-$profile-*.json | head -1)"
+      if node -e 'const f=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).summary;process.exit(f&&typeof f.framesDecoded==="number"&&f.framesDecoded>30?0:1)' "$c" 2>/dev/null; then break; fi
+      echo "    !! flake, retry" >&2; sleep 4
+    done
+    sf="$ROOT/out/score-$label-rep$rep.json"
+    node score/score.js --client "$c" --proxy "$x" --out "$sf" >/dev/null 2>&1
+    node -e '
+      const fs=require("fs");const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const i=r.inputs||{};
+      const f=(x,d=3)=>x==null?"":(typeof x==="number"?x.toFixed(d):x);
+      console.log([process.argv[2],process.argv[3],f(r.score),(r.gates&&r.gates.passed),f(i.decodedFps,1),f(i.coverage),f(i.freezeRatio),f(i.injectedLossRate),process.argv[4],process.argv[5]].join("\t"));
+    ' "$sf" "$label" "$rep" "$bitrate" "$scale" >> "$OUT"
+    sleep 6
+  done
+done
+
+echo "=== GRID DONE: $OUT ==="
+column -t -s $'\t' "$OUT"
+node -e '
+const fs=require("fs");const L=fs.readFileSync(process.argv[1],"utf8").trim().split("\n").slice(1).map(l=>l.split("\t"));
+const by={};for(const r of L)(by[r[0]]??=[]).push(r);
+const stat=a=>{a=a.filter(x=>x!==""&&!isNaN(x)).map(Number);if(!a.length)return[NaN,NaN];const m=a.reduce((x,y)=>x+y,0)/a.length;return[m,Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/a.length)];};
+console.log("\n=== mean +/- std (decFps | score | gatePass) ===");
+for(const k in by){const g=by[k];const[fm,fsd]=stat(g.map(r=>r[4]));const sc=g.filter(r=>+r[2]>-1e8).map(r=>r[2]);const[sm,ssd]=stat(sc);const pass=g.filter(r=>r[3]==="true").length;
+console.log(k+": decFps "+fm.toFixed(1)+"±"+fsd.toFixed(1)+" | score "+(sc.length?sm.toFixed(3)+"±"+ssd.toFixed(3):"all-gatefail")+" | gate "+pass+"/"+g.length);}
+' "$OUT"

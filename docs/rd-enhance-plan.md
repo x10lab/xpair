@@ -74,6 +74,57 @@ Establish: launch host → programmatic client receives H.264 → dump getStats 
   hit probability per frame) or FEC, since residual loss is the real challenge.
   Design = Claude, host implementation = codex, build = CI/m4.
 
+#### Findings (2026-06-28, cont'd) — what's testable & the scoring truth
+- **Score gate is effectively `decodedFps >= 15`** (COVERAGE_FLOOR 0.5 × 30fps).
+  SSIM is unimplemented → `gates.ssim="absent"` (never fails the gate). So burst
+  runs fail purely from decoded-framerate collapse, not image quality.
+- **Single-run variance is large** (calib: 2.9%loss→14fps, 5.3%loss→18.8fps,
+  non-monotonic). Every measurement must be **3× with mean±std** (the doc said so;
+  earlier "faint signals" were noise). Adopted in `bench/baseline-3x.sh`.
+- **Realistic burst calibration** (decFps near the gate): GE_P/GE_R
+  0.015/0.25 ≈ 5% loss (~15-19fps, straddles gate), 0.020/0.20 ≈ 12% (~10fps,
+  fails). 0.030/0.15 (~17%) is unrealistically harsh — no fix can cross. Adopt
+  0.015/0.25 as the primary optimization target.
+- **Flake fixed:** the intermittent zero-traffic runs were the client racing the
+  relay's UDP bind; `run-impaired.sh` now polls the port before launching client.
+- **Hard architectural constraint:** bitrate is passed once at spawn to
+  `rp-screencap` (serve_webrtc.rs:1841); there is no runtime bitrate channel.
+  `rp-screencap` is a *separate signed binary* (XpairHost helper) — rebuilding it
+  loses the Screen-Recording TCC grant, so **encoder-side fixes (adaptive bitrate,
+  FEC) cannot be tested on M1 with the m4 `screen-pli` shortcut**; they require a
+  full CI signed prerelease installed on M1 (which re-grants TCC).
+- **Testable-without-rebuild surface:** serve_webrtc.rs transport layer (largely
+  exhausted: NACK/RTX optimal, PLI neutral) **plus the bitrate/fps/scale args**
+  the deployed signed encoder already accepts. → Next experiment: a 3×
+  bitrate×scale grid on burst5 to find the loss-resilient operating point. That
+  point both (a) may ship as a better default and (b) defines the target an
+  adaptive policy (codex, via CI) should switch to under detected loss.
+
+## Adaptive bitrate design — RustDesk reference (port structure, drive from loss)
+RustDesk `src/server/video_qos.rs` is a sender-side **delay-based** QoS controller
+(TCP transport → no loss visibility). We replicate its *structure* but drive it
+from **loss** (our transport is UDP/RTP, loss is visible via RTCP RR, and the
+bench injects loss not delay — a delay-band law would never fire here).
+
+- Two independent loops: **bitrate ~3s**, **fps ~1s**; fps reacts first.
+- **Multiplicative ratio on bands**, clamped [min,max]. RustDesk delay bands
+  ×1.15…×0.80; ours = loss bands from RR fractionLost / NACK rate, e.g.
+  <1%→×1.05, 1–3%→hold, 3–7%→×0.9, >7%→×0.8 (tune on bench).
+- **Never raise on static screen** (gate raises on a frame-changed counter).
+- **Circuit breaker**: no RR for ~2s → throttle hard.
+- encoder_bitrate = base_bitrate(res) × ratio. Base table (kbps): 720p 1000,
+  1080p 2073, 1440p 3000, 2160p 5000; Balanced ratio 0.67, Best 1.5, Low 0.5.
+- Signal map: avg_delay→RR fractionLost/NACK; response_delayed→RR timeout;
+  dynamic_screen→frame-changed flag; keyframe→PLI/FIR (already handled).
+- **Critical gap:** VideoToolbox runtime bitrate via
+  `VTCompressionSessionSetProperty(kVTCompressionPropertyKey_AverageBitRate)` —
+  implement this live knob in rp-screencap FIRST (the QoS loop needs something to
+  actuate). This is why adaptive bitrate requires a CI signed build, not the m4
+  `screen-pli` shortcut.
+
+Source: rustdesk/rustdesk `src/server/{video_qos,video_service,connection}.rs`,
+`libs/scrap/src/common/codec.rs`; PR #10459, discussion #792.
+
 ## Telemetry note
 `collectVideoStats` in the production webview emits only
 decoded/dropped/fps/jitter/bitrate — the bench client must collect the fuller set
