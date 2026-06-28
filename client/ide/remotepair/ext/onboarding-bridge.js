@@ -394,8 +394,16 @@ function firstUserKnownHostsFile(value) {
   const tokens = raw.split(/\s+/).filter(Boolean);
   const first = tokens[0] || "";
   if (first.toLowerCase() === "none") return "none";
-  if (tokens.length > 1 && os.homedir().includes(" ") && raw.startsWith(os.homedir())) return "";
-  return expandHomePath(first);
+  let best = "";
+  let acc = "";
+  for (const token of tokens) {
+    acc = acc ? `${acc} ${token}` : token;
+    const candidate = expandHomePath(acc);
+    let parentExists = false;
+    try { parentExists = fs.existsSync(path.dirname(candidate)); } catch { parentExists = false; }
+    if (parentExists) best = candidate;
+  }
+  return best;
 }
 
 async function durableKnownHostsReadback(host) {
@@ -1410,7 +1418,19 @@ const bridge = {
     const foundResult = await run("ssh-keygen", ["-F", rb.lookupName, "-f", rb.file]);
     const lines = knownHostsKeyLines(foundResult.out);
     const found = lines.find((l) => keyIdentity(l).startsWith("ssh-ed25519 ")) || "";
-    if (!found) return { ok: false, err: "host key was not saved" };
+    if (!found) {
+      const strict = await run("ssh", [
+        ...sshDurablePinOpts(8),
+        "-o", "StrictHostKeyChecking=yes",
+        h,
+        "true",
+      ]);
+      const strictErr = strict.err || strict.out || "";
+      if (!isHostKeyVerificationFailure(strictErr) && !isSshNetworkFailure(strictErr)) {
+        return { ok: true, err: "" };
+      }
+      return { ok: false, err: "host key was not saved" };
+    }
 
     const persistedFp = await fingerprintKnownHostsLine(found, false);
     if (persistedFp !== String(expectedFp)) {

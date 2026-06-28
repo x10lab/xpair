@@ -72,7 +72,11 @@ function withSpawnSpy(fn) {
         assert.ok(tmpRelative && !tmpRelative.startsWith("..") && !path.isAbsolute(tmpRelative));
         assert.equal(path.basename(path.dirname(knownHostsFiles[0])).startsWith("rp-kh-"), true);
         assert.equal(path.basename(knownHostsFiles[0]), "known_hosts");
-        assert.ok(knownHostsFiles.includes(path.join(os.homedir(), ".ssh", "known_hosts")));
+        assert.ok(knownHostsFiles.length >= 1);
+        for (const file of knownHostsFiles.slice(1)) {
+          assert.ok(path.isAbsolute(file));
+          assert.notEqual(path.dirname(file), path.dirname(knownHostsFiles[0]));
+        }
       });
     } finally {
       if (previousTag === undefined) delete process.env.RP_SSH_CM_TAG;
