@@ -59,6 +59,14 @@ CONTENT_URL="$(node -e 'const path = require("node:path"); const { pathToFileURL
 "${ROOT}/launch-content.sh" "${CONTENT_PROFILE_DIR}" "${CONTENT_URL}" &
 CONTENT_PID="$!"
 sleep "${CONTENT_SETTLE}"
+# launch-content.sh is backgrounded, so `set -e` cannot catch it exiting during the
+# settle (e.g. Google Chrome missing at the default path). Without this guard the host
+# would start and record whatever is on screen instead of the deterministic pattern,
+# corrupting the baseline/variance numbers. Fail fast if the content window died.
+if ! kill -0 "${CONTENT_PID}" 2>/dev/null; then
+  echo "content launcher exited during settle (launch-content.sh) — is Chrome installed?" >&2
+  exit 1
+fi
 
 "${HOST_BIN}" serve-webrtc \
   --port "${PORT}" \

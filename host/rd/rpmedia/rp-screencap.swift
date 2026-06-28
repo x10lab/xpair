@@ -53,9 +53,16 @@ final class Enc {
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (self.fps * 2) as CFNumber)
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_AverageBitRate, value: self.bitrate as CFNumber)
-    let bytesPerSecond = max(1, self.bitrate / 8)
-    let limits = [bytesPerSecond as CFNumber, 1 as CFNumber] as CFArray
-    VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
+    // DataRateLimits is a HARD 1-second byte cap that constrains frame/IDR bursts. Only
+    // install it when ABR is active; with ABR off (the default) normal RD captures must
+    // keep VideoToolbox's stock behavior (AverageBitRate only). Installing it
+    // unconditionally would change off-by-default capture, contradicting the
+    // zero-behavior-change contract for RP_ABR unset.
+    if abrControlEnabled() {
+      let bytesPerSecond = max(1, self.bitrate / 8)
+      let limits = [bytesPerSecond as CFNumber, 1 as CFNumber] as CFArray
+      VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
+    }
     VTSessionSetProperty(sess, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: self.fps as CFNumber)
     VTCompressionSessionPrepareToEncodeFrames(sess)
     session = sess

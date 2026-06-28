@@ -36,6 +36,7 @@ esac
 
 TOKEN_FILE="$(mktemp "${TMPDIR:-/tmp}/xpair-rd-bench-token.XXXXXX")"
 CONTENT_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xpair-rd-bench-chrome.XXXXXX")"
+RELAY_LOG="$(mktemp "${TMPDIR:-/tmp}/xpair-rd-bench-relay.XXXXXX")"
 HOST_PID=""
 CONTENT_PID=""
 RELAY_PID=""
@@ -53,7 +54,7 @@ cleanup() {
     kill "${CONTENT_PID}" 2>/dev/null || true
     wait "${CONTENT_PID}" 2>/dev/null || true
   fi
-  rm -f "${TOKEN_FILE}"
+  rm -f "${TOKEN_FILE}" "${RELAY_LOG}"
   rm -rf "${CONTENT_PROFILE_DIR}"
 }
 trap cleanup EXIT INT TERM
@@ -107,23 +108,26 @@ RETX_LOSS="${RETX_LOSS:-}" \
 BW_KBPS="${BW_KBPS:-}" \
 BW_BUFFER_MS="${BW_BUFFER_MS:-}" \
 BURST_SCHEDULE="${BURST_SCHEDULE:-}" \
-node "${ROOT}/proxy/relay.js" &
+node "${ROOT}/proxy/relay.js" 2>"${RELAY_LOG}" &
 RELAY_PID="$!"
 
-# Wait for the relay to actually bind its UDP port before launching the client.
-# Back-to-back runs under load make the node relay slow to bind; a fixed 1s sleep
-# raced the client's forced-relay ICE check and caused intermittent zero-traffic
-# runs. Poll the port (up to ~5s), but only accept a bind failure as "ready" while
-# our spawned relay is still alive — otherwise a pre-occupied port or a relay that
-# died with EADDRINUSE would look identical to a healthy listener.
+# Wait until OUR spawned relay confirms it bound the UDP port before launching the
+# client. The relay prints "relay listening on <addr>:<port> ..." to stderr only on a
+# successful bind, so we poll that log for OUR port. The old "try to bind it and treat
+# EADDRINUSE as ready" probe had a false-positive race: if PROXY_PORT was already held
+# by a stale relay, the probe saw the bind fail while our just-spawned relay had not
+# yet reported its own EADDRINUSE, so it declared ready and the client trickled ICE to
+# the wrong (stale) relay. Keying on our relay's own listening line removes that race —
+# if our relay can't get the port it exits with EADDRINUSE and the PID check trips.
 RELAY_READY=0
 for _ in $(seq 1 25); do
   if ! kill -0 "${RELAY_PID}" 2>/dev/null; then
-    echo "relay process ${RELAY_PID} exited before binding ${PROXY_PORT}" >&2
+    echo "relay process ${RELAY_PID} exited before binding ${PROXY_PORT}:" >&2
+    cat "${RELAY_LOG}" >&2 || true
     break
   fi
-  if node -e 'const d=require("node:dgram").createSocket("udp4");d.once("error",()=>process.exit(0));d.bind(Number(process.argv[1]),"127.0.0.1",()=>{d.close();process.exit(1)})' "${PROXY_PORT}"; then
-    RELAY_READY=1  # bind failed while relay is alive => relay owns the port
+  if grep -q "relay listening on .*:${PROXY_PORT} " "${RELAY_LOG}" 2>/dev/null; then
+    RELAY_READY=1
     break
   fi
   sleep 0.2
