@@ -99,7 +99,18 @@ RETX_LOSS="${RETX_LOSS:-}" \
 BURST_SCHEDULE="${BURST_SCHEDULE:-}" \
 node "${ROOT}/proxy/relay.js" &
 RELAY_PID="$!"
-sleep 1
+
+# Wait for the relay to actually bind its UDP port before launching the client.
+# Back-to-back runs under load make the node relay slow to bind; a fixed 1s sleep
+# raced the client's forced-relay ICE check and caused intermittent zero-traffic
+# runs. Poll the port (up to ~5s) instead.
+for _ in $(seq 1 25); do
+  if node -e 'const d=require("node:dgram").createSocket("udp4");d.once("error",()=>process.exit(0));d.bind(Number(process.argv[1]),"127.0.0.1",()=>{d.close();process.exit(1)})' "${PROXY_PORT}"; then
+    break  # bind failed => port is taken => relay is up
+  fi
+  sleep 0.2
+done
+sleep 0.5
 
 TOKEN="${TOKEN}" \
 PORT="${PORT}" \
