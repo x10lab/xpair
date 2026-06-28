@@ -322,20 +322,46 @@ async function fingerprintKnownHostsLine(line, useStdin) {
   }
 }
 
-async function hostKeyLinesFromEphemeral(host) {
+async function hostKeyLinesFromEphemeral(host, lookupName) {
   const ephemeral = sshEphemeralKnownHostsPath();
   if (!ephemeral) return [];
-  try {
-    const r = await run("ssh-keygen", ["-F", String(host), "-f", ephemeral]);
-    const lines = knownHostsKeyLines(r.out);
-    if (lines.length) return lines;
-  } catch {
-    /* fall through to the ephemeral file contents */
+  const seen = new Set();
+  for (const name of [lookupName, host]) {
+    const key = String(name || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    try {
+      const r = await run("ssh-keygen", ["-F", key, "-f", ephemeral]);
+      const lines = knownHostsKeyLines(r.out);
+      if (lines.length) return lines;
+    } catch {
+      /* try the next lookup name */
+    }
   }
+  return [];
+}
+
+async function liveHostKeyLine(scanHost, scanPort) {
+  const host = String(scanHost || "").trim();
+  const port = String(scanPort || "22").trim() || "22";
+  if (!host) return "";
+  const r = await run("ssh-keyscan", ["-t", "ed25519", "-T", "5", "-p", port, host]);
+  if (r.code !== 0) return "";
+  return preferEd25519(knownHostsKeyLines(r.out));
+}
+
+function seedEphemeralHostKey(lookupName, line) {
+  const ephemeral = sshEphemeralKnownHostsPath();
+  const name = String(lookupName || "").trim();
+  const raw = String(line || "").trim();
+  if (!ephemeral || !name || !raw) return;
   try {
-    return knownHostsKeyLines(fs.readFileSync(ephemeral, "utf8"));
+    const rewritten = raw.replace(/^\S+(\s+)/, `${name}$1`);
+    fs.mkdirSync(path.dirname(ephemeral), { recursive: true });
+    fs.appendFileSync(ephemeral, `${rewritten}\n`, { mode: 0o600 });
+    try { fs.chmodSync(ephemeral, 0o600); } catch { /* best effort */ }
   } catch {
-    return [];
+    /* best effort */
   }
 }
 
@@ -358,7 +384,7 @@ function firstUserKnownHostsFile(value) {
 
 async function durableKnownHostsReadback(host) {
   const h = String(host || "").trim();
-  const fallback = { isNone: false, file: "", lookups: [h].filter(Boolean) };
+  const fallback = { isNone: false, file: "", lookupName: h, scanHost: h, scanPort: "22" };
   const r = await run("ssh", ["-G", h]);
   if (r.code !== 0) return fallback;
 
@@ -379,21 +405,16 @@ async function durableKnownHostsReadback(host) {
       hostkeyalias = alias.toLowerCase() === "none" ? "" : alias;
     }
   }
-  if (String(file).toLowerCase() === "none") return { isNone: true, file: "", lookups: [] };
-
   const lookupHost = hostname || h;
-  const candidates = [
-    hostkeyalias || lookupHost,
-    port && port !== "22" ? `[${lookupHost}]:${port}` : "",
-    h,
-  ];
-  const seen = new Set();
-  const lookups = candidates.filter((name) => {
-    if (!name || seen.has(name)) return false;
-    seen.add(name);
-    return true;
-  });
-  return { isNone: false, file, lookups };
+  const scanPort = port || "22";
+  if (String(file).toLowerCase() === "none") {
+    return { isNone: true, file: "", lookupName: "", scanHost: lookupHost, scanPort };
+  }
+
+  const lookupName = hostkeyalias
+    ? hostkeyalias
+    : (port && port !== "22" ? `[${lookupHost}]:${port}` : lookupHost);
+  return { isNone: false, file, lookupName, scanHost: lookupHost, scanPort };
 }
 
 function shSingleQuote(s) {
@@ -1323,7 +1344,15 @@ const bridge = {
     if (!expectedFp) return { ok: false, err: "no fingerprint to confirm" };
 
     const ephemeralPath = sshEphemeralKnownHostsPath();
-    const line = preferEd25519(await hostKeyLinesFromEphemeral(h));
+    const rb = await durableKnownHostsReadback(h);
+    let line = preferEd25519(await hostKeyLinesFromEphemeral(h, rb.lookupName));
+    if (!line) {
+      const scanned = await liveHostKeyLine(rb.scanHost, rb.scanPort);
+      if (scanned) {
+        seedEphemeralHostKey(rb.lookupName, scanned);
+        line = scanned;
+      }
+    }
     const fp = line ? await fingerprintKnownHostsLine(line, false) : "";
     if (!line || !fp) return { ok: false, err: "could not read host key to pin" };
     if (fp !== String(expectedFp)) {
@@ -1358,26 +1387,16 @@ const bridge = {
     }
     if (isSshNetworkFailure(persistErr)) return { ok: false, err: "could not reach host to pin" };
 
-    const rb = await durableKnownHostsReadback(h);
-    if (rb.isNone) return { ok: true, err: "" };
+    if (rb.isNone) return { ok: false, err: "SSH config disables host-key checking (UserKnownHostsFile none); cannot establish durable host trust" };
     if (!rb.file) return { ok: false, err: "could not verify pinned host key" };
 
-    let found = "";
-    for (const name of rb.lookups) {
-      const foundResult = await run("ssh-keygen", ["-F", name, "-f", rb.file]);
-      const keyLine = preferEd25519(knownHostsKeyLines(foundResult.out));
-      if (keyLine) {
-        found = keyLine;
-        break;
-      }
-    }
+    const foundResult = await run("ssh-keygen", ["-F", rb.lookupName, "-f", rb.file]);
+    const found = preferEd25519(knownHostsKeyLines(foundResult.out));
     if (!found) return { ok: false, err: "host key was not saved" };
 
     const persistedFp = await fingerprintKnownHostsLine(found, false);
     if (persistedFp !== String(expectedFp)) {
-      for (const name of rb.lookups) {
-        await run("ssh-keygen", ["-R", name, "-f", rb.file]);
-      }
+      await run("ssh-keygen", ["-R", rb.lookupName, "-f", rb.file]);
       return hostKeyMismatch("host key changed before it could be pinned");
     }
     return { ok: true, err: "" };
