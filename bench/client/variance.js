@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const { computeRecovery } = require("../score/recovery");
 
 const METRICS = [
   "framesDecoded",
@@ -13,6 +14,14 @@ const METRICS = [
   "packetsLost",
   "jitter",
 ];
+
+// Derived score terms that score.js normalizes by baseline stddev. They are not
+// raw summary fields, so without these keys score.js silently falls back to fixed
+// scales. We emit them under the exact names score.js reads. (recoverySpeed is ~0
+// for unimpaired baselines that never burst, so it usually epsilon-falls-back
+// anyway; pliRate carries real baseline variance. cpuSlope/qpDelta/e2eP95Delta are
+// not yet instrumented, so they stay absent and use score.js's epsilon scales.)
+const DERIVED_METRICS = ["recoverySpeed", "pliRate"];
 
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -38,13 +47,40 @@ function runMetric(record, metric) {
   return numberOrNull(summary[metric]);
 }
 
+// score.js's rate-from-counter, replicated so baseline pliRate uses the same math.
+function rateFromCounter(record, key) {
+  const samples = Array.isArray(record.samples) ? record.samples : [];
+  let first = null;
+  let last = null;
+  for (const s of samples) {
+    const v = numberOrNull(s[key]);
+    if (v !== null) {
+      if (first === null) first = v;
+      last = v;
+    }
+  }
+  const durationMs = numberOrNull(record.summary && record.summary.durationMs);
+  if (first === null || last === null || !durationMs || durationMs <= 0) return null;
+  return Math.max(0, last - first) / (durationMs / 1000);
+}
+
+function runDerived(record, metric) {
+  if (metric === "pliRate") return rateFromCounter(record, "pliCount");
+  if (metric === "recoverySpeed") {
+    try {
+      return numberOrNull(computeRecovery(record).recoverySpeed);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function aggregateRecords(records, content) {
   const metrics = {};
 
-  for (const metric of METRICS) {
-    const values = records
-      .map((record) => runMetric(record, metric))
-      .filter((value) => value !== null);
+  const collect = (metric, getter) => {
+    const values = records.map(getter).filter((value) => value !== null);
     const mean = values.length > 0
       ? values.reduce((sum, value) => sum + value, 0) / values.length
       : null;
@@ -54,6 +90,13 @@ function aggregateRecords(records, content) {
       stddev: mean === null ? null : sampleStddev(values, mean),
       values,
     };
+  };
+
+  for (const metric of METRICS) {
+    collect(metric, (record) => runMetric(record, metric));
+  }
+  for (const metric of DERIVED_METRICS) {
+    collect(metric, (record) => runDerived(record, metric));
   }
 
   return {

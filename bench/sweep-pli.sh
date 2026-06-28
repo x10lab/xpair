@@ -3,6 +3,15 @@
 # injected impairment is byte-identical across cooldown values (fair comparison).
 # Uses the PLI-cooldown host build at ~/rd-enh/screen-pli; capture via the
 # deployed signed rp-screencap (has the Screen Recording TCC grant).
+#
+# CAVEAT (standalone capture): this runs run-impaired.sh, which starts
+# `serve-webrtc` standalone (NOT RP_AU_STDIN=1). In standalone mode the host's
+# PLI/FIR -> keyframe_noack control writes are not delivered to the app's
+# CaptureEngine, so varying RP_PLI_COOLDOWN_MS may only change no-op control
+# writes rather than on-demand IDR timing. Treat PLI-cooldown A/B results from
+# this script as INDICATIVE ONLY; a definitive PLI study needs the product
+# app-capture path or standalone keyframe control. (This does not affect the ABR
+# results, which actuate encoder bitrate, not keyframes.)
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export HOST_BIN="${HOST_BIN:-$HOME/rd-enh/screen-pli}"

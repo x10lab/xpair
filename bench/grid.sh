@@ -9,7 +9,7 @@
 #
 # Env: REPS (default 3), DURATION (20), CONTENT (motion). Host build via HOST_BIN.
 set -uo pipefail
-ROOT="/Users/ghyeong/Spaces/Work/Devs/Env-X10lab/xpair/fix/rd-enhance/bench"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 export HOST_BIN="${HOST_BIN:-$HOME/rd-enh/screen-pli}"
 export RP_SCREENCAP="${RP_SCREENCAP:-$HOME/.xpair/host/bin/rp-screencap}"
@@ -23,11 +23,14 @@ echo -e "label\trep\tscore\tgate\tdecFps\tcoverage\tfreezeRatio\tinjLoss\tbitrat
 port=9300; pport=9400
 
 # CONDS: edit this list per experiment.
+ABR_ON="RP_ABR=1 RP_ABR_INTERVAL_MS=1000 RP_ABR_MIN_BPS=150000 RP_ABR_MAX_BPS=600000 RP_ABR_NACK_HI=20 RP_ABR_NACK_LO=3"
 CONDS=(
-  "bw_none|passthrough|congcal|4000000|1.0|"
-  "bw_500|passthrough|congcal|4000000|1.0|BW_KBPS=500 BW_BUFFER_MS=300"
-  "bw_300|passthrough|congcal|4000000|1.0|BW_KBPS=300 BW_BUFFER_MS=300"
-  "bw_200|passthrough|congcal|4000000|1.0|BW_KBPS=200 BW_BUFFER_MS=300"
+  "off_bw450|passthrough|congcal|4000000|1.0|BW_KBPS=450 BW_BUFFER_MS=300"
+  "on_bw450|passthrough|congcal|4000000|1.0|BW_KBPS=450 BW_BUFFER_MS=300 $ABR_ON"
+  "off_bw350|passthrough|congcal|4000000|1.0|BW_KBPS=350 BW_BUFFER_MS=300"
+  "on_bw350|passthrough|congcal|4000000|1.0|BW_KBPS=350 BW_BUFFER_MS=300 $ABR_ON"
+  "off_bw250|passthrough|congcal|4000000|1.0|BW_KBPS=250 BW_BUFFER_MS=300"
+  "on_bw250|passthrough|congcal|4000000|1.0|BW_KBPS=250 BW_BUFFER_MS=300 $ABR_ON"
 )
 
 for cond in "${CONDS[@]}"; do

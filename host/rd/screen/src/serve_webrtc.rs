@@ -2051,6 +2051,15 @@ fn spawn_abr_controller(
         max_bps,
         actuator.is_some()
     );
+    if actuator.is_none() {
+        // App-capture (RP_AU_STDIN=1) reads pre-encoded AUs from the host app's
+        // CaptureEngine, which this process cannot retarget — there is no bitrate
+        // control op on that path. Be honest that ABR is observe-only here rather
+        // than implying it is throttling the encoder under congestion.
+        tracing::warn!(
+            "serve-webrtc: ABR has no bitrate actuator on this capture path (app-capture/stdin); running OBSERVE-ONLY — encoder bitrate will NOT change under congestion"
+        );
+    }
     tokio::spawn(async move {
         let started = Instant::now();
         let mut target_bps = spawn_bps.clamp(min_bps, max_bps);

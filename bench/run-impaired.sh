@@ -105,13 +105,25 @@ RELAY_PID="$!"
 # Wait for the relay to actually bind its UDP port before launching the client.
 # Back-to-back runs under load make the node relay slow to bind; a fixed 1s sleep
 # raced the client's forced-relay ICE check and caused intermittent zero-traffic
-# runs. Poll the port (up to ~5s) instead.
+# runs. Poll the port (up to ~5s), but only accept a bind failure as "ready" while
+# our spawned relay is still alive — otherwise a pre-occupied port or a relay that
+# died with EADDRINUSE would look identical to a healthy listener.
+RELAY_READY=0
 for _ in $(seq 1 25); do
+  if ! kill -0 "${RELAY_PID}" 2>/dev/null; then
+    echo "relay process ${RELAY_PID} exited before binding ${PROXY_PORT}" >&2
+    break
+  fi
   if node -e 'const d=require("node:dgram").createSocket("udp4");d.once("error",()=>process.exit(0));d.bind(Number(process.argv[1]),"127.0.0.1",()=>{d.close();process.exit(1)})' "${PROXY_PORT}"; then
-    break  # bind failed => port is taken => relay is up
+    RELAY_READY=1  # bind failed while relay is alive => relay owns the port
+    break
   fi
   sleep 0.2
 done
+if [[ "${RELAY_READY}" -ne 1 ]]; then
+  echo "relay did not become ready on ${PROXY_PORT} within timeout" >&2
+  exit 1
+fi
 sleep 0.5
 
 TOKEN="${TOKEN}" \
@@ -129,7 +141,11 @@ PROXY_STATS="${PROXY_STATS}" \
 OUT="${OUT}" \
 node "${ROOT}/client/index.js"
 
-if [[ "${PROFILE}" == "passthrough" ]]; then
+# Axis-A falsification gate: a *truly* unimpaired passthrough run must observe ~0
+# loss. Skip it when a bandwidth cap is active — there the relay intentionally
+# drops RTP, so nonzero loss is expected and the gate would (correctly) fail,
+# which would block scoring legitimate congestion experiments.
+if [[ "${PROFILE}" == "passthrough" && ( -z "${BW_KBPS:-}" || "${BW_KBPS:-0}" == "0" ) ]]; then
   node -e '
     const fs = require("node:fs");
     const record = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));

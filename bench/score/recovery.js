@@ -2,6 +2,9 @@
 
 const DEFAULT_RECOVER_FRAC = 0.8;
 const PRE_BURST_WINDOW_MS = 3000;
+// One sample period. Offsets recoverySpeed so an instant recovery (0ms) maps to the
+// fastest finite speed (1/SAMPLE) instead of collapsing to the no-recovery value (0).
+const RECOVER_SPEED_OFFSET_MS = 1000;
 
 function finiteNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -96,7 +99,10 @@ function computeRecovery(clientRecord, bursts, options = {}) {
     recoveredCount: recoveredMs.length,
     allRecovered,
     meanRecoverMs,
-    recoverySpeed: meanRecoverMs !== null && meanRecoverMs > 0 ? 1 / meanRecoverMs : 0,
+    // Reward recovery speed; an instant recovery (meanRecoverMs===0, e.g. a burst
+    // ending on a sample already back above threshold) must still beat no recovery
+    // (null => 0). The one-sample offset maps 0ms to the fastest finite speed.
+    recoverySpeed: meanRecoverMs !== null ? 1 / (meanRecoverMs + RECOVER_SPEED_OFFSET_MS) : 0,
     recoveries,
   };
 }
