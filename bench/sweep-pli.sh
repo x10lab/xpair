@@ -37,11 +37,15 @@ run(){ # label profile seed extra_env...   (label disambiguates output files)
     sf="$ROOT/out/score-$label-cd$cd.json"
     node "$ROOT/score/score.js" --client "$c" --proxy "$x" --out "$sf" >/dev/null 2>&1
     node -e '
-      const r=require(process.argv[1]), s=r.summary||{}, p=require(process.argv[2]);
+      const fs=require("fs");
+      const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));        // score record
+      const cl=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));       // client record
+      const p=JSON.parse(fs.readFileSync(process.argv[3],"utf8"));        // proxy record
+      const s=cl.summary||{};  // frame/fps/freeze/bitrate live on the CLIENT summary, not the score JSON
       const h=(p.directions&&p.directions.hostToClient&&p.directions.hostToClient.classes&&p.directions.hostToClient.classes.RTP)||{};
-      const row=[process.argv[3],process.argv[4],r.score,(r.gates&&r.gates.passed),s.framesDecoded,s.decodedFramesPerSecond,s.freezeCount,s.totalFreezesDuration,(h.dropped),Math.round(s.averageBitrateKbps||0),(p.retransmitsPassed||0),(p.retransmitsDropped||0)].join("\t");
+      const row=[process.argv[4],process.argv[5],r.score,(r.gates&&r.gates.passed),s.framesDecoded,s.decodedFps,s.freezeCount,s.totalFreezesDuration,(h.dropped),Math.round(s.averageBitrateKbps||0),(p.retransmitsPassed||0),(p.retransmitsDropped||0)].join("\t");
       console.log(row);
-    ' "$sf" "$x" "$label" "$cd" >> "$OUT"
+    ' "$sf" "$c" "$x" "$label" "$cd" >> "$OUT"
     sleep 8   # thermal cooldown between runs
   done
 }

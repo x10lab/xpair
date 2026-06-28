@@ -172,14 +172,25 @@ assert.notDeepEqual(droppedSeqs("same-seed"), droppedSeqs("other-seed"));
   const stats = createStats(cfg);
   const impairer = new Impairer(cfg, stats);
   const originalNow = Date.now;
+  // Media starts well AFTER relay process start; the burst schedule must anchor to the
+  // first host→client RTP packet (media start), not to startedAt.
+  const t0 = Date.parse(stats.startedAt) + 5000;
   try {
-    Date.now = () => Date.parse(stats.startedAt) + 1100;
-    const packet = rtpPacket(10);
-    assert.equal(impairer.decide(classifyPacket(packet), DIR_HOST_TO_CLIENT, packet.length).drop, true);
+    // First media packet anchors the schedule and is itself before the burst window.
+    Date.now = () => t0;
+    const first = rtpPacket(9);
+    assert.equal(impairer.decide(classifyPacket(first), DIR_HOST_TO_CLIENT, first.length).drop, false);
     assert.equal(stats.bursts.length, 1);
     assert.equal(stats.bursts[0].startOffsetMs, 1000);
-    Date.now = () => Date.parse(stats.startedAt) + 2000;
-    assert.equal(impairer.decide(classifyPacket(rtpPacket(11)), DIR_HOST_TO_CLIENT, packet.length).drop, false);
+    assert.equal(stats.bursts[0].startMs, t0 + 1000);
+    // Inside the burst window [t0+1000, t0+1500): dropped.
+    Date.now = () => t0 + 1100;
+    const inBurst = rtpPacket(10);
+    assert.equal(impairer.decide(classifyPacket(inBurst), DIR_HOST_TO_CLIENT, inBurst.length).drop, true);
+    // After the burst: forwarded again.
+    Date.now = () => t0 + 2000;
+    const after = rtpPacket(11);
+    assert.equal(impairer.decide(classifyPacket(after), DIR_HOST_TO_CLIENT, after.length).drop, false);
   } finally {
     Date.now = originalNow;
   }

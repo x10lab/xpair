@@ -109,5 +109,6 @@ function computeRecovery(clientRecord, bursts, options = {}) {
 
 module.exports = {
   DEFAULT_RECOVER_FRAC,
+  RECOVER_SPEED_OFFSET_MS,
   computeRecovery,
 };

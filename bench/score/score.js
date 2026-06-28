@@ -179,8 +179,17 @@ function scoreRun(client, proxy, baselineVariance = null, options = {}) {
   const loss = injectedLoss(proxy);
   const observedLoss = finiteNumber(summary.packetsLost) ?? 0;
   if (profile === "passthrough") {
-    gates.axisA = loss.hostToClientRtpDropped === 0 && observedLoss <= LOSS_EPSILON ? "passed" : "failed";
-    if (gates.axisA === "failed") gates.passed = false;
+    // A bandwidth-capped passthrough run (BW_KBPS) intentionally drops host→client
+    // RTP at the relay, so the ~0-loss falsification gate must NOT fire — otherwise
+    // every congestion experiment scores as invalid. run-impaired.sh skips its own
+    // passthrough loss gate in the same case; mirror that here.
+    const bwCapped = (finiteNumber(proxyConfig.bwKbps) ?? 0) > 0;
+    if (bwCapped) {
+      gates.axisA = "bw-capped";
+    } else {
+      gates.axisA = loss.hostToClientRtpDropped === 0 && observedLoss <= LOSS_EPSILON ? "passed" : "failed";
+      if (gates.axisA === "failed") gates.passed = false;
+    }
     const climbFields = ["cpuSlope", "encodeSlope", "rssSlope"];
     if (climbFields.some((key) => {
       const value = finiteNumber(inputValue(client, key));

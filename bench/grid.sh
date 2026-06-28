@@ -39,10 +39,17 @@ for cond in "${CONDS[@]}"; do
     for a in 1 2 3; do
       port=$((port+1)); pport=$((pport+1))
       echo ">>> $label rep=$rep attempt=$a port=$port (br=$bitrate scale=$scale)" >&2
-      env PROFILE="$profile" SEED="$seed" CONTENT="$CONTENT" DURATION="$DURATION" \
+      # grid.sh runs without `set -e`, so a failed run-impaired.sh (host startup
+      # timeout, relay-not-ready, axisA gate) would fall through and the ls -t below
+      # would pick the newest leftover JSON from a PRIOR attempt/condition, scoring a
+      # stale run under this label. Gate on the exit status: on failure, retry the
+      # attempt instead of selecting any output file.
+      if ! env PROFILE="$profile" SEED="$seed" CONTENT="$CONTENT" DURATION="$DURATION" \
         BITRATE="$bitrate" SCALE="$scale" PORT="$port" PROXY_PORT="$pport" \
         RP_PLI_COOLDOWN_MS=0 $extra \
-        "$ROOT/run-impaired.sh" >/dev/null 2>>"$LOG"
+        "$ROOT/run-impaired.sh" >/dev/null 2>>"$LOG"; then
+        echo "    !! run-impaired.sh failed, retry" >&2; sleep 4; continue
+      fi
       c="$ROOT/$(ls -t out/impaired-$profile-*.json | head -1)"
       x="$ROOT/$(ls -t out/proxy-$profile-*.json | head -1)"
       # Valid = ICE actually routed media through the relay (proxy forwarded RTP > 0).

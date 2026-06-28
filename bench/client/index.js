@@ -64,6 +64,14 @@ async function collectRawSamplesInBrowser({ port, token, duration, useProxy, pro
         const pc = new RTCPeerConnection({ iceServers: [] });
         const ws = new WebSocket(url);
         const queuedCandidates = [];
+        // Local ICE candidates can trickle out during setLocalDescription(answer),
+        // i.e. BEFORE we send the answer below. If sent first they reach the host
+        // before it has our remote description and get silently discarded (the host
+        // ignores add_ice_candidate errors), which on a forced-relay run can drop the
+        // only rewritten relay candidate and produce a zero-traffic flake. Buffer them
+        // until the answer is on the wire, then flush.
+        let answerSent = false;
+        const pendingLocalCandidates = [];
         const samples = [];
         const shouldUseProxy = Boolean(useProxy);
         const relayPort = proxyPort;
@@ -112,12 +120,17 @@ async function collectRawSamplesInBrowser({ port, token, duration, useProxy, pro
             const c = event.candidate.toJSON();
             const candidate = rewriteCandidateLine(c.candidate);
             if (!candidate) return;
-            ws.send(JSON.stringify({
+            const payload = {
               type: "candidate",
               candidate,
               sdpMid: c.sdpMid,
               sdpMLineIndex: c.sdpMLineIndex,
-            }));
+            };
+            if (!answerSent) {
+              pendingLocalCandidates.push(payload);
+              return;
+            }
+            ws.send(JSON.stringify(payload));
           }
         };
 
@@ -198,6 +211,10 @@ async function collectRawSamplesInBrowser({ port, token, duration, useProxy, pro
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 ws.send(JSON.stringify({ type: "answer", sdp: rewriteSdpCandidates(pc.localDescription.sdp) }));
+                answerSent = true;
+                for (const payload of pendingLocalCandidates.splice(0)) {
+                  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+                }
                 clearTimeout(timeout);
                 resolve();
                 return;

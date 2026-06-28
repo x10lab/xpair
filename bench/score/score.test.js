@@ -2,7 +2,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { computeRecovery } = require("./recovery");
+const { computeRecovery, RECOVER_SPEED_OFFSET_MS } = require("./recovery");
 const { HARD_GATE_SCORE, WEIGHTS, norm, scoreRun } = require("./score");
 
 function client(overrides = {}) {
@@ -126,7 +126,8 @@ function testRecoveryComputation() {
   assert.equal(result.burstCount, 1);
   assert.equal(result.recoveredCount, 1);
   assert.equal(result.meanRecoverMs, 1500);
-  close(result.recoverySpeed, 1 / 1500);
+  // recoverySpeed = 1/(meanRecoverMs + offset) so instant recovery beats no-recovery.
+  close(result.recoverySpeed, 1 / (1500 + RECOVER_SPEED_OFFSET_MS));
 }
 
 const tests = [

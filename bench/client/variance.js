@@ -2,7 +2,6 @@
 "use strict";
 
 const fs = require("node:fs");
-const { computeRecovery } = require("../score/recovery");
 
 const METRICS = [
   "framesDecoded",
@@ -17,11 +16,14 @@ const METRICS = [
 
 // Derived score terms that score.js normalizes by baseline stddev. They are not
 // raw summary fields, so without these keys score.js silently falls back to fixed
-// scales. We emit them under the exact names score.js reads. (recoverySpeed is ~0
-// for unimpaired baselines that never burst, so it usually epsilon-falls-back
-// anyway; pliRate carries real baseline variance. cpuSlope/qpDelta/e2eP95Delta are
-// not yet instrumented, so they stay absent and use score.js's epsilon scales.)
-const DERIVED_METRICS = ["recoverySpeed", "pliRate"];
+// scales. We emit them under the exact names score.js reads. recoverySpeed is
+// deliberately ABSENT: normal baselines (baseline-variance.sh) have no proxy bursts,
+// so every recoverySpeed value is 0 with stddev 0 — score.js would then use its tiny
+// 1e-6 epsilon as the scale and a normal 1–3s recovery would swamp every other term.
+// Leaving it absent makes score.js use its fixed recovery scale instead. pliRate
+// carries real baseline variance. cpuSlope/qpDelta/e2eP95Delta are not yet
+// instrumented, so they stay absent and use score.js's epsilon scales.
+const DERIVED_METRICS = ["pliRate"];
 
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -66,13 +68,6 @@ function rateFromCounter(record, key) {
 
 function runDerived(record, metric) {
   if (metric === "pliRate") return rateFromCounter(record, "pliCount");
-  if (metric === "recoverySpeed") {
-    try {
-      return numberOrNull(computeRecovery(record).recoverySpeed);
-    } catch {
-      return null;
-    }
-  }
   return null;
 }
 

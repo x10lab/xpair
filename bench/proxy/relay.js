@@ -206,19 +206,34 @@ class Impairer {
     this.geStates = [];
     this.linkFreeAtMs = 0; // leaky-bucket: time the bottleneck link is next idle
     this.startedAtMs = Date.parse(stats.startedAt);
-    this.bursts = (config.burstSchedule || []).map((burst) => {
-      const startMs = this.startedAtMs + burst.startOffsetMs;
+    // BURST_SCHEDULE offsets are anchored to the first host→client RTP packet, NOT to
+    // relay process start: between start and first media we still wait for the relay
+    // bind, Chrome launch, signaling, SDP exchange and ICE, so short/early bursts
+    // anchored to start would expire during setup and never impair real media (while
+    // the score still credited them as recovery events). bursts stays empty until
+    // anchorBursts() fires on first media; stats.bursts shares the ref and fills then.
+    this.burstSchedule = config.burstSchedule || [];
+    this.mediaStartMs = null;
+    this.bursts = [];
+    stats.bursts = this.bursts;
+  }
+
+  anchorBursts(nowMs) {
+    if (this.mediaStartMs !== null) return;
+    this.mediaStartMs = nowMs;
+    this.stats.mediaStartedAt = new Date(nowMs).toISOString();
+    for (const burst of this.burstSchedule) {
+      const startMs = nowMs + burst.startOffsetMs;
       const endMs = startMs + burst.durationMs;
-      return {
+      this.bursts.push({
         startOffsetMs: burst.startOffsetMs,
         durationMs: burst.durationMs,
         startMs,
         endMs,
         startAt: new Date(startMs).toISOString(),
         endAt: new Date(endMs).toISOString(),
-      };
-    });
-    stats.bursts = this.bursts;
+      });
+    }
   }
 
   isPassthrough() {
@@ -292,6 +307,9 @@ class Impairer {
       return { drop: false, delayMs: 0, reason: null, normSeq: null };
     }
 
+    // Reached only for host→client RTP (guarded above): this is media. Anchor the
+    // marked-burst schedule to the first such packet.
+    if (this.mediaStartMs === null) this.anchorBursts(Date.now());
     const normSeq = this.normalizer.normalize(packet.seq);
     const count = (this.sendCounts.get(normSeq) || 0) + 1;
     this.sendCounts.set(normSeq, count);
@@ -359,6 +377,13 @@ class Relay {
     this.exiting = false;
   }
 
+  isMediaEndpoint(ep) {
+    if (!ep) return false;
+    const k = endpointKey(ep);
+    return (this.host && endpointKey(this.host) === k) ||
+      (this.client && endpointKey(this.client) === k);
+  }
+
   learnPeer(rinfo) {
     const key = endpointKey(rinfo);
     if (this.peerA && endpointKey(this.peerA) === key) return "peerA";
@@ -371,6 +396,24 @@ class Relay {
       this.peerB = endpointObject(rinfo);
       return "peerB";
     }
+    // Both slots full. A peer that gathered more than one host candidate (Wi-Fi +
+    // VPN/IPv6) can fill these with an early connectivity-check pair that ICE never
+    // nominates; the actually-selected port then arrives here and, with a hard
+    // `return null`, would never be forwarded → a zero-traffic/mismeasured run.
+    // Once media roles are assigned the two media endpoints are sacred; until then,
+    // let a newer endpoint evict a not-yet-confirmed-media slot so the nominated pair
+    // can still be learned.
+    if (!this.isMediaEndpoint(this.peerA)) {
+      console.error(`relay: re-learning peerA ${endpointKey(this.peerA)} -> ${key}`);
+      this.peerA = endpointObject(rinfo);
+      return "peerA";
+    }
+    if (!this.isMediaEndpoint(this.peerB)) {
+      console.error(`relay: re-learning peerB ${endpointKey(this.peerB)} -> ${key}`);
+      this.peerB = endpointObject(rinfo);
+      return "peerB";
+    }
+    console.error(`relay: dropping extra endpoint ${key} (both media slots locked)`);
     return null;
   }
 
