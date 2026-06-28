@@ -297,6 +297,22 @@ function preferEd25519(lines) {
   return lines.find((line) => keyIdentity(line).startsWith("ssh-ed25519 ")) || lines[0] || "";
 }
 
+function removeKnownHostsLine(file, line) {
+  const target = String(line || "").trim();
+  if (!target) return;
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const hadFinalNewline = raw.endsWith("\n");
+    const source = hadFinalNewline ? raw.slice(0, -1) : raw;
+    const kept = (source ? source.split("\n") : []).filter((l) => l.trim() !== target);
+    const next = kept.length ? kept.join("\n") + (hadFinalNewline ? "\n" : "") : "";
+    fs.writeFileSync(file, next, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
+}
+
 async function fingerprintKnownHostsLine(line, useStdin) {
   if (useStdin) {
     const r = await runSecretStdin("ssh-keygen", ["-lf", "-"], line);
@@ -471,6 +487,7 @@ function sshDurablePinOpts(connectTimeout = 5) {
     "-o", "PasswordAuthentication=no",
     "-o", "KbdInteractiveAuthentication=no",
     "-o", "NumberOfPasswordPrompts=0",
+    "-o", "HostKeyAlgorithms=ssh-ed25519",
   ];
   try {
     if (fs.existsSync(SSH_KEY)) opts.push("-o", "IdentitiesOnly=yes", "-i", SSH_KEY);
@@ -1372,9 +1389,9 @@ const bridge = {
     }
     if (isSshNetworkFailure(verifyErr)) return { ok: false, err: "could not reach host to pin" };
 
-    // ponytail: ssh still delegates the durable write, then we read back the persisted key and
-    // fingerprint-check it against the confirmed value; a mismatch is removed via ssh-keygen -R so
-    // the verify->accept-new window cannot pin a wrong key.
+    // ponytail: ssh still delegates the durable write, then we read back the persisted ed25519 key
+    // and fingerprint-check it against the confirmed value; a mismatch is removed precisely so the
+    // verify->accept-new window cannot pin a wrong key.
     const persist = await run("ssh", [
       ...sshDurablePinOpts(8),
       "-o", "StrictHostKeyChecking=accept-new",
@@ -1391,12 +1408,13 @@ const bridge = {
     if (!rb.file) return { ok: false, err: "could not verify pinned host key" };
 
     const foundResult = await run("ssh-keygen", ["-F", rb.lookupName, "-f", rb.file]);
-    const found = preferEd25519(knownHostsKeyLines(foundResult.out));
+    const lines = knownHostsKeyLines(foundResult.out);
+    const found = lines.find((l) => keyIdentity(l).startsWith("ssh-ed25519 ")) || "";
     if (!found) return { ok: false, err: "host key was not saved" };
 
     const persistedFp = await fingerprintKnownHostsLine(found, false);
     if (persistedFp !== String(expectedFp)) {
-      await run("ssh-keygen", ["-R", rb.lookupName, "-f", rb.file]);
+      removeKnownHostsLine(rb.file, found);
       return hostKeyMismatch("host key changed before it could be pinned");
     }
     return { ok: true, err: "" };
