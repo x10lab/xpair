@@ -24,10 +24,10 @@ port=9300; pport=9400
 
 # CONDS: edit this list per experiment.
 CONDS=(
-  "br4000_s100|burst|burstcal|4000000|1.0|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
-  "br2000_s100|burst|burstcal|2000000|1.0|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
-  "br2000_s075|burst|burstcal|2000000|0.75|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
-  "br1000_s050|burst|burstcal|1000000|0.5|GE_P=0.015 GE_R=0.25 GE_LOSS_BAD=1"
+  "bw_none|passthrough|congcal|4000000|1.0|"
+  "bw_500|passthrough|congcal|4000000|1.0|BW_KBPS=500 BW_BUFFER_MS=300"
+  "bw_300|passthrough|congcal|4000000|1.0|BW_KBPS=300 BW_BUFFER_MS=300"
+  "bw_200|passthrough|congcal|4000000|1.0|BW_KBPS=200 BW_BUFFER_MS=300"
 )
 
 for cond in "${CONDS[@]}"; do
@@ -42,8 +42,11 @@ for cond in "${CONDS[@]}"; do
         "$ROOT/run-impaired.sh" >/dev/null 2>>"$LOG"
       c="$ROOT/$(ls -t out/impaired-$profile-*.json | head -1)"
       x="$ROOT/$(ls -t out/proxy-$profile-*.json | head -1)"
-      if node -e 'const f=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).summary;process.exit(f&&typeof f.framesDecoded==="number"&&f.framesDecoded>30?0:1)' "$c" 2>/dev/null; then break; fi
-      echo "    !! flake, retry" >&2; sleep 4
+      # Valid = ICE actually routed media through the relay (proxy forwarded RTP > 0).
+      # A true zero-traffic flake has forwarded==0; severe-but-real degradation
+      # (e.g. bandwidth cap) has forwarded>0 with low framesDecoded — NOT a flake.
+      if node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const h=p.directions.hostToClient.classes.RTP||{};process.exit((h.forwarded||0)>0?0:1)' "$x" 2>/dev/null; then break; fi
+      echo "    !! zero-traffic flake, retry" >&2; sleep 4
     done
     sf="$ROOT/out/score-$label-rep$rep.json"
     node score/score.js --client "$c" --proxy "$x" --out "$sf" >/dev/null 2>&1
