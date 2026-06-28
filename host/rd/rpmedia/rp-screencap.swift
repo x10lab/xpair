@@ -87,7 +87,17 @@ func startControlReader() -> DispatchSourceRead {
   source.resume()
   return source
 }
-let controlReader = startControlReader()
+// Only attach the stdin control reader when ABR is active. The host pipes a control
+// stdin ONLY when RP_ABR is enabled (serve_webrtc.rs abr_enabled(): RP_ABR set and
+// != "0"); RP_ABR is inherited from the host's env. In normal non-ABR runs the host
+// does not pipe stdin, so an unconditional reader would attach to whatever stdin the
+// helper inherited (the host's terminal/pipe) and steal its input.
+func abrControlEnabled() -> Bool {
+  guard let v = ProcessInfo.processInfo.environment["RP_ABR"] else { return false }
+  return v != "0"
+}
+let controlReader: DispatchSourceRead? = abrControlEnabled() ? startControlReader() : nil
+_ = controlReader  // retained to keep the dispatch source alive
 
 func appendParamSets(_ fmt: CMFormatDescription) {
   var count = 0

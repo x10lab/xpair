@@ -29,9 +29,16 @@ run(){ # label profile seed extra_env...   (label disambiguates output files)
   for cd in $COOLDOWNS; do
     port=$((port+1)); pport=$((pport+1))
     echo ">>> label=$label profile=$profile cooldown=${cd}ms seed=$seed port=$port" >&2
-    RP_PLI_COOLDOWN_MS="$cd" PROFILE="$profile" SEED="$seed" CONTENT="$CONTENT" \
+    # No `set -e`, so a failed run (host timeout, relay bind failure, client error)
+    # would fall through to the `ls -t` below and pick the PREVIOUS cooldown's JSON,
+    # emitting a row that mislabels a stale run under this cooldown. Gate on exit
+    # status and skip the row on failure (no retry loop here — this is indicative A/B).
+    if ! RP_PLI_COOLDOWN_MS="$cd" PROFILE="$profile" SEED="$seed" CONTENT="$CONTENT" \
       DURATION="$DURATION" PORT="$port" PROXY_PORT="$pport" "$@" \
-      "$ROOT/run-impaired.sh" >/dev/null 2>>"$ROOT/out/sweep-runs.log"
+      "$ROOT/run-impaired.sh" >/dev/null 2>>"$ROOT/out/sweep-runs.log"; then
+      echo ">>> label=$label cooldown=${cd}ms run FAILED, skipping row" >&2
+      continue
+    fi
     c=$(ls -t "$ROOT"/out/impaired-$profile-*.json 2>/dev/null | head -1)
     x=$(ls -t "$ROOT"/out/proxy-$profile-*.json 2>/dev/null | head -1)
     sf="$ROOT/out/score-$label-cd$cd.json"

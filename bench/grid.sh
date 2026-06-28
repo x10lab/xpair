@@ -36,6 +36,7 @@ CONDS=(
 for cond in "${CONDS[@]}"; do
   IFS='|' read -r label profile seed bitrate scale extra <<<"$cond"
   for rep in $(seq 1 "$REPS"); do
+    ok=0; c=""; x=""
     for a in 1 2 3; do
       port=$((port+1)); pport=$((pport+1))
       echo ">>> $label rep=$rep attempt=$a port=$port (br=$bitrate scale=$scale)" >&2
@@ -55,9 +56,17 @@ for cond in "${CONDS[@]}"; do
       # Valid = ICE actually routed media through the relay (proxy forwarded RTP > 0).
       # A true zero-traffic flake has forwarded==0; severe-but-real degradation
       # (e.g. bandwidth cap) has forwarded>0 with low framesDecoded — NOT a flake.
-      if node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const h=p.directions.hostToClient.classes.RTP||{};process.exit((h.forwarded||0)>0?0:1)' "$x" 2>/dev/null; then break; fi
+      if node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const h=p.directions.hostToClient.classes.RTP||{};process.exit((h.forwarded||0)>0?0:1)' "$x" 2>/dev/null; then ok=1; break; fi
       echo "    !! zero-traffic flake, retry" >&2; sleep 4
     done
+    # All attempts failed/flaked: $c/$x would still hold a PRIOR rep/cond's files
+    # (they persist across iterations), so scoring here would label a stale run.
+    # Emit a visible NA row and skip instead.
+    if [[ "$ok" -ne 1 ]]; then
+      echo "    !! $label rep=$rep: all attempts failed, no valid output — skipping" >&2
+      echo -e "$label\t$rep\tNA\tfalse\t\t\t\t\t$bitrate\t$scale" >> "$OUT"
+      continue
+    fi
     sf="$ROOT/out/score-$label-rep$rep.json"
     node score/score.js --client "$c" --proxy "$x" --out "$sf" >/dev/null 2>&1
     node -e '
