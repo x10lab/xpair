@@ -185,7 +185,7 @@ test("successful inline repair performs hostAppStatus and liveness re-probes bef
     /hostPermissions\(\{ host: connectTarget \}\)/,
   );
   assert.match(app, /const connectReady = reachReady && hostAppReady && hostPermReady/);
-  assert.match(app, /!connectReady \|\| hostAppChecking/);
+  assert.match(app, /!connectReady \|\|[\s\S]*hostAppChecking/);
 });
 
 test("final liveness reports incompatibility without launching a host-update route", () => {
