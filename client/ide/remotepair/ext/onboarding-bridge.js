@@ -19,6 +19,7 @@ const HOME = os.homedir();
 const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
+const SSH_KNOWN_HOSTS = path.join(HOME, ".ssh", "known_hosts");
 const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const ACCOUNT_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 
@@ -174,6 +175,30 @@ function sshControlPath() {
   return "/tmp/rp-cm-" + (process.env.RP_SSH_CM_TAG || "x") + "-%C";
 }
 
+function sshEphemeralKnownHostsPath() {
+  return "/tmp/rp-kh-" + (process.env.RP_SSH_CM_TAG || "x");
+}
+
+function sshConfigDoubleQuote(s) {
+  return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function sshUserKnownHostsFileOption() {
+  return `${sshConfigDoubleQuote(sshEphemeralKnownHostsPath())} ${sshConfigDoubleQuote(SSH_KNOWN_HOSTS)}`;
+}
+
+function shSingleQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+function shPathQuotePreserveHome(p) {
+  const s = String(p);
+  if (s === "~") return "~";
+  if (s === "~/") return "~/";
+  if (s.startsWith("~/")) return "~/" + shSingleQuote(s.slice(2));
+  return shSingleQuote(s);
+}
+
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
  *  publickey-only auth, and BatchMode so ssh NEVER drops to a password/passphrase prompt (which
  *  would hang or spawn an out-of-band GUI prompt). Used by every read/probe ssh call and by the
@@ -193,6 +218,7 @@ function sshProbeOpts(connectTimeout = 5) {
     "-o", "PasswordAuthentication=no",
     "-o", "KbdInteractiveAuthentication=no",
     "-o", "NumberOfPasswordPrompts=0",
+    "-o", `UserKnownHostsFile=${sshUserKnownHostsFileOption()}`,
     "-o", "StrictHostKeyChecking=accept-new",
   ];
   try {
@@ -798,7 +824,7 @@ const bridge = {
     if (!validHost(host)) {
       return { exists: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
     }
-    const r = await run("ssh", [...sshProbeOpts(5), host, "test", "-e", p]);
+    const r = await run("ssh", [...sshProbeOpts(5), host, "test -e " + shPathQuotePreserveHome(p)]);
     if (r.code === 0) return { exists: true, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
     const s = sshResult(r);
     return { exists: false, err: s.err, state: s.state, action: s.action };
