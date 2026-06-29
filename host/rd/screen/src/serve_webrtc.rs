@@ -17,7 +17,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -57,6 +58,8 @@ const SESSION_TOKEN_MAX_LEN: usize = 128;
 const APP_CONTROL_FD_ENV: &str = "RP_AU_CONTROL_FD";
 const MAX_AU_FRAME_LEN: usize = 64 * 1024 * 1024;
 const MAX_CONTROL_FRAME_LEN: usize = 1024 * 1024;
+const ABR_NO_RR_CUT_AFTER: Duration = Duration::from_secs(2);
+const ABR_WRITE_HYSTERESIS: f32 = 0.05;
 
 type SignalingWs = WebSocketStream<tokio::net::TcpStream>;
 type WsTx = SplitSink<SignalingWs, Message>;
@@ -301,6 +304,8 @@ struct NegotiatingSession {
     capture_config: CaptureConfig,
     control: ControlClient,
     cancel: CancellationToken,
+    abr_loss: Arc<Mutex<AbrSignalState>>,
+    abr_frames: Arc<AtomicU64>,
 }
 
 struct ConnectedSession {
@@ -312,11 +317,164 @@ struct ConnectedSession {
     _capture: CaptureSource,
     _caffeinate: CaffeinateGuard,
     cancel: CancellationToken,
+    abr_cancel: CancellationToken,
 }
 
 enum Session {
     Negotiating(NegotiatingSession),
     Connected(ConnectedSession),
+}
+
+fn pli_should_force(last: Option<Instant>, now: Instant, cooldown: Duration) -> bool {
+    if cooldown == Duration::from_millis(0) {
+        return true;
+    }
+    last.map_or(true, |last| now.duration_since(last) >= cooldown)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AbrCfg {
+    interval: Duration,
+    loss_lo: f32,
+    loss_hi: f32,
+    raise_after: usize,
+    raise_factor: f32,
+    nack_lo: f32,
+    nack_hi: f32,
+}
+
+impl AbrCfg {
+    fn from_env() -> Self {
+        Self {
+            interval: env_duration_ms("RP_ABR_INTERVAL_MS", 1500),
+            loss_lo: env_f32("RP_ABR_LOSS_LO", 0.02),
+            loss_hi: env_f32("RP_ABR_LOSS_HI", 0.10),
+            // Raise only after RP_ABR_RAISE_AFTER consecutive clean ABR intervals (default 3).
+            raise_after: env_usize("RP_ABR_RAISE_AFTER", 3).max(1),
+            // RP_ABR_RAISE_FACTOR is intentionally gentler than the cut factor (default 1.05).
+            raise_factor: env_f32("RP_ABR_RAISE_FACTOR", 1.05).max(1.0),
+            // NACK thresholds are RTP sequence numbers NACKed per second.
+            nack_lo: env_f32("RP_ABR_NACK_LO", 5.0),
+            nack_hi: env_f32("RP_ABR_NACK_HI", 50.0),
+        }
+    }
+}
+
+#[derive(Default)]
+struct AbrSignalState {
+    last_loss: Option<f32>,
+    last_rr: Option<Instant>,
+    preferred_media_ssrc: Option<u32>,
+    nack_count: u64,
+}
+
+fn abr_enabled() -> bool {
+    std::env::var("RP_ABR")
+        .ok()
+        .map(|value| value != "0")
+        .unwrap_or(false)
+}
+
+fn env_duration_ms(name: &str, default_ms: u64) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(default_ms))
+}
+
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn abr_raise_tick_clean(loss_rr: f32, nack_rate: f32, cfg: &AbrCfg) -> bool {
+    loss_rr < cfg.loss_lo && nack_rate < cfg.nack_lo
+}
+
+fn abr_raise_streak_next(
+    current: usize,
+    loss_rr: Option<f32>,
+    nack_rate: f32,
+    cfg: &AbrCfg,
+) -> usize {
+    if loss_rr
+        .map(|loss| abr_raise_tick_clean(loss, nack_rate, cfg))
+        .unwrap_or(false)
+    {
+        current.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+fn abr_next_bps(
+    cur: u32,
+    loss_rr: f32,
+    nack_rate: f32,
+    raise_streak: usize,
+    min: u32,
+    max: u32,
+    cfg: &AbrCfg,
+) -> u32 {
+    let min = min.min(max);
+    let cur = cur.clamp(min, max);
+    if loss_rr >= cfg.loss_hi || nack_rate >= cfg.nack_hi {
+        ((cur as f32) * 0.80).round() as u32
+    } else if abr_raise_tick_clean(loss_rr, nack_rate, cfg) && raise_streak >= cfg.raise_after {
+        ((cur as f32) * cfg.raise_factor).round() as u32
+    } else {
+        cur
+    }
+    .clamp(min, max)
+}
+
+fn nack_sequence_count(
+    nack: &webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack,
+) -> u64 {
+    nack.nacks
+        .iter()
+        .map(|pair| pair.packet_list().len() as u64)
+        .sum()
+}
+
+fn bitrate_change_exceeds_hysteresis(was: u32, now: u32) -> bool {
+    if was == now {
+        return false;
+    }
+    let denom = was.max(1) as f32;
+    // `>=`, not `>`: a clean raise uses RAISE_FACTOR=1.05, i.e. exactly a 5% change,
+    // and ABR_WRITE_HYSTERESIS is also 0.05 — with `>` an exactly-5% raise updates the
+    // logged target but never actuates the encoder until a *later* raise compounds past
+    // 5%. The boundary change must write.
+    ((now as f32 - was as f32).abs() / denom) >= ABR_WRITE_HYSTERESIS
+}
+
+/// Whether a missing/stale ReceiverReport should be read as congestion starvation
+/// (→ drive the encoder toward MIN). Only when we're ACTIVELY producing frames: a
+/// static screen makes SCK stop emitting frames, so the receiver legitimately has
+/// nothing to RR. Treating that idle gap as 100% loss would crater the encoder to MIN
+/// and resume motion at the lowest bitrate. So require `screen_changed` too.
+fn abr_starved(no_recent_rr: bool, screen_changed: bool, elapsed_past_cut: bool) -> bool {
+    no_recent_rr && screen_changed && elapsed_past_cut
 }
 
 /// Locate a helper binary that sits **next to this executable** (the bundle
@@ -1176,6 +1334,8 @@ async fn serve_session(
         .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .map_err(SessionError::from)?;
+    let abr_loss = Arc::new(Mutex::new(AbrSignalState::default()));
+    let abr_frames = Arc::new(AtomicU64::new(0));
 
     // RTCP reader: the client sends PictureLossIndication / FullIntraRequest when it
     // loses a keyframe (e.g. a packet of the 76KB IDR dropped on a lossy link). Forward
@@ -1186,19 +1346,79 @@ async fn serve_session(
     {
         let rtp_sender = rtp_sender.clone();
         let control = control.clone();
+        let abr_loss = abr_loss.clone();
         tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
             use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+            use webrtc::rtcp::receiver_report::ReceiverReport;
+            use webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
+            let pli_cooldown = std::env::var("RP_PLI_COOLDOWN_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_millis)
+                .unwrap_or_default();
+            let mut last_forced: Option<Instant> = None;
+            let mut suppressed_plis = 0u64;
             while let Ok((packets, _attrs)) = rtp_sender.read_rtcp().await {
                 for pkt in packets {
                     let any = pkt.as_any();
                     if any.downcast_ref::<PictureLossIndication>().is_some()
                         || any.downcast_ref::<FullIntraRequest>().is_some()
                     {
-                        tracing::info!("serve-webrtc: RTCP PLI/FIR -> requesting keyframe");
-                        control.keyframe_noack(seq);
+                        let now = Instant::now();
+                        if pli_should_force(last_forced, now, pli_cooldown) {
+                            tracing::info!("serve-webrtc: RTCP PLI/FIR -> requesting keyframe");
+                            control.keyframe_noack(seq);
+                            last_forced = Some(now);
+                        } else if let Some(last) = last_forced {
+                            suppressed_plis += 1;
+                            tracing::debug!(
+                                "serve-webrtc: RTCP PLI/FIR suppressed by cooldown ({}ms since last IDR)",
+                                now.duration_since(last).as_millis()
+                            );
+                        }
+                    }
+                    if let Some(rr) = any.downcast_ref::<ReceiverReport>() {
+                        let selected = if let Ok(state) = abr_loss.lock() {
+                            state.preferred_media_ssrc.and_then(|ssrc| {
+                                rr.reports.iter().find(|report| report.ssrc == ssrc)
+                            })
+                        } else {
+                            None
+                        }
+                        .or_else(|| {
+                            if rr.reports.len() == 1 {
+                                rr.reports.first()
+                            } else {
+                                rr.reports.iter().max_by(|a, b| {
+                                    a.fraction_lost.cmp(&b.fraction_lost)
+                                })
+                            }
+                        });
+                        if let Some(report) = selected {
+                            let loss = report.fraction_lost as f32 / 256.0;
+                            if let Ok(mut state) = abr_loss.lock() {
+                                state.last_loss = Some(loss);
+                                state.last_rr = Some(Instant::now());
+                                state.preferred_media_ssrc.get_or_insert(report.ssrc);
+                            }
+                        }
+                    }
+                    if let Some(nack) = any.downcast_ref::<TransportLayerNack>() {
+                        let count = nack_sequence_count(nack);
+                        if count > 0 {
+                            if let Ok(mut state) = abr_loss.lock() {
+                                state.preferred_media_ssrc = Some(nack.media_ssrc);
+                                state.nack_count = state.nack_count.saturating_add(count);
+                            }
+                        }
                     }
                 }
+            }
+            if suppressed_plis > 0 {
+                tracing::info!(
+                    "serve-webrtc: RTCP reader suppressed {suppressed_plis} PLI/FIR keyframe request(s) by cooldown"
+                );
             }
             tracing::info!("serve-webrtc: RTCP reader ended (sender closed)");
         });
@@ -1251,6 +1471,7 @@ async fn serve_session(
 
     // rtp task: forward access units to the track as H264 samples
     let track_w = track.clone();
+    let abr_frames_w = abr_frames.clone();
     let frame_dur = Duration::from_secs_f64(1.0 / capture_config.fps as f64);
     tokio::spawn(async move {
         let mut frames: u64 = 0;
@@ -1306,6 +1527,7 @@ async fn serve_session(
                 duration: frame_dur,
                 ..Default::default()
             };
+            abr_frames_w.fetch_add(1, Ordering::Relaxed);
             if track_w.write_sample(&sample).await.is_err() {
                 break;
             }
@@ -1350,6 +1572,8 @@ async fn serve_session(
         capture_config,
         control,
         cancel,
+        abr_loss,
+        abr_frames,
     });
     let session = match session {
         Session::Negotiating(negotiating) => {
@@ -1450,6 +1674,14 @@ impl NegotiatingSession {
                 return Err(e.error);
             }
         };
+        let abr_cancel = CancellationToken::new();
+        spawn_abr_controller(
+            self.capture_config.bitrate,
+            capture.bitrate_control(),
+            self.abr_loss.clone(),
+            self.abr_frames.clone(),
+            abr_cancel.clone(),
+        );
         if let Some(input_rx) = self.peer.input_rx.take() {
             match capture.capture_display_id_for_input().await {
                 Ok(display_id) => {
@@ -1470,6 +1702,7 @@ impl NegotiatingSession {
             _capture: capture,
             _caffeinate: CaffeinateGuard::start(),
             cancel: self.cancel,
+            abr_cancel,
         })
     }
 
@@ -1499,6 +1732,7 @@ impl NegotiatingSession {
 impl ConnectedSession {
     async fn run(mut self) -> Result<(), SessionError> {
         let result = self.run_inner().await;
+        self.abr_cancel.cancel();
         let _ = self.peer.pc.close().await;
         tracing::info!(
             "serve-webrtc: session {} closed after {:?}",
@@ -1700,6 +1934,13 @@ impl CaptureSource {
             CaptureSource::Stdin(h) => h.stop(),
         }
     }
+
+    fn bitrate_control(&self) -> Option<AbrActuator> {
+        match self {
+            CaptureSource::Child(h) => h.bitrate_control(),
+            CaptureSource::Stdin(h) => Some(h.bitrate_control()),
+        }
+    }
 }
 
 impl Drop for CaptureSource {
@@ -1730,6 +1971,10 @@ impl StdinReaderHandle {
             self.control.stop_noack(self.generation);
             self.registry.deregister(self.generation);
         }
+    }
+
+    fn bitrate_control(&self) -> AbrActuator {
+        AbrActuator::control(self.control.clone(), self.generation)
     }
 
     async fn capture_display_id_for_input(&mut self) -> Result<Option<u32>, String> {
@@ -1778,15 +2023,214 @@ fn spawn_au_stdin_reader(
         .ok();
 }
 
+/// Where ABR pushes a new target bitrate. `Pipe` writes `bitrate <bps>\n` to a
+/// spawned rp-screencap child's stdin (standalone path); `Control` sends a no-ack
+/// `bitrate` control op to the parent app's in-process CaptureEngine encoder
+/// (app-capture / `RP_AU_STDIN=1` path).
+#[derive(Clone)]
+enum AbrActuator {
+    Pipe(Arc<Mutex<std::process::ChildStdin>>),
+    Control {
+        control: ControlClient,
+        generation: u64,
+    },
+}
+
+impl AbrActuator {
+    fn pipe(stdin: Arc<Mutex<std::process::ChildStdin>>) -> Self {
+        Self::Pipe(stdin)
+    }
+
+    fn control(control: ControlClient, generation: u64) -> Self {
+        Self::Control {
+            control,
+            generation,
+        }
+    }
+
+    fn set_bitrate(&self, bps: u32) -> bool {
+        match self {
+            Self::Pipe(stdin) => {
+                let line = format!("bitrate {bps}\n");
+                stdin
+                    .lock()
+                    .map(|mut stdin| stdin.write_all(line.as_bytes()).is_ok())
+                    .unwrap_or(false)
+            }
+            Self::Control {
+                control,
+                generation,
+            } => {
+                // Fire-and-forget: the app applies the new bitrate best-effort on
+                // its encoder session; there is no ack to wait on.
+                control.bitrate_noack(*generation, bps);
+                true
+            }
+        }
+    }
+}
+
+fn spawn_abr_controller(
+    spawn_bps: u32,
+    actuator: Option<AbrActuator>,
+    signal_state: Arc<Mutex<AbrSignalState>>,
+    frame_counter: Arc<AtomicU64>,
+    cancel: CancellationToken,
+) {
+    if !abr_enabled() {
+        return;
+    }
+    let cfg = AbrCfg::from_env();
+    let max_bps = env_u32("RP_ABR_MAX_BPS", spawn_bps).min(spawn_bps);
+    let min_bps = env_u32("RP_ABR_MIN_BPS", 150_000).min(max_bps);
+    tracing::info!(
+        "serve-webrtc: ABR enabled interval={}ms loss_lo={} loss_hi={} raise_after={} raise_factor={} nack_lo={}/s nack_hi={}/s min={}bps max={}bps actuation={}",
+        cfg.interval.as_millis(),
+        cfg.loss_lo,
+        cfg.loss_hi,
+        cfg.raise_after,
+        cfg.raise_factor,
+        cfg.nack_lo,
+        cfg.nack_hi,
+        min_bps,
+        max_bps,
+        actuator.is_some()
+    );
+    if actuator.is_none() {
+        // No bitrate actuator wired for this capture path, so this process cannot
+        // retarget the encoder. Be honest that ABR is observe-only here rather than
+        // implying it is throttling the encoder under congestion.
+        tracing::warn!(
+            "serve-webrtc: ABR has no bitrate actuator on this capture path; running OBSERVE-ONLY — encoder bitrate will NOT change under congestion"
+        );
+    }
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let mut target_bps = spawn_bps.clamp(min_bps, max_bps);
+        let mut sent_bps = spawn_bps;
+        let mut last_frames = frame_counter.load(Ordering::Relaxed);
+        let mut last_cut_at: Option<Instant> = None;
+        let mut raise_streak = 0usize;
+        let mut tick = tokio::time::interval(cfg.interval);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tick.tick() => {
+                    let now = Instant::now();
+                    let (loss_rr, last_rr, nacks) = signal_state
+                        .lock()
+                        .map(|mut state| {
+                            let nacks = state.nack_count;
+                            state.nack_count = 0;
+                            (state.last_loss, state.last_rr, nacks)
+                        })
+                        .unwrap_or((None, None, 0));
+                    let nack_rate = nacks as f32 / cfg.interval.as_secs_f32();
+                    let no_recent_rr = last_rr
+                        .map(|last_rr| now.duration_since(last_rr) > ABR_NO_RR_CUT_AFTER)
+                        .unwrap_or(true);
+
+                    let frames = frame_counter.load(Ordering::Relaxed);
+                    let screen_changed = frames != last_frames;
+                    last_frames = frames;
+
+                    // A stale RR is only congestion when we're actively sending frames;
+                    // on a static screen SCK emits nothing so RR silence is benign.
+                    let elapsed_past_cut = now.duration_since(started) >= ABR_NO_RR_CUT_AFTER;
+                    let starved = abr_starved(no_recent_rr, screen_changed, elapsed_past_cut);
+                    let loss = match (loss_rr, no_recent_rr) {
+                        (Some(loss), false) => Some(loss),
+                        _ if starved => Some(1.0),
+                        _ => None,
+                    };
+
+                    raise_streak = abr_raise_streak_next(raise_streak, loss, nack_rate, &cfg);
+
+                    let mut next_bps =
+                        if starved {
+                            min_bps
+                        } else if nack_rate >= cfg.nack_hi {
+                            abr_next_bps(
+                                target_bps,
+                                loss.unwrap_or(0.0),
+                                nack_rate,
+                                raise_streak,
+                                min_bps,
+                                max_bps,
+                                &cfg,
+                            )
+                        } else if let Some(loss) = loss {
+                            abr_next_bps(
+                                target_bps,
+                                loss,
+                                nack_rate,
+                                raise_streak,
+                                min_bps,
+                                max_bps,
+                                &cfg,
+                            )
+                        } else {
+                            target_bps
+                        };
+                    if next_bps > target_bps && !screen_changed {
+                        next_bps = target_bps;
+                    }
+                    if next_bps > target_bps
+                        && last_cut_at
+                            .map(|last| now.duration_since(last) < cfg.interval)
+                            .unwrap_or(false)
+                    {
+                        next_bps = target_bps;
+                    }
+                    if next_bps < target_bps {
+                        last_cut_at = Some(now);
+                    }
+
+                    let logged_loss = loss.unwrap_or(f32::NAN);
+                    tracing::info!(
+                        "serve-webrtc: ABR tick loss_rr={logged_loss:.3} nack_rate={nack_rate:.1} raise_streak={raise_streak} target={next_bps}bps"
+                    );
+                    if next_bps != target_bps {
+                        let was = target_bps;
+                        target_bps = next_bps;
+                        tracing::info!(
+                            "serve-webrtc: ABR: loss_rr={logged_loss:.3} nack_rate={nack_rate:.1} target={target_bps}bps (was {was})"
+                        );
+                    }
+                    if bitrate_change_exceeds_hysteresis(sent_bps, target_bps) {
+                        if let Some(actuator) = actuator.as_ref() {
+                            if actuator.set_bitrate(target_bps) {
+                                sent_bps = target_bps;
+                            } else {
+                                tracing::warn!("serve-webrtc: ABR bitrate command failed");
+                                break;
+                            }
+                        } else {
+                            sent_bps = target_bps;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Handle to stop the capture/encode helper process.
 struct CaptureHandle {
     child: std::sync::Mutex<std::process::Child>,
+    control_stdin: Option<Arc<Mutex<std::process::ChildStdin>>>,
 }
 impl CaptureHandle {
     fn stop(&self) {
         if let Ok(mut c) = self.child.lock() {
             let _ = c.kill();
         }
+    }
+
+    fn bitrate_control(&self) -> Option<AbrActuator> {
+        self.control_stdin
+            .as_ref()
+            .map(|stdin| AbrActuator::pipe(stdin.clone()))
     }
 }
 
@@ -1807,15 +2251,26 @@ fn spawn_screencap(
 ) -> Result<CaptureHandle, String> {
     let bin = screencap_path();
     tracing::info!("serve-webrtc: capture+encode '{bin}' @ {fps}fps {bitrate}bps scale={scale}");
-    let mut child = Command::new(&bin)
+    let mut command = Command::new(&bin);
+    command
         .arg(fps.to_string())
         .arg(bitrate.to_string())
         .arg(format!("{scale}"))
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("spawn '{bin}': {e}"))?;
+        .stderr(Stdio::inherit());
+    if abr_enabled() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command.spawn().map_err(|e| format!("spawn '{bin}': {e}"))?;
     let mut stdout = child.stdout.take().ok_or("no helper stdout")?;
+    let control_stdin = if abr_enabled() {
+        child
+            .stdin
+            .take()
+            .map(|stdin| Arc::new(Mutex::new(stdin)))
+    } else {
+        None
+    };
 
     // reader thread: helper stdout (length-prefixed Annex-B AUs) -> au_tx
     std::thread::Builder::new()
@@ -1844,6 +2299,7 @@ fn spawn_screencap(
 
     Ok(CaptureHandle {
         child: std::sync::Mutex::new(child),
+        control_stdin,
     })
 }
 
@@ -1902,6 +2358,176 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("timed out waiting for {count} control frame(s)");
+    }
+
+    #[test]
+    fn control_actuator_writes_bitrate_frame() {
+        let writer = Arc::new(TestControlWriter::default());
+        let control = ControlClient::new(writer.clone());
+        let actuator = AbrActuator::control(control, 42);
+        assert!(actuator.set_bitrate(1_500_000));
+        let frames = writer.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            String::from_utf8(frames[0].clone()).expect("utf8"),
+            r#"{"v":1,"op":"bitrate","gen":42,"rid":"42-1","bitrate":1500000}"#
+        );
+    }
+
+    #[test]
+    fn pli_cooldown_decision_forces_only_after_cooldown() {
+        let now = Instant::now();
+        let cooldown = Duration::from_millis(200);
+
+        assert!(pli_should_force(None, now, cooldown));
+        assert!(pli_should_force(Some(now), now, Duration::from_millis(0)));
+        assert!(!pli_should_force(
+            Some(now),
+            now + Duration::from_millis(199),
+            cooldown
+        ));
+        assert!(pli_should_force(
+            Some(now),
+            now + Duration::from_millis(200),
+            cooldown
+        ));
+    }
+
+    fn test_abr_cfg() -> AbrCfg {
+        AbrCfg {
+            interval: Duration::from_millis(1500),
+            loss_lo: 0.02,
+            loss_hi: 0.10,
+            raise_after: 3,
+            raise_factor: 1.05,
+            nack_lo: 5.0,
+            nack_hi: 50.0,
+        }
+    }
+
+    #[test]
+    fn abr_next_bps_holds_clean_tick_below_raise_threshold() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 0.0, 2, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_raises_at_streak_threshold_and_clamps_to_max() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 0.0, 3, 150_000, 2_000_000, &cfg),
+            1_050_000
+        );
+        assert_eq!(
+            abr_next_bps(1_950_000, 0.0, 0.0, 3, 150_000, 2_000_000, &cfg),
+            2_000_000
+        );
+        assert_eq!(
+            abr_next_bps(2_000_000, 0.0, 0.0, 3, 150_000, 2_000_000, &cfg),
+            2_000_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_holds_inside_loss_band() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.02, 0.0, 3, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.05, 0.0, 3, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.0, 5.0, 3, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_cuts_above_high_loss_and_clamps_to_min() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.10, 0.0, 0, 150_000, 2_000_000, &cfg),
+            800_000
+        );
+        assert_eq!(
+            abr_next_bps(180_000, 0.50, 0.0, 0, 150_000, 2_000_000, &cfg),
+            150_000
+        );
+        assert_eq!(
+            abr_next_bps(150_000, 1.0, 0.0, 0, 150_000, 2_000_000, &cfg),
+            150_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_cuts_on_high_nack_rate_even_when_rr_loss_is_low() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.0, 50.0, 0, 150_000, 2_000_000, &cfg),
+            800_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 250.0, 0, 150_000, 2_000_000, &cfg),
+            800_000
+        );
+    }
+
+    #[test]
+    fn abr_next_bps_raises_only_when_rr_and_nacks_are_clean() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 4.9, 3, 150_000, 2_000_000, &cfg),
+            1_050_000
+        );
+        assert_eq!(
+            abr_next_bps(1_000_000, 0.01, 5.0, 3, 150_000, 2_000_000, &cfg),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn abr_raise_streak_resets_on_dirty_tick() {
+        let cfg = test_abr_cfg();
+
+        assert_eq!(abr_raise_streak_next(0, Some(0.01), 4.9, &cfg), 1);
+        assert_eq!(abr_raise_streak_next(1, Some(0.01), 4.9, &cfg), 2);
+        assert_eq!(abr_raise_streak_next(2, Some(0.02), 0.0, &cfg), 0);
+        assert_eq!(abr_raise_streak_next(2, Some(0.01), 5.0, &cfg), 0);
+        assert_eq!(abr_raise_streak_next(2, None, 0.0, &cfg), 0);
+    }
+
+    #[test]
+    fn abr_starved_requires_active_frames() {
+        // idle screen (no frame change) => not starved even when RR is stale & elapsed
+        assert!(!abr_starved(true, false, true));
+        // actively sending frames + stale RR + past cut window => starved
+        assert!(abr_starved(true, true, true));
+        // recent RR => not starved
+        assert!(!abr_starved(false, true, true));
+        // not yet past the cut window => not starved
+        assert!(!abr_starved(true, true, false));
+    }
+
+    #[test]
+    fn bitrate_change_writes_on_exact_five_percent_raise() {
+        // RAISE_FACTOR=1.05 yields an exactly-5% change; ABR_WRITE_HYSTERESIS=0.05.
+        // The boundary must actuate (>=), else a single clean raise never reaches the
+        // encoder.
+        assert!(bitrate_change_exceeds_hysteresis(600_000, 630_000)); // exactly +5%
+        assert!(!bitrate_change_exceeds_hysteresis(600_000, 600_000)); // no change
+        assert!(!bitrate_change_exceeds_hysteresis(600_000, 610_000)); // <5% held
     }
 
     fn frame_rid(frame: &[u8]) -> String {

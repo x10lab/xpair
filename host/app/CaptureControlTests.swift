@@ -16,6 +16,7 @@ enum CaptureControlTests {
         var starts: [Generation] = []
         var stops = 0
         var keyframes = 0
+        var bitrates: [Int] = []
 
         func start(_ gen: Generation) {
             starts.append(gen)
@@ -27,6 +28,10 @@ enum CaptureControlTests {
 
         func requestKeyframe() {
             keyframes += 1
+        }
+
+        func setBitrate(_ bitrate: Int) {
+            bitrates.append(bitrate)
         }
     }
 
@@ -107,6 +112,13 @@ enum CaptureControlTests {
             }
         }
 
+        mutating func bitrate(_ raw: UInt64, _ value: Int) {
+            let gen = Generation(raw: raw)
+            // No-ack: only retarget the live encoder for the active generation.
+            guard case let .running(active) = state, active == gen else { return }
+            engine.setBitrate(value)
+        }
+
         mutating func complete(_ raw: UInt64) {
             let gen = Generation(raw: raw)
             guard case let .starting(active, _) = state, active == gen else { return }
@@ -170,6 +182,8 @@ enum CaptureControlTests {
         try every_op_produces_exactly_one_ack()
         try duplicate_start_same_gen_running_reacks_started()
         try engine_error_while_running_emits_unsolicited_event_not_ack()
+        try bitrate_while_running_retargets_engine_no_ack()
+        try bitrate_when_not_active_is_ignored()
     }
 
     static func stale_start_is_superseded_not_applied() throws {
@@ -253,6 +267,20 @@ enum CaptureControlTests {
         machine.engineError(42)
         try expect(machine.acks.isEmpty, "engine error must not emit ack")
         try expect(machine.events.count == 1, "engine error must emit one event")
+    }
+
+    static func bitrate_while_running_retargets_engine_no_ack() throws {
+        var machine = Machine(state: .running(gen: Generation(raw: 42)))
+        machine.bitrate(42, 1_500_000)
+        try expect(machine.engine.bitrates == [1_500_000], "bitrate while running must retarget engine")
+        try expect(machine.acks.isEmpty, "bitrate is a no-ack op")
+    }
+
+    static func bitrate_when_not_active_is_ignored() throws {
+        var machine = Machine(state: .running(gen: Generation(raw: 43)))
+        machine.bitrate(42, 1_500_000)
+        try expect(machine.engine.bitrates.isEmpty, "stale-gen bitrate must not retarget engine")
+        try expect(machine.acks.isEmpty, "bitrate is a no-ack op")
     }
 
     private static func expect(_ condition: Bool, _ message: String) throws {
