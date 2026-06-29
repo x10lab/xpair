@@ -1812,7 +1812,7 @@ cmd_host_permissions() {
   raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
              -o ControlMaster=auto -o "ControlPath=$cm" -o ControlPersist=300 \
              -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 \
-             -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -T -n "$host" \
+             -o StrictHostKeyChecking=yes -T -n "$host" \
              'cat ~/.xpair/host/logs/status.json 2>/dev/null' </dev/null 2>/dev/null)" || true
   if [ -z "$raw" ]; then
     printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no status.json (host app not running?)"}\n'
