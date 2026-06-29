@@ -609,9 +609,26 @@ export default function App() {
         status: "setup",
       }
     : null;
+  const setupPinKey = useCallback(
+    (target: string, fp: string | null) => `${target}\n${fp ?? ""}`,
+    [],
+  );
+
+  const requiresNonSetupPin =
+    w.index === S.CONNECT && !isSetup && reachReady && hostAppReady;
+  const nonSetupFirstSeen =
+    requiresNonSetupPin &&
+    durableHostKey?.target === connectTarget &&
+    durableHostKey.present === false;
+  const nonSetupKeyTrusted =
+    (durableHostKey?.target === connectTarget && durableHostKey.present === true) ||
+    setupPinnedKey === setupPinKey(connectTarget, setupFp);
 
   useEffect(() => {
-    if (!canRepairHost || !missingRepairNeedsHostKey || !connectTarget) {
+    if (
+      ((!canRepairHost || !missingRepairNeedsHostKey) && !requiresNonSetupPin) ||
+      !connectTarget
+    ) {
       durableHostKeyProbeId.current += 1;
       setDurableHostKey(null);
       setDurableHostKeyChecking(false);
@@ -637,7 +654,7 @@ export default function App() {
       .finally(() => {
         if (durableHostKeyProbeId.current === probeId) setDurableHostKeyChecking(false);
       });
-  }, [canRepairHost, missingRepairNeedsHostKey, connectTarget]);
+  }, [canRepairHost, missingRepairNeedsHostKey, requiresNonSetupPin, connectTarget]);
 
   const handleHostRepairDone = useCallback(() => {
     if (!connectTarget) return;
@@ -651,7 +668,17 @@ export default function App() {
   // Non-setup connect/reconnect must prove the Host is currently grant-bearing too. SSH and app
   // presence alone are not enough: hostPermissions must be live and report AX + SR granted.
   useEffect(() => {
-    if (!requiresHostPerms || !reachReady || !hostAppReady || !connectTarget) {
+    const nonSetupPinProbePending =
+      requiresNonSetupPin &&
+      (durableHostKeyChecking || durableHostKey?.target !== connectTarget);
+    if (
+      !requiresHostPerms ||
+      !reachReady ||
+      !hostAppReady ||
+      !connectTarget ||
+      nonSetupPinProbePending ||
+      (requiresNonSetupPin && !nonSetupKeyTrusted && nonSetupFirstSeen)
+    ) {
       setHostPerms(null);
       setHostPermChecking(false);
       return;
@@ -685,7 +712,17 @@ export default function App() {
       alive = false;
       window.clearInterval(id);
     };
-  }, [requiresHostPerms, reachReady, hostAppReady, connectTarget]);
+  }, [
+    requiresHostPerms,
+    reachReady,
+    hostAppReady,
+    connectTarget,
+    requiresNonSetupPin,
+    durableHostKeyChecking,
+    durableHostKey,
+    nonSetupKeyTrusted,
+    nonSetupFirstSeen,
+  ]);
 
   const connectReady = reachReady && hostAppReady && hostPermReady;
   // CLI hard gate — ONLY on the CLI-dependent steps, and ONLY when the CLI isn't ready yet. On the
@@ -706,7 +743,11 @@ export default function App() {
     (w.index === S.CONNECT &&
       (isSetup
         ? !setupReady
-        : !connectReady || hostAppChecking || (hostPermChecking && !hostPermReady))) ||
+        : !connectReady ||
+          hostAppChecking ||
+          (durableHostKeyChecking && requiresNonSetupPin) ||
+          (nonSetupFirstSeen && !nonSetupKeyTrusted) ||
+          (hostPermChecking && !hostPermReady))) ||
     (w.index === S.GRANT && !grantReady) || // wait until host AX + SR are granted
     (w.index === S.ENGINE && !engineReady); // wait until the engine is installed + authed on the host
   // Folder mappings are OPTIONAL — you can attach to a host for screen share / terminal without
@@ -715,10 +756,6 @@ export default function App() {
 
   // Custom Next routing: Mappings → run liveness check before Done; Connect (non-setup) skips the
   // Installing step.
-  const setupPinKey = useCallback(
-    (target: string, fp: string | null) => `${target}\n${fp ?? ""}`,
-    [],
-  );
   const pinConfirmedHostKey = useCallback(
     async (target: string, expectedFp: string | null) => {
       if (setupPinningRef.current) return false;
@@ -767,6 +804,13 @@ export default function App() {
       return;
     }
     if (w.index === S.CONNECT && !isSetup) {
+      if (nonSetupFirstSeen && !nonSetupKeyTrusted) {
+        if (await pinConfirmedHostKey(connectTarget, setupFp)) {
+          stepRef.current = S.ENGINE;
+          w.goTo(S.ENGINE, "next");
+        }
+        return;
+      }
       // Reconnect path and manual path both skip the Installing + Grant steps → straight to Engine.
       stepRef.current = S.ENGINE;
       w.goTo(S.ENGINE, "next");
@@ -895,6 +939,51 @@ export default function App() {
       )}
     </>
   ) : null;
+  const nonSetupPinPanel =
+    nonSetupFirstSeen && !nonSetupKeyTrusted && missingRepairPeer ? (
+      <>
+        <div className="mt-4">
+          <StepSetupPassword
+            peer={missingRepairPeer}
+            onReady={setSetupReady}
+            onFingerprint={setSetupFp}
+            error={setupPinErr}
+          />
+        </div>
+        {setupReady && (
+          <div className="mx-auto mt-4 max-w-sm rounded-xl border border-border bg-muted/25 p-3.5 text-xs text-muted-foreground">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0">
+                <p className="font-semibold text-foreground">Trust this host key before connecting.</p>
+                <p className="mt-1 leading-snug">
+                  Xpair will pin the confirmed fingerprint for {connectTarget}.
+                </p>
+                {durableHostKey?.target === connectTarget && durableHostKey.err ? (
+                  <p className="mt-1 leading-snug text-destructive">{durableHostKey.err}</p>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-2 h-8 gap-1.5"
+                  disabled={setupPinning || durableHostKeyChecking}
+                  onClick={() => void pinConfirmedHostKey(connectTarget, setupFp)}
+                >
+                  {setupPinning || durableHostKeyChecking ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : null}
+                  {setupPinning
+                    ? "Pinning…"
+                    : durableHostKeyChecking
+                    ? "Checking…"
+                    : "Trust host key"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    ) : null;
 
   return (
     <>
@@ -1035,11 +1124,13 @@ export default function App() {
                   w.goTo(S.DISCOVER, "prev");
                 }}
               />
+              {nonSetupPinPanel}
               {hostRepairPanel}
             </>
           ) : isReconnect ? (
             <>
               <StepReconnect peer={peer} onReady={setReconnectReady} />
+              {nonSetupPinPanel}
               {hostRepairPanel}
             </>
           ) : (
