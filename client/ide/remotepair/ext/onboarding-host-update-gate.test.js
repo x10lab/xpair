@@ -129,7 +129,7 @@ test("manual changed-target missing-app repair shows fingerprint/key prep before
   );
   assert.match(
     app,
-    /manualMissingNeedsFingerprint && manualMissingRepairPeer[\s\S]*<StepSetupPassword peer=\{manualMissingRepairPeer\} onReady=\{setSetupReady\} \/>/,
+    /manualMissingNeedsFingerprint && manualMissingRepairPeer[\s\S]*<StepSetupPassword[\s\S]*peer=\{manualMissingRepairPeer\}[\s\S]*onReady=\{setSetupReady\}/,
   );
   assert.match(
     app,

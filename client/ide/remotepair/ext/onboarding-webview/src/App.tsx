@@ -92,6 +92,13 @@ function engineFromLocation(): EngineId {
   return isEngineId(raw) ? raw : "claude";
 }
 
+function isHostKeyMismatch(err: string, state?: string): boolean {
+  return (
+    state === "host_key_mismatch" ||
+    /host key|known_hosts|REMOTE HOST IDENTIFICATION|offending .*key|key verification/i.test(err)
+  );
+}
+
 type LiveState =
   | "idle"
   | "checking"
@@ -253,6 +260,10 @@ export default function App() {
   // Setup path readiness: the fingerprint-confirm step must prepare/reuse the client SSH key and
   // fetch the host fingerprint before Next starts the key-auth install.
   const [setupReady, setSetupReady] = useState(false);
+  const [setupFp, setSetupFp] = useState<string | null>(null);
+  const [setupPinErr, setSetupPinErr] = useState("");
+  const [setupPinning, setSetupPinning] = useState(false);
+  const setupPinningRef = useRef(false);
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
   const [grantReady, setGrantReady] = useState(false);
@@ -341,6 +352,10 @@ export default function App() {
       setPeer(p);
       setHost(p.status === "connect" ? p.target || p.addrs?.[0] || p.name || "" : "");
       setSetupReady(false);
+      setSetupFp(null);
+      setSetupPinErr("");
+      setupPinningRef.current = false;
+      setSetupPinning(false);
       setConnState("idle");
       hostAppProbeId.current += 1;
       setHostApp(null);
@@ -360,6 +375,10 @@ export default function App() {
     setManual(true);
     setPeer(null);
     setSetupReady(false);
+    setSetupFp(null);
+    setSetupPinErr("");
+    setupPinningRef.current = false;
+    setSetupPinning(false);
     hostAppProbeId.current += 1;
     setHostApp(null);
     setHostAppChecking(false);
@@ -480,6 +499,10 @@ export default function App() {
     previousConnectTarget.current = connectTarget;
     cancelLivenessCheck();
     setSetupReady(false);
+    setSetupFp(null);
+    setSetupPinErr("");
+    setupPinningRef.current = false;
+    setSetupPinning(false);
     setInstallState("idle");
   }, [connectTarget, cancelLivenessCheck]);
   // The setup (install) path doesn't require the app to already exist — it installs it. For manual +
@@ -628,6 +651,7 @@ export default function App() {
       ? "installing xpair CLI…"
       : "waiting for xpair CLI…";
   const nextDisabled =
+    setupPinning ||
     cliGateActive || // wait for the background xpair CLI install on CLI-dependent steps.
     w.index === S.DISCOVER || // Discover advances by picking a peer, not Next.
     (w.index === S.CONNECT &&
@@ -642,7 +666,43 @@ export default function App() {
 
   // Custom Next routing: Mappings → run liveness check before Done; Connect (non-setup) skips the
   // Installing step.
-  const onNext = () => {
+  const onNext = async () => {
+    if (w.index === S.CONNECT && isSetup) {
+      if (setupPinningRef.current) return;
+      const target = currentTarget;
+      setupPinningRef.current = true;
+      setSetupPinning(true);
+      setSetupPinErr("");
+      setLive("idle");
+      setLiveErr("");
+      try {
+        const r = await window.remotepair.pinHostKey(target, setupFp ?? "");
+        if (r.ok) {
+          stepRef.current = S.INSTALL;
+          w.next();
+          return;
+        }
+        const err = r.err || "Could not pin this host key. Verify the fingerprint, then retry.";
+        setLiveErr(err);
+        if (isHostKeyMismatch(err, r.state)) {
+          setLive("rekeyed");
+          setSetupPinErr(
+            "SSH host key changed. Re-pair this host, or verify the Mac and update known_hosts before retrying.",
+          );
+        } else {
+          setSetupPinErr(err);
+        }
+        return;
+      } catch (e) {
+        const err = String(e);
+        setSetupPinErr(err);
+        setLiveErr(err);
+      } finally {
+        setupPinningRef.current = false;
+        setSetupPinning(false);
+      }
+      return;
+    }
     if (w.index === S.CONNECT && !isSetup) {
       // Reconnect path and manual path both skip the Installing + Grant steps → straight to Engine.
       stepRef.current = S.ENGINE;
@@ -685,7 +745,9 @@ export default function App() {
 
   // Mappings runs the final gate before Done, so failed probes keep a retry-oriented label.
   const nextLabel =
-    w.index === S.MAPPINGS && live === "checking"
+    setupPinning
+      ? "Pinning…"
+      : w.index === S.MAPPINGS && live === "checking"
       ? "Checking…"
       : w.index === S.MAPPINGS &&
         (live === "offline" ||
@@ -702,7 +764,12 @@ export default function App() {
     <>
       {manualMissingNeedsFingerprint && manualMissingRepairPeer && (
         <div className="mt-4">
-          <StepSetupPassword peer={manualMissingRepairPeer} onReady={setSetupReady} />
+          <StepSetupPassword
+            peer={manualMissingRepairPeer}
+            onReady={setSetupReady}
+            onFingerprint={setSetupFp}
+            error={setupPinErr}
+          />
         </div>
       )}
       {(!manualMissingNeedsFingerprint || setupReady) && (
@@ -875,6 +942,8 @@ export default function App() {
             <StepSetupPassword
               peer={peer}
               onReady={setSetupReady}
+              onFingerprint={setSetupFp}
+              error={setupPinErr}
             />
           ))}
         {w.index === S.INSTALL && peer && (

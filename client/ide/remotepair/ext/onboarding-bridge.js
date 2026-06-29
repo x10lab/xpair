@@ -218,17 +218,29 @@ function effectiveKnownHostsFiles(host) {
     for (const line of String(out).split("\n")) {
       const m = line.match(/^\s*(userknownhostsfile|globalknownhostsfile)\s+(.+?)\s*$/i);
       if (!m) continue;
-      let acc = "";
-      for (const token of m[2].split(/\s+/).filter(Boolean)) {
-        acc = acc ? `${acc} ${token}` : token;
-        let exists = false;
-        try { exists = fs.existsSync(acc); } catch { exists = false; }
-        if (!exists) continue;
-        if (!seen.has(acc)) {
-          seen.add(acc);
-          files.push(acc);
+      const tokens = m[2].split(/\s+/).filter(Boolean);
+      for (let i = 0; i < tokens.length;) {
+        let best = "";
+        let bestEnd = -1;
+        let acc = "";
+        for (let j = i; j < tokens.length; j++) {
+          acc = acc ? `${acc} ${tokens[j]}` : tokens[j];
+          let exists = false;
+          try { exists = fs.existsSync(acc); } catch { exists = false; }
+          if (exists) {
+            best = acc;
+            bestEnd = j;
+          }
         }
-        acc = "";
+        if (best) {
+          if (!seen.has(best)) {
+            seen.add(best);
+            files.push(best);
+          }
+          i = bestEnd + 1;
+        } else {
+          i += 1;
+        }
       }
     }
     EFFECTIVE_KNOWN_HOSTS_FILES.set(h, files);
@@ -255,6 +267,113 @@ function sshUserKnownHostsFileOption(host) {
     })
     .map(sshConfigDoubleQuote)
     .join(" ");
+}
+
+function hostKeyMismatch(err) {
+  return {
+    ok: false,
+    err,
+    state: SSH_STATE.HOST_KEY_MISMATCH,
+    action: SSH_ACTION.RECOVER_HOST_KEY,
+  };
+}
+
+function knownHostsKeyLines(out) {
+  return String(out || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+function keyIdentity(line) {
+  const fields = String(line || "").trim().split(/\s+/).filter(Boolean);
+  const i = fields.findIndex((f) => /^(?:ssh|ecdsa|sk)-/.test(f));
+  return i >= 0 && fields[i + 1] ? `${fields[i]} ${fields[i + 1]}` : "";
+}
+
+function preferEd25519(lines) {
+  return lines.find((line) => keyIdentity(line).startsWith("ssh-ed25519 ")) || lines[0] || "";
+}
+
+async function fingerprintKnownHostsLine(line, useStdin) {
+  if (useStdin) {
+    const r = await runSecretStdin("ssh-keygen", ["-lf", "-"], line);
+    if (r.code !== 0) return "";
+    const fields = String(r.out || "").trim().split(/\s+/);
+    return fields[1] || "";
+  }
+
+  let dir = "";
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "rp-kh-fp-"));
+    const tmp = path.join(dir, "known_hosts");
+    fs.writeFileSync(tmp, `${line}\n`, { mode: 0o600 });
+    try { fs.chmodSync(tmp, 0o600); } catch { /* best effort */ }
+    const r = await run("ssh-keygen", ["-lf", tmp]);
+    if (r.code !== 0) return "";
+    const fields = String(r.out || "").trim().split(/\s+/);
+    return fields[1] || "";
+  } finally {
+    if (dir) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+}
+
+async function resolveSshScanTarget(host) {
+  const target = { host: String(host), port: "22" };
+  const r = await run("ssh", ["-G", String(host)]);
+  if (r.code !== 0) return target;
+  for (const line of String(r.out || "").split("\n")) {
+    const m = line.match(/^\s*(hostname|port)\s+(.+?)\s*$/i);
+    if (!m) continue;
+    if (m[1].toLowerCase() === "hostname" && m[2]) target.host = m[2];
+    if (m[1].toLowerCase() === "port" && /^\d+$/.test(m[2])) target.port = m[2];
+  }
+  return target;
+}
+
+async function hostKeyLinesFromEphemeral(host) {
+  const ephemeral = sshEphemeralKnownHostsPath();
+  if (!ephemeral) return [];
+  const r = await run("ssh-keygen", ["-F", String(host), "-f", ephemeral]);
+  return knownHostsKeyLines(r.out);
+}
+
+async function hostKeyLinesFromScan(host) {
+  const scan = await resolveSshScanTarget(host);
+  const r = await run("ssh-keyscan", ["-t", "ed25519", "-T", "5", "-p", scan.port, scan.host]);
+  if (r.code !== 0 && !r.out) return [];
+  return knownHostsKeyLines(r.out);
+}
+
+async function reconcileDurableHostKey(host, line) {
+  const identity = keyIdentity(line);
+  if (!identity) return { ok: false, err: "could not read host key to pin" };
+  const r = await run("ssh-keygen", ["-F", String(host), "-f", SSH_KNOWN_HOSTS]);
+  const durableLines = knownHostsKeyLines(r.out);
+  if (durableLines.length) {
+    const identities = durableLines.map(keyIdentity).filter(Boolean);
+    if (identities.some((known) => known !== identity)) {
+      return hostKeyMismatch("a different host key is already trusted for this host");
+    }
+    if (identities.some((known) => known === identity)) return { ok: true, err: "" };
+    return hostKeyMismatch("a different host key is already trusted for this host");
+  }
+
+  const sshDir = path.dirname(SSH_KNOWN_HOSTS);
+  fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(sshDir, 0o700); } catch { /* best effort */ }
+  let prefix = "";
+  try {
+    const existing = fs.readFileSync(SSH_KNOWN_HOSTS, "utf8");
+    if (existing && !existing.endsWith("\n")) prefix = "\n";
+  } catch {
+    /* file may not exist yet */
+  }
+  fs.appendFileSync(SSH_KNOWN_HOSTS, `${prefix}${line}\n`);
+  try { fs.chmodSync(SSH_KNOWN_HOSTS, 0o600); } catch { /* best effort */ }
+  return { ok: true, err: "" };
 }
 
 function shSingleQuote(s) {
@@ -1139,6 +1258,34 @@ const bridge = {
     } catch {
       return { fp: "", err: "fingerprint: bad JSON: " + r.out.trim() };
     }
+  },
+
+  // TOFU confirm — pin the exact ed25519 host key fingerprint the user confirmed into durable
+  // ~/.ssh/known_hosts. Probes learn first-seen keys in an app-launch ephemeral known_hosts file;
+  // this bridges the confirmed key into the durable store so later CLI/RD SSH flows do not re-TOFU.
+  async pinHostKey(host, expectedFp) {
+    const h = String(host || "").trim();
+    if (!validHost(h)) {
+      return { ok: false, err: invalidHost(h), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
+    }
+    if (!expectedFp) return { ok: false, err: "no fingerprint to confirm" };
+
+    let lines = await hostKeyLinesFromEphemeral(h);
+    let line = preferEd25519(lines);
+    let fp = line ? await fingerprintKnownHostsLine(line, false) : "";
+
+    if (!line) {
+      lines = await hostKeyLinesFromScan(h);
+      line = preferEd25519(lines);
+      if (!line) return { ok: false, err: "could not read host key to pin" };
+      fp = await fingerprintKnownHostsLine(line, true);
+    }
+
+    if (!fp) return { ok: false, err: "could not read host key to pin" };
+    if (fp !== String(expectedFp)) {
+      return hostKeyMismatch("host key does not match the confirmed fingerprint");
+    }
+    return reconcileDurableHostKey(h, line);
   },
 
   // Host-app hard guard (Connect / Reconnect step): being able to SSH to the host (reachable) is NOT
