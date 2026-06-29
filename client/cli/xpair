@@ -1466,7 +1466,8 @@ def host_app_present(target):
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "ConnectionAttempts=1",
              "-o", "ControlMaster=no", "-o", "ControlPath=none",
              "-o", "PreferredAuthentications=publickey", "-o", "NumberOfPasswordPrompts=0",
-             "-o", "StrictHostKeyChecking=accept-new", "-T", "-n", target,
+             "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null",
+             "-T", "-n", target,
              "[ -d /Applications/XpairHost.app ] || [ -d $HOME/Applications/XpairHost.app ]"],
             timeout=6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return r.returncode == 0
@@ -1811,7 +1812,7 @@ cmd_host_permissions() {
   raw="$(ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
              -o ControlMaster=auto -o "ControlPath=$cm" -o ControlPersist=300 \
              -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 \
-             -o StrictHostKeyChecking=accept-new -T -n "$host" \
+             -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -T -n "$host" \
              'cat ~/.xpair/host/logs/status.json 2>/dev/null' </dev/null 2>/dev/null)" || true
   if [ -z "$raw" ]; then
     printf '{"alive":false,"ax":false,"sr":false,"fda":false,"err":"no status.json (host app not running?)"}\n'
