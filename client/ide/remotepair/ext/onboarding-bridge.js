@@ -19,8 +19,17 @@ const HOME = os.homedir();
 const RP_DIR = path.join(HOME, ".xpair/host");
 const CLIENT_ENV = path.join(RP_DIR, "client.env");
 const SSH_KEY = path.join(HOME, ".ssh", "id_ed25519");
+const SSH_KNOWN_HOSTS = path.join(HOME, ".ssh", "known_hosts");
+const SSH_KNOWN_HOSTS_DEFAULTS = [
+  SSH_KNOWN_HOSTS,
+  path.join(HOME, ".ssh", "known_hosts2"),
+  "/etc/ssh/ssh_known_hosts",
+  "/etc/ssh/ssh_known_hosts2",
+];
 const HOST_RE = /^(?!-)[A-Za-z0-9._-]+$/;
 const ACCOUNT_RE = /^(?!-)[A-Za-z0-9._-]+$/;
+const EFFECTIVE_KNOWN_HOSTS_FILES = new Map();
+let sshEphemeralKnownHostsDir;
 
 function validHost(host) {
   return HOST_RE.test(String(host || "").trim());
@@ -174,13 +183,285 @@ function sshControlPath() {
   return "/tmp/rp-cm-" + (process.env.RP_SSH_CM_TAG || "x") + "-%C";
 }
 
+function sshEphemeralKnownHostsPath() {
+  if (sshEphemeralKnownHostsDir === undefined) {
+    let dir = null;
+    try {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "rp-kh-"));
+      sshEphemeralKnownHostsDir = dir;
+      process.on("exit", () => {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      });
+    } catch {
+      sshEphemeralKnownHostsDir = null;
+    }
+  }
+  return sshEphemeralKnownHostsDir ? path.join(sshEphemeralKnownHostsDir, "known_hosts") : null;
+}
+
+function effectiveKnownHostsFiles(host) {
+  const h = String(host || "").trim();
+  if (!h) return null;
+  if (EFFECTIVE_KNOWN_HOSTS_FILES.has(h)) return EFFECTIVE_KNOWN_HOSTS_FILES.get(h);
+  try {
+    const out = cp.execFileSync("ssh", ["-G", h], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!out) {
+      EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
+      return null;
+    }
+    const seen = new Set();
+    const files = [];
+    for (const line of String(out).split("\n")) {
+      const m = line.match(/^\s*(userknownhostsfile|globalknownhostsfile)\s+(.+?)\s*$/i);
+      if (!m) continue;
+      const tokens = m[2].split(/\s+/).filter(Boolean);
+      for (let i = 0; i < tokens.length;) {
+        let best = "";
+        let bestEnd = -1;
+        let acc = "";
+        for (let j = i; j < tokens.length; j++) {
+          acc = acc ? `${acc} ${tokens[j]}` : tokens[j];
+          let exists = false;
+          try { exists = fs.existsSync(acc); } catch { exists = false; }
+          if (exists) {
+            best = acc;
+            bestEnd = j;
+          }
+        }
+        if (best) {
+          if (!seen.has(best)) {
+            seen.add(best);
+            files.push(best);
+          }
+          i = bestEnd + 1;
+        } else {
+          i += 1;
+        }
+      }
+    }
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, files);
+    return files;
+  } catch {
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
+    return null;
+  }
+}
+
+function sshConfigDoubleQuote(s) {
+  return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function sshUserKnownHostsFileOption(host) {
+  const ephemeral = sshEphemeralKnownHostsPath();
+  const effective = effectiveKnownHostsFiles(host);
+  const files = effective === null ? SSH_KNOWN_HOSTS_DEFAULTS : effective;
+  const seen = new Set();
+  return [ephemeral, ...files]
+    .filter((file) => typeof file === "string" && file.length > 0)
+    .filter((file) => {
+      if (seen.has(file)) return false;
+      seen.add(file);
+      return true;
+    })
+    .map(sshConfigDoubleQuote)
+    .join(" ");
+}
+
+function hostKeyMismatch(err) {
+  return {
+    ok: false,
+    err,
+    state: SSH_STATE.HOST_KEY_MISMATCH,
+    action: SSH_ACTION.RECOVER_HOST_KEY,
+  };
+}
+
+function knownHostsKeyLines(out) {
+  return String(out || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+function keyIdentity(line) {
+  const fields = String(line || "").trim().split(/\s+/).filter(Boolean);
+  const i = fields.findIndex((f) => /^(?:ssh|ecdsa|sk)-/.test(f));
+  return i >= 0 && fields[i + 1] ? `${fields[i]} ${fields[i + 1]}` : "";
+}
+
+function preferEd25519(lines) {
+  return lines.find((line) => keyIdentity(line).startsWith("ssh-ed25519 ")) || lines[0] || "";
+}
+
+function removeKnownHostsLine(file, line) {
+  const target = String(line || "").trim();
+  if (!target) return;
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const hadFinalNewline = raw.endsWith("\n");
+    const source = hadFinalNewline ? raw.slice(0, -1) : raw;
+    const kept = (source ? source.split("\n") : []).filter((l) => l.trim() !== target);
+    const next = kept.length ? kept.join("\n") + (hadFinalNewline ? "\n" : "") : "";
+    fs.writeFileSync(file, next, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
+}
+
+async function fingerprintKnownHostsLine(line, useStdin) {
+  if (useStdin) {
+    const r = await runSecretStdin("ssh-keygen", ["-lf", "-"], line);
+    if (r.code !== 0) return "";
+    const fields = String(r.out || "").trim().split(/\s+/);
+    return fields[1] || "";
+  }
+
+  let dir = "";
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "rp-kh-fp-"));
+    const tmp = path.join(dir, "known_hosts");
+    fs.writeFileSync(tmp, `${line}\n`, { mode: 0o600 });
+    try { fs.chmodSync(tmp, 0o600); } catch { /* best effort */ }
+    const r = await run("ssh-keygen", ["-lf", tmp]);
+    if (r.code !== 0) return "";
+    const fields = String(r.out || "").trim().split(/\s+/);
+    return fields[1] || "";
+  } finally {
+    if (dir) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+}
+
+async function hostKeyLinesFromEphemeral(host, lookupName) {
+  const ephemeral = sshEphemeralKnownHostsPath();
+  if (!ephemeral) return [];
+  const seen = new Set();
+  for (const name of [lookupName, host]) {
+    const key = String(name || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    try {
+      const r = await run("ssh-keygen", ["-F", key, "-f", ephemeral]);
+      const lines = knownHostsKeyLines(r.out);
+      if (lines.length) return lines;
+    } catch {
+      /* try the next lookup name */
+    }
+  }
+  return [];
+}
+
+async function liveHostKeyLine(scanHost, scanPort) {
+  const host = String(scanHost || "").trim();
+  const port = String(scanPort || "22").trim() || "22";
+  if (!host) return "";
+  const r = await run("ssh-keyscan", ["-t", "ed25519", "-T", "5", "-p", port, host]);
+  if (r.code !== 0) return "";
+  return preferEd25519(knownHostsKeyLines(r.out));
+}
+
+function seedEphemeralHostKey(lookupName, line) {
+  const ephemeral = sshEphemeralKnownHostsPath();
+  const name = String(lookupName || "").trim();
+  const raw = String(line || "").trim();
+  if (!ephemeral || !name || !raw) return;
+  try {
+    const rewritten = raw.replace(/^\S+(\s+)/, `${name}$1`);
+    fs.mkdirSync(path.dirname(ephemeral), { recursive: true });
+    fs.appendFileSync(ephemeral, `${rewritten}\n`, { mode: 0o600 });
+    try { fs.chmodSync(ephemeral, 0o600); } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
+}
+
+function expandHomePath(p) {
+  const s = String(p || "");
+  if (s === "~") return os.homedir();
+  if (s.startsWith("~/")) return path.join(os.homedir(), s.slice(2));
+  return s;
+}
+
+function firstUserKnownHostsFile(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const first = tokens[0] || "";
+  if (first.toLowerCase() === "none") return "none";
+  let best = "";
+  let acc = "";
+  for (const token of tokens) {
+    acc = acc ? `${acc} ${token}` : token;
+    const candidate = expandHomePath(acc);
+    let parentExists = false;
+    try { parentExists = fs.existsSync(path.dirname(candidate)); } catch { parentExists = false; }
+    if (parentExists) best = candidate;
+  }
+  return best;
+}
+
+async function durableKnownHostsReadback(host) {
+  const h = String(host || "").trim();
+  const fallback = { isNone: false, file: "", lookupName: h, scanHost: h, scanPort: "22" };
+  const r = await run("ssh", ["-G", h]);
+  if (r.code !== 0) return fallback;
+
+  let file = "";
+  let hostname = "";
+  let port = "";
+  let hostkeyalias = "";
+  for (const line of String(r.out || "").split("\n")) {
+    const m = line.match(/^\s*(userknownhostsfile|hostname|port|hostkeyalias)\s+(.+?)\s*$/i);
+    if (!m) continue;
+    const key = m[1].toLowerCase();
+    const value = m[2];
+    if (key === "userknownhostsfile" && !file) file = firstUserKnownHostsFile(value);
+    else if (key === "hostname") hostname = value.trim().split(/\s+/)[0] || "";
+    else if (key === "port") port = value.trim().split(/\s+/)[0] || "";
+    else if (key === "hostkeyalias") {
+      const alias = value.trim().split(/\s+/)[0] || "";
+      hostkeyalias = alias.toLowerCase() === "none" ? "" : alias;
+    }
+  }
+  const lookupHost = hostname || h;
+  const scanPort = port || "22";
+  if (String(file).toLowerCase() === "none") {
+    return { isNone: true, file: "", lookupName: "", scanHost: lookupHost, scanPort };
+  }
+
+  const lookupName = hostkeyalias
+    ? hostkeyalias
+    : (port && port !== "22" ? `[${lookupHost}]:${port}` : lookupHost);
+  return { isNone: false, file, lookupName, scanHost: lookupHost, scanPort };
+}
+
+function shSingleQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+function shPathQuotePreserveHome(p) {
+  const s = String(p);
+  if (s === "~") return "~";
+  if (s === "~/") return "~/";
+  if (s.startsWith("~/")) return "~/" + shSingleQuote(s.slice(2));
+  const m = s.match(/^(~[A-Za-z0-9._-]*)(?:\/(.*))?$/);
+  if (m) return m[2] === undefined ? m[1] : `${m[1]}/${shSingleQuote(m[2])}`;
+  return shSingleQuote(s);
+}
+
 /** Non-interactive ssh options for reachability/read probes: name the key explicitly, force
  *  publickey-only auth, and BatchMode so ssh NEVER drops to a password/passphrase prompt (which
  *  would hang or spawn an out-of-band GUI prompt). Used by every read/probe ssh call and by the
  *  install preflight: fingerprint-confirmed key auth is the primary path. ControlMaster is shared
  *  within one app launch via RP_SSH_CM_TAG so probes/tunnels multiplex over one authenticated SSH
  *  master without reusing a previous launch's stale master. */
-function sshProbeOpts(connectTimeout = 5) {
+function sshProbeOpts(host, connectTimeout = 5) {
   const opts = [
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${connectTimeout}`,
@@ -193,7 +474,28 @@ function sshProbeOpts(connectTimeout = 5) {
     "-o", "PasswordAuthentication=no",
     "-o", "KbdInteractiveAuthentication=no",
     "-o", "NumberOfPasswordPrompts=0",
+    "-o", `UserKnownHostsFile=${sshUserKnownHostsFileOption(host)}`,
     "-o", "StrictHostKeyChecking=accept-new",
+  ];
+  try {
+    if (fs.existsSync(SSH_KEY)) opts.push("-o", "IdentitiesOnly=yes", "-i", SSH_KEY);
+  } catch { /* key probe failed — let ssh use the agent / defaults */ }
+  return opts;
+}
+
+function sshDurablePinOpts(connectTimeout = 5) {
+  const opts = [
+    "-o", "BatchMode=yes",
+    "-o", `ConnectTimeout=${connectTimeout}`,
+    "-o", "ConnectionAttempts=1",
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
+    "-o", "PreferredAuthentications=publickey",
+    "-o", "PubkeyAuthentication=yes",
+    "-o", "PasswordAuthentication=no",
+    "-o", "KbdInteractiveAuthentication=no",
+    "-o", "NumberOfPasswordPrompts=0",
+    "-o", "HostKeyAlgorithms=ssh-ed25519",
   ];
   try {
     if (fs.existsSync(SSH_KEY)) opts.push("-o", "IdentitiesOnly=yes", "-i", SSH_KEY);
@@ -230,6 +532,18 @@ function sshFailureKind(err) {
     return SSH_STATE.KEY_AUTH_BLOCKED;
   }
   return SSH_STATE.UNREACHABLE;
+}
+
+function isHostKeyVerificationFailure(err) {
+  return /host key verification failed|no .*host key is known|is not known|REMOTE HOST IDENTIFICATION HAS CHANGED|host key.*has changed/i.test(
+    String(err || "")
+  );
+}
+
+function isSshNetworkFailure(err) {
+  return /could not resolve hostname|name or service not known|temporary failure in name resolution|connection refused|connection timed out|operation timed out|network is unreachable|no route to host|kex_exchange_identification|connection closed by remote host|connection closed by|connection reset by peer|banner exchange|broken pipe/i.test(
+    String(err || "")
+  );
 }
 
 function isRemotePublickeyDenied(err) {
@@ -655,7 +969,7 @@ const bridge = {
         action: SSH_ACTION.ABORT,
       };
     }
-    const r = await run("ssh", [...sshProbeOpts(5), h, "true"]);
+    const r = await run("ssh", [...sshProbeOpts(h, 5), h, "true"]);
     return sshResult(r);
   },
 
@@ -702,7 +1016,7 @@ const bridge = {
     }
     const probe = ENGINE_PROBE[e];
     if (!probe) return { installed: false, authed: false, version: "", err: `unknown engine: ${e}` };
-    const r = await run("ssh", [...sshProbeOpts(6), host, probe]);
+    const r = await run("ssh", [...sshProbeOpts(host, 6), host, probe]);
     if (r.code !== 0) {
       const s = sshResult(r);
       return {
@@ -747,7 +1061,7 @@ const bridge = {
     // Run the native installer, then persist PATH (skip for shell — nothing was installed).
     const persist = e === "shell" ? "" : ` && { ${PATH_PERSIST}; }`;
     const cmd = `${PATH_PREFIX}${ENGINE_INSTALL[e]}${persist}`;
-    const r = await run("ssh", [...sshProbeOpts(20), host, cmd], { /* installer can take a while */ });
+    const r = await run("ssh", [...sshProbeOpts(host, 20), host, cmd], { /* installer can take a while */ });
     if (r.code !== 0) {
       const s = sshResult(r, `install exited ${r.code}`);
       return { ok: false, err: s.err, state: s.state, action: s.action };
@@ -774,7 +1088,7 @@ const bridge = {
     // The remote command reads the key from stdin (`read -r KEY`) — the key never appears on argv.
     // We pipe it over ssh's stdin via runSecretStdin (fd0), not fd3, since ssh forwards fd0 to the
     // remote shell directly.
-    const r = await runSecretStdin("ssh", [...sshProbeOpts(15), host, writer], apiKey);
+    const r = await runSecretStdin("ssh", [...sshProbeOpts(host, 15), host, writer], apiKey);
     if (r.code !== 0) {
       const s = sshResult(r, `auth write exited ${r.code}`);
       return { ok: false, err: s.err, state: s.state, action: s.action };
@@ -798,7 +1112,7 @@ const bridge = {
     if (!validHost(host)) {
       return { exists: false, err: invalidHost(host), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
     }
-    const r = await run("ssh", [...sshProbeOpts(5), host, "test", "-e", p]);
+    const r = await run("ssh", [...sshProbeOpts(host, 5), host, "test -e " + shPathQuotePreserveHome(p)]);
     if (r.code === 0) return { exists: true, err: "", state: SSH_STATE.READY, action: SSH_ACTION.CONTINUE };
     const s = sshResult(r);
     return { exists: false, err: s.err, state: s.state, action: s.action };
@@ -924,7 +1238,7 @@ const bridge = {
     // failures (agent refused, passphrase required, unreadable key) stay on the existing key recovery
     // path and must not consume the account password.
     let keyBlocked = false;
-    const preflight = await run("ssh", [...sshProbeOpts(8), target, "true"]);
+    const preflight = await run("ssh", [...sshProbeOpts(target, 8), target, "true"]);
     if (preflight.code !== 0) {
       const raw = preflight.err || preflight.out || "";
       const s = sshResult(preflight);
@@ -1043,6 +1357,104 @@ const bridge = {
     }
   },
 
+  // TOFU confirm — pin the exact ed25519 host key fingerprint the user confirmed into the effective
+  // durable UserKnownHostsFile. Probes learn first-seen keys in an app-launch ephemeral known_hosts
+  // file; this asks ssh to bridge the confirmed key into the durable store so later CLI/RD SSH flows
+  // do not re-TOFU.
+  async pinHostKey(host, expectedFp) {
+    const h = String(host || "").trim();
+    if (!validHost(h)) {
+      return { ok: false, err: invalidHost(h), state: SSH_STATE.INVALID_HOST, action: SSH_ACTION.ABORT };
+    }
+    if (!expectedFp) return { ok: false, err: "no fingerprint to confirm" };
+
+    const ephemeralPath = sshEphemeralKnownHostsPath();
+    const rb = await durableKnownHostsReadback(h);
+    let line = preferEd25519(await hostKeyLinesFromEphemeral(h, rb.lookupName));
+    if (!line) {
+      const scanned = await liveHostKeyLine(rb.scanHost, rb.scanPort);
+      if (scanned) {
+        seedEphemeralHostKey(rb.lookupName, scanned);
+        line = scanned;
+      }
+    }
+    const fp = line ? await fingerprintKnownHostsLine(line, false) : "";
+    if (!line || !fp) return { ok: false, err: "could not read host key to pin" };
+    if (fp !== String(expectedFp)) {
+      return hostKeyMismatch("host key does not match the confirmed fingerprint");
+    }
+
+    const verify = await run("ssh", [
+      ...sshDurablePinOpts(8),
+      "-o", `UserKnownHostsFile=${sshConfigDoubleQuote(ephemeralPath)}`,
+      "-o", "StrictHostKeyChecking=yes",
+      h,
+      "true",
+    ]);
+    const verifyErr = verify.err || verify.out || "";
+    if (isHostKeyVerificationFailure(verifyErr)) {
+      return hostKeyMismatch("host key changed before it could be pinned");
+    }
+    if (isSshNetworkFailure(verifyErr)) return { ok: false, err: "could not reach host to pin" };
+
+    // ponytail: ssh still delegates the durable write, then we read back the persisted ed25519 key
+    // and fingerprint-check it against the confirmed value; a mismatch is removed precisely so the
+    // verify->accept-new window cannot pin a wrong key.
+    const persist = await run("ssh", [
+      ...sshDurablePinOpts(8),
+      "-o", "StrictHostKeyChecking=accept-new",
+      h,
+      "true",
+    ]);
+    const persistErr = persist.err || persist.out || "";
+    if (isHostKeyVerificationFailure(persistErr)) {
+      return hostKeyMismatch("a different host key is already trusted for this host");
+    }
+    if (isSshNetworkFailure(persistErr)) return { ok: false, err: "could not reach host to pin" };
+
+    if (rb.isNone) return { ok: false, err: "SSH config disables host-key checking (UserKnownHostsFile none); cannot establish durable host trust" };
+    if (!rb.file) return { ok: false, err: "could not verify pinned host key" };
+
+    const foundResult = await run("ssh-keygen", ["-F", rb.lookupName, "-f", rb.file]);
+    const lines = knownHostsKeyLines(foundResult.out);
+    const found = lines.find((l) => keyIdentity(l).startsWith("ssh-ed25519 ")) || "";
+    if (!found) {
+      const strict = await run("ssh", [
+        ...sshDurablePinOpts(8),
+        "-o", "StrictHostKeyChecking=yes",
+        h,
+        "true",
+      ]);
+      const strictErr = strict.err || strict.out || "";
+      if (!isHostKeyVerificationFailure(strictErr) && !isSshNetworkFailure(strictErr)) {
+        return { ok: true, err: "" };
+      }
+      return { ok: false, err: "host key was not saved" };
+    }
+
+    const persistedFp = await fingerprintKnownHostsLine(found, false);
+    if (persistedFp !== String(expectedFp)) {
+      removeKnownHostsLine(rb.file, found);
+      return hostKeyMismatch("host key changed before it could be pinned");
+    }
+    return { ok: true, err: "" };
+  },
+
+  async hasDurableHostKey(host) {
+    const h = String(host || "").trim();
+    if (!validHost(h)) return { ok: false, present: false, err: invalidHost(h) };
+    const r = await run("ssh", [
+      ...sshDurablePinOpts(8),
+      "-o", "StrictHostKeyChecking=yes",
+      h,
+      "true",
+    ]);
+    const err = r.err || r.out || "";
+    if (isSshNetworkFailure(err)) return { ok: false, present: false, err };
+    if (isHostKeyVerificationFailure(err)) return { ok: true, present: false, err: "" };
+    return { ok: true, present: true, err: "" };
+  },
+
   // Host-app hard guard (Connect / Reconnect step): being able to SSH to the host (reachable) is NOT
   // enough — the host must actually have the Xpair host app installed AND be version-compatible with
   // this client, or pairing produces a connected-but-dead session that silently does nothing. SSHes
@@ -1072,7 +1484,7 @@ const bridge = {
         action: SSH_ACTION.ABORT,
       };
     }
-    const sshArgs = sshProbeOpts(6);
+    const sshArgs = sshProbeOpts(h, 6);
     // Resolve the host version that will actually serve the RD session, in priority order:
     //   1. RUNNING version — ~/.xpair/host/logs/status.json. The app rewrites it every second, so a FRESH
     //      file means the app is up and its `version` is the live process version. After an on-disk update
