@@ -176,7 +176,25 @@ function sshControlPath() {
 }
 
 function sshEphemeralKnownHostsPath() {
-  return "/tmp/rp-kh-" + (process.env.RP_SSH_CM_TAG || "x");
+  const dir = path.join(os.tmpdir(), "rp-kh-" + (process.env.RP_SSH_CM_TAG || "x"));
+  try {
+    try {
+      fs.mkdirSync(dir, { mode: 0o700 });
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      const stat = fs.lstatSync(dir);
+      const ownedByUs = typeof process.getuid !== "function" || stat.uid === process.getuid();
+      const privateMode = (stat.mode & 0o077) === 0;
+      if (!stat.isDirectory() || !ownedByUs || !privateMode) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { mode: 0o700 });
+      }
+    }
+    fs.chmodSync(dir, 0o700);
+    return path.join(dir, "known_hosts");
+  } catch {
+    return null;
+  }
 }
 
 function sshConfigDoubleQuote(s) {
@@ -184,7 +202,10 @@ function sshConfigDoubleQuote(s) {
 }
 
 function sshUserKnownHostsFileOption() {
-  return `${sshConfigDoubleQuote(sshEphemeralKnownHostsPath())} ${sshConfigDoubleQuote(SSH_KNOWN_HOSTS)}`;
+  const ephemeral = sshEphemeralKnownHostsPath();
+  return ephemeral
+    ? `${sshConfigDoubleQuote(ephemeral)} ${sshConfigDoubleQuote(SSH_KNOWN_HOSTS)}`
+    : sshConfigDoubleQuote(SSH_KNOWN_HOSTS);
 }
 
 function shSingleQuote(s) {
