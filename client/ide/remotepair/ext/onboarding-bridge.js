@@ -339,6 +339,63 @@ async function hostKeyLinesFromEphemeral(host) {
   }
 }
 
+function expandHomePath(p) {
+  const s = String(p || "");
+  if (s === "~") return os.homedir();
+  if (s.startsWith("~/")) return path.join(os.homedir(), s.slice(2));
+  return s;
+}
+
+function firstUserKnownHostsFile(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const first = tokens[0] || "";
+  if (first.toLowerCase() === "none") return "none";
+  if (tokens.length > 1 && os.homedir().includes(" ") && raw.startsWith(os.homedir())) return "";
+  return expandHomePath(first);
+}
+
+async function durableKnownHostsReadback(host) {
+  const h = String(host || "").trim();
+  const fallback = { isNone: false, file: "", lookups: [h].filter(Boolean) };
+  const r = await run("ssh", ["-G", h]);
+  if (r.code !== 0) return fallback;
+
+  let file = "";
+  let hostname = "";
+  let port = "";
+  let hostkeyalias = "";
+  for (const line of String(r.out || "").split("\n")) {
+    const m = line.match(/^\s*(userknownhostsfile|hostname|port|hostkeyalias)\s+(.+?)\s*$/i);
+    if (!m) continue;
+    const key = m[1].toLowerCase();
+    const value = m[2];
+    if (key === "userknownhostsfile" && !file) file = firstUserKnownHostsFile(value);
+    else if (key === "hostname") hostname = value.trim().split(/\s+/)[0] || "";
+    else if (key === "port") port = value.trim().split(/\s+/)[0] || "";
+    else if (key === "hostkeyalias") {
+      const alias = value.trim().split(/\s+/)[0] || "";
+      hostkeyalias = alias.toLowerCase() === "none" ? "" : alias;
+    }
+  }
+  if (String(file).toLowerCase() === "none") return { isNone: true, file: "", lookups: [] };
+
+  const lookupHost = hostname || h;
+  const candidates = [
+    hostkeyalias || lookupHost,
+    port && port !== "22" ? `[${lookupHost}]:${port}` : "",
+    h,
+  ];
+  const seen = new Set();
+  const lookups = candidates.filter((name) => {
+    if (!name || seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  });
+  return { isNone: false, file, lookups };
+}
+
 function shSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
@@ -438,7 +495,7 @@ function isHostKeyVerificationFailure(err) {
 }
 
 function isSshNetworkFailure(err) {
-  return /could not resolve hostname|name or service not known|connection refused|connection timed out|operation timed out|network is unreachable|no route to host/i.test(
+  return /could not resolve hostname|name or service not known|temporary failure in name resolution|connection refused|connection timed out|operation timed out|network is unreachable|no route to host|kex_exchange_identification|connection closed by remote host|connection closed by|connection reset by peer|banner exchange|broken pipe/i.test(
     String(err || "")
   );
 }
@@ -1286,8 +1343,9 @@ const bridge = {
     }
     if (isSshNetworkFailure(verifyErr)) return { ok: false, err: "could not reach host to pin" };
 
-    // ponytail: the residual verify->accept-new window is ssh's own first-connect exposure, which is
-    // the accepted ceiling here.
+    // ponytail: ssh still delegates the durable write, then we read back the persisted key and
+    // fingerprint-check it against the confirmed value; a mismatch is removed via ssh-keygen -R so
+    // the verify->accept-new window cannot pin a wrong key.
     const persist = await run("ssh", [
       ...sshDurablePinOpts(8),
       "-o", "StrictHostKeyChecking=accept-new",
@@ -1295,7 +1353,33 @@ const bridge = {
       "true",
     ]);
     const persistErr = persist.err || persist.out || "";
+    if (isHostKeyVerificationFailure(persistErr)) {
+      return hostKeyMismatch("a different host key is already trusted for this host");
+    }
     if (isSshNetworkFailure(persistErr)) return { ok: false, err: "could not reach host to pin" };
+
+    const rb = await durableKnownHostsReadback(h);
+    if (rb.isNone) return { ok: true, err: "" };
+    if (!rb.file) return { ok: false, err: "could not verify pinned host key" };
+
+    let found = "";
+    for (const name of rb.lookups) {
+      const foundResult = await run("ssh-keygen", ["-F", name, "-f", rb.file]);
+      const keyLine = preferEd25519(knownHostsKeyLines(foundResult.out));
+      if (keyLine) {
+        found = keyLine;
+        break;
+      }
+    }
+    if (!found) return { ok: false, err: "host key was not saved" };
+
+    const persistedFp = await fingerprintKnownHostsLine(found, false);
+    if (persistedFp !== String(expectedFp)) {
+      for (const name of rb.lookups) {
+        await run("ssh-keygen", ["-R", name, "-f", rb.file]);
+      }
+      return hostKeyMismatch("host key changed before it could be pinned");
+    }
     return { ok: true, err: "" };
   },
 
