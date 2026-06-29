@@ -106,38 +106,38 @@ test("safe saved, manual, reconnect, or connect hosts render an inline repair bu
   assert.match(app, /const MIN_COMPATIBLE_HOST = "0\.5\.0a51"/);
 });
 
-test("manual changed-target missing-app repair shows fingerprint/key prep before the install panel", () => {
+test("missing-app repair shows fingerprint/key prep before the install panel unless a durable key exists", () => {
   assert.match(app, /const \[savedHost, setSavedHost\] = useState\(""\);/);
   assert.match(app, /const hydratedHost = cfg\.remoteHost\.trim\(\);/);
   assert.match(app, /setSavedHost\(\(current\) => current \|\| hydratedHost\);/);
   assert.match(app, /setHost\(\(current\) => current \|\| hydratedHost\);/);
   assert.match(
     app,
-    /const manualTargetIsSavedHost = !!savedHost && connectTarget === savedHost;/,
+    /const missingRepairNeedsHostKey =[\s\S]*hostRepairKind === "missing" &&[\s\S]*\(manual \|\| startsFromSavedHost \|\| isReconnect \|\| isConnect \|\| !!savedHost\);/,
   );
   assert.match(
     app,
-    /const manualMissingNeedsFingerprint =[\s\S]*manual && !manualTargetIsSavedHost && hostRepairKind === "missing";/,
-  );
-  assert.doesNotMatch(
-    app,
-    /manual && !startsFromSavedHost && hostRepairKind === "missing"/,
+    /hasDurableHostKey\(connectTarget\)[\s\S]*present: !!r\.ok && !!r\.present/,
   );
   assert.match(
     app,
-    /const manualMissingRepairPeer: Peer \| null = connectTarget[\s\S]*source: "ssh"[\s\S]*status: "setup"/,
+    /const missingRepairPeer: Peer \| null = connectTarget[\s\S]*source: "ssh"[\s\S]*status: "setup"/,
   );
   assert.match(
     app,
-    /manualMissingNeedsFingerprint && manualMissingRepairPeer[\s\S]*<StepSetupPassword[\s\S]*peer=\{manualMissingRepairPeer\}[\s\S]*onReady=\{setSetupReady\}/,
+    /missingRepairNeedsHostKey && !durableEntryVerified && missingRepairPeer[\s\S]*<StepSetupPassword[\s\S]*peer=\{missingRepairPeer\}[\s\S]*onReady=\{setSetupReady\}/,
   );
   assert.match(
     app,
-    /const repairHostKeyPinned =[\s\S]*!manualMissingNeedsFingerprint \|\| setupPinnedKey === setupPinKey\(connectTarget, setupFp\);/,
+    /const durableEntryVerified =[\s\S]*missingRepairNeedsHostKey &&[\s\S]*durableHostKey\?\.target === connectTarget &&[\s\S]*durableHostKey\.present/,
   );
   assert.match(
     app,
-    /manualMissingNeedsFingerprint && setupReady && !repairHostKeyPinned[\s\S]*onClick=\{\(\) => void pinConfirmedHostKey\(connectTarget, setupFp\)\}/,
+    /const repairHostKeyPinned =[\s\S]*!missingRepairNeedsHostKey \|\|[\s\S]*durableEntryVerified \|\|[\s\S]*setupPinnedKey === setupPinKey\(connectTarget, setupFp\);/,
+  );
+  assert.match(
+    app,
+    /missingRepairNeedsHostKey && setupReady && !repairHostKeyPinned[\s\S]*onClick=\{\(\) => void pinConfirmedHostKey\(connectTarget, setupFp\)\}/,
   );
   assert.match(
     app,
