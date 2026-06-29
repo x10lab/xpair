@@ -133,7 +133,15 @@ test("manual changed-target missing-app repair shows fingerprint/key prep before
   );
   assert.match(
     app,
-    /\{\(!manualMissingNeedsFingerprint \|\| setupReady\) && \([\s\S]*<StepInstalling/,
+    /const repairHostKeyPinned =[\s\S]*!manualMissingNeedsFingerprint \|\| setupPinnedKey === setupPinKey\(connectTarget, setupFp\);/,
+  );
+  assert.match(
+    app,
+    /manualMissingNeedsFingerprint && setupReady && !repairHostKeyPinned[\s\S]*onClick=\{\(\) => void pinConfirmedHostKey\(connectTarget, setupFp\)\}/,
+  );
+  assert.match(
+    app,
+    /\{repairHostKeyPinned && \([\s\S]*<StepInstalling/,
   );
   assert.match(
     app,

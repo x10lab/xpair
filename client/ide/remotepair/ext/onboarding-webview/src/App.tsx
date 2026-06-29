@@ -263,6 +263,7 @@ export default function App() {
   const [setupFp, setSetupFp] = useState<string | null>(null);
   const [setupPinErr, setSetupPinErr] = useState("");
   const [setupPinning, setSetupPinning] = useState(false);
+  const [setupPinnedKey, setSetupPinnedKey] = useState("");
   const setupPinningRef = useRef(false);
   const [installState, setInstallState] = useState<InstallState>("idle");
   // Host TCC grant readiness, lifted from the Grant step so Next stays gated until AX + SR are on.
@@ -354,6 +355,7 @@ export default function App() {
       setSetupReady(false);
       setSetupFp(null);
       setSetupPinErr("");
+      setSetupPinnedKey("");
       setupPinningRef.current = false;
       setSetupPinning(false);
       setConnState("idle");
@@ -377,6 +379,7 @@ export default function App() {
     setSetupReady(false);
     setSetupFp(null);
     setSetupPinErr("");
+    setSetupPinnedKey("");
     setupPinningRef.current = false;
     setSetupPinning(false);
     hostAppProbeId.current += 1;
@@ -501,6 +504,7 @@ export default function App() {
     setSetupReady(false);
     setSetupFp(null);
     setSetupPinErr("");
+    setSetupPinnedKey("");
     setupPinningRef.current = false;
     setSetupPinning(false);
     setInstallState("idle");
@@ -666,22 +670,25 @@ export default function App() {
 
   // Custom Next routing: Mappings → run liveness check before Done; Connect (non-setup) skips the
   // Installing step.
-  const onNext = async () => {
-    if (w.index === S.CONNECT && isSetup) {
-      if (setupPinningRef.current) return;
-      const target = currentTarget;
+  const setupPinKey = useCallback(
+    (target: string, fp: string | null) => `${target}\n${fp ?? ""}`,
+    [],
+  );
+  const pinConfirmedHostKey = useCallback(
+    async (target: string, expectedFp: string | null) => {
+      if (setupPinningRef.current) return false;
       setupPinningRef.current = true;
       setSetupPinning(true);
       setSetupPinErr("");
       setLive("idle");
       setLiveErr("");
       try {
-        const r = await window.remotepair.pinHostKey(target, setupFp ?? "");
+        const r = await window.remotepair.pinHostKey(target, expectedFp ?? "");
         if (r.ok) {
-          stepRef.current = S.INSTALL;
-          w.next();
-          return;
+          setSetupPinnedKey(setupPinKey(target, expectedFp));
+          return true;
         }
+        setSetupPinnedKey("");
         const err = r.err || "Could not pin this host key. Verify the fingerprint, then retry.";
         setLiveErr(err);
         if (isHostKeyMismatch(err, r.state)) {
@@ -692,14 +699,25 @@ export default function App() {
         } else {
           setSetupPinErr(err);
         }
-        return;
+        return false;
       } catch (e) {
         const err = String(e);
+        setSetupPinnedKey("");
         setSetupPinErr(err);
         setLiveErr(err);
+        return false;
       } finally {
         setupPinningRef.current = false;
         setSetupPinning(false);
+      }
+    },
+    [setupPinKey],
+  );
+  const onNext = async () => {
+    if (w.index === S.CONNECT && isSetup) {
+      if (await pinConfirmedHostKey(currentTarget, setupFp)) {
+        stepRef.current = S.INSTALL;
+        w.next();
       }
       return;
     }
@@ -760,6 +778,9 @@ export default function App() {
       ? "Skip for now"
       : "Next";
 
+  const repairHostKeyPinned =
+    !manualMissingNeedsFingerprint || setupPinnedKey === setupPinKey(connectTarget, setupFp);
+
   const hostRepairPanel = canRepairHost ? (
     <>
       {manualMissingNeedsFingerprint && manualMissingRepairPeer && (
@@ -772,7 +793,30 @@ export default function App() {
           />
         </div>
       )}
-      {(!manualMissingNeedsFingerprint || setupReady) && (
+      {manualMissingNeedsFingerprint && setupReady && !repairHostKeyPinned && (
+        <div className="mx-auto mt-4 max-w-sm rounded-xl border border-border bg-muted/25 p-3.5 text-xs text-muted-foreground">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="min-w-0">
+              <p className="font-semibold text-foreground">Trust this host key before installing.</p>
+              <p className="mt-1 leading-snug">
+                Xpair will pin the confirmed fingerprint for {connectTarget}.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-2 h-8 gap-1.5"
+                disabled={setupPinning}
+                onClick={() => void pinConfirmedHostKey(connectTarget, setupFp)}
+              >
+                {setupPinning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {setupPinning ? "Pinning…" : "Trust host key"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {repairHostKeyPinned && (
         <div className="mt-4">
           <StepInstalling
             isUpdate={hostRepairKind === "update"}

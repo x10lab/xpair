@@ -201,7 +201,7 @@ function sshEphemeralKnownHostsPath() {
 
 function effectiveKnownHostsFiles(host) {
   const h = String(host || "").trim();
-  if (!h) return [];
+  if (!h) return null;
   if (EFFECTIVE_KNOWN_HOSTS_FILES.has(h)) return EFFECTIVE_KNOWN_HOSTS_FILES.get(h);
   try {
     const out = cp.execFileSync("ssh", ["-G", h], {
@@ -210,8 +210,8 @@ function effectiveKnownHostsFiles(host) {
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (!out) {
-      EFFECTIVE_KNOWN_HOSTS_FILES.set(h, []);
-      return [];
+      EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
+      return null;
     }
     const seen = new Set();
     const files = [];
@@ -246,8 +246,8 @@ function effectiveKnownHostsFiles(host) {
     EFFECTIVE_KNOWN_HOSTS_FILES.set(h, files);
     return files;
   } catch {
-    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, []);
-    return [];
+    EFFECTIVE_KNOWN_HOSTS_FILES.set(h, null);
+    return null;
   }
 }
 
@@ -257,8 +257,10 @@ function sshConfigDoubleQuote(s) {
 
 function sshUserKnownHostsFileOption(host) {
   const ephemeral = sshEphemeralKnownHostsPath();
+  const effective = effectiveKnownHostsFiles(host);
+  const files = effective === null ? SSH_KNOWN_HOSTS_DEFAULTS : effective;
   const seen = new Set();
-  return [ephemeral, ...effectiveKnownHostsFiles(host), ...SSH_KNOWN_HOSTS_DEFAULTS]
+  return [ephemeral, ...files]
     .filter((file) => typeof file === "string" && file.length > 0)
     .filter((file) => {
       if (seen.has(file)) return false;
