@@ -49,6 +49,7 @@ declare global {
         remoteHost: string
         engine: string
         folderMaps: string
+        folderMapModes: string
         syncBackend: string
         mountBackend: string
       }>
@@ -68,7 +69,8 @@ declare global {
       // Set the host-side API key for the engine. The key is handed to the host over the SSH stdin
       // pipe (NEVER argv/log/disk) and persisted engine-specifically. Re-probe afterwards.
       setHostEngineAuth: (engine: EngineId, apiKey: string) => Promise<{ ok: boolean; err: string }>
-      addMapping: (clientPath: string, hostPath: string) => Promise<any>
+      addMapping: (clientPath: string, hostPath: string, method?: "mount" | "sync") => Promise<any>
+      hostSmbStatus: () => Promise<"on" | "off" | "unknown">
       setBackend: (sync: string, mount?: string) => Promise<any>
       mount: (hostPath: string, mountpoint?: string) => Promise<{ code: number; out: string; err: string; mountpoint: string }>
       hostPathExists: (p: string) => Promise<{ exists: boolean; err: string }>

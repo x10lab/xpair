@@ -20,17 +20,36 @@ export type Mapping = {
   method: ConnectMethod;
 };
 
-// Convention: if a clientPath contains "/.xpair/host/mounts/" it was created by
-// the mount backend (default_mountpoint places volumes there). FOLDER_MAPS does
-// not store the method, so this is a best-effort inference. Explicit per-mapping
-// persistence + re-mount-on-launch is a separate follow-up.
+// FALLBACK ONLY: when a mapping has no stored method (FOLDER_MAP_MODES), infer it from the
+// path convention — a clientPath under "/.xpair/host/mounts/" was created by the mount backend
+// (default_mountpoint places volumes there), else sync. Used only for legacy entries persisted
+// before the method was stored explicitly.
 function inferMethod(clientPath: string): ConnectMethod {
   return clientPath.includes("/.xpair/host/mounts/") ? "mount" : "third-party-sync";
 }
 
-/** Parse the raw FOLDER_MAPS env value (`client::host;client2::host2`) into entries. */
-export function parseFolderMaps(raw: string): Mapping[] {
+/** Parse the stored per-mapping methods (`clientPath::mount;clientPath2::sync`) into a lookup.
+ *  The CLI stores `mount|sync`; the UI's ConnectMethod uses `mount|third-party-sync`. */
+function parseModes(raw: string): Map<string, ConnectMethod> {
+  const m = new Map<string, ConnectMethod>();
+  for (const entry of (raw || "").split(";")) {
+    const s = entry.trim();
+    if (!s) continue;
+    const idx = s.indexOf("::");
+    if (idx === -1) continue;
+    const clientPath = s.slice(0, idx);
+    const method = s.slice(idx + 2);
+    if (method === "mount") m.set(clientPath, "mount");
+    else if (method === "sync") m.set(clientPath, "third-party-sync");
+  }
+  return m;
+}
+
+/** Parse FOLDER_MAPS (`client::host;…`) into entries, taking each mapping's method from the
+ *  STORED modes (FOLDER_MAP_MODES) when present, falling back to path inference only otherwise. */
+export function parseFolderMaps(raw: string, modes?: string): Mapping[] {
   if (!raw) return [];
+  const modeOf = parseModes(modes || "");
   return raw
     .split(";")
     .map((s) => s.trim())
@@ -39,7 +58,7 @@ export function parseFolderMaps(raw: string): Mapping[] {
       const idx = entry.indexOf("::");
       const clientPath = idx === -1 ? entry : entry.slice(0, idx);
       const hostPath = idx === -1 ? "" : entry.slice(idx + 2);
-      return { clientPath, hostPath, method: inferMethod(clientPath) };
+      return { clientPath, hostPath, method: modeOf.get(clientPath) ?? inferMethod(clientPath) };
     });
 }
 
@@ -67,7 +86,7 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
     (async () => {
       try {
         const cfg = await window.remotepair.getConfig();
-        const parsed = parseFolderMaps(cfg.folderMaps);
+        const parsed = parseFolderMaps(cfg.folderMaps, cfg.folderMapModes);
         if (active && parsed.length) setMappings(parsed);
       } catch {
         /* no saved mappings yet */
@@ -116,6 +135,18 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
         return;
       }
 
+      // 1b. GATE 1 — a mount mapping needs File Sharing (SMB) ON on the host. Probe it BEFORE
+      //     attempting the mount so the user gets a clear, actionable message (enable File Sharing)
+      //     instead of a cryptic mount_smbfs error. We detect + guide only — never enable it for them.
+      //     Only a definite "off" blocks; "unknown" (transient SSH hiccup) falls through to the mount.
+      if (isMount && (await window.remotepair.hostSmbStatus()) === "off") {
+        setErr(
+          "File Sharing (SMB) is OFF on the host. Turn it on (System Settings > General > Sharing > " +
+            "File Sharing) and add this folder to the shared list, then add the mapping again.",
+        );
+        return;
+      }
+
       // 2. Record the backend signal. For mount, pass the smb/sshfs choice.
       //    For sync, signal "third-party-sync" unless a mount mapping already exists
       //    (in which case the backend stays "mount" as the global signal).
@@ -143,7 +174,7 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
       // 4. Record the mapping — HARD GUARD: the CLI must report success. A non-zero code (or a
       //    thrown/ENOENT result) means the mapping did NOT land (CLI missing, map add failed); do
       //    NOT fake it into the UI. Surface the reason and bail.
-      const ar = await window.remotepair.addMapping(effectiveClient, h);
+      const ar = await window.remotepair.addMapping(effectiveClient, h, isMount ? "mount" : "sync");
       if (!ar || ar.code !== 0) {
         setErr((ar && ar.err) || "Failed to add mapping (xpair map add did not succeed).");
         return;
@@ -153,7 +184,7 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
       //    truth). Only reflect what the CLI reports; if the just-added entry isn't there, the add
       //    silently no-op'd — block instead of showing a phantom row.
       const cfg = await window.remotepair.getConfig();
-      const parsed = parseFolderMaps(cfg.folderMaps);
+      const parsed = parseFolderMaps(cfg.folderMaps, cfg.folderMapModes);
       const landed = parsed.some((m) => m.hostPath === h && m.clientPath === effectiveClient);
       if (!landed) {
         setErr("Mapping was not persisted by the CLI — please retry.");

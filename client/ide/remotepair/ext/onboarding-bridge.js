@@ -908,19 +908,30 @@ const bridge = {
   async getConfig() {
     const e = parseEnv(CLIENT_ENV);
     let folderMaps = e.FOLDER_MAPS || "";
+    // Per-mapping method comes from the CLI SSOT (FOLDER_MAP_MODES via `map list --json`). Carry it
+    // alongside folderMaps as `clientPath::method;…` so the UI uses the STORED method instead of the
+    // path-convention inference. Falls back to the raw env var when the CLI is unavailable.
+    let folderMapModes = e.FOLDER_MAP_MODES || "";
     try {
       const r = await cli(["map", "list", "--json"]);
       if (r.code === 0 && r.out) {
         const arr = JSON.parse(r.out);
-        if (Array.isArray(arr)) folderMaps = arr.map((m) => `${m.client}::${m.host}`).join(";");
+        if (Array.isArray(arr)) {
+          folderMaps = arr.map((m) => `${m.client}::${m.host}`).join(";");
+          folderMapModes = arr
+            .filter((m) => m.method)
+            .map((m) => `${m.client}::${m.method}`)
+            .join(";");
+        }
       }
     } catch {
-      /* CLI unavailable — fall back to the raw env value */
+      /* CLI unavailable — fall back to the raw env values */
     }
     return {
       remoteHost: e.REMOTE_HOST || "",
       engine: e.ENGINE || "",
       folderMaps,
+      folderMapModes,
       syncBackend: e.SYNC_BACKEND || "",
       mountBackend: e.MOUNT_BACKEND || "",
     };
@@ -1160,8 +1171,22 @@ const bridge = {
   },
 
   // Mappings — manual add of a client→host mapping (hard-gate: >=1).
-  async addMapping(clientPath, hostPath) {
-    return cli(["map", "add", clientPath, hostPath]);
+  // method (mount|sync) is persisted per-mapping (FOLDER_MAP_MODES); omitted ⇒ the CLI infers
+  // it by path convention, preserving legacy callers.
+  async addMapping(clientPath, hostPath, method) {
+    const args = ["map", "add", clientPath, hostPath];
+    if (method === "mount" || method === "sync") args.push(method);
+    return cli(args);
+  },
+
+  // Host File Sharing (SMB) readiness probe → "on" | "off" | "unknown" (best-effort over SSH).
+  // Gate 1: a mount-method mapping cannot work until this is "on"; the wizard blocks + guides
+  // (we never enable File Sharing for the user). "unknown" is non-blocking (don't trap on a
+  // transient SSH hiccup) — only a definite "off" blocks.
+  async hostSmbStatus() {
+    const r = await cli(["smb-status"]);
+    const s = ((r && r.out) || "").trim().toLowerCase();
+    return s === "on" || s === "off" ? s : "unknown";
   },
 
   // --- Discovery / remote-install (component ⑤ — shells to the CLI brain) -----------------------
