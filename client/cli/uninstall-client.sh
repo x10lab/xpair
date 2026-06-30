@@ -2,8 +2,8 @@
 # uninstall-client.sh — fully wipe the Xpair client from this Mac for a clean reinstall.
 #
 # Reverts manifest-recorded install actions when run from a repo checkout, then removes
-# the local xpair namespace, installed CLIs, legacy tmux-aqua symlink, client Quick
-# Action, and the xpair Homebrew cask.
+# the local xpair namespace, installed CLIs, legacy app symlinks, client Quick
+# Action, app bundle, and the xpair Homebrew cask.
 #
 # Usage: uninstall-client.sh [-y|--yes] [--dry-run]
 set -euo pipefail
@@ -23,6 +23,7 @@ while [ $# -gt 0 ]; do
 done
 
 say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m⚠︎ %s\033[0m\n' "$*" >&2; }
 
 run() {
   if [ "$DRY_RUN" = 1 ]; then
@@ -56,11 +57,74 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SHARED="$REPO_ROOT/shared"
 
+recorded_repo_root() {
+  local env_file line value
+  for env_file in \
+    "$HOME/.xpair/client/client.env" \
+    "$HOME/.xpair/client/host.env" \
+    "$HOME/.xpair/host/host.env" \
+    "$HOME/.xpair/host/client.env"; do
+    [ -f "$env_file" ] || continue
+    line="$(grep -E '^(export[[:space:]]+)?RP_REPO_ROOT=' "$env_file" | tail -n 1 || true)"
+    [ -n "$line" ] || continue
+    value="$(printf '%s\n' "$line" | sed -E 's/^(export[[:space:]]+)?RP_REPO_ROOT=//')"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    [ -n "$value" ] || continue
+    printf '%s\n' "$value"
+    return 0
+  done
+  return 1
+}
+
+find_shared_uninstaller() {
+  local candidate rp_repo_root
+  candidate="$SHARED/uninstall.sh"
+  if [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  rp_repo_root="$(recorded_repo_root || true)"
+  if [ -n "$rp_repo_root" ]; then
+    candidate="$rp_repo_root/shared/uninstall.sh"
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+remove_xpair_app_symlink() {
+  local p target
+  p="$1"
+  [ -L "$p" ] || return 0
+  target="$(readlink "$p" 2>/dev/null || true)"
+  case "$target" in
+    *XpairHost.app*|*RemotePairHost.app*) run rm -f "$p" ;;
+  esac
+}
+
+remove_client_app() {
+  local app_path
+  app_path="$1"
+  [ -d "$app_path" ] || return 0
+  run rm -rf "$app_path"
+  if [ "$DRY_RUN" != 1 ] && [ -d "$app_path" ]; then
+    warn "$app_path needs admin permissions and was left in place."
+  fi
+}
+
 confirm "Wipe xpair client state, binaries, Quick Action, and cask from this Mac?"
 
-if [ -f "$SHARED/uninstall.sh" ]; then
+UNINSTALLER="$(find_shared_uninstaller || true)"
+if [ -n "$UNINSTALLER" ]; then
   say "Reverting manifest-recorded install actions"
-  run bash "$SHARED/uninstall.sh"
+  run bash "$UNINSTALLER"
 else
   say "No shared manifest reverter found; continuing with known paths."
 fi
@@ -75,16 +139,21 @@ for p in \
   "$HOME/.local/bin/xpair-desktop" \
   "$HOME/.local/bin/xpair-editor" \
   "$HOME/.local/bin/xpair-mount" \
-  "$HOME/.local/bin/xpair-launch" \
-  "$HOME/.local/bin/tmux-aqua"; do
+  "$HOME/.local/bin/xpair-launch"; do
   run rm -f "$p"
 done
+remove_xpair_app_symlink "$HOME/.local/bin/tmux-aqua"
+remove_xpair_app_symlink "$HOME/.local/bin/mosh-server"
 
 say "Removing client Quick Action"
 run rm -rf "$HOME/Library/Services/Launch Xpair.workflow"
 
 say "Removing Homebrew cask"
 run_quiet brew uninstall --cask xpair
+
+say "Removing directly installed app bundle"
+remove_client_app "/Applications/Xpair.app"
+remove_client_app "$HOME/Applications/Xpair.app"
 
 say "Refreshing Finder Quick Action cache"
 run_quiet /System/Library/CoreServices/pbs -flush
