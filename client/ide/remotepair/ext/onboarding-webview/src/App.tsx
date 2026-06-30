@@ -474,6 +474,30 @@ export default function App() {
       return;
     }
 
+    // GATE 2 — every mount-method mapping must actually be mounted before Done. add() mounts at
+    // add-time, but a seeded/re-opened wizard (or a volume unmounted out-of-band) may not be; the
+    // re-mount is idempotent (xpair-mount returns "Already mounted" + success), so this both verifies
+    // and self-heals. Any folder that still won't mount blocks Done with its name + the likely cause.
+    try {
+      for (const m of mappings.filter((mm) => mm.method === "mount")) {
+        const mr = await window.remotepair.mount(m.hostPath, m.clientPath || undefined);
+        if (!stillCurrent()) return;
+        if (!mr || mr.code !== 0) {
+          setLiveErr(
+            `Could not mount "${m.hostPath}": ${(mr && mr.err) || "mount failed"}. ` +
+              "Ensure File Sharing is on and that folder is shared on the host.",
+          );
+          setLive("offline");
+          return;
+        }
+      }
+    } catch (e) {
+      if (!stillCurrent()) return;
+      setLiveErr(`Mount verification failed: ${String(e)}`);
+      setLive("offline");
+      return;
+    }
+
     try {
       const r = await window.remotepair.sshReachable(target);
       if (!stillCurrent()) return;
@@ -492,7 +516,7 @@ export default function App() {
       setLiveErr(`Liveness check failed: ${String(e)}`);
       setLive("offline");
     }
-  }, [isSetup, installState, w]);
+  }, [isSetup, installState, mappings, w]);
 
   // Per-step Next gating (mirror of the existing readyToProceed idiom).
   const manualReady = connState === "reachable";
