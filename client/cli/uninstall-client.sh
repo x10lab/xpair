@@ -58,20 +58,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SHARED="$REPO_ROOT/shared"
 
 recorded_repo_root() {
-  local env_file line value
+  local env_file value
   for env_file in \
     "$HOME/.xpair/client/client.env" \
     "$HOME/.xpair/client/host.env" \
     "$HOME/.xpair/host/host.env" \
     "$HOME/.xpair/host/client.env"; do
     [ -f "$env_file" ] || continue
-    line="$(grep -E '^(export[[:space:]]+)?RP_REPO_ROOT=' "$env_file" | tail -n 1 || true)"
-    [ -n "$line" ] || continue
-    value="$(printf '%s\n' "$line" | sed -E 's/^(export[[:space:]]+)?RP_REPO_ROOT=//')"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
+    value="$(set -a; RP_REPO_ROOT=''; . "$env_file" >/dev/null 2>&1; printf '%s' "${RP_REPO_ROOT:-}")"
     [ -n "$value" ] || continue
     printf '%s\n' "$value"
     return 0
@@ -94,6 +88,12 @@ find_shared_uninstaller() {
       printf '%s\n' "$candidate"
       return 0
     fi
+  fi
+
+  candidate="$HOME/.local/share/xpair/shared/uninstall.sh"
+  if [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
   fi
 
   return 1

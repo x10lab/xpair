@@ -76,20 +76,14 @@ app_version() {
 }
 
 recorded_repo_root() {
-  local env_file line value
+  local env_file value
   for env_file in \
     "$HOME/.xpair/host/host.env" \
     "$HOME/.xpair/host/client.env" \
     "$HOME/.xpair/client/client.env" \
     "$HOME/.xpair/client/host.env"; do
     [ -f "$env_file" ] || continue
-    line="$(grep -E '^(export[[:space:]]+)?RP_REPO_ROOT=' "$env_file" | tail -n 1 || true)"
-    [ -n "$line" ] || continue
-    value="$(printf '%s\n' "$line" | sed -E 's/^(export[[:space:]]+)?RP_REPO_ROOT=//')"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
+    value="$(set -a; RP_REPO_ROOT=''; . "$env_file" >/dev/null 2>&1; printf '%s' "${RP_REPO_ROOT:-}")"
     [ -n "$value" ] || continue
     printf '%s\n' "$value"
     return 0
@@ -114,7 +108,53 @@ find_shared_uninstaller() {
     fi
   fi
 
+  candidate="$HOME/.local/share/xpair/shared/uninstall.sh"
+  if [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
   return 1
+}
+
+# ponytail: bounded mirror of shared/lib.sh manifest_revert for the no-repo (pure-cask) host case.
+revert_manifest_inline() {
+  local manifest tab action a b hooks_manager
+  manifest="$1"
+  tab="$(printf '\t')"
+  hooks_manager="$HOME/.xpair/host/bin/manage-claude-hooks.py"
+
+  awk '{l[NR]=$0} END{for(i=NR;i>=1;i--)print l[i]}' "$manifest" |
+    while IFS="$tab" read -r action a b _; do
+      case "$action" in
+        FILE)
+          [ -e "$a" ] && run rm -f "$a"
+          ;;
+        TREE)
+          [ -e "$a" ] && run rm -rf "$a"
+          ;;
+        BACKUP)
+          if [ -e "$b" ]; then
+            run cp -p "$b" "$a"
+            run rm -f "$b"
+          fi
+          ;;
+        MKDIR)
+          run_quiet rmdir "$a"
+          ;;
+        LAUNCHCTL)
+          run_quiet launchctl bootout "gui/$(id -u)/$a"
+          [ -n "$b" ] && run rm -f "$b"
+          ;;
+        HOOKS)
+          if [ -f "$a" ] && [ -f "$hooks_manager" ]; then
+            run python3 "$hooks_manager" remove "$a" "$b" "$b"
+          fi
+          ;;
+        GITIGNORE|GITREMOTE|NOTE|*)
+          ;;
+      esac
+    done
 }
 
 remove_xpair_app_symlink() {
@@ -166,13 +206,24 @@ remove_app() {
 
 APP_PATH=""
 VER=""
+PROTECTED_APP_PATH=""
+PROTECTED_VER=""
 for p in "/Applications/$APP_NAME.app" "$HOME/Applications/$APP_NAME.app"; do
   [ -d "$p" ] || continue
   v="$(app_version "$p")"
   [ -n "$v" ] || continue
-  APP_PATH="$p"
-  VER="$v"
-  break
+  if [ -z "$VER" ]; then
+    APP_PATH="$p"
+    VER="$v"
+  fi
+  case "$v" in
+    0.4*)
+      if [ -z "$PROTECTED_VER" ]; then
+        PROTECTED_APP_PATH="$p"
+        PROTECTED_VER="$v"
+      fi
+      ;;
+  esac
 done
 
 if [ -z "$VER" ]; then
@@ -181,9 +232,9 @@ else
   say "$APP_NAME $VER found at $APP_PATH"
 fi
 
-case "$VER" in
-  0.4*) [ "$FORCE" = 1 ] || { echo "⛔ REFUSING: $VER is a protected 0.4.x (production) install. Use --force only if you really mean it." >&2; exit 3; } ;;
-esac
+if [ -n "$PROTECTED_VER" ] && [ "$FORCE" != 1 ]; then
+  warn "$PROTECTED_APP_PATH is a protected 0.4.x install ($PROTECTED_VER) and will be left in place."
+fi
 
 if [ -n "$VER" ]; then
   confirm "Remove $APP_NAME $VER and wipe xpair host leftovers from this Mac?"
@@ -218,9 +269,8 @@ if [ -n "$UNINSTALLER" ]; then
   say "Reverting manifest-recorded install actions"
   run bash "$UNINSTALLER"
 elif [ -f "$HOME/.xpair/host/.install-manifest" ]; then
-  warn "No shared manifest reverter found while $HOME/.xpair/host/.install-manifest exists; a full manifest revert was unavailable."
-  warn "Claude hook entries in $HOME/.claude/settings.json may remain."
-  warn "$HOME/.claude/hooks/xpair-approve-reminder.sh may remain; remove these manually if present."
+  say "No shared manifest reverter found; using inline manifest revert."
+  revert_manifest_inline "$HOME/.xpair/host/.install-manifest"
 else
   say "No shared manifest reverter found; continuing with known paths."
 fi
