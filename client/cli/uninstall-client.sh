@@ -149,7 +149,7 @@ say "Removing client Quick Action"
 run rm -rf "$HOME/Library/Services/Launch Xpair.workflow"
 
 say "Removing Homebrew cask"
-run_quiet brew uninstall --cask xpair
+run_quiet brew uninstall --cask --force xpair
 
 say "Removing directly installed app bundle"
 remove_client_app "/Applications/Xpair.app"

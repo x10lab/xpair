@@ -134,9 +134,13 @@ revert_manifest_inline() {
           [ -e "$a" ] && run rm -rf "$a"
           ;;
         BACKUP)
+          # Mirror lib.sh: delete the backup ONLY if the restore copy succeeds, else keep it.
           if [ -e "$b" ]; then
-            run cp -p "$b" "$a"
-            run rm -f "$b"
+            if [ "$DRY_RUN" = 1 ]; then
+              run cp -p "$b" "$a"; run rm -f "$b"
+            else
+              cp -p "$b" "$a" && rm -f "$b" || warn "restore failed for $a — kept backup $b"
+            fi
           fi
           ;;
         MKDIR)
@@ -232,8 +236,12 @@ else
   say "$APP_NAME $VER found at $APP_PATH"
 fi
 
+# A 0.4.x copy is the protected production line. Its LaunchAgents, ~/.xpair state, and cask
+# are SHARED with any test copy, so there is no safe partial wipe — refuse the whole run
+# before touching anything. Use --force only to deliberately remove a 0.4.x host.
 if [ -n "$PROTECTED_VER" ] && [ "$FORCE" != 1 ]; then
-  warn "$PROTECTED_APP_PATH is a protected 0.4.x install ($PROTECTED_VER) and will be left in place."
+  echo "⛔ REFUSING: $PROTECTED_APP_PATH is a protected 0.4.x install ($PROTECTED_VER). A clean wipe here would stop/unregister the production host. Re-run with --force only if you really mean it." >&2
+  exit 3
 fi
 
 if [ -n "$VER" ]; then
@@ -268,11 +276,21 @@ UNINSTALLER="$(find_shared_uninstaller || true)"
 if [ -n "$UNINSTALLER" ]; then
   say "Reverting manifest-recorded install actions"
   run bash "$UNINSTALLER"
-elif [ -f "$HOME/.xpair/host/.install-manifest" ]; then
-  say "No shared manifest reverter found; using inline manifest revert."
-  revert_manifest_inline "$HOME/.xpair/host/.install-manifest"
 else
-  say "No shared manifest reverter found; continuing with known paths."
+  # No shared reverter on disk — replay every manifest we have inline (best-effort). The
+  # role installer writes .manifest-host; the self-installer writes .install-manifest. The
+  # shared uninstaller globs both, so we must too, or rm -rf ~/.xpair drops the only record.
+  shopt -s nullglob
+  inline_mans=("$HOME"/.xpair/host/.manifest-* "$HOME/.xpair/host/.install-manifest")
+  shopt -u nullglob
+  if [ "${#inline_mans[@]}" -gt 0 ]; then
+    say "No shared manifest reverter found; using inline manifest revert (${#inline_mans[@]} manifest(s))."
+    for m in "${inline_mans[@]}"; do
+      [ -f "$m" ] && revert_manifest_inline "$m"
+    done
+  else
+    say "No shared manifest reverter found; continuing with known paths."
+  fi
 fi
 
 say "Stopping host processes"
@@ -295,10 +313,12 @@ done
 remove_xpair_app_symlink "$HOME/.local/bin/tmux-aqua"
 remove_xpair_app_symlink "$HOME/.local/bin/mosh-server"
 
+# Unregister the cask FIRST (with --force so a missing/manually-deleted app artifact does not
+# leave xpair-host registered and block the next reinstall), then clean any leftover bundle.
+say "Removing Homebrew cask"
+run_quiet brew uninstall --cask --force xpair-host
+
 remove_app "/Applications/$APP_NAME.app"
 remove_app "$HOME/Applications/$APP_NAME.app"
-
-say "Removing Homebrew cask"
-run_quiet brew uninstall --cask xpair-host
 
 say 'host wiped — re-run `xpair install-host` (or onboarding) to reinstall.'
