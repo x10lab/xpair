@@ -135,11 +135,12 @@ export function StepFileAccess({ mappings, setMappings }: Props) {
         return;
       }
 
-      // 1b. GATE 1 — a mount mapping needs File Sharing (SMB) ON on the host. Probe it BEFORE
-      //     attempting the mount so the user gets a clear, actionable message (enable File Sharing)
-      //     instead of a cryptic mount_smbfs error. We detect + guide only — never enable it for them.
-      //     Only a definite "off" blocks; "unknown" (transient SSH hiccup) falls through to the mount.
-      if (isMount && (await window.remotepair.hostSmbStatus()) === "off") {
+      // 1b. GATE 1 — an SMB mount needs File Sharing ON on the host. Probe it BEFORE attempting the
+      //     mount so the user gets a clear, actionable message (enable File Sharing) instead of a
+      //     cryptic mount_smbfs error. We detect + guide only — never enable it for them. Only a
+      //     definite "off" blocks; "unknown" (transient SSH hiccup) falls through to the mount.
+      //     SSHFS mounts reuse SSH (no File Sharing), so the SMB gate only applies to the smb backend.
+      if (isMount && mountBackend === "smb" && (await window.remotepair.hostSmbStatus()) === "off") {
         setErr(
           "File Sharing (SMB) is OFF on the host. Turn it on (System Settings > General > Sharing > " +
             "File Sharing) and add this folder to the shared list, then add the mapping again.",

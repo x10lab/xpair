@@ -1072,9 +1072,11 @@ cmd_doctor() {
     fi
     printf '%-22s %s\n' "file access (sync)" "Syncthing $_st"
   fi
-  # SMB readiness on the host — the prerequisite for any mount-method mapping. Best-effort over SSH;
-  # we detect + guide only (never enable File Sharing for the user).
-  if [ -n "$REMOTE_HOST" ] && { has_mount_mapping || [ "$_sync_backend" = mount ]; } && [ "${MOUNT_BACKEND:-smb}" = smb ]; then
+  # SMB readiness on the host — the prerequisite for any mount-method mapping. Gated on the
+  # per-mapping truth (has_mount_mapping), NOT the global SYNC_BACKEND: removing the last mount
+  # mapping leaves SYNC_BACKEND=mount stale, which would otherwise warn with no mount mapping in play.
+  # Best-effort over SSH; we detect + guide only (never enable File Sharing for the user).
+  if [ -n "$REMOTE_HOST" ] && has_mount_mapping && [ "${MOUNT_BACKEND:-smb}" = smb ]; then
     case "$(host_smb_status)" in
       on)  printf '%-22s %s\n' "host File Sharing" "on (SMB mounts can connect)" ;;
       off) printf '%-22s %s\n' "host File Sharing" "OFF — a mount mapping needs it ON: System Settings > General > Sharing > File Sharing, then share the mapped folder(s)" ;;

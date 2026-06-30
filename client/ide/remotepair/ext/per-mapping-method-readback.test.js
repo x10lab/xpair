@@ -15,6 +15,7 @@ const stepFileAccess = fs.readFileSync(
   "utf8",
 );
 const globalDts = fs.readFileSync(path.join(webview, "global.d.ts"), "utf8");
+const preload = fs.readFileSync(path.join(extRoot, "onboarding-preload.cjs"), "utf8");
 
 let failures = 0;
 function test(name, fn) {
@@ -72,6 +73,21 @@ test("both seed paths pass the stored modes into parseFolderMaps", () => {
     stepFileAccess,
     /parseFolderMaps\(cfg\.folderMaps\)(?!,)/,
     "no caller may parse folderMaps without the stored modes",
+  );
+});
+
+test("preload bridges the method arg and hostSmbStatus to window.remotepair", () => {
+  // The webview only sees what the Electron preload exposes — a bridge method missing here is
+  // undefined at runtime even though global.d.ts/types compile. Guards both gate + C0 write paths.
+  assert.match(
+    preload,
+    /addMapping: \(clientPath, hostPath, method\) => rp\('addMapping', \[clientPath, hostPath, method\]\)/,
+    "preload addMapping must forward the per-mapping method (else the GUI never persists it)",
+  );
+  assert.match(
+    preload,
+    /hostSmbStatus: \(\) => rp\('hostSmbStatus', \[\]\)/,
+    "preload must expose hostSmbStatus (else Gate 1's call is undefined at runtime)",
   );
 });
 
