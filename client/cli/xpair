@@ -774,7 +774,10 @@ cmd_launch() {
   if [ "$should_probe_remote" = 1 ]; then
     validate_folder_maps_config || return 1
     local mapped_pair=""
-    mapped_pair="$(mapping_for_dir "$dir")"
+    # mapping_for_dir exits non-zero for an unmapped dir (not an error). Tolerate it under
+    # `set -e` — otherwise `xpair launch --yes <unmapped-dir>` on the (now sole) host path
+    # aborts rc 1 silently before reaching the launcher. The empty-check below handles it.
+    mapped_pair="$(mapping_for_dir "$dir")" || true
     if [ -n "$mapped_pair" ]; then
       ensure_mapped_host_dir_ready "$dir" "$mapped_pair" || return 1
     fi

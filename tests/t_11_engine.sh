@@ -94,12 +94,12 @@ cat > "$RP_DIR/bin/xpair-launch" <<'EOF'
 printf 'engine=%s explicit=%s args=%s\n' "${RP_ENGINE:-}" "${RP_ENGINE_EXPLICIT:-}" "$*" >> "$MOCKLOG"
 EOF
 chmod +x "$RP_DIR/bin/xpair-launch"
-# Uniform host path: give the sandbox dir an identity mapping so cmd_launch's remote-probe
-# resolves a mapped host dir (unmapped + --yes would otherwise short-circuit before exec).
-printf 'REMOTE_HOST=test-host\nFOLDER_MAPS=%s::%s\n' "$SBX" "$SBX" > "$RP_DIR/client.env"
+# Unmapped dir + --yes on the uniform host path must still reach the launcher (regression:
+# mapping_for_dir returns non-zero for an unmapped dir; under set -e that used to abort rc 1).
 run_cli launch --engine claudecode --yes "$SBX"
 
 it "engine/xpair-launch-claudecode-alias"
+assert_rc "$RP_RC" 0 "unmapped --yes launch reaches the launcher (no silent set -e abort)"
 assert_rc "$RP_RC" 0 "xpair launch claudecode alias succeeds"
 assert_contains "$MLOG" "engine=claude explicit=1" "xpair passes canonical claude engine explicitly"
 assert_contains "$MLOG" "--yes" "xpair preserves supported launch flags"
