@@ -1382,11 +1382,15 @@ async function setupLayout(context, force) {
   try {
     await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
   } catch (_e) {}
-  // Reveal the custom "Terminal" sidebar (embedded EditorPart, workbench source).
+  // Default the primary sidebar to the Browser. A fresh launch has no attached terminal
+  // sessions, so we start in the Browser (file explorer) rather than the empty Sessions
+  // sidebar. The workbench-side RemotePairEmptySessionsBrowserFallback contribution keeps this
+  // in sync afterwards (re-reveals the Browser whenever the last terminal tab is closed), so
+  // the two agree on every launch and there is no Terminal→Browser flash.
   try {
-    await vscode.commands.executeCommand("remotepair.terminalSidebar.view.focus");
+    await vscode.commands.executeCommand("workbench.view.explorer");
   } catch (e) {
-    log(`setupLayout reveal terminal sidebar: ${e && e.message ? e.message : e}`);
+    log(`setupLayout reveal browser: ${e && e.message ? e.message : e}`);
   }
   try {
     await context.globalState.update(KEY, true);
@@ -2086,13 +2090,19 @@ function activate(context) {
   notifier.start();
   context.subscriptions.push({ dispose: () => notifier.stop() });
 
-  // 5a) Force the Sessions sidebar open on every activation so it is always the
-  //     active primary-sidebar container — overrides any persisted
-  //     'workbench.sidebar.activeviewletid' that may still point to Browser
-  //     (e.g. after a workspace reload where Explorer was last active).
-  //     Fire-and-forget: do NOT await so the sidebar switch races with the layout
-  //     restore rather than blocking it, minimising any visible flash.
-  vscode.commands.executeCommand("remotepair.terminalSidebar");
+  // 5a) Warm the Sessions sidebar, THEN default the visible sidebar to the Browser. Constructing the
+  //     Sessions view runs its constructor side effects — wiring the session reattacher and the
+  //     attached-sessions provider, and scheduling the embedded EditorPart — which the bottom
+  //     Detached/History reattach cards and the per-folder "New Session Here" depend on; without this
+  //     warm-up a Browser-first launch leaves reattach unwired until the user opens Sessions manually.
+  //     We then switch to the Browser: a fresh launch never has attached terminal tabs (they are live
+  //     editor instances, not restored), so "no terminal tabs → Browser" holds unconditionally, and
+  //     this runs for existing profiles too (unlike the one-time setupLayout gate). Closing the last
+  //     terminal tab later returns here via RemotePairEmptySessionsBrowserFallback (workbench source).
+  vscode.commands
+    .executeCommand("remotepair.terminalSidebar")
+    .then(() => vscode.commands.executeCommand("workbench.view.explorer"))
+    .then(undefined, (e) => log(`startup Browser default: ${e && e.message ? e.message : e}`, "warn"));
 
   // 5) Open the RD editor tab on startup (Remote Desktop is this client's
   //    primary surface), then apply the one-time workbench layout. Chained so
