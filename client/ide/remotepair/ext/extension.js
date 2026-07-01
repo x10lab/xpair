@@ -1382,11 +1382,15 @@ async function setupLayout(context, force) {
   try {
     await vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
   } catch (_e) {}
-  // Reveal the custom "Terminal" sidebar (embedded EditorPart, workbench source).
+  // Default the primary sidebar to the Browser. A fresh launch has no attached terminal
+  // sessions, so we start in the Browser (file explorer) rather than the empty Sessions
+  // sidebar. The workbench-side RemotePairEmptySessionsBrowserFallback contribution keeps this
+  // in sync afterwards (re-reveals the Browser whenever the last terminal tab is closed), so
+  // the two agree on every launch and there is no Terminal→Browser flash.
   try {
-    await vscode.commands.executeCommand("remotepair.terminalSidebar.view.focus");
+    await vscode.commands.executeCommand("workbench.view.explorer");
   } catch (e) {
-    log(`setupLayout reveal terminal sidebar: ${e && e.message ? e.message : e}`);
+    log(`setupLayout reveal browser: ${e && e.message ? e.message : e}`);
   }
   try {
     await context.globalState.update(KEY, true);

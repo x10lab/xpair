@@ -2336,7 +2336,7 @@ index 0000000..515cbd0
 +	order: 100,
 +	canToggleVisibility: true,
 +	canMoveView: true,
-+	collapsed: true,
++	collapsed: false,
 +};
 +
 +viewsRegistry.registerViews([favoritesViewDescriptor], VIEW_CONTAINER);
@@ -2574,7 +2574,7 @@ new file mode 100644
 index 0000000..6e5d586
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairSessionManager.ts
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,692 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: bottom-panel session tabs. Three Panel view containers — Attached / Detached /
 + *  History — each surfaced as a horizontal TAB in the bottom-panel composite bar (exactly like
@@ -2665,6 +2665,9 @@ index 0000000..6e5d586
 +}
 +/** Called by the sidebar whenever its attached set changes; triggers an Attached-tab refresh. */
 +export function notifyAttachedSessionsChanged(): void { attachedChangeEmitter.fire(); }
++
++/** Number of attached sessions the sidebar is currently tracking (0 when no provider yet). */
++export function attachedSessionCount(): number { return attachedProvider?.getAttached().length ?? 0; }
 +
 +/**
 + * Provides the Detached/History session-name lists for the manager. The core renderer
@@ -3412,7 +3415,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,718 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3428,7 +3431,8 @@ index 00000000..820a8de4
 +import { URI } from '../../../../base/common/uri.js';
 +import { mainWindow } from '../../../../base/browser/window.js';
 +import { getWindow, scheduleAtNextAnimationFrame, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
-+import { DisposableStore, MutableDisposable, IDisposable } from '../../../../base/common/lifecycle.js';
++import { DisposableStore, MutableDisposable, IDisposable, Disposable } from '../../../../base/common/lifecycle.js';
++import { registerWorkbenchContribution2, WorkbenchPhase, IWorkbenchContribution } from '../../../common/contributions.js';
 +import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 +import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 +import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -3459,7 +3463,7 @@ index 00000000..820a8de4
 +import { EditorInput } from '../../../common/editor/editorInput.js';
 +import { SessionPickerInput, SessionKind } from './remotePairSessionPicker.js';
 +import { VIEWLET_ID as BROWSER_VIEWLET_ID } from '../../files/common/files.js';
-+import { setSessionReattacher, setAttachedSessionsProvider, setSessionCardCause, notifyAttachedSessionsChanged } from './remotePairSessionManager.js';
++import { setSessionReattacher, setAttachedSessionsProvider, setSessionCardCause, notifyAttachedSessionsChanged, attachedSessionCount, onDidChangeAttachedSessions } from './remotePairSessionManager.js';
 +import { rpLog } from './remotePairLog.js';
 +
 +export const REMOTEPAIR_TERMINAL_SIDEBAR_ID = 'remotepair.terminalSidebar';
@@ -3864,6 +3868,12 @@ index 00000000..820a8de4
 +
 +		this.editorPart = part;
 +
++		// S0: register the embedded part for GROUP LOOKUP ONLY (NOT via registerPart — see the long
++		// note above). This adds it to `getGroup()`'s lookup set without joining `_parts`/MRU, so the
++		// native editor-tab commands (close X, middle-click, context-menu Close/Others, Pin, the
++		// closeActiveEditor keybinding) can resolve this part's groups. Without it those are all no-ops.
++		this.partDisposables.add(editorPartsView.registerLookupPart(part));
++
 +		// Blank-fix: drive the embedded part's visibility from the ViewPane body.
 +		// Editor panes (including TerminalEditor/xterm) only attach and size when their
 +		// group is told it is visible: EditorPart.setVisible → onDidVisibilityChange →
@@ -4102,6 +4112,28 @@ index 00000000..820a8de4
 +function shellSingleQuote(value: string): string {
 +	return `'${value.replace(/'/g, `'\\''`)}'`;
 +}
++
++// RemotePair (S0): keep the primary sidebar on the Browser whenever there are no attached terminal
++// sessions. Covers the two cases the user asked for: (1) launching with no sessions starts in the
++// Browser, and (2) closing the last terminal tab falls back to the Browser. We only act on the empty
++// state — when sessions exist we leave the sidebar alone so the user is never yanked out of the
++// Browser mid-use. Driven by the same `attached` set the Session Manager renders.
++class RemotePairEmptySessionsBrowserFallback extends Disposable implements IWorkbenchContribution {
++	static readonly ID = 'workbench.contrib.remotePairEmptySessionsBrowser';
++
++	constructor(@IViewsService private readonly viewsService: IViewsService) {
++		super();
++		this._register(onDidChangeAttachedSessions(() => this.update()));
++		this.update();
++	}
++
++	private update(): void {
++		if (attachedSessionCount() === 0) {
++			this.viewsService.openViewContainer(BROWSER_VIEWLET_ID, false);
++		}
++	}
++}
++registerWorkbenchContribution2(RemotePairEmptySessionsBrowserFallback.ID, RemotePairEmptySessionsBrowserFallback, WorkbenchPhase.AfterRestored);
 diff --git a/extensions/git/package.json b/extensions/git/package.json
 index 483589b3..d4310749 100644
 --- a/extensions/git/package.json
@@ -4247,3 +4279,62 @@ index 3c7242ab..d29f74fd 100644
  				'markdownDescription': isWeb ?
  					localize('layoutControlEnabledWeb', "Controls whether the layout control in the title bar is shown.") :
  					localize({ key: 'layoutControlEnabled', comment: ['{0}, {1} is a placeholder for a setting identifier.'] }, "Controls whether the layout control is shown in the custom title bar. This setting only has an effect when {0} is not set to {1}.", '`#window.customTitleBarVisibility#`', '`never`'),
+diff --git a/src/vs/workbench/browser/parts/editor/editor.ts b/src/vs/workbench/browser/parts/editor/editor.ts
+index 28d0480..d81bb81 100644
+--- a/src/vs/workbench/browser/parts/editor/editor.ts
++++ b/src/vs/workbench/browser/parts/editor/editor.ts
+@@ -189,6 +189,15 @@ export interface IEditorPartsView {
+ 	readonly mainPart: IEditorGroupsView;
+ 	registerPart(part: IEditorPart): IDisposable;
+ 
++	/**
++	 * RemotePair (S0): register a part for GROUP LOOKUP ONLY. Unlike `registerPart`, this does NOT
++	 * add the part to `_parts`, the MRU, or any focus/group-change listeners, so it never affects
++	 * `activeGroup`/`getGroups()` and cannot trigger the reverse-leak. It only lets `getGroup(id)`
++	 * resolve the part's groups, so global title/tab commands (close, close others, pin, ...) reach
++	 * editors hosted in the embedded Sessions EditorPart.
++	 */
++	registerLookupPart(part: IEditorPart): IDisposable;
++
+ 	readonly activeGroup: IEditorGroupView;
+ 	readonly groups: IEditorGroupView[];
+ 	getGroup(identifier: GroupIdentifier): IEditorGroupView | undefined;
+diff --git a/src/vs/workbench/browser/parts/editor/editorParts.ts b/src/vs/workbench/browser/parts/editor/editorParts.ts
+index 3b6b374..54f6410 100644
+--- a/src/vs/workbench/browser/parts/editor/editorParts.ts
++++ b/src/vs/workbench/browser/parts/editor/editorParts.ts
+@@ -244,6 +244,18 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
+ 		return disposables;
+ 	}
+ 
++	// RemotePair (S0): parts registered for GROUP LOOKUP ONLY (see IEditorPartsView.registerLookupPart).
++	// Deliberately kept out of `_parts`, the MRU, and every part listener, so these parts stay invisible
++	// to `getGroups()`/`activeGroup` and never fire focus/group-change events (no reverse-leak). Only
++	// `getGroup()` consults this set, which is all the global tab/title close commands need.
++	private readonly lookupParts = new Set<EditorPart>();
++
++	registerLookupPart(part: EditorPart): IDisposable {
++		this.lookupParts.add(part);
++
++		return toDisposable(() => this.lookupParts.delete(part));
++	}
++
+ 	protected override unregisterPart(part: EditorPart): void {
+ 		super.unregisterPart(part);
+ 
+@@ -718,6 +730,15 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
+ 			}
+ 		}
+ 
++		// RemotePair (S0): lookup-only parts (e.g. the embedded Sessions EditorPart) are not in
++		// `_parts`, so consult them here so global tab/title commands can resolve their groups.
++		for (const part of this.lookupParts) {
++			const group = part.getGroup(identifier);
++			if (group) {
++				return group;
++			}
++		}
++
+ 		return this.mainPart.getGroup(identifier);
+ 	}
+ 

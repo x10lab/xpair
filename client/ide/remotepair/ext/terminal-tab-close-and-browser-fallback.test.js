@@ -1,0 +1,74 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const patch = fs.readFileSync(path.join(__dirname, "../patches/zz-remotepair-ide-frontend.patch"), "utf8");
+
+let failures = 0;
+function check(name, fn) {
+  try {
+    fn();
+    console.log(`  ok  - ${name}`);
+  } catch (error) {
+    failures += 1;
+    console.error(`  FAIL - ${name}\n        ${error && error.message ? error.message : error}`);
+  }
+}
+
+// --- editor-tab X close fix (S0 lookup-only part registration) ------------------------------
+// The embedded Sessions EditorPart is not in `_parts`, so global tab/title commands (close X,
+// middle-click, context-menu, closeActiveEditor) resolve `getGroup(id)` to undefined and no-op.
+// The fix restores getGroup reachability via a lookup-only registry without the MRU/activeGroup
+// reverse-leak. If any leg regresses the tab X silently stops working again.
+
+check("IEditorPartsView exposes registerLookupPart", () => {
+  assert.match(patch, /registerLookupPart\(part: IEditorPart\): IDisposable;/);
+});
+
+check("EditorParts keeps lookup-only parts out of _parts", () => {
+  assert.match(patch, /private readonly lookupParts = new Set<EditorPart>\(\);/);
+  assert.match(patch, /registerLookupPart\(part: EditorPart\): IDisposable \{\n\+\s*this\.lookupParts\.add\(part\);/);
+});
+
+check("getGroup consults the lookup-only parts", () => {
+  // The new loop must sit inside getGroup, before the mainPart fallback.
+  assert.match(patch, /for \(const part of this\.lookupParts\) \{\n\+\s*const group = part\.getGroup\(identifier\);/);
+});
+
+check("embedded Sessions part registers for lookup (not full registerPart)", () => {
+  // The lookup registration must be wired as an executable disposable.
+  assert.match(patch, /this\.partDisposables\.add\(editorPartsView\.registerLookupPart\(part\)\);/);
+  // Must NOT full-register the embedded part as executable code (that reintroduces the S0
+  // reverse-leak). Guard against the disposable-add form; the explanatory comment may still
+  // mention registerPart in prose, so only reject the wired call.
+  assert.doesNotMatch(patch, /\.add\(editorPartsView\.registerPart\(part\)\)/);
+});
+
+// --- Favorites section defaults to open ------------------------------------------------------
+
+check("Favorites view descriptor defaults to expanded", () => {
+  const favBlock = patch.match(/const favoritesViewDescriptor: IViewDescriptor = \{[\s\S]*?\};/);
+  assert.ok(favBlock, "favoritesViewDescriptor block not found");
+  assert.match(favBlock[0], /collapsed: false,/);
+  assert.doesNotMatch(favBlock[0], /collapsed: true,/);
+});
+
+// --- empty-sessions -> Browser fallback (#2 launch default, #4 close-last auto-switch) -------
+
+check("attachedSessionCount is exported for the fallback contribution", () => {
+  assert.match(patch, /export function attachedSessionCount\(\): number \{ return attachedProvider\?\.getAttached\(\)\.length \?\? 0; \}/);
+});
+
+check("empty-sessions Browser fallback contribution is registered", () => {
+  assert.match(patch, /class RemotePairEmptySessionsBrowserFallback extends Disposable implements IWorkbenchContribution/);
+  assert.match(patch, /onDidChangeAttachedSessions\(\(\) => this\.update\(\)\)/);
+  assert.match(patch, /if \(attachedSessionCount\(\) === 0\) \{\n\+\s*this\.viewsService\.openViewContainer\(BROWSER_VIEWLET_ID, false\);/);
+  assert.match(patch, /registerWorkbenchContribution2\(RemotePairEmptySessionsBrowserFallback\.ID, RemotePairEmptySessionsBrowserFallback, WorkbenchPhase\.AfterRestored\);/);
+});
+
+if (failures > 0) {
+  console.error(`\n${failures} test(s) FAILED`);
+  process.exit(1);
+}
+
+console.log("\nall terminal-tab-close and browser-fallback tests passed");
