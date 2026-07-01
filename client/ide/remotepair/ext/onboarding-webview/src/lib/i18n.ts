@@ -12,6 +12,8 @@ const EN: Dict = {
   "shell.skip": "Skip",
   "shell.beginSetup": "Begin setup",
   "shell.openXpair": "Open Xpair",
+  "shell.close": "Close",
+  "shell.notAvailable": "—",
 
   // Client Welcome
   "client.welcome.title": "Welcome to Xpair",
@@ -61,6 +63,7 @@ const EN: Dict = {
   "update.now": "Update now",
   "update.updating": "Updating host",
   "update.updated": "Updated",
+  "update.error": "Update failed. Try again.",
 
   // Client WaitPerm
   "wait.denied.title": "Host denied the request",
@@ -98,6 +101,7 @@ const EN: Dict = {
   "map.selected": "Selected:",
   "map.cancel": "Cancel",
   "map.chooseThis": "Choose this folder",
+  "map.openFolder": "Open folder",
   "map.localTitle": "Choose local folder",
   "map.localPick": "Choose folder on this Mac…",
   "map.localUnsupported": "Your browser doesn't support the folder picker. Type a path instead.",
@@ -194,6 +198,8 @@ const KO: Dict = {
   "shell.skip": "건너뛰기",
   "shell.beginSetup": "설정 시작",
   "shell.openXpair": "Xpair 열기",
+  "shell.close": "닫기",
+  "shell.notAvailable": "—",
 
   "client.welcome.title": "Xpair에 오신 것을 환영합니다",
   "client.welcome.desc":
@@ -239,6 +245,7 @@ const KO: Dict = {
   "update.now": "지금 업데이트",
   "update.updating": "호스트 업데이트 중",
   "update.updated": "업데이트 완료",
+  "update.error": "업데이트에 실패했습니다. 다시 시도하세요.",
 
   "wait.denied.title": "호스트가 요청을 거절했습니다",
   "wait.denied.desc":
@@ -274,6 +281,7 @@ const KO: Dict = {
   "map.selected": "선택됨:",
   "map.cancel": "취소",
   "map.chooseThis": "이 폴더 선택",
+  "map.openFolder": "폴더 열기",
   "map.localTitle": "로컬 폴더 선택",
   "map.localPick": "이 Mac에서 폴더 선택…",
   "map.localUnsupported": "이 브라우저는 폴더 선택을 지원하지 않습니다. 경로를 직접 입력하세요.",
