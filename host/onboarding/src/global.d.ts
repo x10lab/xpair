@@ -3,15 +3,16 @@ export type EngineId = 'claude' | 'codex' | 'opencode'
 
 declare global {
   interface Window {
+    __rp_initialStep?: 'permissions' | 'engine' | 'connect'
     xpair: {
-      // VIEW-ONLY: Accessibility ('ax') is no longer a granted permission, but the
-      // bridge still accepts it for forward-compat; the UI only uses 'sr' | 'fda'.
-      openPermissionPane: (key: 'ax' | 'sr' | 'fda') => Promise<void>
-      requestPermission: (key: 'ax' | 'sr' | 'fda') => Promise<void>
+      openPermissionPane: (key: 'login' | 'ax' | 'sr' | 'fda' | 'sharing') => Promise<void>
+      requestPermission: (key: 'login' | 'ax' | 'sr' | 'fda' | 'sharing') => Promise<void>
       startInstall: () => Promise<void>
       getInstallStatus: () => Promise<{ appAlive: boolean; launchAgentPresent: boolean; serverUp: boolean }>
       getHostInfo: () => Promise<{ hostname: string; user: string }>
-      getStatus: () => Promise<{ alive: boolean; ax: boolean; sr: boolean; fda: boolean }>
+      getStatus: () => Promise<{ alive: boolean; login: boolean; ax: boolean; sr: boolean; fda: boolean; sharing: boolean }>
+      getOnboardingStep: () => Promise<number>
+      setOnboardingStep: (n: number) => Promise<void>
       // Both flags are opt-in (default OFF). Maps to UserDefaults RPTelemetryConsent / RPCrashReportConsent.
       getConsent: () => Promise<{ telemetry: boolean; crash: boolean }>
       setConsent: (c: { telemetry: boolean; crash: boolean }) => Promise<void>
