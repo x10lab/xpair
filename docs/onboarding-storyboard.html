@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xpair · Onboarding Storyboard</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#30363d;
+    --ink:#e6edf3; --mut:#8b949e; --acc:#4f8cff; --ok:#3fb950; --warn:#d29922;
+    --bad:#f85149; --chip:#21262d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{padding:28px 32px 12px;border-bottom:1px solid var(--line)}
+  header h1{margin:0 0 4px;font-size:22px}
+  header p{margin:0;color:var(--mut)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px}
+  .legend span{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:50%}
+  main{padding:24px 32px 64px;max-width:1400px;margin:0 auto}
+  h2.track{font-size:15px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--mut);margin:36px 0 16px;padding-bottom:8px;border-bottom:1px dashed var(--line)}
+  .rail{display:flex;gap:18px;overflow-x:auto;padding:6px 2px 18px;align-items:stretch}
+  .screen{flex:0 0 258px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+  .screen .bar{display:flex;gap:6px;padding:9px 12px;background:var(--panel2);
+    border-bottom:1px solid var(--line);align-items:center}
+  .screen .bar i{width:10px;height:10px;border-radius:50%;background:#3a4150;display:inline-block}
+  .screen .bar b{margin-left:auto;font-size:11px;color:var(--mut);font-weight:500}
+  .screen .body{padding:14px;flex:1;display:flex;flex-direction:column;gap:10px}
+  .step-no{position:absolute;top:-10px;left:-10px;width:26px;height:26px;border-radius:50%;
+    background:var(--acc);color:#fff;font-size:12px;font-weight:700;display:flex;
+    align-items:center;justify-content:center;box-shadow:0 2px 6px #0007;z-index:2}
+  .ttl{font-size:15px;font-weight:650}
+  .sub{font-size:12px;color:var(--mut)}
+  .btn{margin-top:auto;text-align:center;padding:8px;border-radius:8px;font-weight:600;
+    font-size:13px;background:var(--acc);color:#fff}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
+  .btn.disabled{background:var(--chip);color:var(--mut)}
+  .list{display:flex;flex-direction:column;gap:7px}
+  .row{display:flex;align-items:center;gap:8px;font-size:12.5px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+  .row .s{margin-left:auto;font-size:11px}
+  .s.ok{color:var(--ok)} .s.bad{color:var(--bad)} .s.warn{color:var(--warn)} .s.mut{color:var(--mut)}
+  .chip{display:inline-block;font-size:11px;background:var(--chip);border:1px solid var(--line);
+    border-radius:999px;padding:2px 9px;color:var(--mut)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .decision{border-color:var(--warn)}
+  .decision .bar b{color:var(--warn)}
+  .gate-tag{position:absolute;top:8px;right:8px;font-size:10px;color:var(--warn);
+    border:1px solid var(--warn);border-radius:6px;padding:1px 6px}
+  .arrow{flex:0 0 22px;align-self:center;color:var(--mut);font-size:20px;text-align:center}
+  .note{background:#12233a;border:1px solid #24466e;border-radius:10px;padding:12px 14px;
+    margin:14px 0;font-size:13px;color:#bcd6ff}
+  .note b{color:#e6f0ff}
+  .cross{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .cross div{flex:1;min-width:260px;background:var(--panel);border:1px solid var(--line);
+    border-left:3px solid var(--acc);border-radius:8px;padding:10px 12px;font-size:12.5px}
+  .cross b{color:var(--acc)}
+  footer{color:var(--mut);font-size:12px;padding:0 32px 40px}
+</style>
+</head>
+<body>
+<header>
+  <h1>xpair · Onboarding Storyboard</h1>
+  <p>재설계된 client(IDE webview) / host(macOS) 온보딩 화면별 흐름. <code>docs/onboarding-flow.md</code>의 mermaid 설계 기준.</p>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--acc)"></i> 일반 스텝</span>
+    <span><i class="dot" style="background:var(--warn)"></i> 가드 체크 (통과 못 하면 repair 스텝으로)</span>
+    <span><i class="dot" style="background:var(--ok)"></i> 통과</span>
+    <span><i class="dot" style="background:var(--bad)"></i> 미충족</span>
+  </div>
+</header>
+<main>
+
+  <h2 class="track">Client — 메인 플로우</h2>
+  <div class="rail">
+
+    <div class="screen"><div class="step-no">1</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client</b></div>
+      <div class="body">
+        <div class="ttl">Welcome</div>
+        <div class="sub">xpair로 원격 페어링을 시작합니다. 이 기기가 <b>client</b>(조종석)입니다.</div>
+        <div class="btn">시작하기</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">2</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client</b></div>
+      <div class="body">
+        <div class="ttl">Consent</div>
+        <div class="sub">익명 사용 통계 및 진단 수집 동의. 언제든 끌 수 있습니다.</div>
+        <div class="list">
+          <div class="row">진단 로그 전송 <span class="s ok">ON</span></div>
+        </div>
+        <div class="btn">동의하고 계속</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen decision"><div class="step-no">3</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client · 판단</b></div>
+      <div class="body">
+        <div class="ttl">Is your host installed?</div>
+        <div class="sub">host 앱 설치 여부 확인. 미설치면 설치 안내로.</div>
+        <div class="list">
+          <div class="row">host 앱 감지 <span class="s ok">Yes → Discover</span></div>
+          <div class="row">미설치 <span class="s bad">No → 설치 안내</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">4</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client</b></div>
+      <div class="body">
+        <div class="ttl">Discover</div>
+        <div class="sub">LAN + Tailscale에서 host 탐색 후 선택.</div>
+        <div class="list">
+          <div class="row">🖥️ mac-studio.local <span class="s mut">LAN</span></div>
+          <div class="row">🖥️ swjeon-m4 <span class="s mut">Tailscale</span></div>
+          <div class="row">＋ 수동 입력 <span class="s mut">IP/host</span></div>
+        </div>
+        <div class="btn">선택</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">7</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client</b></div>
+      <div class="body">
+        <div class="ttl">Waiting for Permission grant</div>
+        <div class="sub">host가 client를 수락하고 권한을 켤 때까지 대기.</div>
+        <div class="chips"><span class="chip">host accept 대기</span><span class="chip">AX / SR</span></div>
+        <div class="btn disabled">대기 중…</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">8</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client</b></div>
+      <div class="body">
+        <div class="ttl">Folder mappings</div>
+        <div class="sub">host가 제공한 폴더 구조로 매핑 구성. 최소 1개 필요.</div>
+        <div class="list">
+          <div class="row">~/work → /Volumes/host-work <span class="s ok">mounted</span></div>
+          <div class="row">＋ 매핑 추가 <span class="s mut"></span></div>
+        </div>
+        <div class="btn">계속</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">9</div>
+      <div class="bar"><i></i><i></i><i></i><b>Client</b></div>
+      <div class="body">
+        <div class="ttl">Done 🎉</div>
+        <div class="sub">모든 가드 통과. IDE를 실행합니다.</div>
+        <div class="btn">IDE 열기</div>
+      </div>
+    </div>
+
+  </div>
+
+  <h2 class="track">Client — Onboarding completion Guard (낙하산 모델)</h2>
+  <div class="note">
+    가드는 <b>스텝이 아니라 완료 게이트</b>입니다. 세로(마름모→마름모)는 <b>Yes</b>,
+    실패하면 <b>가로로 해당 repair 스텝</b>으로 떨어져 고친 뒤 재검사합니다.
+    한 번에 죽지 않고 어느 고도에서 낙하산이 안 펴졌는지 짚어 그 단계로만 착지.
+  </div>
+  <div class="rail">
+
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">Is CLI ready?</div>
+        <div class="sub">번들 xpair CLI 실행 가능?</div>
+        <div class="list"><div class="row">Yes → 다음 <span class="s ok">▼</span></div>
+          <div class="row">No → Consent <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">Is your host connected?</div>
+        <div class="sub">SSH 도달 가능?</div>
+        <div class="list"><div class="row">Yes → 다음 <span class="s ok">▼</span></div>
+          <div class="row">No → Discover <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">Is your host version compatible?</div>
+        <div class="sub">host 버전이 최소 호환선 이상?</div>
+        <div class="list"><div class="row">Yes → 다음 <span class="s ok">▼</span></div>
+          <div class="row">No → Request &amp; Do Update <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">Sufficient permission &amp; Accepted?</div>
+        <div class="sub">host 권한(AX/SR) + host가 client 수락?</div>
+        <div class="list"><div class="row">Yes → 다음 <span class="s ok">▼</span></div>
+          <div class="row">No → Waiting for grant <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">Mapping exists &amp; mounted?</div>
+        <div class="sub">최소 1개 매핑이 실제 마운트?</div>
+        <div class="list"><div class="row">Yes → Done <span class="s ok">✓</span></div>
+          <div class="row">No → Folder mappings <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <h2 class="track">Host — 메인 플로우</h2>
+  <div class="rail">
+
+    <div class="screen"><div class="step-no">1</div>
+      <div class="bar"><i></i><i></i><i></i><b>Host</b></div>
+      <div class="body">
+        <div class="ttl">Consent</div>
+        <div class="sub">이 mac이 <b>host</b>(작업 머신)입니다. 진단 수집 동의.</div>
+        <div class="btn">동의하고 계속</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">2</div>
+      <div class="bar"><i></i><i></i><i></i><b>Host</b></div>
+      <div class="body">
+        <div class="ttl">Check Permission</div>
+        <div class="sub">필수 시스템 권한을 켭니다.</div>
+        <div class="list">
+          <div class="row">Remote Login (SSH) <span class="s ok">ON</span></div>
+          <div class="row">Accessibility <span class="s ok">ON</span></div>
+          <div class="row">Screen Recording <span class="s ok">ON</span></div>
+          <div class="row">Full Disk <span class="s warn">권장</span></div>
+          <div class="row">File Sharing <span class="s bad">OFF</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">3</div>
+      <div class="bar"><i></i><i></i><i></i><b>Host</b></div>
+      <div class="body">
+        <div class="ttl">Choose Engine</div>
+        <div class="sub">이 host에서 쓸 에이전트 엔진 선택 (설치+로그인 필요).</div>
+        <div class="list">
+          <div class="row">Claude <span class="s ok">설치·로그인</span></div>
+          <div class="row">Codex <span class="s mut">선택 가능</span></div>
+          <div class="row">Opencode <span class="s mut">선택 가능</span></div>
+        </div>
+        <div class="btn">계속</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">4</div>
+      <div class="bar"><i></i><i></i><i></i><b>Host</b></div>
+      <div class="body">
+        <div class="ttl">Broadcasting &amp; Accept / Deny</div>
+        <div class="sub">host를 광고하고, 붙는 client를 직접 수락/거부.</div>
+        <div class="list">
+          <div class="row">📡 브로드캐스팅 중… <span class="s mut">visible</span></div>
+          <div class="row">client: swjeon-mbp <span class="s mut">요청</span></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <div class="btn" style="flex:1">Accept</div>
+          <div class="btn ghost" style="flex:1">Deny</div>
+        </div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="screen"><div class="step-no">5</div>
+      <div class="bar"><i></i><i></i><i></i><b>Host</b></div>
+      <div class="body">
+        <div class="ttl">Done 🎉</div>
+        <div class="sub">client 페어링 완료. host 준비됨.</div>
+        <div class="btn">완료</div>
+      </div>
+    </div>
+
+  </div>
+
+  <h2 class="track">Host — Host onboarding guard</h2>
+  <div class="rail">
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">Sufficient permission?</div>
+        <div class="sub">필수 권한 충족?</div>
+        <div class="list"><div class="row">Yes → 엔진 체크 <span class="s ok">▼</span></div>
+          <div class="row">No → Check Permission <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+    <div class="arrow">▼</div>
+    <div class="screen decision"><span class="gate-tag">GATE</span>
+      <div class="bar"><i></i><i></i><i></i><b>Guard</b></div>
+      <div class="body">
+        <div class="ttl">At least one engine?</div>
+        <div class="sub">엔진 1개 이상 설치+로그인?</div>
+        <div class="list"><div class="row">Yes → Done <span class="s ok">✓</span></div>
+          <div class="row">No → Choose Engine <span class="s bad">◀ repair</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="track">Client ↔ Host 교차 연결</h2>
+  <div class="cross">
+    <div><b>If host accept</b> → Client <i>Waiting for Permission grant</i><br>
+      host가 <b>Broadcasting</b>에서 client를 수락하면, client의 권한/수락 가드가 풀립니다.</div>
+    <div><b>Provides Folder Structure Information</b> → Client <i>Folder mappings</i><br>
+      host가 폴더 구조를 제공해 client가 매핑을 구성할 수 있게 합니다.</div>
+  </div>
+
+</main>
+<footer>xpair onboarding storyboard · feat/onboarding-redesign · 화면은 흐름 설명용 목업이며 실제 UI와 다를 수 있음.</footer>
+</body>
+</html>
