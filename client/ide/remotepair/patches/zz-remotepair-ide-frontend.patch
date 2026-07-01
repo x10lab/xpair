@@ -4329,17 +4329,18 @@ index 28d0480..d81bb81 100644
  	readonly groups: IEditorGroupView[];
  	getGroup(identifier: GroupIdentifier): IEditorGroupView | undefined;
 diff --git a/src/vs/workbench/browser/parts/editor/editorParts.ts b/src/vs/workbench/browser/parts/editor/editorParts.ts
-index 3b6b374..54f6410 100644
+index 3b6b374..8012189 100644
 --- a/src/vs/workbench/browser/parts/editor/editorParts.ts
 +++ b/src/vs/workbench/browser/parts/editor/editorParts.ts
-@@ -244,6 +244,18 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
+@@ -244,6 +244,19 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
  		return disposables;
  	}
  
 +	// RemotePair (S0): parts registered for GROUP LOOKUP ONLY (see IEditorPartsView.registerLookupPart).
 +	// Deliberately kept out of `_parts`, the MRU, and every part listener, so these parts stay invisible
 +	// to `getGroups()`/`activeGroup` and never fire focus/group-change events (no reverse-leak). Only
-+	// `getGroup()` consults this set, which is all the global tab/title close commands need.
++	// `getGroup()` and `getPart()`'s id branch consult this set, which is all the global tab/title
++	// commands (close, split, move, ...) need.
 +	private readonly lookupParts = new Set<EditorPart>();
 +
 +	registerLookupPart(part: EditorPart): IDisposable {
@@ -4351,7 +4352,27 @@ index 3b6b374..54f6410 100644
  	protected override unregisterPart(part: EditorPart): void {
  		super.unregisterPart(part);
  
-@@ -718,6 +730,15 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
+@@ -375,6 +388,19 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
+ 			}
+ 		}
+ 
++		// RemotePair (S0): symmetric with getGroup — resolve lookup-only parts (the embedded Sessions
++		// EditorPart) for group mutators (addGroup/moveGroup/copyGroup/activateGroup…) that dispatch
++		// via getPart(location). Id-branch ONLY: never consults getPartByDocument, so activePart/
++		// activeGroup/MRU stay untouched and the S0 reverse-leak cannot return.
++		if (!isHTMLElement(groupOrElement)) {
++			const id = typeof groupOrElement === 'number' ? groupOrElement : groupOrElement.id;
++			for (const part of this.lookupParts) {
++				if (part.hasGroup(id)) {
++					return part;
++				}
++			}
++		}
++
+ 		return this.mainPart;
+ 	}
+ 
+@@ -718,6 +744,15 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
  			}
  		}
  

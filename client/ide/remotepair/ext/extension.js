@@ -2090,14 +2090,19 @@ function activate(context) {
   notifier.start();
   context.subscriptions.push({ dispose: () => notifier.stop() });
 
-  // 5a) Default the primary sidebar to the Browser on every activation. A fresh launch never has
-  //     attached terminal tabs (they are live editor instances, not restored), so "no terminal
-  //     tabs → Browser" holds unconditionally at startup. This overrides any persisted
-  //     'workbench.sidebar.activeviewletid' (which may point to Sessions or Browser) and, unlike
-  //     the one-time setupLayout gate, runs for existing profiles too. Closing the last terminal
-  //     tab later returns here via RemotePairEmptySessionsBrowserFallback (workbench source).
-  //     Fire-and-forget: do NOT await so the switch races with the layout restore, minimising flash.
-  vscode.commands.executeCommand("workbench.view.explorer");
+  // 5a) Warm the Sessions sidebar, THEN default the visible sidebar to the Browser. Constructing the
+  //     Sessions view runs its constructor side effects — wiring the session reattacher and the
+  //     attached-sessions provider, and scheduling the embedded EditorPart — which the bottom
+  //     Detached/History reattach cards and the per-folder "New Session Here" depend on; without this
+  //     warm-up a Browser-first launch leaves reattach unwired until the user opens Sessions manually.
+  //     We then switch to the Browser: a fresh launch never has attached terminal tabs (they are live
+  //     editor instances, not restored), so "no terminal tabs → Browser" holds unconditionally, and
+  //     this runs for existing profiles too (unlike the one-time setupLayout gate). Closing the last
+  //     terminal tab later returns here via RemotePairEmptySessionsBrowserFallback (workbench source).
+  vscode.commands
+    .executeCommand("remotepair.terminalSidebar")
+    .then(() => vscode.commands.executeCommand("workbench.view.explorer"))
+    .then(undefined, (e) => log(`startup Browser default: ${e && e.message ? e.message : e}`, "warn"));
 
   // 5) Open the RD editor tab on startup (Remote Desktop is this client's
   //    primary surface), then apply the one-time workbench layout. Chained so

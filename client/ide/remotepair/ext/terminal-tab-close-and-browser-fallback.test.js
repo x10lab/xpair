@@ -35,6 +35,13 @@ check("getGroup consults the lookup-only parts", () => {
   assert.match(patch, /for \(const part of this\.lookupParts\) \{\n\+\s*const group = part\.getGroup\(identifier\);/);
 });
 
+check("getPart id-branch consults the lookup-only parts (Split/Move routing)", () => {
+  // Symmetric with getGroup so group mutators (addGroup/moveGroup/...) route to the embedded part
+  // instead of falling back to mainPart. Must be the id branch only (guarded by !isHTMLElement) so
+  // getPartByDocument / activePart stay untouched.
+  assert.match(patch, /if \(!isHTMLElement\(groupOrElement\)\) \{\n\+\s*const id = typeof groupOrElement === 'number' \? groupOrElement : groupOrElement\.id;\n\+\s*for \(const part of this\.lookupParts\) \{\n\+\s*if \(part\.hasGroup\(id\)\) \{/);
+});
+
 check("embedded Sessions part registers for lookup (not full registerPart)", () => {
   // The lookup registration must be wired as an executable disposable.
   assert.match(patch, /this\.partDisposables\.add\(editorPartsView\.registerLookupPart\(part\)\);/);
