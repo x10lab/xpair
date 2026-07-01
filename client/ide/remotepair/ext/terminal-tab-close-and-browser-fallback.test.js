@@ -59,10 +59,13 @@ check("attachedSessionCount is exported for the fallback contribution", () => {
   assert.match(patch, /export function attachedSessionCount\(\): number \{ return attachedProvider\?\.getAttached\(\)\.length \?\? 0; \}/);
 });
 
-check("empty-sessions Browser fallback contribution is registered", () => {
+check("close-last Browser fallback only fires on a nonzero->0 transition", () => {
   assert.match(patch, /class RemotePairEmptySessionsBrowserFallback extends Disposable implements IWorkbenchContribution/);
-  assert.match(patch, /onDidChangeAttachedSessions\(\(\) => this\.update\(\)\)/);
-  assert.match(patch, /if \(attachedSessionCount\(\) === 0\) \{\n\+\s*this\.viewsService\.openViewContainer\(BROWSER_VIEWLET_ID, false\);/);
+  assert.match(patch, /onDidChangeAttachedSessions\(\(\) => this\.onAttachedChanged\(\)\)/);
+  // Must gate on the transition, NOT every count==0 — otherwise an explicit Sessions open (which
+  // fires onDidChange at count 0 before the terminal is created) gets bounced back to Browser.
+  assert.match(patch, /const wasNonzero = this\.lastCount > 0;/);
+  assert.match(patch, /if \(wasNonzero && count === 0\) \{\n\+\s*this\.viewsService\.openViewContainer\(BROWSER_VIEWLET_ID, false\);/);
   assert.match(patch, /registerWorkbenchContribution2\(RemotePairEmptySessionsBrowserFallback\.ID, RemotePairEmptySessionsBrowserFallback, WorkbenchPhase\.AfterRestored\);/);
 });
 

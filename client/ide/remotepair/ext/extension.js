@@ -2090,13 +2090,14 @@ function activate(context) {
   notifier.start();
   context.subscriptions.push({ dispose: () => notifier.stop() });
 
-  // 5a) Force the Sessions sidebar open on every activation so it is always the
-  //     active primary-sidebar container — overrides any persisted
-  //     'workbench.sidebar.activeviewletid' that may still point to Browser
-  //     (e.g. after a workspace reload where Explorer was last active).
-  //     Fire-and-forget: do NOT await so the sidebar switch races with the layout
-  //     restore rather than blocking it, minimising any visible flash.
-  vscode.commands.executeCommand("remotepair.terminalSidebar");
+  // 5a) Default the primary sidebar to the Browser on every activation. A fresh launch never has
+  //     attached terminal tabs (they are live editor instances, not restored), so "no terminal
+  //     tabs → Browser" holds unconditionally at startup. This overrides any persisted
+  //     'workbench.sidebar.activeviewletid' (which may point to Sessions or Browser) and, unlike
+  //     the one-time setupLayout gate, runs for existing profiles too. Closing the last terminal
+  //     tab later returns here via RemotePairEmptySessionsBrowserFallback (workbench source).
+  //     Fire-and-forget: do NOT await so the switch races with the layout restore, minimising flash.
+  vscode.commands.executeCommand("workbench.view.explorer");
 
   // 5) Open the RD editor tab on startup (Remote Desktop is this client's
   //    primary surface), then apply the one-time workbench layout. Chained so

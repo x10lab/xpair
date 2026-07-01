@@ -3415,7 +3415,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,741 @@
+@@ -0,0 +1,747 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3890,8 +3890,9 @@ index 00000000..820a8de4
 +
 +		// S0: register the embedded part for GROUP LOOKUP ONLY (NOT via registerPart — see the long
 +		// note above). This adds it to `getGroup()`'s lookup set without joining `_parts`/MRU, so the
-+		// native editor-tab commands (close X, middle-click, context-menu Close/Others, Pin, the
-+		// closeActiveEditor keybinding) can resolve this part's groups. Without it those are all no-ops.
++		// editor-tab commands that carry a group id (close X, middle-click, context-menu Close/Others,
++		// Pin) can resolve this part's groups — without it those are all no-ops. (The context-less
++		// `closeActiveEditor` keybinding still targets the main part's activeGroup; out of scope here.)
 +		this.partDisposables.add(editorPartsView.registerLookupPart(part));
 +
 +		// Unblock any per-folder Browser action that was queued while the part was still building.
@@ -4136,22 +4137,27 @@ index 00000000..820a8de4
 +	return `'${value.replace(/'/g, `'\\''`)}'`;
 +}
 +
-+// RemotePair (S0): keep the primary sidebar on the Browser whenever there are no attached terminal
-+// sessions. Covers the two cases the user asked for: (1) launching with no sessions starts in the
-+// Browser, and (2) closing the last terminal tab falls back to the Browser. We only act on the empty
-+// state — when sessions exist we leave the sidebar alone so the user is never yanked out of the
-+// Browser mid-use. Driven by the same `attached` set the Session Manager renders.
++// RemotePair (S0): when the LAST attached terminal tab is closed, fall back to the Browser. We only
++// fire on a nonzero → 0 transition. The launch default is owned by the extension host (it reveals the
++// Browser on every activation — a fresh launch never has attached tabs), and reacting to every
++// count==0 here would also bounce an in-progress EXPLICIT Sessions open: opening the Sessions view
++// registers the attached provider and fires this at count 0 before the terminal is created, so a
++// blanket reveal would abort "New Session Here" / Favorites opens back to the Browser.
 +class RemotePairEmptySessionsBrowserFallback extends Disposable implements IWorkbenchContribution {
 +	static readonly ID = 'workbench.contrib.remotePairEmptySessionsBrowser';
 +
++	private lastCount = attachedSessionCount();
++
 +	constructor(@IViewsService private readonly viewsService: IViewsService) {
 +		super();
-+		this._register(onDidChangeAttachedSessions(() => this.update()));
-+		this.update();
++		this._register(onDidChangeAttachedSessions(() => this.onAttachedChanged()));
 +	}
 +
-+	private update(): void {
-+		if (attachedSessionCount() === 0) {
++	private onAttachedChanged(): void {
++		const count = attachedSessionCount();
++		const wasNonzero = this.lastCount > 0;
++		this.lastCount = count;
++		if (wasNonzero && count === 0) {
 +			this.viewsService.openViewContainer(BROWSER_VIEWLET_ID, false);
 +		}
 +	}
