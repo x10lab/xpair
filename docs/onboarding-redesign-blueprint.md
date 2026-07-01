@@ -131,17 +131,37 @@ Decisions locked by `260701 논의.txt`:
 - **Client roaming safety:** client watches default gateway MAC; on change →
   moved networks → auto-disable. (Client-only; host does no network key-check.)
 
-### 6.1 Pairing flow (proposed)
-1. Host (Broadcast step) advertises `{ hostname, host-key-fp }` over mDNS/broadcast on LAN (+ Tailscale name for remote).
-2. Client Discover sees the ad; on select, client sends a **pairing request** carrying `IncomingRequest = { name, ip, user, keyFingerprint }` where `keyFingerprint = SHA-256(client ed25519 pubkey)` short-form.
-3. Host Broadcast/incoming shows request + fingerprint; user eyeball-compares against what the client displays; **Accept** → host appends the client pubkey to `~/.ssh/authorized_keys` (authorize) and notifies client; **Deny** → notify client (→ client DeadEnd).
-4. Client verifies **host** key via TOFU (existing); host verifies **client** via the fingerprint eyeball-compare (new). Mutual, no PIN.
+### 6.1 Pairing flow (HARDENED — post codex-challenge, gpt-5.5 xhigh)
 
-### 6.2 Open questions for codex-challenge (security/robustness)
-- Transport for the pairing request itself (step 2): reuse the just-established SSH channel vs a small broadcast-discovered control endpoint? Which is safe without opening a fixed port?
-- Fingerprint spoofing / MITM on LAN: is eyeball-compare + TOFU sufficient, or is a short auth tag needed on the request channel?
-- authorized_keys authorization: scope/hardening (forced command? key options? per-client comment for later revoke)?
-- Gateway-MAC roaming check: false-positive cases (VPN up/down, dual-NIC); fail-open vs fail-closed.
+> ⚠️ The demo UI shows a **transported** `keyFingerprint` string and (conceptually)
+> installs a pubkey. That is INSECURE as a backend contract: an attacker can send
+> the victim's fingerprint for display + their own pubkey → the host user approves
+> the familiar fingerprint but the attacker's key gets authorized. The demo is a UI
+> mock; the real backend MUST bind display→installed key. Implement as below, not as
+> the demo's data model.
+
+1. Host (Broadcast step) advertises `{ hostname, serviceInstanceID, hostNonce }` over mDNS/broadcast on LAN (+ Tailscale name for remote). The host SSH **host key** is the TOFU anchor — the mDNS `host-key-fp` is a hint only, never trust evidence.
+2. Client sends a **signed pairing request**: `{ clientPubKey, name, user, sig }` where `sig = Sign(clientPrivKey, hostKeyFP ‖ hostNonce ‖ serviceInstanceID ‖ clientPubKey ‖ timestamp)`. The request carries the **actual client public key**, not a fingerprint string.
+3. Host verifies the signature (proof-of-possession, binds to this host + nonce + fresh timestamp; reject stale/replayed). Only then does the host **compute the fingerprint locally from the received `clientPubKey`** and show THAT on the Broadcast/incoming screen. User eyeball-compares against the client's own display of the **full** `SHA256:` fingerprint (or a word/QR SAS over the full transcript — never a 6–8 char short form).
+4. **Accept** → host installs ONLY that exact `clientPubKey` into `~/.ssh/authorized_keys`, hardened (see 6.3); notifies client. **Deny** → notify client (→ client DeadEnd).
+5. **Final binding proof:** client then connects over SSH using the approved key; host marks paired only after the authenticated SSH key fingerprint == the approved fingerprint. This closes the "approved key A, logged-in key B" gap.
+6. Mutual trust, no PIN: client verifies host via TOFU host key; host verifies client via signature + eyeball SAS + final SSH proof.
+
+### 6.2 Pairing request transport
+Pre-authorization there is NO SSH application channel (stock OpenSSH) — do NOT pretend SSH carries step 2. Use an **ephemeral host pairing endpoint open only while the Broadcast step is visible** (a pairing window), receiving **signed** UDP/mDNS request messages. Treat the transport as fully hostile: source IP/name/user are spoofable; all security comes from the signature, host nonce, expiry, rate-limit, and the human Accept. Close the endpoint when leaving Broadcast — no permanent open surface.
+
+### 6.3 authorized_keys hardening (host Accept)
+- Install a **dedicated xpair key line**, not raw append. Restrict:
+  `restrict,command="/usr/local/bin/xpair-ssh-gate <client-id>",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc` — re-enable `pty`/needed forwards only if the product truly requires them.
+- **Sanitize:** accept only a well-formed `ssh-ed25519 <base64>`; reconstruct the line yourself; never pass through attacker-controlled options/newlines/comments.
+- **Stable comment for revoke:** `xpair:v1 client_id=… fp=… created=… name=…`; de-dupe by key blob; keep `~/.xpair/authorized_clients.json`; support exact revoke.
+- **Atomic write:** flock, validate `~/.ssh` perms, write temp + `chmod 600` + atomic rename, preserve unrelated user keys.
+
+### 6.4 Roaming check is NOT a security boundary
+Gateway-MAC watch is a convenience trigger only — ARP spoof, evil-twin, same-gateway, VPN/IPv6-RA route changes, dual-NIC all bypass or false-trigger it. Fail **closed** for auto-connect on unknown network state, but never treat it as auth — auth is always SSH host key + approved client key.
+
+### 6.5 UI note (from reference pull)
+Accept/Deny live in the WizardShell **footerSlot** (host route), shown only when `broadcast==="incoming"` — not inside StepBroadcast. Onboarding copy is **i18n (KR/EN via `t()` + LangToggle)** — localize the ported onboarding too.
 
 ---
 
