@@ -9,26 +9,16 @@ run_cli() {
   MLOG="$(cat "$MOCKLOG" 2>/dev/null)"
 }
 
-SBX_REMOTE_HOST="" new_sandbox
+new_sandbox
 make_all_mocks
 SESSION="gh_proj_1"
-MOCK_SESS_EXISTS="$SESSION" run_cli attach --local "$SESSION"
+run_cli attach --local "$SESSION"
 
-it "attach/local-existing-session"
-assert_rc "$RP_RC" 0 "local attach succeeds"
-assert_contains "$MLOG" "tmux-aqua|-S|/tmp/aqua-tmux.sock|has-session|-t|=$SESSION" "checks exact local session existence"
-assert_contains "$MLOG" "tmux-aqua|-S|/tmp/aqua-tmux.sock|attach|-d|-t|=$SESSION" "attaches exact local session"
-cleanup_sandbox
-
-SBX_REMOTE_HOST="" new_sandbox
-make_all_mocks
-SESSION="missing_1"
-MOCK_SESS_EXISTS="" run_cli attach --local "$SESSION"
-
-it "attach/local-missing-session"
-assert_rc "$RP_RC" 4 "missing local session returns not-found"
-assert_contains "$RP_ERR" "session not found: $SESSION" "missing local session is reported"
-assert_absent "$MLOG" "new-session" "attach never creates a session"
+it "attach/removed-local-flag"
+assert_rc "$RP_RC" 2 "--local is rejected"
+assert_contains "$RP_ERR" "unknown attach option: --local" "unknown-option error is reported"
+assert_absent "$MLOG" "ssh|" "rejected option does not probe ssh"
+assert_absent "$MLOG" "tmux-aqua" "rejected option does not invoke tmux-aqua"
 cleanup_sandbox
 
 new_sandbox
