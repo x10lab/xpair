@@ -25,6 +25,7 @@ import {
 } from "@/components/onboarding/client/StepInstalling";
 import { StepEngine } from "@/components/onboarding/client/StepEngine";
 import type { EngineId, Peer } from "@/global";
+import { useT } from "@/lib/i18n";
 import { capture, EVENTS } from "@/lib/telemetry";
 
 // Step indices for the discovery flow:
@@ -134,6 +135,7 @@ type HostPermState =
   | null;
 
 export default function App() {
+  const { t } = useT();
   const [initialStep] = useState(() => initialStepFromLocation());
   const w = useWizard(9, initialStep);
   const startsFromSavedHost = initialStep >= S.CONNECT && initialStep <= S.ENGINE;
@@ -696,7 +698,7 @@ export default function App() {
       ? "Re-check"
       : w.index === S.MAPPINGS && mappings.length === 0
       ? "Skip for now"
-      : "Next";
+      : t("shell.next");
 
   const hostRepairPanel = canRepairHost ? (
     <>
@@ -822,7 +824,7 @@ export default function App() {
       footerSlot={
         w.isLast ? (
           <Button size="sm" onClick={() => window.remotepair.complete()}>
-            Open Xpair
+            {t("shell.openXpair")}
           </Button>
         ) : w.index === S.MAPPINGS && live === "checking" ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

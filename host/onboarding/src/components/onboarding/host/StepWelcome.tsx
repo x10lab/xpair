@@ -1,22 +1,26 @@
 import { Server } from "lucide-react";
+import { LangToggle } from "@/components/onboarding/LangToggle";
 import { ConsentControls } from "@/components/onboarding/host/ConsentControls";
+import { useT } from "@/lib/i18n";
 
 export function StepWelcome() {
+  const { t } = useT();
+
   return (
     <div className="flex flex-col items-center text-center">
       <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
         <Server className="h-7 w-7" />
       </div>
       <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-        Set up XpairHost
+        {t("host.welcome.title")}
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
-        This Mac will run your sessions 24/7 and accept connections from your
-        client. Setup takes about a minute.
+        {t("host.welcome.desc")}
       </p>
       <p className="mt-2 text-xs text-muted-foreground">
-        Tap <span className="font-medium text-foreground">Begin setup</span> to grant the screen permission.
+        Tap <span className="font-medium text-foreground">{t("shell.beginSetup")}</span> to grant the screen permission.
       </p>
+      <LangToggle />
       <ul className="mt-6 w-full max-w-sm space-y-2 text-left text-sm text-muted-foreground">
         <Bullet>Grant Screen Recording (required)</Bullet>
         <Bullet>Optionally grant Full Disk Access</Bullet>

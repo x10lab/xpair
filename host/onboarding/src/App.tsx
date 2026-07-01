@@ -12,6 +12,7 @@ import { StepWaiting, type ConnectedClient } from "@/components/onboarding/host/
 import { HostDoneClientContext, StepDone } from "@/components/onboarding/host/StepDone";
 import { StepEngine } from "@/components/onboarding/host/StepEngine";
 import type { EngineId } from "@/global";
+import { useT } from "@/lib/i18n";
 
 // The app self-launches this onboarding AFTER it is already installed, so there is no install step:
 // Welcome(0) → Permissions(1) → Engine(2) → Connect(3) → Done(4). Engine follows the permission grant:
@@ -19,6 +20,7 @@ import type { EngineId } from "@/global";
 const STEP_TITLES = ["Welcome", "Permissions", "Engine", "Connect", "Done"];
 
 export default function App() {
+  const { t } = useT();
   // The host can deep-link this onboarding to a specific step (menu-bar "Permissions…"/"Connect…"):
   // OnboardingWindow injects window.__rp_initialStep before app code runs. 'permissions'→1, 'connect'→2,
   // anything else (incl. unset, "Set up…")→0 (Welcome).
@@ -66,11 +68,11 @@ export default function App() {
       onPrev={w.prev}
       onNext={w.isLast ? undefined : handleNext}
       nextDisabled={nextDisabled}
-      nextLabel={w.index === 0 ? "Begin setup" : "Next"}
+      nextLabel={w.index === 0 ? t("shell.beginSetup") : t("shell.next")}
       footerSlot={
         w.isLast ? (
           <Button size="sm" onClick={() => window.xpair.complete()}>
-            Open Xpair
+            {t("shell.openXpair")}
           </Button>
         ) : null
       }

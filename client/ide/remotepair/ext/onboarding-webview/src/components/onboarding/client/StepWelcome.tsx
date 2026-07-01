@@ -1,18 +1,22 @@
 import { Laptop } from "lucide-react";
+import { LangToggle } from "@/components/onboarding/LangToggle";
+import { useT } from "@/lib/i18n";
 
 export function StepWelcome() {
+  const { t } = useT();
+
   return (
     <div className="flex flex-col items-center text-center">
       <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
         <Laptop className="h-7 w-7" />
       </div>
       <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-        Welcome to Xpair
+        {t("client.welcome.title")}
       </h2>
       <p className="mt-3 max-w-sm text-sm text-muted-foreground">
-        Attach to a Mac running XpairHost and work as if it were sitting
-        on your desk. Let's get you connected.
+        {t("client.welcome.desc")}
       </p>
+      <LangToggle />
       <ul className="mt-8 w-full max-w-sm space-y-2 text-left text-sm text-muted-foreground">
         <Bullet>Reach your host over Tailscale or SSH</Bullet>
         <Bullet>Choose a file-access backend</Bullet>
