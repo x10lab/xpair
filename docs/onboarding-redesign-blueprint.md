@@ -70,7 +70,7 @@ Indices + gates (from demo `routes/client.tsx`, verbatim logic):
 | 2 | Consent(analytics) | none; default OFF |
 | 3-7 | SinglePerm ×5 `PERM_ORDER=[login,ax,sr,fda,sharing]` | each gated until that perm `granted` |
 | 8 | Engine (multi-select) | gated until `engines.size>=1` |
-| 9 | Broadcast | never hard-gated; Next "Continue" if accepted else "Skip" |
+| 9 | Broadcast | **HARD-GATED on accept** (ref 988ee1c+): Next hidden until `broadcast==="accepted"`, no Skip. Deny is soft in-body (re-broadcast). Host onboarding cannot complete until a client pairs. US-004 repoints `accepted`→proven `paired`. |
 | 10 | Done | last; footer "Open Xpair" |
 
 Permission copy + panes (verbatim, demo `StepSinglePerm`):
@@ -161,7 +161,15 @@ Pre-authorization there is NO SSH application channel (stock OpenSSH) — do NOT
 Gateway-MAC watch is a convenience trigger only — ARP spoof, evil-twin, same-gateway, VPN/IPv6-RA route changes, dual-NIC all bypass or false-trigger it. Fail **closed** for auto-connect on unknown network state, but never treat it as auth — auth is always SSH host key + approved client key.
 
 ### 6.5 UI note (from reference pull)
-Accept/Deny live in the WizardShell **footerSlot** (host route), shown only when `broadcast==="incoming"` — not inside StepBroadcast. Onboarding copy is **i18n (KR/EN via `t()` + LangToggle)** — localize the ported onboarding too.
+Accept/Deny live in the WizardShell **footerSlot** (host route), shown only when `broadcast==="incoming"` — not inside StepBroadcast. Onboarding copy is **i18n (KR/EN via `t()` + LangToggle)** — localize the ported onboarding too. LangToggle mounts on the **Welcome step** of each flow (not the shell); locale persists in localStorage `xpair-locale` in the demo → port onto the real webview state stores (extension global state / host app state), not raw localStorage.
+
+### 6.6 Mapping modes (ref 988ee1c — supersedes the old "Mount/Sync Syncthing" model)
+Two client mapping modes on the Mappings step:
+- **Mount** — Xpair mounts a host folder here. User picks the **host folder ONLY**; the local mount location is **auto-managed** (no client-path picker in mount mode; the `map.mountPoint` key is orphaned — drop it).
+- **Third-party sync** — the same folder already exists on both sides via Google Drive/Dropbox/etc. User maps a **pre-existing** folder on the host AND on this Mac. **No Xpair transport / no Syncthing** — pure path-pairing metadata. Local folder captured via the browser directory picker (`showDirectoryPicker`, name-only) + manual `~/path` fallback; the port must decide how the IDE webview gets the real local path (native picker vs text).
+
+### 6.7 Copy security (ref e5d63c0 drift — fix during port)
+The KO `bc.incoming.desc` lost the "name alone can be spoofed / 이름만으로는 위조될 수 있습니다" clause while EN kept it. The §6.1 threat model relies on the user comparing the **fingerprint**, not the spoofable name. **Restore the fingerprint-eyeball / name-spoof warning in BOTH locales** during the port (US-004).
 
 ---
 
