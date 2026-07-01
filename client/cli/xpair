@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
 # xpair — Xpair single entry-point CLI (client side).
 #
-#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
+#   xpair launch [<dir>] [--fresh] [--yes] [--engine <claude|claudecode|codex|opencode>]
 #                              Plain shell sessions are also supported via --engine shell.
-#   xpair launch [<dir>] [--local|--remote] [--fresh] [--yes] [--engine <claude|claudecode|shell|codex|opencode>]
-#                              Launch/attach a session (remote host/local) for a folder. Prompts to register if unmapped.
+#   xpair launch [<dir>] [--fresh] [--yes] [--engine <claude|claudecode|shell|codex|opencode>]
+#                              Launch/attach a session on the configured host for a folder. Prompts to register if unmapped.
 #                              --engine overrides the configured engine for this launch only (default: config engine, else claude).
-#   xpair attach [--local|--remote] <session-name>
+#   xpair attach <session-name>
 #                              Attach an existing exact tmux-aqua session by name; never creates a new session.
-#   xpair ls [--json]    List host (or local) tmux-aqua sessions + registered folder mappings
+#   xpair ls [--json]    List host tmux-aqua sessions + registered folder mappings
 #   xpair map [list|add <clientDir> [hostDir]|rm <clientDir>]
 #                              Folder mappings with identical content on both machines (external sync assumed). Omit hostDir = same path.
 #   xpair config [list|get <key>|set <key> <value>|maps]
-#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|shell|codex|opencode), mode (local|auto).
-#   xpair mode [status|local|auto]
-#                              Transient local mode: launch/attach use local only until the remote host is reachable again.
+#                              View/edit client config. keys: host (REMOTE_HOST), terminal (iterm2|terminal), engine (claude|claudecode|shell|codex|opencode).
 #   xpair onboard        Interactive, re-runnable client setup (host, terminal app, folder mapping, doctor).
 #   xpair open-gui <dir> Open the configured terminal app in a new window running 'launch <dir>'.
 #   xpair discover [--json] [--timeout S]   Discover Xpair/SSH hosts (LAN Bonjour + Tailscale) → normalized JSON peer list on stdout.
@@ -71,7 +69,6 @@ APPROVE_TRIGGER="${APPROVE_TRIGGER:-/tmp/xpair.approve-request}"
 LOG_FILE="${LOG_FILE:-$RP_DIR/logs/xpair.log}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-$RP_DIR/logs/xpair.heartbeat}"
 REMOTE_HOST="${REMOTE_HOST:-}"
-LOCAL_MODE="${LOCAL_MODE:-0}"
 FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"     # client::host mappings (legacy SYNC_ROOTS compatible)
 FOLDER_MAP_MODES="${FOLDER_MAP_MODES:-}"          # per-mapping method, keyed by clientPath: "client::mount;client2::sync"
 LAUNCHER="${LAUNCHER:-$RP_DIR/bin/xpair-launch}"
@@ -121,21 +118,6 @@ canonical_engine() {
     shell|codex|opencode) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
-}
-
-case "$LOCAL_MODE" in
-  1|true|TRUE|yes|YES|on|ON|local) LOCAL_MODE=1 ;;
-  *) LOCAL_MODE=0 ;;
-esac
-local_mode_on() { [ "${LOCAL_MODE:-0}" = 1 ]; }
-mode_label() {
-  if local_mode_on; then
-    printf 'local (transient)'
-  elif [ -n "$REMOTE_HOST" ]; then
-    printf 'auto (remote)'
-  else
-    printf 'auto (local)'
-  fi
 }
 
 STATUS_FILE="${STATUS_FILE:-$RP_DIR/logs/status.json}"
@@ -203,31 +185,6 @@ rp_set() {
   local k="$1" v="$2" f="$CLIENT_ENV"
   mkdir -p "$(dirname "$f")"; touch "$f"
   { grep -v "^$k=" "$f" 2>/dev/null || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
-}
-
-set_local_mode() {
-  case "${1:-}" in
-    1|true|TRUE|yes|YES|on|ON|local)
-      rp_set LOCAL_MODE 1
-      LOCAL_MODE=1
-      ok "local mode enabled — launch/attach will use local only until the host is reachable again"
-      ;;
-    0|false|FALSE|no|NO|off|OFF|auto|remote|"")
-      rp_set LOCAL_MODE 0
-      LOCAL_MODE=0
-      ok "local mode cleared"
-      ;;
-    *)
-      echo "mode must be local or auto" >&2
-      return 2
-      ;;
-  esac
-}
-
-clear_local_mode_quiet() {
-  local_mode_on || return 0
-  rp_set LOCAL_MODE 0
-  LOCAL_MODE=0
 }
 
 # ── mappings ──
@@ -408,24 +365,18 @@ cmd_map() {
 }
 
 cmd_ls_json() {
-  local target host raw rc=0
-  if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
-    target=remote
-    host="$REMOTE_HOST"
+  local target="host" host="${REMOTE_HOST:-}" raw="" rc=0
+  if [ -n "$REMOTE_HOST" ]; then
     raw="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S $(sh_quote "$AQUA_SOCK") list-sessions -F '#S	#{session_attached}' 2>/dev/null" 2>/dev/null)" || rc=$?
-    # ssh exit 255 == transport failure (host down / DNS / auth). The remote tmux-aqua
+    # ssh exit 255 == transport failure (host down / DNS / auth). The host tmux-aqua
     # itself exits 1 merely when no sessions exist — that is NOT a failure. Only a transport
     # failure means the session state is unknown, so exit nonzero instead of emitting an
     # empty list: session-list.js renders its unavailable/retry UI on a nonzero CLI exit,
     # whereas {"sessions":[]} with exit 0 would masquerade host-down as "no sessions".
     if [ "$rc" = 255 ]; then
-      warn "remote session listing failed — host '$REMOTE_HOST' unreachable (ssh transport)"
+      warn "session listing failed — host '$REMOTE_HOST' unreachable (ssh transport)"
       return 3
     fi
-  else
-    target=local
-    host=""
-    raw="$(tm list-sessions -F '#S	#{session_attached}' 2>/dev/null || true)"
   fi
   TARGET="$target" HOST="$host" python3 -c '
 import json
@@ -460,12 +411,13 @@ cmd_ls() {
     return
   fi
   cmd_map list; echo
-  if [ -n "$REMOTE_HOST" ] && ! local_mode_on; then
+  if [ -n "$REMOTE_HOST" ]; then
     echo "[$REMOTE_HOST] tmux-aqua sessions:"
     ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_HOST" "\$HOME/.local/bin/tmux-aqua -S '$AQUA_SOCK' list-sessions 2>/dev/null" \
       | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none or unreachable)"
   else
-    echo "[local] tmux-aqua sessions:"; tm list-sessions 2>/dev/null | grep -v '^_keeper' | sed 's/^/  /' || echo "  (none)"
+    echo "[no host configured] tmux-aqua sessions:"
+    echo "  (set one in Xpair.app or: xpair config set host <ssh-host>)"
   fi
 }
 
@@ -537,8 +489,7 @@ cmd_config() {
   case "${1:-list}" in
     list|"")
       c "Xpair client config"
-      printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(local-only)}"
-      printf '%-12s %s\n' "mode"     "$(mode_label)"
+      printf '%-12s %s\n' "host"     "${REMOTE_HOST:-(no host configured)}"
       printf '%-12s %s\n' "terminal" "$TERMINAL_APP"
       printf '%-12s %s\n' "engine"   "${ENGINE:-claude}"
       printf '%-12s %s\n' "mappings" "$([ -n "$FOLDER_MAPS" ] && printf '%s' "$FOLDER_MAPS" | tr ';' '\n' | grep -c . || echo 0)"
@@ -546,11 +497,9 @@ cmd_config() {
     get)
       case "${2:-}" in
         host)     printf '%s\n' "$REMOTE_HOST" ;;
-        mode)     mode_label; printf '\n' ;;
-        local_mode) printf '%s\n' "$LOCAL_MODE" ;;
         terminal) printf '%s\n' "$TERMINAL_APP" ;;
         engine)   printf '%s\n' "${ENGINE:-claude}" ;;
-        *) echo "config get <host|mode|local_mode|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|shell|codex|opencode
+        *) echo "config get <host|terminal|engine>" >&2; return 2 ;;  # engine: claude|claudecode|shell|codex|opencode
       esac
       ;;
     set)
@@ -567,12 +516,11 @@ cmd_config() {
             printf '  Checking SSH ... '
             if ssh -o BatchMode=yes -o ConnectTimeout=6 "$val" true 2>/dev/null; then
               echo "OK (key auth)"
-              clear_local_mode_quiet
             else
               echo "FAILED"; warn "SSH key auth failed — run 'xpair doctor' for guidance."
             fi
           else
-            ok "host cleared (local-only mode)"
+            ok "host cleared (no host configured)"
           fi
           ;;
         terminal)
@@ -592,27 +540,11 @@ cmd_config() {
             echo "config set engine <claude|claudecode|shell|codex|opencode>" >&2; return 2
           fi
           ;;
-        mode|local_mode)
-          set_local_mode "$val"
-          ;;
-        *) echo "config set <host|mode|local_mode|terminal|engine> <value>" >&2; return 2 ;;
+        *) echo "config set <host|terminal|engine> <value>" >&2; return 2 ;;
       esac
       ;;
     maps) cmd_map list ;;
     *) echo "config [list|get <key>|set <key> <value>|maps]" >&2; return 2 ;;
-  esac
-}
-
-cmd_mode() {
-  case "${1:-status}" in
-    status|"")
-      c "Xpair mode"
-      printf '%-12s %s\n' "mode" "$(mode_label)"
-      printf '%-12s %s\n' "host" "${REMOTE_HOST:-(none)}"
-      ;;
-    local) set_local_mode local ;;
-    auto|remote|off) set_local_mode auto ;;
-    *) echo "mode [status|local|auto]" >&2; return 2 ;;
   esac
 }
 
@@ -820,13 +752,12 @@ cmd_onboard() {
 }
 
 cmd_launch() {
-  local pass=() dir="" engine="" engine_explicit=0 target_explicit=0 target_pref=""
+  local pass=() dir="" engine="" engine_explicit=0
   while [ $# -gt 0 ]; do case "$1" in
-    --local) pass+=("$1"); target_explicit=1; target_pref=local; shift ;;
-    --remote) pass+=("$1"); target_explicit=1; target_pref=remote; shift ;;
     --fresh) pass+=("$1"); shift ;;
     --yes|-y) pass+=("$1"); RP_YES=1; shift ;;
     --engine) engine="${2:-}"; engine_explicit=1; shift 2 ;;        # per-launch override of client.env ENGINE
+    --*) echo "unknown launch option: $1" >&2; return 2 ;;
     *) dir="$1"; shift ;;
   esac; done
   # Validate explicit override here. Otherwise let xpair-launch read client.env ENGINE and ask interactively.
@@ -837,15 +768,9 @@ cmd_launch() {
     fi
   fi
   dir="$(cd "${dir:-$PWD}" 2>/dev/null && pwd)" || { echo "folder not found" >&2; return 1; }
-  if local_mode_on && [ "$target_explicit" = 0 ]; then
-    pass+=("--local")
-  fi
+  [ -n "$REMOTE_HOST" ] || { echo "no host configured — set one in Xpair.app or: xpair config set host <ssh-host>" >&2; return 1; }
   local should_probe_remote=0
-  if [ -n "$REMOTE_HOST" ]; then
-    if [ "$target_pref" = remote ] || { [ -z "$target_pref" ] && ! local_mode_on; }; then
-      should_probe_remote=1
-    fi
-  fi
+  [ -n "$REMOTE_HOST" ] && should_probe_remote=1
   if [ "$should_probe_remote" = 1 ]; then
     validate_folder_maps_config || return 1
     local mapped_pair=""
@@ -899,11 +824,9 @@ cmd_launch() {
 }
 
 cmd_attach() {
-  local target_pref="" session=""
+  local session=""
   while [ $# -gt 0 ]; do case "$1" in
-    --local)  target_pref=local; shift ;;
-    --remote) target_pref=remote; shift ;;
-    -h|--help) echo "attach [--local|--remote] <session-name>"; return 0 ;;
+    -h|--help) echo "attach <session-name>"; return 0 ;;
     --*) echo "unknown attach option: $1" >&2; return 2 ;;
     *)
       if [ -n "$session" ]; then
@@ -918,39 +841,11 @@ cmd_attach() {
   [ -n "$session" ] || { echo "attach requires a session name" >&2; return 2; }
   case "$session" in *[!A-Za-z0-9_.-]*|'') echo "invalid session name: $session" >&2; return 2 ;; esac
 
-  local target="$target_pref"
-  if [ -z "$target" ]; then
-    if local_mode_on; then
-      target=local
-    elif [ -n "$REMOTE_HOST" ]; then
-      target=remote
-    else
-      target=local
-    fi
-  fi
-
-  if [ "$target" = local ]; then
-    [ -x "$TMUXB" ] || { echo "tmux-aqua missing: $TMUXB" >&2; return 1; }
-    tm has-session -t "=$session" 2>/dev/null || { echo "session not found: $session" >&2; return 4; }
-    printf '\033]2;%s\007' "$session"
-    on_attach_close() {
-      ( trap '' HUP; "$TMUXB" -S "$AQUA_SOCK" detach-client -s "=$session" \
-          >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-      exit 129
-    }
-    trap on_attach_close HUP TERM
-    local rc=0
-    "$TMUXB" -S "$AQUA_SOCK" attach -d -t "=$session" || rc=$?
-    trap - HUP TERM
-    return "$rc"
-  fi
-
-  [ "$target" = remote ] || { echo "unknown attach target: $target" >&2; return 2; }
-  [ -n "$REMOTE_HOST" ] || { echo "no REMOTE_HOST configured — use --local or 'xpair config set host <ssh-host>'" >&2; return 1; }
+  [ -n "$REMOTE_HOST" ] || { echo "no host configured — set one in Xpair.app or: xpair config set host <ssh-host>" >&2; return 1; }
   local remote_bin="${REMOTE_BIN:-\$HOME/.local/bin}" aqua_sock_q
   aqua_sock_q="$(sh_quote "$AQUA_SOCK")"
   if ssh -n -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" "$remote_bin/tmux-aqua -S $aqua_sock_q has-session -t $(sh_quote "=$session")"; then
-    clear_local_mode_quiet
+    :
   else
     echo "session not found on $REMOTE_HOST: $session" >&2
     return 4
@@ -1027,8 +922,7 @@ cmd_status() {
     printf '%-14s %s\n' "heartbeat" "${age}s ago $([ "$age" -le 90 ] && echo "(fresh)" || echo "(STALE)")"
   else printf '%-14s %s\n' "heartbeat" "none (app not running?)"; fi
   in_host_session && printf '%-14s %s\n' "this session" "INSIDE Xpair host → computer-use available here"
-  printf '%-14s %s\n' "remote" "${REMOTE_HOST:-(local-only)}"
-  printf '%-14s %s\n' "mode" "$(mode_label)"
+  printf '%-14s %s\n' "host" "${REMOTE_HOST:-(no host configured)}"
   printf '%-14s %s\n' "bundle" "$BUNDLE_PREFIX"
   return 0
 }
@@ -1087,11 +981,11 @@ cmd_doctor() {
   if [ -n "$REMOTE_HOST" ]; then
     printf '%-22s %s\n' "host notify hook" "$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$REMOTE_HOST" 'grep -q xpair-notify ~/.claude/settings.json 2>/dev/null' 2>/dev/null && echo "OK (forwarding installed)" || echo "not detected (install.sh --role host on the host)")"
   else
-    printf '%-22s %s\n' "host notify hook" "n/a (no REMOTE_HOST — host-side hook)"
+    printf '%-22s %s\n' "host notify hook" "n/a (no host configured)"
   fi
 
   if [ -z "$REMOTE_HOST" ]; then
-    warn "REMOTE_HOST not set — local-only mode (skipping remote checks)"; return "$fail"
+    warn "no host configured — set one in Xpair.app or: xpair config set host <ssh-host> (skipping host checks)"; return "$fail"
   fi
   # SSH key connection
   printf '%-22s ' "SSH ($REMOTE_HOST)"
@@ -2099,7 +1993,6 @@ case "${1:-help}" in
   map)     shift; cmd_map "$@" ;;
   roots)   shift; cmd_map "$@" ;;     # legacy alias
   config)  shift; cmd_config "$@" ;;
-  mode)    shift; cmd_mode "$@" ;;
   onboard) cmd_onboard ;;
   open-gui) shift; cmd_open_gui "$@" ;;
   discover) shift; cmd_discover "$@" ;;
