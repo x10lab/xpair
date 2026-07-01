@@ -66,6 +66,15 @@ check("empty-sessions Browser fallback contribution is registered", () => {
   assert.match(patch, /registerWorkbenchContribution2\(RemotePairEmptySessionsBrowserFallback\.ID, RemotePairEmptySessionsBrowserFallback, WorkbenchPhase\.AfterRestored\);/);
 });
 
+check("Browser-first launch queues per-folder actions until the embedded part is ready", () => {
+  // setupLayout no longer warms the Sessions part, so openSessionInFolder/stageBrowserCommand
+  // must wait for embeddedPartReady instead of no-op'ing when editorPart is still unset.
+  assert.match(patch, /private readonly embeddedPartReady = new Promise<void>\(resolve => \{ this\.resolveEmbeddedPartReady = resolve; \}\);/);
+  assert.match(patch, /this\.resolveEmbeddedPartReady\(\);/);
+  assert.match(patch, /this\.embeddedPartReady\.then\(\(\) => \{ if \(this\.editorPart\) \{ this\.openSessionInFolder\(cwd, kind\); \} \}\);/);
+  assert.match(patch, /this\.embeddedPartReady\.then\(\(\) => \{ if \(this\.editorPart\) \{ this\.stageBrowserCommand\(text\); \} \}\);/);
+});
+
 if (failures > 0) {
   console.error(`\n${failures} test(s) FAILED`);
   process.exit(1);

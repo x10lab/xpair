@@ -3415,7 +3415,7 @@ new file mode 100644
 index 00000000..820a8de4
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminal/browser/remotePairTerminalSidebar.ts
-@@ -0,0 +1,718 @@
+@@ -0,0 +1,741 @@
 +/*---------------------------------------------------------------------------------------------
 + *  RemotePair: "Terminal" sidebar container that embeds a real EditorPart so its
 + *  content is editor-tab-based (horizontal tabs), terminal-specialized.
@@ -3536,6 +3536,13 @@ index 00000000..820a8de4
 +	private static readonly INPUT_RECOVERY_GUIDANCE_COOLDOWN_MS = 30000;
 +
 +	private lastInputRecoveryGuidanceAt = 0;
++
++	// Resolves once the embedded EditorPart has been created. The part is built on the animation
++	// frame AFTER the view first renders (see renderBody — it cannot be built synchronously), so
++	// per-folder Browser actions fired right after openView must wait on this instead of dropping
++	// the request when `editorPart` is still unset (Browser-first launch never warms the part).
++	private resolveEmbeddedPartReady!: () => void;
++	private readonly embeddedPartReady = new Promise<void>(resolve => { this.resolveEmbeddedPartReady = resolve; });
 +
 +	constructor(
 +		options: IViewPaneOptions,
@@ -3705,6 +3712,13 @@ index 00000000..820a8de4
 +	 * sendText API. Hosting-layer only — core terminal behavior untouched.
 +	 */
 +	openSessionInFolder(cwd: URI | undefined, kind?: SessionKind): void {
++		if (!this.editorPart) {
++			// Browser-first launch: the embedded part is built on the frame after the Sessions view
++			// first renders, so this action (fired right after openView) would otherwise silently
++			// no-op. Re-dispatch once the part exists rather than dropping the request.
++			this.embeddedPartReady.then(() => { if (this.editorPart) { this.openSessionInFolder(cwd, kind); } });
++			return;
++		}
 +		const part = this.editorPart;
 +		if (!part) {
 +			return;
@@ -3753,6 +3767,12 @@ index 00000000..820a8de4
 +	 * staged `xpair map add ` prefix). Hosting-layer only — core terminal untouched.
 +	 */
 +	stageBrowserCommand(text: string): void {
++		if (!this.editorPart) {
++			// Browser-first launch: mirror openSessionInFolder — wait for the embedded part rather
++			// than dropping the "Add Mapping" staging when it fires before the part is built.
++			this.embeddedPartReady.then(() => { if (this.editorPart) { this.stageBrowserCommand(text); } });
++			return;
++		}
 +		const part = this.editorPart;
 +		if (!part) {
 +			return;
@@ -3873,6 +3893,9 @@ index 00000000..820a8de4
 +		// native editor-tab commands (close X, middle-click, context-menu Close/Others, Pin, the
 +		// closeActiveEditor keybinding) can resolve this part's groups. Without it those are all no-ops.
 +		this.partDisposables.add(editorPartsView.registerLookupPart(part));
++
++		// Unblock any per-folder Browser action that was queued while the part was still building.
++		this.resolveEmbeddedPartReady();
 +
 +		// Blank-fix: drive the embedded part's visibility from the ViewPane body.
 +		// Editor panes (including TerminalEditor/xterm) only attach and size when their
