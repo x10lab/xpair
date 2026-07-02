@@ -13,6 +13,16 @@ enum Permissions {
     static func axTrusted() -> Bool { AXIsProcessTrusted() }
     static func srGranted() -> Bool { CGPreflightScreenCaptureAccess() }
 
+    static func loginGranted() -> Bool {
+        let output = runProbe("/usr/sbin/systemsetup", ["-getremotelogin"]).lowercased()
+        // ponytail: heuristic probe, tighten if it false-positives on a firewalled sshd.
+        return output.contains("remote login: on")
+    }
+
+    static func sharingGranted() -> Bool {
+        runProbeStatus("/bin/launchctl", ["print", "system/com.apple.smbd"]) == 0
+    }
+
     /// FDA has no public preflight API → infer it by actually reading a TCC-protected file (TCC.db) that can only be opened with FDA.
     static func fdaGranted() -> Bool {
         let probe = (NSHomeDirectory() as NSString)
@@ -53,6 +63,40 @@ enum Permissions {
             if !srGranted() { CGRequestScreenCaptureAccess() }
         default:
             break   // fda: no programmatic request API — the user adds the app via the Full Disk Access pane
+        }
+    }
+
+    private static func runProbe(_ path: String, _ args: [String]) -> String {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: path)
+        task.arguments = args
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8) ?? ""
+        } catch {
+            log(.debug, "permission probe failed: \(path) \(args.joined(separator: " ")) — \(error)")
+            return ""
+        }
+    }
+
+    private static func runProbeStatus(_ path: String, _ args: [String]) -> Int32 {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: path)
+        task.arguments = args
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus
+        } catch {
+            log(.debug, "permission status probe failed: \(path) \(args.joined(separator: " ")) — \(error)")
+            return -1
         }
     }
 }

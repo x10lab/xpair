@@ -33,6 +33,8 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
     // Set true once the React side calls complete() (Screen Recording granted). Distinguishes a
     // legitimate finish from the user dismissing the window while still ungranted (→ hard gate quit).
     private var completed = false
+    private static let onboardingStepPath = "\(RP_DIR)/onboarding-step.json"
+    private static let onboardingStepMax = 10
 
     /// onComplete is invoked on the main thread when the React onboarding signals completion.
     /// `initialStep` deep-links the flow (e.g. "permissions"); nil starts at Welcome.
@@ -56,9 +58,16 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         getInstallStatus: () => post('getInstallStatus', []),
         getHostInfo: () => post('getHostInfo', []),
         getStatus: () => post('getStatus', []),
+        getOnboardingStep: () => post('getOnboardingStep', []),
+        setOnboardingStep: (n) => post('setOnboardingStep', [n]),
         getConsent: () => post('getConsent', []),
         setConsent: (c) => post('setConsent', [c]),
         connectedClients: () => post('connectedClients', []),
+        beginPairing: () => post('beginPairing', []),
+        pairingStatus: () => post('pairingStatus', []),
+        acceptPairing: (request) => post('acceptPairing', [request]),
+        denyPairing: () => post('denyPairing', []),
+        endPairing: () => post('endPairing', []),
         engineStatus: (engine) => post('engineStatus', [engine]),
         installEngine: (engine) => post('installEngine', [engine]),
         setEngineAuth: (engine, key) => post('setEngineAuth', [engine, key]),
@@ -144,10 +153,24 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         case "getStatus":
             replyHandler([
                 "alive": true,
+                "login": Permissions.loginGranted(),
                 "ax": Permissions.axTrusted(),
                 "sr": Permissions.srGranted(),
                 "fda": Permissions.fdaGranted(),
+                "sharing": Permissions.sharingGranted(),
             ], nil)
+
+        case "getOnboardingStep":
+            replyHandler(Self.readOnboardingStep(), nil)
+
+        case "setOnboardingStep":
+            let n = Self.intArg(args.first) ?? 0
+            do {
+                try Self.writeOnboardingStep(n)
+                replyHandler(nil, nil)
+            } catch {
+                replyHandler(nil, "onboarding-step write failed: \(error)")
+            }
 
         case "requestPermission":
             if let key = args.first as? String { Permissions.request(key) }
@@ -199,6 +222,37 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
             }
             replyHandler(clients, nil)
 
+        case "beginPairing":
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    replyHandler(try PairingManager.shared.beginWindow(), nil)
+                } catch {
+                    replyHandler(nil, "beginPairing failed: \(error)")
+                }
+            }
+
+        case "pairingStatus":
+            replyHandler(PairingManager.shared.status(), nil)
+
+        case "acceptPairing":
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let request = args.first as? [String: Any]
+                    let requestID = (request?["id"] as? String) ?? (args.first as? String) ?? ""
+                    let fingerprint = (request?["keyFingerprint"] as? String) ?? ""
+                    replyHandler(try PairingManager.shared.acceptIncoming(requestID: requestID,
+                                                                         fingerprint: fingerprint), nil)
+                } catch {
+                    replyHandler(nil, "acceptPairing failed: \(error)")
+                }
+            }
+
+        case "denyPairing":
+            replyHandler(PairingManager.shared.denyIncoming(), nil)
+
+        case "endPairing":
+            replyHandler(PairingManager.shared.endWindow(), nil)
+
         case "engineStatus":
             guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
                 replyHandler(["installed": false, "authed": false, "version": "", "err": "unknown engine"], nil)
@@ -249,6 +303,11 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
                 replyHandler(["ok": false, "err": "permissions not granted"], nil)
                 return
             }
+            guard PairingManager.shared.hasPairedClient() else {
+                log(.warn, "onboarding complete ignored — no proven paired client")
+                replyHandler(["ok": false, "err": "client not paired"], nil)
+                return
+            }
             replyHandler(["ok": true], nil)
             finish()
 
@@ -261,12 +320,42 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
 
     private func openPane(_ key: String) {
         let urls = [
+            "login": "x-apple.systempreferences:com.apple.preferences.sharing?Services_RemoteLogin",
             "ax": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
             "sr": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
             "fda": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+            "sharing": "x-apple.systempreferences:com.apple.preferences.sharing?Services_PersonalFileSharing",
         ]
         guard let s = urls[key], let url = URL(string: s) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private static func intArg(_ value: Any?) -> Int? {
+        if let i = value as? Int { return i }
+        if let d = value as? Double { return Int(d) }
+        if let n = value as? NSNumber { return n.intValue }
+        return nil
+    }
+
+    private static func clampOnboardingStep(_ n: Int) -> Int {
+        min(max(n, 0), onboardingStepMax)
+    }
+
+    private static func readOnboardingStep() -> Int {
+        let url = URL(fileURLWithPath: onboardingStepPath)
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = intArg(obj["step"]) else {
+            return 0
+        }
+        return clampOnboardingStep(raw)
+    }
+
+    private static func writeOnboardingStep(_ n: Int) throws {
+        try FileManager.default.createDirectory(atPath: RP_DIR, withIntermediateDirectories: true)
+        let step = clampOnboardingStep(n)
+        let data = try JSONSerialization.data(withJSONObject: ["step": step], options: [])
+        try data.write(to: URL(fileURLWithPath: onboardingStepPath), options: [.atomic])
     }
 
     /// React Done → complete(): close the window and start serving.
@@ -286,6 +375,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
     // MARK: - NSWindowDelegate (hard gate)
 
     func windowWillClose(_ notification: Notification) {
+        _ = PairingManager.shared.endWindow()
         switch mode {
         case .runGate:
             // Launch gate: dismissing while AX/SR are still ungranted (and not completed) quits the

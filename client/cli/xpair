@@ -1308,7 +1308,8 @@ cmd_discover() {
     return 0
   fi
 
-  # Collect peers as tab-separated records: name \t addr \t source \t fp \t role
+  # Collect peers as tab-separated records:
+  # name \t addr \t source \t fp \t role \t serviceInstanceID \t hostNonce \t pairPort
   # then dedup by fp (fall back to name) and emit JSON. We use a temp file rather
   # than a subshell pipe so the awk emitter sees the whole set.
   local rec; rec="$(mktemp "${TMPDIR:-/tmp}/rp-disc.XXXXXX")" || { err "mktemp failed"; return 1; }
@@ -1354,15 +1355,18 @@ cmd_discover() {
       for _i in "${!_lfiles[@]}"; do
         lk="${_lfiles[$_i]}"; svcname="${_lnames[$_i]}"
         # TXT comes as: ... can be reached at <target>:<port> (interface …) hn=… v=… role=… fp=…
-        local txt hn fp role addr
+        local txt hn fp role addr sid nonce pp
         txt="$(cat "$lk" 2>/dev/null)"
         addr="$(printf '%s' "$txt" | sed -n 's/.*reached at \([^: ]*\):.*/\1/p' | head -1)"
         hn="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]hn=\([^ ]*\).*/\1/p'   | head -1)"
         fp="$(printf '%s' "$txt"   | sed -n 's/.*[[:space:]]fp=\([^ ]*\).*/\1/p'   | head -1)"
         role="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]role=\([^ ]*\).*/\1/p' | head -1)"
+        sid="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]sid=\([^ ]*\).*/\1/p' | head -1)"
+        nonce="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]nonce=\([^ ]*\).*/\1/p' | head -1)"
+        pp="$(printf '%s' "$txt" | sed -n 's/.*[[:space:]]pp=\([0-9][0-9]*\).*/\1/p' | head -1)"
         [ -n "$hn" ] || hn="$svcname"
         [ -n "$fp" ] && fp="$(rp_norm_fp "$fp")"
-        printf '%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" >> "$rec"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$hn" "${addr:-$hn}" "lan" "${fp:-}" "${role:-}" "${sid:-}" "${nonce:-}" "${pp:-}" >> "$rec"
         rm -f "$lk"
       done
     done
@@ -1386,7 +1390,7 @@ for p in (d.get("Peer") or {}).values():
     addrs = p.get("TailscaleIPs") or []
     addr = addrs[0] if addrs else name
     online = "online" if p.get("Online") else "offline"
-    # name, addr, source, fp(empty), role(empty); status hint via role col left blank
+    # name, addr, source, fp(empty), role(empty), pairing fields empty
     print("%s\t%s\t%s\t%s\t%s" % (name, addr, "tailscale", "", online))
 ' >> "$rec" 2>/dev/null || true
   fi
@@ -1456,12 +1460,13 @@ for ln in lines:
     if not ln.strip():
         continue
     parts = ln.split("\t")
-    while len(parts) < 5:
+    while len(parts) < 8:
         parts.append("")
-    name, addr, source, fp, role = parts[:5]
+    name, addr, source, fp, role, sid, nonce, pp = parts[:8]
     key = fp if fp else ("name:" + name)
     if key not in peers:
-        peers[key] = {"name": name, "addrs": [], "sources": [], "fp": fp or None, "_role": role}
+        peers[key] = {"name": name, "addrs": [], "sources": [], "fp": fp or None, "_role": role,
+                      "serviceInstanceID": sid or "", "hostNonce": nonce or "", "pairPort": pp or ""}
         order.append(key)
     p = peers[key]
     if addr and addr not in p["addrs"]:
@@ -1472,6 +1477,12 @@ for ln in lines:
         p["fp"] = fp
     if (not p["_role"]) and role in ("host", "both", "client"):
         p["_role"] = role
+    if (not p.get("serviceInstanceID")) and sid:
+        p["serviceInstanceID"] = sid
+    if (not p.get("hostNonce")) and nonce:
+        p["hostNonce"] = nonce
+    if (not p.get("pairPort")) and pp:
+        p["pairPort"] = pp
 
 def alias_for(name, addrs):
     # Prefer an ssh-config Host alias for this peer (matched by full name, the short
@@ -1498,7 +1509,7 @@ for key in order:
     # discovered address (e.g. a tailnet 100.x IP not in ssh config) would fall back to password
     # auth and hang the GUI askpass. So: alias-known -> the alias name; otherwise the address.
     target = name if (name in cfg_aliases or name == remote_host) else (addr or name)
-    out.append({
+    item = {
         "name": name,
         "addrs": p["addrs"],
         "target": target,
@@ -1506,7 +1517,17 @@ for key in order:
         "sources": p["sources"],
         "fp": p["fp"],
         "status": status_for(name, addr, p["_role"]),
-    })
+    }
+    if p.get("serviceInstanceID"):
+        item["serviceInstanceID"] = p["serviceInstanceID"]
+    if p.get("hostNonce"):
+        item["hostNonce"] = p["hostNonce"]
+    if p.get("pairPort"):
+        try:
+            item["pairPort"] = int(p["pairPort"])
+        except Exception:
+            pass
+    out.append(item)
 print(json.dumps(out))
 PY
 }

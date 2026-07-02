@@ -10,10 +10,12 @@ const path = require("node:path");
 const extRoot = __dirname;
 const bridge = fs.readFileSync(path.join(extRoot, "onboarding-bridge.js"), "utf8");
 const webview = path.join(extRoot, "onboarding-webview", "src");
-const stepFileAccess = fs.readFileSync(
-  path.join(webview, "components/onboarding/client/StepFileAccess.tsx"),
+const stepMappings = fs.readFileSync(
+  path.join(webview, "components/onboarding/client/StepMappings.tsx"),
   "utf8",
 );
+const app = fs.readFileSync(path.join(webview, "App.tsx"), "utf8");
+const newFlow = `${stepMappings}\n${app}`;
 const globalDts = fs.readFileSync(path.join(webview, "global.d.ts"), "utf8");
 const preload = fs.readFileSync(path.join(extRoot, "onboarding-preload.cjs"), "utf8");
 
@@ -52,27 +54,29 @@ test("global.d.ts getConfig contract exposes folderMapModes", () => {
 
 test("parseFolderMaps prefers the stored method over path inference", () => {
   assert.match(
-    stepFileAccess,
+    stepMappings,
     /export function parseFolderMaps\(raw: string, modes\?: string\)/,
     "parseFolderMaps must accept the stored modes string",
   );
   assert.match(
-    stepFileAccess,
+    stepMappings,
     /modeOf\.get\(clientPath\) \?\? inferMethod\(clientPath\)/,
     "stored method must win; inferMethod is only the fallback",
   );
 });
 
-test("both seed paths pass the stored modes into parseFolderMaps", () => {
-  const calls = stepFileAccess.match(/parseFolderMaps\(cfg\.folderMaps, cfg\.folderMapModes\)/g) || [];
-  assert.ok(
-    calls.length >= 2,
-    `both getConfig→parseFolderMaps call sites must pass cfg.folderMapModes (found ${calls.length})`,
+test("every new-flow seed path passes the stored modes into parseFolderMaps", () => {
+  const cfgParseCalls = (newFlow.match(/parseFolderMaps\([^)]*\)/g) || []).filter((call) =>
+    call.includes("cfg.folderMaps"),
   );
-  assert.doesNotMatch(
-    stepFileAccess,
-    /parseFolderMaps\(cfg\.folderMaps\)(?!,)/,
-    "no caller may parse folderMaps without the stored modes",
+  assert.ok(
+    cfgParseCalls.length >= 1,
+    "App must seed mappings from getConfig via parseFolderMaps",
+  );
+  assert.deepEqual(
+    cfgParseCalls.filter((call) => !/cfg\.folderMaps\s*,\s*cfg\.folderMapModes/.test(call)),
+    [],
+    "every getConfig→parseFolderMaps call site must pass cfg.folderMapModes",
   );
 });
 
