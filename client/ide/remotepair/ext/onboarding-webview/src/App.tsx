@@ -15,6 +15,7 @@ import {
 } from "@/components/onboarding/client/StepUpdate";
 import { StepWaitPerm } from "@/components/onboarding/client/StepWaitPerm";
 import {
+  parseFolderMaps,
   StepMappings,
   type Mapping,
 } from "@/components/onboarding/client/StepMappings";
@@ -123,8 +124,13 @@ export default function App() {
     void window.remotepair
       .getConfig()
       .then((cfg) => {
+        if (!alive) return;
+        const parsedMappings = parseFolderMaps(cfg.folderMaps, cfg.folderMapModes);
+        if (parsedMappings.length) {
+          setMappings((current) => (current.length ? current : parsedMappings));
+        }
         const remoteHost = cfg.remoteHost.trim();
-        if (!alive || !remoteHost) return;
+        if (!remoteHost) return;
         setSelectedHost((current) =>
           current ?? {
             id: remoteHost,

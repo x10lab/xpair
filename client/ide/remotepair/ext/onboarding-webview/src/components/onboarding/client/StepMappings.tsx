@@ -18,6 +18,50 @@ export type Mapping = {
   clientPath?: string;
 };
 
+// FALLBACK ONLY: when a mapping has no stored method (FOLDER_MAP_MODES), infer it from the
+// path convention. Mount mappings created by the default mount backend live under this root;
+// everything else is treated as sync.
+function inferMethod(clientPath: string): MappingMode {
+  return clientPath.includes("/.xpair/host/mounts/") ? "mount" : "sync";
+}
+
+function parseModes(raw: string): Map<string, MappingMode> {
+  const m = new Map<string, MappingMode>();
+  for (const entry of (raw || "").split(";")) {
+    const s = entry.trim();
+    if (!s) continue;
+    const idx = s.indexOf("::");
+    if (idx === -1) continue;
+    const clientPath = s.slice(0, idx);
+    const method = s.slice(idx + 2);
+    if (method === "mount") m.set(clientPath, "mount");
+    else if (method === "sync") m.set(clientPath, "sync");
+  }
+  return m;
+}
+
+/** Parse FOLDER_MAPS (`client::host;...`) into redesigned Mapping rows, taking each mapping's
+ * stored method from FOLDER_MAP_MODES (`client::mount;client2::sync`) when present. */
+export function parseFolderMaps(raw: string, modes?: string): Mapping[] {
+  if (!raw) return [];
+  const modeOf = parseModes(modes || "");
+  return raw
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((entry, index) => {
+      const idx = entry.indexOf("::");
+      const clientPath = idx === -1 ? entry : entry.slice(0, idx);
+      const hostPath = idx === -1 ? "" : entry.slice(idx + 2);
+      return {
+        id: `${clientPath}::${hostPath}::${index}`,
+        mode: modeOf.get(clientPath) ?? inferMethod(clientPath),
+        hostPath,
+        clientPath,
+      };
+    });
+}
+
 type FsNode = { name: string; children?: FsNode[] };
 
 // TODO(US-004/host-fs): replace HOST_FS sample with a real host listing bridge.
