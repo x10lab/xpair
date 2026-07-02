@@ -26,7 +26,8 @@ contextBridge.exposeInMainWorld('remotepair', {
   hostEngineStatus: (engine) => rp('hostEngineStatus', [engine]),
   installHostEngine: (engine) => rp('installHostEngine', [engine]),
   setHostEngineAuth: (engine, apiKey) => rp('setHostEngineAuth', [engine, apiKey]),
-  addMapping: (clientPath, hostPath) => rp('addMapping', [clientPath, hostPath]),
+  addMapping: (clientPath, hostPath, method) => rp('addMapping', [clientPath, hostPath, method]),
+  hostSmbStatus: () => rp('hostSmbStatus', []),
   setBackend: (sync, mount) => rp('setBackend', [sync, mount]),
   mount: (hostPath, mountpoint) => rp('mount', [hostPath, mountpoint]),
   hostPathExists: (hostPath) => rp('hostPathExists', [hostPath]),
@@ -43,6 +44,8 @@ contextBridge.exposeInMainWorld('remotepair', {
   installHost: (opts) => rp('installHost', [opts]),
   hostPermissions: (opts) => rp('hostPermissions', [opts]),
   hostKeyFingerprint: (host) => rp('hostKeyFingerprint', [host]),
+  pinHostKey: (host, expectedFp) => rp('pinHostKey', [host, expectedFp]),
+  hasDurableHostKey: (host) => rp('hasDurableHostKey', [host]),
   // Telemetry (consent-gated PostHog; no-ops until opt-in).
   tCapture: (event, props) => rp('tCapture', [event, props]),
   tCatalog: () => rp('tCatalog'),

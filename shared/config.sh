@@ -44,12 +44,17 @@ LOG_LEVEL="${REMOTEPAIR_LOG:-${LOG_LEVEL:-info}}"
 RULES_FILE="${RULES_FILE:-$RP_DIR/rules.txt}"           # approve router rules (formerly ~/.claude/auto-approve/rules.txt)
 
 # ── Client config (no personal path defaults) ──
-REMOTE_HOST="${REMOTE_HOST:-}"          # Empty = local-only mode
+REMOTE_HOST="${REMOTE_HOST:-}"          # Empty = no host configured (onboarding sets one; may be localhost for a local host)
 # Folder mappings for directories whose content is the same on both machines
 # but may live at different absolute paths (synced via Google Drive / Syncthing / etc.).
 #   Format: "clientPath::hostPath;clientPath2::hostPath2"  (identical path → use clientPath==hostPath)
 #   No default — registered on first launch. (generalises legacy SYNC_ROOTS)
 FOLDER_MAPS="${FOLDER_MAPS:-${SYNC_ROOTS:-}}"
+# Per-mapping access method, keyed by clientPath: "clientPath::mount;clientPath2::sync".
+# FOLDER_MAPS itself stays client::host (no method), so an entry missing here falls back to
+# path-convention inference (a clientPath under ~/.xpair/host/mounts/ ⇒ mount, else sync).
+# method ∈ {mount, sync}; mount transport is SMB-only.
+FOLDER_MAP_MODES="${FOLDER_MAP_MODES:-}"
 LAUNCHER="${LAUNCHER:-$RP_DIR/bin/xpair-launch}"
 
 # Terminal app used by the Quick Action / open-gui subcommand.
@@ -82,4 +87,4 @@ RP_REPO_ROOT="${RP_REPO_ROOT:-$REPO_ROOT}"
 # Per-role persistence key groups (install writes only to its own file)
 COMMON_KEYS=(LOCAL_BIN AQUA_SOCK)
 HOST_KEYS=(RP_ORG BUNDLE_PREFIX APP_NAME SIGN_CN GH_REPO APPROVE_TRIGGER LOG_FILE HEARTBEAT_FILE RULES_FILE)
-CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS LAUNCHER TERMINAL_APP EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND RP_REPO_ROOT)
+CLIENT_KEYS=(REMOTE_HOST FOLDER_MAPS FOLDER_MAP_MODES LAUNCHER TERMINAL_APP EDITOR_PORT SYNC_BACKEND MOUNT_BACKEND RP_REPO_ROOT)

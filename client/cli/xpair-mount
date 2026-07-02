@@ -81,6 +81,25 @@ valid_host() {
   esac
 }
 
+# Best-effort probe of the host's File Sharing (SMB) state over SSH → echoes on|off|unknown.
+# No sudo: reads launchctl's disabled-override db first (authoritative for the System Settings
+# toggle), then falls back to the LaunchDaemon plist. Any failure ⇒ unknown (never blocks).
+host_smb_status() {
+  valid_host "${REMOTE_HOST:-}" || { printf 'unknown'; return; }
+  ssh -o BatchMode=yes -o ConnectTimeout=6 "$REMOTE_HOST" '
+    v=$(launchctl print-disabled system 2>/dev/null | sed -n "s/.*\"com.apple.smbd\" => \(.*\)/\1/p")
+    case "$v" in
+      *true*|*disabled*)  echo off;  exit 0 ;;
+      *false*|*enabled*)  echo on;   exit 0 ;;
+    esac
+    # Fallback when print-disabled yields nothing: the static plist is NOT authoritative for the live
+    # toggle (Disabled=1 by factory default), so only explicit Disabled=0 means "on"; else unknown.
+    case "$(defaults read /System/Library/LaunchDaemons/com.apple.smbd Disabled 2>/dev/null)" in
+      0) echo on ;; *) echo unknown ;;
+    esac
+  ' 2>/dev/null || printf 'unknown'
+}
+
 require_host() {
   if [ -z "$REMOTE_HOST" ]; then
     err "REMOTE_HOST is not set."
@@ -212,6 +231,13 @@ cmd_mount() {
       printf >&2 '  and "%s" must be in the shared folders list.\n' "$hostpath"
       if ! mount_smbfs "$smb_url" "$mountpoint"; then
         err "mount_smbfs failed."
+        # Probe the actual cause instead of leaving a bare failure: the #1 reason is File Sharing
+        # being OFF on the host (the mount has nothing to connect to).
+        case "$(host_smb_status)" in
+          off) printf >&2 '  ▶ Cause: File Sharing (SMB) is OFF on %s — turn it ON in\n     System Settings > General > Sharing > File Sharing, then add "%s" to the shared list.\n' "$REMOTE_HOST" "$hostpath" ;;
+          on)  printf >&2 '  ▶ File Sharing is ON on %s, so "%s" is likely not in the shared folders (or the share name differs).\n' "$REMOTE_HOST" "$hostpath" ;;
+          *)   printf >&2 '  ▶ Could not probe %s File Sharing state over SSH (host unreachable or check unavailable).\n' "$REMOTE_HOST" ;;
+        esac
         printf >&2 '  Troubleshooting:\n'
         printf >&2 '    1. Verify File Sharing is ON on the host (System Settings > General > Sharing).\n'
         printf >&2 '    2. Ensure the folder "%s" is shared (or a parent folder is shared).\n' "$hostpath"

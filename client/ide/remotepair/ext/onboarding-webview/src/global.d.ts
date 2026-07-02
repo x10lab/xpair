@@ -52,6 +52,7 @@ declare global {
         remoteHost: string
         engine: string
         folderMaps: string
+        folderMapModes: string
         syncBackend: string
         mountBackend: string
       }>
@@ -71,7 +72,8 @@ declare global {
       // Set the host-side API key for the engine. The key is handed to the host over the SSH stdin
       // pipe (NEVER argv/log/disk) and persisted engine-specifically. Re-probe afterwards.
       setHostEngineAuth: (engine: EngineId, apiKey: string) => Promise<{ ok: boolean; err: string }>
-      addMapping: (clientPath: string, hostPath: string) => Promise<any>
+      addMapping: (clientPath: string, hostPath: string, method?: "mount" | "sync") => Promise<any>
+      hostSmbStatus: () => Promise<"on" | "off" | "unknown">
       setBackend: (sync: string, mount?: string) => Promise<any>
       mount: (hostPath: string, mountpoint?: string) => Promise<{ code: number; out: string; err: string; mountpoint: string }>
       hostPathExists: (p: string) => Promise<{ exists: boolean; err: string }>
@@ -128,6 +130,8 @@ declare global {
         err: string
       }>
       hostKeyFingerprint: (host: string) => Promise<{ fp: string; err: string }>
+      pinHostKey: (host: string, expectedFp: string) => Promise<{ ok: boolean; err: string; state?: string; action?: string }>
+      hasDurableHostKey: (host: string) => Promise<{ ok: boolean; present: boolean; err?: string }>
       // Telemetry (consent-gated PostHog; no-ops until opt-in).
       tCapture: (event: string, props?: Record<string, unknown>) => Promise<{ ok: boolean }>
       tCatalog: () => Promise<{

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const childProcess = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const bridge = require("./onboarding-bridge.js");
@@ -62,6 +63,20 @@ function withSpawnSpy(fn) {
         assert.ok(calls[0].args.includes("ControlPersist=300"));
         const controlPath = calls[0].args.find((arg) => String(arg).startsWith("ControlPath="));
         assert.equal(controlPath, "ControlPath=/tmp/rp-cm-testlaunch-%C");
+        const knownHosts = calls[0].args.find((arg) => String(arg).startsWith("UserKnownHostsFile="));
+        assert.ok(knownHosts);
+        const knownHostsFiles = [...String(knownHosts).matchAll(/"((?:\\.|[^"\\])*)"/g)].map((m) =>
+          m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+        );
+        const tmpRelative = path.relative(os.tmpdir(), knownHostsFiles[0]);
+        assert.ok(tmpRelative && !tmpRelative.startsWith("..") && !path.isAbsolute(tmpRelative));
+        assert.equal(path.basename(path.dirname(knownHostsFiles[0])).startsWith("rp-kh-"), true);
+        assert.equal(path.basename(knownHostsFiles[0]), "known_hosts");
+        assert.ok(knownHostsFiles.length >= 1);
+        for (const file of knownHostsFiles.slice(1)) {
+          assert.ok(path.isAbsolute(file));
+          assert.notEqual(path.dirname(file), path.dirname(knownHostsFiles[0]));
+        }
       });
     } finally {
       if (previousTag === undefined) delete process.env.RP_SSH_CM_TAG;
