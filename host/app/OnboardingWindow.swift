@@ -63,6 +63,11 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
         getConsent: () => post('getConsent', []),
         setConsent: (c) => post('setConsent', [c]),
         connectedClients: () => post('connectedClients', []),
+        beginPairing: () => post('beginPairing', []),
+        pairingStatus: () => post('pairingStatus', []),
+        acceptPairing: (request) => post('acceptPairing', [request]),
+        denyPairing: () => post('denyPairing', []),
+        endPairing: () => post('endPairing', []),
         engineStatus: (engine) => post('engineStatus', [engine]),
         installEngine: (engine) => post('installEngine', [engine]),
         setEngineAuth: (engine, key) => post('setEngineAuth', [engine, key]),
@@ -217,6 +222,37 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
             }
             replyHandler(clients, nil)
 
+        case "beginPairing":
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    replyHandler(try PairingManager.shared.beginWindow(), nil)
+                } catch {
+                    replyHandler(nil, "beginPairing failed: \(error)")
+                }
+            }
+
+        case "pairingStatus":
+            replyHandler(PairingManager.shared.status(), nil)
+
+        case "acceptPairing":
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let request = args.first as? [String: Any]
+                    let requestID = (request?["id"] as? String) ?? (args.first as? String) ?? ""
+                    let fingerprint = (request?["keyFingerprint"] as? String) ?? ""
+                    replyHandler(try PairingManager.shared.acceptIncoming(requestID: requestID,
+                                                                         fingerprint: fingerprint), nil)
+                } catch {
+                    replyHandler(nil, "acceptPairing failed: \(error)")
+                }
+            }
+
+        case "denyPairing":
+            replyHandler(PairingManager.shared.denyIncoming(), nil)
+
+        case "endPairing":
+            replyHandler(PairingManager.shared.endWindow(), nil)
+
         case "engineStatus":
             guard let engine = args.first as? String, EngineGuard.isKnown(engine) else {
                 replyHandler(["installed": false, "authed": false, "version": "", "err": "unknown engine"], nil)
@@ -265,6 +301,11 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
             guard Permissions.allGranted() else {
                 log(.warn, "onboarding complete ignored — Accessibility/Screen Recording still not granted")
                 replyHandler(["ok": false, "err": "permissions not granted"], nil)
+                return
+            }
+            guard PairingManager.shared.hasPairedClient() else {
+                log(.warn, "onboarding complete ignored — no proven paired client")
+                replyHandler(["ok": false, "err": "client not paired"], nil)
                 return
             }
             replyHandler(["ok": true], nil)
@@ -334,6 +375,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler
     // MARK: - NSWindowDelegate (hard gate)
 
     func windowWillClose(_ notification: Notification) {
+        _ = PairingManager.shared.endWindow()
         switch mode {
         case .runGate:
             // Launch gate: dismissing while AX/SR are still ungranted (and not completed) quits the

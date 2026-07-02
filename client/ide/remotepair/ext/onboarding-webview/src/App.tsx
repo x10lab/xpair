@@ -207,13 +207,6 @@ export default function App() {
   }, [w.index, selectedHost?.id, probeSelectedHost, w.goTo]);
 
   useEffect(() => {
-    if (w.index !== S.WAIT_PERM) return;
-    // TODO(US-004): replace with the real pairing-accept subscription/probe.
-    // Until US-004 lands, StepWaitPerm exposes explicit accept/deny affordances (dev-only) so the
-    // happy path is drivable; no fake bridge method is introduced.
-  }, [w.index, permAccepted, permDenied]);
-
-  useEffect(() => {
     if (w.index !== S.DONE) return;
     if (!selectedHost) {
       w.goTo(S.DISCOVER, "prev");

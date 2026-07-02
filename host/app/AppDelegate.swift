@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         ensureDirs()
+        XpairAuthorizedKeys.expirePendingProofs()
         // Telemetry consent flags — both default OFF (opt-in). Registered so a never-toggled key reads false
         // (zero network calls by default). Toggled in SettingsWindow.
         UserDefaults.standard.register(defaults: [
@@ -56,6 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self           // rebuilt each time via menuNeedsUpdate
         statusItem.menu = menu
         rebuildMenu()
+        NotificationCenter.default.addObserver(forName: .bonjourPairingInfoChanged,
+                                               object: nil,
+                                               queue: .main) { [weak self] _ in
+            guard isHostRole else { return }
+            self?.advertiser.refreshAdvertising()
+        }
 
         log("launched (XpairHost v\(APP_VERSION), repo=\(GH_REPO))")
 

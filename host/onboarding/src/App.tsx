@@ -20,6 +20,7 @@ import {
 } from "@/components/onboarding/host/StepBroadcast";
 import { StepDone } from "@/components/onboarding/host/StepDone";
 import { useT } from "@/lib/i18n";
+import type { PairingStatus } from "@/global";
 
 const CONSENT_ANALYTICS_IDX = 2;
 const PERM_START = 3;
@@ -69,6 +70,7 @@ export default function App() {
   const [engines, setEngines] = useState<Set<EngineKey>>(new Set());
   const [broadcast, setBroadcast] = useState<BroadcastState>("waiting");
   const [request, setRequest] = useState<IncomingRequest | null>(null);
+  const [pairingError, setPairingError] = useState("");
 
   const inPerms = w.index >= PERM_START && w.index <= PERM_END;
   const currentPermKey = inPerms ? PERM_ORDER[w.index - PERM_START] : null;
@@ -251,6 +253,64 @@ export default function App() {
     })(currentPermKey);
   }, [currentPermKey]);
 
+  const applyPairingStatus = useCallback((s: PairingStatus) => {
+    setPairingError(s.error || "");
+    if (s.request) {
+      setRequest({
+        id: s.request.id,
+        name: s.request.name,
+        ip: s.request.ip,
+        user: s.request.user,
+        keyFingerprint: s.request.keyFingerprint,
+      });
+    } else if (s.phase !== "accepted-pending-proof" && s.phase !== "paired") {
+      setRequest(null);
+    }
+
+    if (s.phase === "incoming" && s.request) {
+      setBroadcast("incoming");
+    } else if (s.phase === "accepted-pending-proof") {
+      setBroadcast("accepted-pending-proof");
+    } else if (s.phase === "paired") {
+      setBroadcast("accepted");
+    } else if (s.phase === "denied") {
+      setBroadcast("denied");
+    } else if (s.phase === "waiting" || s.phase === "closed") {
+      setBroadcast("waiting");
+    }
+  }, []);
+
+  const beginBroadcast = useCallback(async () => {
+    try {
+      const s = await window.xpair.beginPairing();
+      applyPairingStatus(s);
+    } catch (error) {
+      setPairingError(error instanceof Error ? error.message : String(error));
+      setBroadcast("waiting");
+    }
+  }, [applyPairingStatus]);
+
+  useEffect(() => {
+    if (!hydrated || w.index !== BROADCAST_IDX) return;
+    let active = true;
+    void beginBroadcast();
+    const id = window.setInterval(() => {
+      window.xpair
+        .pairingStatus()
+        .then((s) => {
+          if (active) applyPairingStatus(s);
+        })
+        .catch((error) => {
+          if (active) setPairingError(error instanceof Error ? error.message : String(error));
+        });
+    }, 1000);
+    return () => {
+      active = false;
+      window.clearInterval(id);
+      void window.xpair.endPairing();
+    };
+  }, [applyPairingStatus, beginBroadcast, hydrated, w.index]);
+
   const footerSlot = useMemo(() => {
     if (w.isLast) {
       return (
@@ -262,17 +322,36 @@ export default function App() {
     if (w.index === BROADCAST_IDX && broadcast === "incoming") {
       return (
         <>
-          <Button variant="outline" size="sm" onClick={() => setBroadcast("denied")}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.xpair
+                .denyPairing()
+                .then(applyPairingStatus)
+                .catch((error) => setPairingError(error instanceof Error ? error.message : String(error)));
+            }}
+          >
             {t("bc.deny")}
           </Button>
-          <Button size="sm" onClick={() => setBroadcast("accepted")}>
+          <Button
+            size="sm"
+            disabled={!request}
+            onClick={() => {
+              if (!request) return;
+              window.xpair
+                .acceptPairing({ id: request.id, keyFingerprint: request.keyFingerprint })
+                .then(applyPairingStatus)
+                .catch((error) => setPairingError(error instanceof Error ? error.message : String(error)));
+            }}
+          >
             {t("bc.accept")}
           </Button>
         </>
       );
     }
     return null;
-  }, [broadcast, t, w.index, w.isLast]);
+  }, [applyPairingStatus, broadcast, request, t, w.index, w.isLast]);
 
   return (
     <WizardShell
@@ -322,6 +401,8 @@ export default function App() {
             setState={setBroadcast}
             request={request}
             setRequest={setRequest}
+            error={pairingError}
+            onBroadcastAgain={beginBroadcast}
           />
         )}
         {w.index === DONE_IDX && <StepDone />}

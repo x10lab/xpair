@@ -75,8 +75,6 @@ const EN: Dict = {
   "wait.descPre": "A prompt should appear on",
   "wait.descPost": ". Accept it there to continue.",
   "wait.requestingFrom": "Requesting from",
-  "wait.simAccept": "Simulate host accept",
-  "wait.simDeny": "Simulate host deny",
 
   // Client Mappings
   "map.title": "Folder mappings",
@@ -159,15 +157,18 @@ const EN: Dict = {
   "bc.paired.title": "Client paired",
   "bc.paired.desc": "You can keep this Mac running — sessions stay alive 24/7.",
   "bc.pairedWith": "Paired with",
+  "bc.pending.title": "Waiting for SSH proof",
+  "bc.pending.desc":
+    "The exact key was installed. Keep this open while the client connects once with that key.",
   "bc.incoming.title": "Incoming pairing request",
   "bc.incoming.desc":
     "Compare the fingerprint below with what the client is showing. Only accept if they match — the name alone can be spoofed.",
   "bc.from": "From",
   "bc.fingerprint": "Client key fingerprint",
   "bc.warnTitle": "What accepting allows",
-  "bc.warn1": "See this Mac's screen in real time",
-  "bc.warn2": "Move the cursor, type, and run commands as you",
-  "bc.warn3": "Read files inside folders you map for this session",
+  "bc.warn1": "Authorize this exact client key through Xpair's restricted SSH gate",
+  "bc.warn2": "Run Xpair-managed setup and session commands as this macOS user",
+  "bc.warn3": "Agent, port, X11, and user-rc forwarding stay disabled for this key",
   "bc.warnRevoke": "You can revoke access anytime from the menu bar.",
   "bc.deny": "Deny",
   "bc.accept": "Accept",
@@ -175,7 +176,6 @@ const EN: Dict = {
   "bc.desc":
     "This Mac is discoverable on your LAN and Tailscale network. Open Xpair on your client to send a pairing request.",
   "bc.thisMac": "This Mac",
-  "bc.simIncoming": "Simulate incoming request",
 
   // Host Done
   "done.host.title": "You're paired",
@@ -252,8 +252,6 @@ const KO: Dict = {
   "wait.descPre": "다음 Mac에 프롬프트가 표시됩니다:",
   "wait.descPost": ". 거기서 수락하면 계속됩니다.",
   "wait.requestingFrom": "요청 대상",
-  "wait.simAccept": "호스트 수락 시뮬레이션",
-  "wait.simDeny": "호스트 거절 시뮬레이션",
 
   "map.title": "폴더 매핑",
   "map.desc": "호스트 폴더를 이 Mac에 마운트하거나 폴더를 양방향 동기화하세요.",
@@ -330,15 +328,18 @@ const KO: Dict = {
   "bc.paired.title": "클라이언트 페어링 완료",
   "bc.paired.desc": "이 Mac을 켜두면 세션이 24시간 유지됩니다.",
   "bc.pairedWith": "페어링 완료:",
+  "bc.pending.title": "SSH 증명 대기 중",
+  "bc.pending.desc":
+    "정확한 키를 설치했습니다. 클라이언트가 그 키로 한 번 연결할 때까지 이 창을 열어두세요.",
   "bc.incoming.title": "들어온 페어링 요청",
   "bc.incoming.desc":
-    "아래 지문을 클라이언트에 표시된 값과 대조하세요. 일치할 때만 수락하세요.",
+    "아래 지문을 클라이언트에 표시된 값과 대조하세요. 일치할 때만 수락하세요 — 이름만으로는 위조될 수 있습니다.",
   "bc.from": "요청자",
   "bc.fingerprint": "클라이언트 키 지문",
   "bc.warnTitle": "수락 시 허용되는 것",
-  "bc.warn1": "이 Mac 화면을 실시간으로 봄",
-  "bc.warn2": "사용자처럼 커서 이동, 키 입력, 명령 실행",
-  "bc.warn3": "이번 세션에 매핑한 폴더의 파일 읽기",
+  "bc.warn1": "이 클라이언트 키만 Xpair의 제한된 SSH 게이트로 승인",
+  "bc.warn2": "이 macOS 사용자 권한으로 Xpair가 관리하는 설정 및 세션 명령 실행",
+  "bc.warn3": "이 키에는 에이전트, 포트, X11, user-rc 포워딩을 계속 비활성화",
   "bc.warnRevoke": "메뉴 바에서 언제든지 권한을 회수할 수 있습니다.",
   "bc.deny": "거절",
   "bc.accept": "수락",
@@ -346,7 +347,6 @@ const KO: Dict = {
   "bc.desc":
     "이 Mac이 LAN과 Tailscale 네트워크에 검색 가능한 상태입니다. 클라이언트에서 Xpair를 열어 페어링 요청을 보내세요.",
   "bc.thisMac": "이 Mac",
-  "bc.simIncoming": "들어온 요청 시뮬레이션",
 
   "done.host.title": "페어링이 완료되었습니다",
   "done.host.desc":

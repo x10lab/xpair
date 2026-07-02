@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('remotepair', {
   // host's grant status (status.json) so the Grant step can confirm AX/SR were granted on the
   // host's screen.
   discover: () => rp('discover'),
+  sendPairingRequest: (opts) => rp('sendPairingRequest', [opts]),
+  pairingStatus: (opts) => rp('pairingStatus', [opts]),
   installHost: (opts) => rp('installHost', [opts]),
   hostPermissions: (opts) => rp('hostPermissions', [opts]),
   hostKeyFingerprint: (host) => rp('hostKeyFingerprint', [host]),

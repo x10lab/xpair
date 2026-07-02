@@ -78,8 +78,6 @@ const EN: Dict = {
   "wait.descPre": "A prompt should appear on",
   "wait.descPost": ". Accept it there to continue.",
   "wait.requestingFrom": "Requesting from",
-  "wait.simAccept": "Simulate host accept",
-  "wait.simDeny": "Simulate host deny",
 
   // Client Mappings
   "map.title": "Folder mappings",
@@ -259,8 +257,6 @@ const KO: Dict = {
   "wait.descPre": "다음 Mac에 프롬프트가 표시됩니다:",
   "wait.descPost": ". 거기서 수락하면 계속됩니다.",
   "wait.requestingFrom": "요청 대상",
-  "wait.simAccept": "호스트 수락 시뮬레이션",
-  "wait.simDeny": "호스트 거절 시뮬레이션",
 
   "map.title": "폴더 매핑",
   "map.desc": "호스트 폴더를 이 Mac에 마운트하거나 폴더를 양방향 동기화하세요.",

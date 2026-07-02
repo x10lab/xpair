@@ -14,6 +14,9 @@ export interface Peer {
   source: PeerSource
   sources: PeerSource[]
   fp: string | null
+  serviceInstanceID?: string
+  hostNonce?: string
+  pairPort?: number
   status: PeerStatus
 }
 
@@ -86,6 +89,24 @@ declare global {
       // and the bridge uses BatchMode/publickey-only probes. Failures return explicit recovery states
       // (host-key mismatch, key-agent/passphrase failure) instead of password or pairing-code entry.
       discover: () => Promise<{ peers: Peer[]; err: string }>
+      sendPairingRequest: (opts: {
+        host: string
+        port: number
+        hostKeyFP: string
+        hostNonce: string
+        serviceInstanceID: string
+        name?: string
+        user?: string
+      }) => Promise<{ ok: boolean; err: string; fingerprint: string }>
+      pairingStatus: (opts: { host: string }) => Promise<{
+        paired: boolean
+        pending: boolean
+        denied: boolean
+        err: string
+        fingerprint: string
+        state?: "ready" | "invalid_host" | "host_key_mismatch" | "key_auth_blocked" | "needs_password" | "password_denied" | "unreachable"
+        action?: "continue" | "abort" | "recover_host_key" | "approve_or_retry" | "prompt_password" | "retry"
+      }>
       // force:true reinstalls the bundled XpairHost over a missing/incompatible/below-floor host app
       // (restart repairs omit force so the CLI only kickstarts/opens the existing app). password is a
       // one-shot used only to bootstrap the first connection to a host that hasn't authorized the key.

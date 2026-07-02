@@ -10,6 +10,8 @@ const cp = require("child_process");
 const os = require("os");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const dgram = require("dgram");
 
 // Zero-dep telemetry (PostHog capture + consent). Shared with the extension host. Consent is
 // opt-in (default OFF) → all capture() calls below are no-ops until the user opts in.
@@ -355,6 +357,164 @@ function runSecretStdin(cmd, args, secret) {
 
 function cliWithPasswordStdin(args, secret) {
   return runSecretStdin(rpBin(), [...args, "--password-stdin"], secret);
+}
+
+function b64url(buf) {
+  return Buffer.from(buf)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function readU32(buf, off) {
+  if (off + 4 > buf.length) throw new Error("truncated uint32");
+  return [buf.readUInt32BE(off), off + 4];
+}
+
+function readSSHString(buf, off) {
+  const [len, next] = readU32(buf, off);
+  if (next + len > buf.length) throw new Error("truncated ssh string");
+  return [buf.subarray(next, next + len), next + len];
+}
+
+function sshString(buf) {
+  const b = Buffer.from(buf);
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(b.length, 0);
+  return Buffer.concat([len, b]);
+}
+
+function canonicalPairingTranscript(hostKeyFP, hostNonce, serviceInstanceID, clientPubKey, timestamp) {
+  return Buffer.concat(
+    [hostKeyFP, hostNonce, serviceInstanceID, clientPubKey, String(timestamp)].map((field) =>
+      sshString(Buffer.from(String(field), "utf8"))
+    )
+  );
+}
+
+function sanitizeEd25519PublicKey(pubkey) {
+  const parts = String(pubkey || "").trim().split(/\s+/);
+  if (parts.length < 2 || parts[0] !== "ssh-ed25519") {
+    throw new Error("expected ssh-ed25519 public key");
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(parts[1])) {
+    throw new Error("invalid ed25519 public key blob");
+  }
+  // Drop comments/options before sending. The host accepts exactly "ssh-ed25519 <base64>".
+  return `ssh-ed25519 ${parts[1]}`;
+}
+
+function parseEd25519PublicKey(pubkey) {
+  const clean = sanitizeEd25519PublicKey(pubkey);
+  const [, b64] = clean.split(/\s+/);
+  const blob = Buffer.from(b64, "base64");
+  let off = 0;
+  let field;
+  [field, off] = readSSHString(blob, off);
+  if (field.toString("utf8") !== "ssh-ed25519") throw new Error("public key type is not ssh-ed25519");
+  let raw;
+  [raw, off] = readSSHString(blob, off);
+  if (raw.length !== 32 || off !== blob.length) throw new Error("bad ed25519 public key blob");
+  const fp = "SHA256:" + crypto.createHash("sha256").update(blob).digest("base64").replace(/=/g, "");
+  return { clean, blob, raw, fingerprint: fp };
+}
+
+function clientIDForKeyBlob(keyBlob) {
+  return b64url(crypto.createHash("sha256").update(String(keyBlob), "utf8").digest()).slice(0, 24);
+}
+
+function parseOpenSSHEd25519PrivateKey(pem) {
+  const b64 = String(pem || "")
+    .replace(/-----BEGIN OPENSSH PRIVATE KEY-----|-----END OPENSSH PRIVATE KEY-----|\s/g, "");
+  const buf = Buffer.from(b64, "base64");
+  const magic = Buffer.from("openssh-key-v1\0", "utf8");
+  if (buf.length < magic.length || !buf.subarray(0, magic.length).equals(magic)) {
+    throw new Error("not an OpenSSH private key");
+  }
+  let off = magic.length;
+  let cipher, kdf, kdfOptions;
+  [cipher, off] = readSSHString(buf, off);
+  [kdf, off] = readSSHString(buf, off);
+  [kdfOptions, off] = readSSHString(buf, off);
+  void kdfOptions;
+  if (cipher.toString("utf8") !== "none" || kdf.toString("utf8") !== "none") {
+    throw new Error("encrypted OpenSSH private keys are not supported for pairing signatures");
+  }
+  const [nkeys, afterN] = readU32(buf, off);
+  off = afterN;
+  if (nkeys !== 1) throw new Error("expected one OpenSSH private key");
+  let pubBlob, privateBlob;
+  [pubBlob, off] = readSSHString(buf, off);
+  [privateBlob, off] = readSSHString(buf, off);
+  void pubBlob;
+  let poff = 0;
+  const [check1, poff1] = readU32(privateBlob, poff);
+  const [check2, poff2] = readU32(privateBlob, poff1);
+  poff = poff2;
+  if (check1 !== check2) throw new Error("OpenSSH private key checkints differ");
+  let type, pubRaw, privRaw;
+  [type, poff] = readSSHString(privateBlob, poff);
+  if (type.toString("utf8") !== "ssh-ed25519") throw new Error("private key is not ssh-ed25519");
+  [pubRaw, poff] = readSSHString(privateBlob, poff);
+  [privRaw, poff] = readSSHString(privateBlob, poff);
+  if (pubRaw.length !== 32 || privRaw.length !== 64 || !privRaw.subarray(32, 64).equals(pubRaw)) {
+    throw new Error("bad ed25519 private key shape");
+  }
+  const jwk = {
+    kty: "OKP",
+    crv: "Ed25519",
+    d: b64url(privRaw.subarray(0, 32)),
+    x: b64url(pubRaw),
+  };
+  return { keyObject: crypto.createPrivateKey({ key: jwk, format: "jwk" }), publicRaw: pubRaw };
+}
+
+function sendUdpJSON(host, port, obj) {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    const payload = Buffer.from(JSON.stringify(obj), "utf8");
+    socket.send(payload, Number(port), host, (err) => {
+      socket.close();
+      resolve(err ? { ok: false, err: err.message } : { ok: true, err: "" });
+    });
+  });
+}
+
+function commandOutput(cmd, args) {
+  try {
+    const r = cp.spawnSync(cmd, args, { encoding: "utf8", timeout: 1200, windowsHide: true });
+    return r.status === 0 ? String(r.stdout || "") : "";
+  } catch {
+    return "";
+  }
+}
+
+function currentGatewayMac() {
+  const route = commandOutput("/sbin/route", ["-n", "get", "default"]);
+  const gm = route.match(/gateway:\s*([^\s]+)/);
+  if (!gm) return "";
+  const arp = commandOutput("/usr/sbin/arp", ["-n", gm[1]]);
+  const mm = arp.match(/\bat\s+([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})\b/i);
+  return mm ? mm[1].toLowerCase() : "";
+}
+
+function gatewayMacStatus({ updateBaseline = false } = {}) {
+  const current = currentGatewayMac();
+  const stored = parseEnv(CLIENT_ENV).GATEWAY_MAC || "";
+  if (!current) {
+    upsertEnv("LOCAL_MODE", "1");
+    return { allowed: false, state: "unknown", current: "", stored, err: "default gateway MAC unknown" };
+  }
+  if (updateBaseline || !stored) {
+    upsertEnv("GATEWAY_MAC", current);
+    return { allowed: true, state: "baseline", current, stored: current, err: "" };
+  }
+  if (stored !== current) {
+    upsertEnv("LOCAL_MODE", "1");
+    return { allowed: false, state: "changed", current, stored, err: "default gateway MAC changed" };
+  }
+  return { allowed: true, state: "same", current, stored, err: "" };
 }
 
 /** True only when the FULL password-bootstrap toolchain is present: the installed CLI understands
@@ -876,6 +1036,108 @@ const bridge = {
     return { peers, err: "" };
   },
 
+  // Pairing — send a signed request to the host's ephemeral UDP endpoint. The request carries the
+  // actual client public key and a raw Ed25519 signature over the length-prefixed transcript:
+  // hostKeyFP, hostNonce, serviceInstanceID, clientPubKey, timestamp.
+  async sendPairingRequest({ host, port, hostKeyFP, hostNonce, serviceInstanceID, name, user } = {}) {
+    const h = String(host || "").trim();
+    const p = Number(port);
+    if (!h || !validHost(h)) return { ok: false, err: invalidHost(h), fingerprint: "" };
+    if (!Number.isInteger(p) || p <= 0 || p > 65535) {
+      return { ok: false, err: "invalid pairing port", fingerprint: "" };
+    }
+    if (!hostKeyFP || !hostNonce || !serviceInstanceID) {
+      return { ok: false, err: "missing pairing transcript fields", fingerprint: "" };
+    }
+
+    await bridge.sshKeygen();
+    let pubkey;
+    try {
+      pubkey = sanitizeEd25519PublicKey(fs.readFileSync(SSH_KEY + ".pub", "utf8"));
+    } catch (e) {
+      return { ok: false, err: `could not read client public key: ${e.message || e}`, fingerprint: "" };
+    }
+
+    let privateKey;
+    let pub;
+    try {
+      privateKey = parseOpenSSHEd25519PrivateKey(fs.readFileSync(SSH_KEY, "utf8"));
+      pub = parseEd25519PublicKey(pubkey);
+      if (!pub.raw.equals(privateKey.publicRaw)) throw new Error("private/public key mismatch");
+    } catch (e) {
+      return { ok: false, err: `could not sign pairing request: ${e.message || e}`, fingerprint: "" };
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const transcript = canonicalPairingTranscript(hostKeyFP, hostNonce, serviceInstanceID, pub.clean, timestamp);
+    const sig = crypto.sign(null, transcript, privateKey.keyObject).toString("base64");
+    const sent = await sendUdpJSON(h, p, {
+      clientPubKey: pub.clean,
+      name: String(name || os.hostname()),
+      user: String(user || os.userInfo().username),
+      timestamp,
+      sig,
+    });
+    return { ok: sent.ok, err: sent.err, fingerprint: pub.fingerprint };
+  },
+
+  async pairingStatus({ host } = {}) {
+    const h = String(host || "").trim();
+    if (!h) return { paired: false, pending: false, denied: false, err: "no host", fingerprint: "" };
+    if (!validHost(h)) {
+      return {
+        paired: false,
+        pending: false,
+        denied: false,
+        err: invalidHost(h),
+        fingerprint: "",
+        state: SSH_STATE.INVALID_HOST,
+        action: SSH_ACTION.ABORT,
+      };
+    }
+
+    await bridge.sshKeygen();
+    let pub;
+    let clientID;
+    try {
+      pub = parseEd25519PublicKey(fs.readFileSync(SSH_KEY + ".pub", "utf8"));
+      clientID = clientIDForKeyBlob(pub.clean.split(/\s+/)[1]);
+    } catch (e) {
+      return {
+        paired: false,
+        pending: false,
+        denied: false,
+        err: `could not read client public key: ${e.message || e}`,
+        fingerprint: "",
+      };
+    }
+
+    const probe =
+      `XPAIR_CLIENT_ID=${clientID} /usr/bin/perl -MJSON::PP -e '` +
+      'use strict; use warnings; ' +
+      'my $id=$ENV{"XPAIR_CLIENT_ID"}||""; ' +
+      'my $ledger="$ENV{HOME}/.xpair/authorized_clients.json"; ' +
+      'open(my $fh,"<",$ledger) or exit 2; local $/; my $raw=<$fh>; close($fh); ' +
+      'my $j=eval { JSON::PP->new->decode($raw) }; exit 3 if $@ || ref($j) ne "HASH" || ref($j->{clients}) ne "ARRAY"; ' +
+      'for my $r (@{$j->{clients}}) { next unless ref($r) eq "HASH" && ($r->{clientID}//"") eq $id; if (($r->{status}//"") eq "paired") { print "paired\\n"; exit 0; } exit 4; } exit 5;' +
+      "'";
+    const r = await run("ssh", [...sshProbeOpts(5), h, probe]);
+    if (r.code === 0 && /\bpaired\b/.test(r.out || "")) {
+      return { paired: true, pending: false, denied: false, err: "", fingerprint: pub.fingerprint };
+    }
+    const s = sshResult(r, "pairing proof not accepted yet");
+    const pending = s.state === SSH_STATE.KEY_AUTH_BLOCKED || s.state === SSH_STATE.NEEDS_PASSWORD || r.code === 255;
+    return {
+      paired: false,
+      pending,
+      denied: false,
+      err: s.err,
+      fingerprint: pub.fingerprint,
+      state: s.state,
+      action: s.action,
+    };
+  },
+
   // Setup — remote install over SSH. Keys are the PRIMARY path: we preflight the key-only path and,
   // once the host trusts this client's key, every install/connect is key-auth. But the first install
   // on a host that has NOT yet authorized this client's key cannot connect with a key that isn't
@@ -1042,6 +1304,10 @@ const bridge = {
       return { fp: "", err: "fingerprint: bad JSON: " + r.out.trim() };
     }
   },
+
+  // Gateway-MAC roaming is a convenience guard only. Unknown/changed network state fails closed by
+  // setting LOCAL_MODE=1; auth remains SSH host-key TOFU + the approved client key.
+  gatewayMacStatus,
 
   // Host-app hard guard (Connect / Reconnect step): being able to SSH to the host (reachable) is NOT
   // enough — the host must actually have the Xpair host app installed AND be version-compatible with
@@ -1212,6 +1478,14 @@ const bridge = {
   sshActionForState,
   SSH_STATE,
   SSH_ACTION,
+	  __pairingTest: {
+	    canonicalPairingTranscript,
+	    sanitizeEd25519PublicKey,
+	    parseEd25519PublicKey,
+	    clientIDForKeyBlob,
+	    parseOpenSSHEd25519PrivateKey,
+	    gatewayMacStatus,
+	  },
 };
 
 module.exports = bridge;

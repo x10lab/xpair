@@ -9,6 +9,10 @@ export type DiscoveredHost = {
   address: string;
   transport: "LAN" | "Tailscale";
   version: string;
+  hostKeyFP?: string;
+  serviceInstanceID?: string;
+  hostNonce?: string;
+  pairPort?: number;
   outdated?: boolean;
   majorMismatch?: boolean;
 };
@@ -28,6 +32,10 @@ function peerToHost(peer: BridgePeer): DiscoveredHost {
     address,
     transport: peer.source === "tailscale" ? "Tailscale" : "LAN",
     version: "",
+    hostKeyFP: peer.fp || undefined,
+    serviceInstanceID: peer.serviceInstanceID,
+    hostNonce: peer.hostNonce,
+    pairPort: peer.pairPort,
   };
 }
 

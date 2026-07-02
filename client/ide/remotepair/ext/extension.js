@@ -1989,6 +1989,26 @@ function activate(context) {
     let ok = false;
     let probeReason = telemetry.REASONS.UNKNOWN;
     try {
+      const gw = onboardingBridge.gatewayMacStatus();
+      if (gw && gw.allowed === false) {
+        hostReachable = false;
+        renderHostButton();
+        if (prev === true) {
+          telemetry.capture(telemetry.EVENTS.HOST_CONNECT_FAILED, {
+            path: classifyPath(host),
+            reason: telemetry.REASONS.HOST_UNREACHABLE,
+          });
+        }
+        log(`gateway MAC guard fail-closed: ${gw.state}${gw.err ? ` (${gw.err})` : ""}`, "warn");
+        return;
+      }
+    } catch (e) {
+      hostReachable = false;
+      renderHostButton();
+      log(`gateway MAC guard unavailable; auto-connect disabled: ${e && e.message ? e.message : e}`, "warn");
+      return;
+    }
+    try {
       const r = await sshRun(host, "true", { timeoutMs: 6000 });
       ok = r.code === 0;
       if (!ok) probeReason = r.code === -2 ? telemetry.REASONS.TIMEOUT : telemetry.REASONS.HOST_UNREACHABLE;

@@ -23,7 +23,7 @@ function test(name, fn) {
   }
 }
 
-test("US-003 host Broadcast holds until the single broadcast enum is accepted", () => {
+test("US-004 host Broadcast holds until the backend reports a proven paired state", () => {
   assert.match(app, /const BROADCAST_IDX = ENGINE_IDX \+ 1/);
   assert.match(app, /const \[broadcast, setBroadcast\] = useState<BroadcastState>\("waiting"\)/);
   assert.doesNotMatch(app, /accept(?:ed)?Click|rawAccept|hasAccepted/);
@@ -43,7 +43,14 @@ test("US-003 host Broadcast holds until the single broadcast enum is accepted", 
     "Accept/Deny buttons must live in the footerSlot while incoming",
   );
   assert.doesNotMatch(app, /shell\.skip|t\("shell\.skip"\)/, "Broadcast must not expose Skip");
-  assert.match(stepBroadcast, /export type BroadcastState = "waiting" \| "incoming" \| "accepted" \| "denied"/);
+  assert.match(
+    stepBroadcast,
+    /export type BroadcastState =[\s\S]*"waiting"[\s\S]*"incoming"[\s\S]*"accepted-pending-proof"[\s\S]*"accepted"[\s\S]*"denied"/,
+  );
+  assert.match(
+    app,
+    /window\.xpair[\s\S]*\.acceptPairing\(\{ id: request\.id, keyFingerprint: request\.keyFingerprint \}\)[\s\S]*\.then\(applyPairingStatus\)/,
+  );
   assert.match(stepBroadcast, /setState\("waiting"\)/, "Deny recovery must rebroadcast in-body");
   assert.doesNotMatch(stepBroadcast, /setState\("accepted"\)/, "Accept belongs in the WizardShell footerSlot");
 });

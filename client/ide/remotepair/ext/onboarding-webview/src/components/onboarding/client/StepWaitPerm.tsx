@@ -26,12 +26,88 @@ export function StepWaitPerm({
 }: Props) {
   const { t } = useT();
   const [dots, setDots] = useState(1);
+  const [error, setError] = useState("");
+  const [clientFingerprint, setClientFingerprint] = useState("");
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     if (accepted || denied) return;
     const tm = setInterval(() => setDots((d) => (d % 3) + 1), 500);
     return () => clearInterval(tm);
   }, [accepted, denied]);
+
+  useEffect(() => {
+    if (!host || accepted || denied) return;
+    const missingPairingFields =
+      !host.hostKeyFP || !host.serviceInstanceID || !host.hostNonce || !host.pairPort;
+    if (missingPairingFields) {
+      setError("Host is not broadcasting pairing details. Open Connect on the host, then rescan.");
+      return;
+    }
+
+    let stopped = false;
+    let pollTimer: number | undefined;
+    const poll = async (expectedFingerprint: string) => {
+      try {
+        const status = await window.remotepair.pairingStatus({ host: host.address });
+        if (stopped) return;
+        if (status.paired && (!expectedFingerprint || status.fingerprint === expectedFingerprint)) {
+          if (pollTimer !== undefined) window.clearInterval(pollTimer);
+          await window.remotepair.setHost(host.address).catch(() => {});
+          if (!stopped) setAccepted(true);
+          return;
+        }
+        if (status.denied) {
+          if (pollTimer !== undefined) window.clearInterval(pollTimer);
+          onDeny();
+          return;
+        }
+        if (status.err && !status.pending) setError(status.err);
+      } catch (err) {
+        if (!stopped) setError(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    void (async () => {
+      setError("");
+      setClientFingerprint("");
+      const sent = await window.remotepair.sendPairingRequest({
+        host: host.address,
+        port: host.pairPort!,
+        hostKeyFP: host.hostKeyFP!,
+        hostNonce: host.hostNonce!,
+        serviceInstanceID: host.serviceInstanceID!,
+      });
+      if (stopped) return;
+      if (!sent.ok) {
+        setError(sent.err || "Could not send pairing request.");
+        return;
+      }
+      setClientFingerprint(sent.fingerprint);
+      await poll(sent.fingerprint);
+      if (!stopped) {
+        pollTimer = window.setInterval(() => void poll(sent.fingerprint), 1500);
+      }
+    })().catch((err) => {
+      if (!stopped) setError(err instanceof Error ? err.message : String(err));
+    });
+
+    return () => {
+      stopped = true;
+      if (pollTimer !== undefined) window.clearInterval(pollTimer);
+    };
+  }, [
+    accepted,
+    denied,
+    host?.address,
+    host?.hostKeyFP,
+    host?.hostNonce,
+    host?.pairPort,
+    host?.serviceInstanceID,
+    onDeny,
+    retryNonce,
+    setAccepted,
+  ]);
 
   if (denied) {
     return (
@@ -93,29 +169,32 @@ export function StepWaitPerm({
         </div>
         <div className="mt-1 font-mono text-sm text-foreground">{host?.name}</div>
         <div className="mt-0.5 font-mono text-xs text-muted-foreground">{host?.address}</div>
+        {clientFingerprint ? (
+          <div className="mt-2 break-all font-mono text-[11px] text-muted-foreground">
+            {clientFingerprint}
+          </div>
+        ) : null}
       </div>
 
-      {/* TODO(US-004): replace with the real pairing-accept subscription/probe.
-          Until US-004 lands, these explicit accept/deny affordances are the dev-only driver for
-          the happy path and denial DeadEnd; no fake bridge method is introduced. */}
-      <div className="mt-6 flex items-center gap-3">
-        <Button
-          size="sm"
-          variant="ghost"
-          className="text-xs text-muted-foreground"
-          onClick={() => setAccepted(true)}
-        >
-          {t("wait.simAccept")}
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="text-xs text-muted-foreground"
-          onClick={onDeny}
-        >
-          {t("wait.simDeny")}
-        </Button>
-      </div>
+      {error ? <p className="mt-4 max-w-sm text-xs text-destructive">{error}</p> : null}
+      {error ? (
+        <div className="mt-4 flex items-center gap-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setError("");
+              setRetryNonce((n) => n + 1);
+              onRetry();
+            }}
+          >
+            {t("wait.tryAgain")}
+          </Button>
+          <Button size="sm" variant="outline" onClick={onPickAnother}>
+            {t("wait.pickAnother")}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

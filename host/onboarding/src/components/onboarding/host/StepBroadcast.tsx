@@ -1,25 +1,40 @@
 import { useEffect, useState } from "react";
-import { Check, Fingerprint, Laptop, Radio, ShieldAlert, ShieldX } from "lucide-react";
+import { Check, Fingerprint, Laptop, Loader2, Radio, ShieldAlert, ShieldX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 
 export type IncomingRequest = {
+  id: string;
   name: string;
   ip: string;
   user: string;
   keyFingerprint: string;
 };
 
-export type BroadcastState = "waiting" | "incoming" | "accepted" | "denied";
+export type BroadcastState =
+  | "waiting"
+  | "incoming"
+  | "accepted-pending-proof"
+  | "accepted"
+  | "denied";
 
 type Props = {
   state: BroadcastState;
   setState: (s: BroadcastState) => void;
   request: IncomingRequest | null;
   setRequest: (r: IncomingRequest | null) => void;
+  error?: string;
+  onBroadcastAgain: () => void | Promise<void>;
 };
 
-export function StepBroadcast({ state, setState, request, setRequest }: Props) {
+export function StepBroadcast({
+  state,
+  setState,
+  request,
+  setRequest,
+  error,
+  onBroadcastAgain,
+}: Props) {
   const { t } = useT();
   const [dots, setDots] = useState(1);
 
@@ -45,10 +60,34 @@ export function StepBroadcast({ state, setState, request, setRequest }: Props) {
           onClick={() => {
             setRequest(null);
             setState("waiting");
+            void onBroadcastAgain();
           }}
         >
           {t("bc.broadcastAgain")}
         </Button>
+      </div>
+    );
+  }
+
+  if (state === "accepted-pending-proof") {
+    return (
+      <div className="flex flex-col items-center text-center">
+        <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Loader2 className="h-7 w-7 animate-spin" />
+        </div>
+        <h2 className="text-xl font-semibold tracking-tight text-foreground">
+          {t("bc.pending.title")}
+        </h2>
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground">{t("bc.pending.desc")}</p>
+        <div className="mt-6 w-full max-w-xs rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-left">
+          <div className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-wide text-primary">
+            <Fingerprint className="h-3 w-3" />
+            {t("bc.fingerprint")}
+          </div>
+          <div className="font-mono text-[13px] leading-relaxed text-foreground break-all">
+            {request?.keyFingerprint}
+          </div>
+        </div>
       </div>
     );
   }
@@ -149,22 +188,7 @@ export function StepBroadcast({ state, setState, request, setRequest }: Props) {
         <div className="mt-1 font-mono text-sm text-foreground">gh-mac-m1.local</div>
       </div>
 
-      <Button
-        size="sm"
-        variant="ghost"
-        className="mt-6 text-xs text-muted-foreground"
-        onClick={() => {
-          setRequest({
-            name: "gh-macbook.local",
-            ip: "192.168.1.24",
-            user: "ghyeong",
-            keyFingerprint: "SHA256:7Qk3 nP2v Yx9L wM4t Aa8B cJ1r",
-          });
-          setState("incoming");
-        }}
-      >
-        {t("bc.simIncoming")}
-      </Button>
+      {error ? <p className="mt-4 max-w-sm text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }
