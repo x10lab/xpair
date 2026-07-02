@@ -1,0 +1,736 @@
+//! Client env-file config (`~/.xpair/host/client.env`).
+//!
+//! Ports the bash `rp_set`/`cmd_config` storage model: one `KEY=VALUE` assignment per line
+//! in `client.env`, with shell-style quoting for values. The core file functions take an
+//! explicit path so tests and future callers can stay isolated from the real user config.
+
+use std::ffi::OsStr;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Line {
+    Pair {
+        key: String,
+        value: String,
+        raw: Option<String>,
+    },
+    Raw(String),
+}
+
+/// Return the configured client env path.
+///
+/// The bash SSOT is `RP_DIR="${RP_DIR:-$HOME/.xpair/host}"` plus
+/// `CLIENT_ENV="$RP_DIR/client.env"`.
+pub fn default_client_env_path() -> io::Result<PathBuf> {
+    if let Some(rp_dir) = non_empty_env("RP_DIR") {
+        return Ok(PathBuf::from(rp_dir).join("client.env"));
+    }
+
+    Ok(home_dir()?.join(".xpair").join("host").join("client.env"))
+}
+
+/// The bash SSOT `RP_DIR="${RP_DIR:-$HOME/.xpair/host}"` (the client/host state dir).
+pub fn default_rp_dir() -> io::Result<PathBuf> {
+    if let Some(rp_dir) = non_empty_env("RP_DIR") {
+        return Ok(PathBuf::from(rp_dir));
+    }
+
+    Ok(home_dir()?.join(".xpair").join("host"))
+}
+
+/// The bash SSOT `LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"` (installed client tools).
+pub fn default_local_bin() -> io::Result<PathBuf> {
+    if let Some(local_bin) = non_empty_env("LOCAL_BIN") {
+        return Ok(PathBuf::from(local_bin));
+    }
+
+    Ok(home_dir()?.join(".local").join("bin"))
+}
+
+/// Read one config key from `path`.
+///
+/// Missing files behave like an empty config, matching the bash startup path that sources
+/// role files only when they exist.
+pub fn get(path: impl AsRef<Path>, key: &str) -> io::Result<Option<String>> {
+    let lines = read_lines(path.as_ref())?;
+    Ok(lines.into_iter().rev().find_map(|line| match line {
+        Line::Pair { key: k, value, .. } if k == key => Some(value),
+        _ => None,
+    }))
+}
+
+/// Set or append one config key in `path`.
+///
+/// Comments, blank lines, unknown keys, and the relative order of other lines are preserved.
+/// The first existing `key` is overwritten in place and later duplicates are removed so the
+/// resulting file has a single authoritative assignment for that key.
+pub fn set(path: impl AsRef<Path>, key: &str, value: &str) -> io::Result<()> {
+    validate_env_key(key)?;
+
+    let path = path.as_ref();
+    let lines = read_lines(path)?;
+    let mut out = Vec::with_capacity(lines.len() + 1);
+    let mut replaced = false;
+
+    for line in lines {
+        match line {
+            Line::Pair { key: existing, .. } if existing == key => {
+                if !replaced {
+                    out.push(Line::Pair {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                        raw: None,
+                    });
+                    replaced = true;
+                }
+            }
+            other => out.push(other),
+        }
+    }
+
+    if !replaced {
+        out.push(Line::Pair {
+            key: key.to_string(),
+            value: value.to_string(),
+            raw: None,
+        });
+    }
+
+    atomic_write(path, &serialize_lines(&out))
+}
+
+/// List parsed config assignments in file order.
+///
+/// If a key appears more than once, the returned list includes each parsed assignment. The
+/// writer removes duplicates only for the key it is updating.
+pub fn list(path: impl AsRef<Path>) -> io::Result<Vec<(String, String)>> {
+    Ok(read_lines(path.as_ref())?
+        .into_iter()
+        .filter_map(|line| match line {
+            Line::Pair { key, value, .. } => Some((key, value)),
+            Line::Raw(_) => None,
+        })
+        .collect())
+}
+
+/// Get a bash-facing config key (`host`, `mode`, `local_mode`, `terminal`, or `engine`).
+pub fn get_cli(path: impl AsRef<Path>, key: &str) -> io::Result<String> {
+    let path = path.as_ref();
+    match key {
+        "host" => Ok(valid_remote_host(path)?.unwrap_or_default()),
+        "mode" => Ok(mode_label(path)?),
+        "local_mode" => Ok(if local_mode_on(path)? { "1" } else { "0" }.to_string()),
+        "terminal" => Ok(get(path, "TERMINAL_APP")?.unwrap_or_else(default_terminal_app)),
+        "engine" => Ok(get(path, "ENGINE")?.unwrap_or_else(|| "claude".to_string())),
+        _ => Err(invalid_input(
+            "config get <host|mode|local_mode|terminal|engine>",
+        )),
+    }
+}
+
+/// Set a bash-facing config key (`host`, `mode`, `local_mode`, `terminal`, or `engine`).
+pub fn set_cli(path: impl AsRef<Path>, key: &str, value: &str) -> io::Result<String> {
+    let path = path.as_ref();
+    match key {
+        "host" => {
+            if !value.is_empty() && !valid_host(value) {
+                return Err(invalid_input(format!("invalid host: {value}")));
+            }
+            set(path, "REMOTE_HOST", value)?;
+            Ok(if value.is_empty() {
+                "host cleared (local-only mode)".to_string()
+            } else {
+                format!("host set: {value}")
+            })
+        }
+        "terminal" => match value {
+            "iterm2" | "terminal" => {
+                set(path, "TERMINAL_APP", value)?;
+                Ok(format!("terminal set: {value}"))
+            }
+            _ => Err(invalid_input("config set terminal <iterm2|terminal>")),
+        },
+        "engine" => {
+            let canon = canonical_engine(value).ok_or_else(|| {
+                invalid_input("config set engine <claude|claudecode|shell|codex|opencode>")
+            })?;
+            set(path, "ENGINE", canon)?;
+            Ok(format!("engine set: {canon}"))
+        }
+        "mode" | "local_mode" => {
+            let mode = canonical_local_mode(value)
+                .ok_or_else(|| invalid_input("mode must be local or auto"))?;
+            set(path, "LOCAL_MODE", mode)?;
+            Ok(if mode == "1" {
+                "local mode enabled".to_string()
+            } else {
+                "local mode cleared".to_string()
+            })
+        }
+        _ => Err(invalid_input(
+            "config set <host|mode|local_mode|terminal|engine> <value>",
+        )),
+    }
+}
+
+/// Format the bash-style `config list` summary rows.
+pub fn list_cli(path: impl AsRef<Path>) -> io::Result<Vec<(String, String)>> {
+    let path = path.as_ref();
+    let host = valid_remote_host(path)?.unwrap_or_else(|| "(local-only)".to_string());
+    let maps = get(path, "FOLDER_MAPS")?
+        .map(|m| m.split(';').filter(|entry| !entry.is_empty()).count())
+        .unwrap_or(0);
+
+    Ok(vec![
+        ("host".to_string(), host),
+        ("mode".to_string(), mode_label(path)?),
+        (
+            "terminal".to_string(),
+            get(path, "TERMINAL_APP")?.unwrap_or_else(default_terminal_app),
+        ),
+        (
+            "engine".to_string(),
+            get(path, "ENGINE")?.unwrap_or_else(|| "claude".to_string()),
+        ),
+        ("mappings".to_string(), maps.to_string()),
+    ])
+}
+
+fn read_lines(path: &Path) -> io::Result<Vec<Line>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+
+    Ok(text.lines().map(parse_line).collect())
+}
+
+fn parse_line(line: &str) -> Line {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Line::Raw(line.to_string());
+    }
+
+    let Some((key, raw_value)) = line.split_once('=') else {
+        return Line::Raw(line.to_string());
+    };
+
+    if validate_env_key(key).is_err() {
+        return Line::Raw(line.to_string());
+    }
+
+    match shell_unquote(raw_value) {
+        Ok(value) => Line::Pair {
+            key: key.to_string(),
+            value,
+            raw: Some(line.to_string()),
+        },
+        Err(_) => Line::Raw(line.to_string()),
+    }
+}
+
+fn serialize_lines(lines: &[Line]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        match line {
+            Line::Pair { key, value, raw } => {
+                if let Some(raw) = raw {
+                    out.push_str(raw);
+                } else {
+                    out.push_str(key);
+                    out.push('=');
+                    out.push_str(&bash_percent_q(value));
+                }
+            }
+            Line::Raw(raw) => out.push_str(raw),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn shell_unquote(raw: &str) -> io::Result<String> {
+    let mut chars = raw.chars().peekable();
+    let mut out = String::new();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(next) => out.push(next),
+                None => out.push('\\'),
+            },
+            '\'' => {
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if next == '\'' {
+                        closed = true;
+                        break;
+                    }
+                    out.push(next);
+                }
+                if !closed {
+                    return Err(invalid_input("unterminated single quote"));
+                }
+            }
+            '"' => {
+                let mut closed = false;
+                while let Some(next) = chars.next() {
+                    match next {
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        '\\' => match chars.next() {
+                            Some(escaped @ ('"' | '\\' | '$' | '`' | '\n')) => out.push(escaped),
+                            Some(other) => {
+                                out.push('\\');
+                                out.push(other);
+                            }
+                            None => out.push('\\'),
+                        },
+                        _ => out.push(next),
+                    }
+                }
+                if !closed {
+                    return Err(invalid_input("unterminated double quote"));
+                }
+            }
+            '$' if chars.peek() == Some(&'\'') => {
+                chars.next();
+                parse_ansi_c_quoted(&mut chars, &mut out)?;
+            }
+            _ => out.push(c),
+        }
+    }
+
+    Ok(out)
+}
+
+fn parse_ansi_c_quoted<I>(chars: &mut std::iter::Peekable<I>, out: &mut String) -> io::Result<()>
+where
+    I: Iterator<Item = char>,
+{
+    let mut closed = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                closed = true;
+                break;
+            }
+            '\\' => match chars.next() {
+                Some('a') => out.push('\u{7}'),
+                Some('b') => out.push('\u{8}'),
+                Some('e') | Some('E') => out.push('\u{1b}'),
+                Some('f') => out.push('\u{c}'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('v') => out.push('\u{b}'),
+                Some('\\') => out.push('\\'),
+                Some('\'') => out.push('\''),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            },
+            _ => out.push(c),
+        }
+    }
+
+    if closed {
+        Ok(())
+    } else {
+        Err(invalid_input("unterminated ANSI-C quote"))
+    }
+}
+
+fn bash_percent_q(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    let mut out = String::new();
+    for c in value.chars() {
+        if is_bash_q_plain(c) {
+            out.push(c);
+        } else {
+            out.push('\\');
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn is_bash_q_plain(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '%' | '+' | ',' | '-' | '.' | '/' | ':' | '=' | '@' | '_')
+}
+
+fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let tmp = temp_path(path);
+    fs::write(&tmp, contents)?;
+    replace_file(&tmp, path)
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut name = path
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("client.env"))
+        .to_os_string();
+    name.push(format!(".{}.{}.tmp", std::process::id(), nonce));
+    path.with_file_name(name)
+}
+
+#[cfg(windows)]
+fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    extern "system" {
+        fn MoveFileExW(
+            lpExistingFileName: *const u16,
+            lpNewFileName: *const u16,
+            dwFlags: u32,
+        ) -> i32;
+    }
+
+    let from_w: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to_w: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    let ok = unsafe {
+        MoveFileExW(
+            from_w.as_ptr(),
+            to_w.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+
+    if ok == 0 {
+        let err = io::Error::last_os_error();
+        let _ = fs::remove_file(from);
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
+fn validate_env_key(key: &str) -> io::Result<()> {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return Err(invalid_input("invalid config key")),
+    }
+
+    if chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        Ok(())
+    } else {
+        Err(invalid_input("invalid config key"))
+    }
+}
+
+fn valid_host(host: &str) -> bool {
+    let mut chars = host.chars();
+    match chars.next() {
+        Some('-') | None => return false,
+        Some(c) if c.is_ascii_alphanumeric() || matches!(c, '.' | '_') => {}
+        Some(_) => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn valid_remote_host(path: &Path) -> io::Result<Option<String>> {
+    Ok(get(path, "REMOTE_HOST")?.filter(|host| host.is_empty() || valid_host(host)))
+}
+
+fn canonical_engine(engine: &str) -> Option<&'static str> {
+    match engine {
+        "claude" | "claudecode" | "claude-code" => Some("claude"),
+        "shell" => Some("shell"),
+        "codex" => Some("codex"),
+        "opencode" => Some("opencode"),
+        _ => None,
+    }
+}
+
+fn canonical_local_mode(mode: &str) -> Option<&'static str> {
+    match mode {
+        "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON" | "local" => Some("1"),
+        "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF" | "auto" | "remote" | "" => Some("0"),
+        _ => None,
+    }
+}
+
+fn local_mode_on(path: &Path) -> io::Result<bool> {
+    Ok(get(path, "LOCAL_MODE")?
+        .as_deref()
+        .and_then(canonical_local_mode)
+        .unwrap_or("0")
+        == "1")
+}
+
+fn mode_label(path: &Path) -> io::Result<String> {
+    if local_mode_on(path)? {
+        Ok("local (transient)".to_string())
+    } else if valid_remote_host(path)?.is_some_and(|host| !host.is_empty()) {
+        Ok("auto (remote)".to_string())
+    } else {
+        Ok("auto (local)".to_string())
+    }
+}
+
+fn default_terminal_app() -> String {
+    if Path::new("/Applications/iTerm.app").is_dir() {
+        "iterm2".to_string()
+    } else {
+        "terminal".to_string()
+    }
+}
+
+fn home_dir() -> io::Result<PathBuf> {
+    if let Some(home) = non_empty_env("HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    if let Some(home) = non_empty_env("USERPROFILE") {
+        return Ok(PathBuf::from(home));
+    }
+    match (non_empty_env("HOMEDRIVE"), non_empty_env("HOMEPATH")) {
+        (Some(drive), Some(path)) => {
+            let mut home = PathBuf::from(drive);
+            home.push(path);
+            Ok(home)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "HOME is not set; cannot resolve ~/.xpair/host/client.env",
+        )),
+    }
+}
+
+fn non_empty_env(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).filter(|value| !value.is_empty())
+}
+
+fn invalid_input(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestPath {
+        path: PathBuf,
+    }
+
+    impl TestPath {
+        fn new(name: &str) -> TestPath {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "xpair-config-test-{}-{nonce}-{id}-{name}.env",
+                std::process::id()
+            ));
+            let _ = fs::remove_file(&path);
+            TestPath { path }
+        }
+
+        fn write(&self, body: &str) {
+            fs::write(&self.path, body).unwrap();
+        }
+
+        fn read(&self) -> String {
+            fs::read_to_string(&self.path).unwrap()
+        }
+    }
+
+    impl Drop for TestPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+            if let Some(parent) = self.path.parent() {
+                if let Some(name) = self.path.file_name().and_then(OsStr::to_str) {
+                    if let Ok(entries) = fs::read_dir(parent) {
+                        for entry in entries.flatten() {
+                            let file_name = entry.file_name();
+                            if file_name.to_string_lossy().starts_with(name) {
+                                let _ = fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_set_list_round_trip_with_shell_escaping() {
+        let tmp = TestPath::new("round-trip");
+
+        set(&tmp.path, "REMOTE_HOST", "test-host").unwrap();
+        set(
+            &tmp.path,
+            "FOLDER_MAPS",
+            "/tmp/xpair path'quote::/host path",
+        )
+        .unwrap();
+
+        assert_eq!(
+            get(&tmp.path, "REMOTE_HOST").unwrap(),
+            Some("test-host".to_string())
+        );
+        assert_eq!(
+            get(&tmp.path, "FOLDER_MAPS").unwrap(),
+            Some("/tmp/xpair path'quote::/host path".to_string())
+        );
+        assert_eq!(
+            list(&tmp.path).unwrap(),
+            vec![
+                ("REMOTE_HOST".to_string(), "test-host".to_string()),
+                (
+                    "FOLDER_MAPS".to_string(),
+                    "/tmp/xpair path'quote::/host path".to_string()
+                )
+            ]
+        );
+
+        let body = tmp.read();
+        assert!(body.contains("REMOTE_HOST=test-host\n"));
+        assert!(body.contains("FOLDER_MAPS=/tmp/xpair\\ path\\'quote::/host\\ path\n"));
+    }
+
+    #[test]
+    fn upsert_overwrites_in_place_and_removes_duplicates() {
+        let tmp = TestPath::new("upsert");
+        tmp.write("FIRST=1\nREMOTE_HOST=old\nMIDDLE=2\nREMOTE_HOST=older\nLAST=3\n");
+
+        set(&tmp.path, "REMOTE_HOST", "new-host").unwrap();
+
+        assert_eq!(
+            get(&tmp.path, "REMOTE_HOST").unwrap(),
+            Some("new-host".to_string())
+        );
+        assert_eq!(
+            tmp.read(),
+            "FIRST=1\nREMOTE_HOST=new-host\nMIDDLE=2\nLAST=3\n"
+        );
+    }
+
+    #[test]
+    fn preserves_comments_blank_lines_unknown_keys_and_order() {
+        let tmp = TestPath::new("preserve");
+        tmp.write("# heading\n\nREMOTE_HOST=old\nUNKNOWN=\"one two\"\n# tail\n");
+
+        set(&tmp.path, "REMOTE_HOST", "new").unwrap();
+
+        assert_eq!(
+            tmp.read(),
+            "# heading\n\nREMOTE_HOST=new\nUNKNOWN=\"one two\"\n# tail\n"
+        );
+    }
+
+    #[test]
+    fn missing_key_returns_none() {
+        let tmp = TestPath::new("missing");
+        tmp.write("REMOTE_HOST=test-host\n");
+
+        assert_eq!(get(&tmp.path, "ENGINE").unwrap(), None);
+    }
+
+    #[test]
+    fn missing_file_reads_as_empty_config() {
+        let tmp = TestPath::new("missing-file");
+
+        assert_eq!(get(&tmp.path, "REMOTE_HOST").unwrap(), None);
+        assert_eq!(list(&tmp.path).unwrap(), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_file() {
+        let tmp = TestPath::new("atomic");
+
+        set(&tmp.path, "REMOTE_HOST", "test-host").unwrap();
+
+        let parent = tmp.path.parent().unwrap();
+        let name = tmp.path.file_name().unwrap().to_string_lossy();
+        let leftovers: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|file_name| file_name.starts_with(name.as_ref()) && file_name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    #[test]
+    fn parses_existing_double_quotes_and_backslash_quotes() {
+        let tmp = TestPath::new("parse-quotes");
+        tmp.write("A=\"one two\"\nB=/tmp/xpair\\ path\\'quote\\;tail\n");
+
+        assert_eq!(get(&tmp.path, "A").unwrap(), Some("one two".to_string()));
+        assert_eq!(
+            get(&tmp.path, "B").unwrap(),
+            Some("/tmp/xpair path'quote;tail".to_string())
+        );
+    }
+
+    #[test]
+    fn cli_engine_alias_stores_canonical_claude() {
+        let tmp = TestPath::new("engine");
+
+        let msg = set_cli(&tmp.path, "engine", "claudecode").unwrap();
+
+        assert_eq!(msg, "engine set: claude");
+        assert_eq!(
+            get(&tmp.path, "ENGINE").unwrap(),
+            Some("claude".to_string())
+        );
+        assert_eq!(get_cli(&tmp.path, "engine").unwrap(), "claude");
+    }
+
+    #[test]
+    fn cli_mode_matches_bash_labels() {
+        let tmp = TestPath::new("mode");
+        set(&tmp.path, "REMOTE_HOST", "test-host").unwrap();
+
+        assert_eq!(get_cli(&tmp.path, "mode").unwrap(), "auto (remote)");
+        set_cli(&tmp.path, "mode", "local").unwrap();
+        assert_eq!(get_cli(&tmp.path, "local_mode").unwrap(), "1");
+        assert_eq!(get_cli(&tmp.path, "mode").unwrap(), "local (transient)");
+        set_cli(&tmp.path, "mode", "auto").unwrap();
+        assert_eq!(get_cli(&tmp.path, "mode").unwrap(), "auto (remote)");
+    }
+
+    #[test]
+    fn cli_rejects_ssh_option_host() {
+        let tmp = TestPath::new("host");
+
+        let err = set_cli(&tmp.path, "host", "-oProxyCommand=touch-pwn").unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "invalid host: -oProxyCommand=touch-pwn");
+        assert_eq!(get(&tmp.path, "REMOTE_HOST").unwrap(), None);
+    }
+}
