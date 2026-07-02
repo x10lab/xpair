@@ -241,50 +241,12 @@ function readClientEnvValue(keyName) {
   return null;
 }
 
-function setClientEnvValue(keyName, value) {
-  let raw = "";
-  try {
-    raw = fs.readFileSync(CLIENT_ENV_FILE, "utf8");
-  } catch (_e) {
-    raw = "";
-  }
-  const lines = raw ? raw.split(/\r?\n/) : [];
-  const next = [];
-  let found = false;
-  for (const line of lines) {
-    if (line === "" && next.length === lines.length - 1) continue;
-    const t = line.trim();
-    const eq = t.indexOf("=");
-    if (eq >= 0 && t.slice(0, eq).trim() === keyName) {
-      if (!found) next.push(`${keyName}=${value}`);
-      found = true;
-    } else {
-      next.push(line);
-    }
-  }
-  if (!found) next.push(`${keyName}=${value}`);
-  fs.mkdirSync(path.dirname(CLIENT_ENV_FILE), { recursive: true });
-  fs.writeFileSync(CLIENT_ENV_FILE, `${next.join("\n")}\n`);
-}
-
 /** Read REMOTE_HOST from ~/.xpair/host/client.env (KEY=VALUE lines). */
 function readRemoteHost() {
   // env override wins (useful for testing), then the client.env file.
   const fromEnv = process.env.REMOTE_HOST;
   if (fromEnv && HOST_RE.test(fromEnv.trim())) return fromEnv.trim();
   return readClientEnvValue("REMOTE_HOST");
-}
-
-function localModeActive() {
-  const fromFile = readClientEnvValue("LOCAL_MODE");
-  const raw = fromFile !== null ? fromFile : process.env.LOCAL_MODE;
-  return /^(1|true|yes|on|local)$/i.test(String(raw || "").trim());
-}
-
-function clearLocalModeFlag() {
-  if (!localModeActive()) return false;
-  setClientEnvValue("LOCAL_MODE", "0");
-  return true;
 }
 
 /** Validated REMOTE_HOST or null. */
@@ -1947,13 +1909,7 @@ function activate(context) {
     /\.ts\.net$/i.test(String(host || "")) ? telemetry.PATHS.TAILSCALE : telemetry.PATHS.LAN;
   const renderHostButton = () => {
     const host = getValidHost();
-    if (localModeActive()) {
-      hostBtn.text = "$(debug-disconnect) 로컬 모드";
-      hostBtn.tooltip = host
-        ? `Xpair: 로컬 모드 — launch/attach use local sessions until ${host} is reachable.`
-        : "Xpair: 로컬 모드 — launch/attach use local sessions.";
-      hostBtn.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-    } else if (!host) {
+    if (!host) {
       hostBtn.text = "$(gear) Set host";
       hostBtn.tooltip = "Xpair: no host configured — click to set up";
       hostBtn.backgroundColor = undefined;
@@ -2017,9 +1973,6 @@ function activate(context) {
       probeReason = telemetry.REASONS.HOST_UNREACHABLE;
     }
     hostReachable = ok;
-    if (ok && clearLocalModeFlag()) {
-      log(`local mode cleared: ${host} is reachable`);
-    }
     renderHostButton();
     // Edge-trigger telemetry: only on a change to/from reachable (prev !== current).
     // host_connected cardinality = ONCE PER INSTALL (Insight A/B count installs, not IDE

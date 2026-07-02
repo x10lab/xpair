@@ -72,11 +72,6 @@ function configuredEngine(env = readClientEnv()) {
   return SESSION_ENGINES.has(engine) ? engine : 'claude'
 }
 
-function configuredLocalMode(env = readClientEnv()) {
-  const localMode = String(env.LOCAL_MODE || '').trim()
-  return /^(1|true|yes|on|local)$/i.test(localMode)
-}
-
 /** Historical helper: "configured" ⇔ REMOTE_HOST is set. Folder mappings are OPTIONAL (you can
  *  attach to a host for screen share / terminal with no folders mapped and add them later from the
  *  IDE), so they are intentionally not part of the launch guard. */
@@ -111,8 +106,6 @@ async function firstFailingGuard(argv = process.argv, probeBridge = bridge) {
   } catch {
     return START_STEP.WELCOME
   }
-
-  if (configuredLocalMode(clientEnv)) return null
 
   try {
     const reach = await probeBridge.sshReachable(host)

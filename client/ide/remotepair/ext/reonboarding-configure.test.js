@@ -197,7 +197,7 @@ test("Q0473/Q0493/Q0494 per-launch guard parachutes to the first failing step", 
   });
 });
 
-test("Q0473/Q0493/Q0494 local mode opens the workbench after CLI readiness without remote probes", async () => {
+test("Q0473/Q0493/Q0494 LOCAL_MODE no longer bypasses native remote guards", async () => {
   await withTempHome(async (home, onboardingMain) => {
     const rpDir = path.join(home, ".xpair/host");
     fs.mkdirSync(rpDir, { recursive: true });
@@ -209,17 +209,17 @@ test("Q0473/Q0493/Q0494 local mode opens the workbench after CLI readiness witho
         sshProbes += 1;
         return { reachable: false, err: "offline" };
       },
-    })), null);
-    assert.equal(sshProbes, 0, "LOCAL_MODE must skip remote reachability and later remote guards");
+    })), "connect");
+    assert.equal(sshProbes, 1, "LOCAL_MODE must not skip remote reachability");
 
     assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
       cliReady: async () => ({ ready: false, bin: "", err: "missing cli" }),
-    })), "welcome", "LOCAL_MODE must not skip the local CLI guard");
+    })), "welcome", "LOCAL_MODE must still run the local CLI guard first");
 
     fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nENGINE=codex\nLOCAL_MODE=0\n");
     assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
       sshReachable: async () => ({ reachable: false, err: "offline" }),
-    })), "connect", "cleared LOCAL_MODE=0 must not skip remote guards");
+    })), "connect", "cleared LOCAL_MODE=0 follows the same remote guard path");
   });
 });
 
