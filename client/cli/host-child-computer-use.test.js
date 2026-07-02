@@ -25,10 +25,9 @@ test("Q0025 Q0101 Q0245 child sessions use the host tmux-aqua subtree for comput
   assert.match(hostManager, /TMUX, "-S", SOCKET, "new-session", "-s", "_keeper"/);
   assert.match(hostManager, /posix_spawn\(&pid, "\/usr\/bin\/script"/);
 
-  assert.match(launcher, /ensure_local_host\(\) \{/);
-  assert.match(launcher, /case "\$_role" in[\s\S]*host\|both\)[\s\S]*client\)[\s\S]*return 1/);
-  assert.match(launcher, /if ensure_local_host; then[\s\S]*exec "\$LOCAL_BIN\/tmux-aqua" -S "\$AQUA_SOCK" attach -d -t "=\$SESS"/);
-  assert.match(launcher, /Fallback: plain tmux \(no computer-use/);
+  assert.match(launcher, /Single uniform target: the configured host \(may be localhost\)\. No local\/remote branch\./);
+  assert.match(launcher, /\[ -n "\$REMOTE_HOST" \] \|\| die "no host configured/);
+  assert.doesNotMatch(launcher, /\bensure_local_host\b|\btm_local\b|\bLOCAL_PROJ\b/);
 
   assert.match(launcher, /TMUXB="\$\{REMOTE_BIN\}\/tmux-aqua"/);
   assert.match(launcher, /tm\(\) \{ "\\\$TMUXB" -S "\\\$SOCK" "\\\$@"; \}/);

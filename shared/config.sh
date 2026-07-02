@@ -44,7 +44,7 @@ LOG_LEVEL="${REMOTEPAIR_LOG:-${LOG_LEVEL:-info}}"
 RULES_FILE="${RULES_FILE:-$RP_DIR/rules.txt}"           # approve router rules (formerly ~/.claude/auto-approve/rules.txt)
 
 # ── Client config (no personal path defaults) ──
-REMOTE_HOST="${REMOTE_HOST:-}"          # Empty = local-only mode
+REMOTE_HOST="${REMOTE_HOST:-}"          # Empty = no host configured (onboarding sets one; may be localhost for a local host)
 # Folder mappings for directories whose content is the same on both machines
 # but may live at different absolute paths (synced via Google Drive / Syncthing / etc.).
 #   Format: "clientPath::hostPath;clientPath2::hostPath2"  (identical path → use clientPath==hostPath)

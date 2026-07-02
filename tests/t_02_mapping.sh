@@ -15,7 +15,7 @@ SBX_FOLDER_MAPS="" new_sandbox
 CLIENT_DIR="$SBX/myproject"
 mkdir -p "$CLIENT_DIR"
 make_all_mocks
-MOCK_DIRCHECK=__YES__ run_launcher --remote "$CLIENT_DIR"
+MOCK_DIRCHECK=__YES__ run_launcher "$CLIENT_DIR"
 
 it "mapping/identity-no-maps"
 assert_rc "$RP_RC" 0 "no FOLDER_MAPS → remote launch succeeds"
@@ -37,7 +37,7 @@ mkdir -p "$CLIENT_SUBDIR"
 # Inject the mapping into client.env (overwrites the FOLDER_MAPS="" written by new_sandbox)
 printf 'REMOTE_HOST=test-host\nFOLDER_MAPS=%s::/host/proj\n' "$CLIENT_ROOT" > "$RP_DIR/client.env"
 make_all_mocks
-MOCK_DIRCHECK=__YES__ run_launcher --remote "$CLIENT_SUBDIR"
+MOCK_DIRCHECK=__YES__ run_launcher "$CLIENT_SUBDIR"
 
 it "mapping/single-map-subpath"
 assert_rc "$RP_RC" 0 "single map → remote launch succeeds"
@@ -57,7 +57,7 @@ mkdir -p "$NESTED_DIR"
 # FOLDER_MAPS contains a semicolon — wrapped in quotes so the shell does not interpret ; as a command separator
 printf 'REMOTE_HOST=test-host\nFOLDER_MAPS="%s/a::/x;%s/a/b::/y"\n' "$SBX" "$SBX" > "$RP_DIR/client.env"
 make_all_mocks
-MOCK_DIRCHECK=__YES__ run_launcher --remote "$NESTED_DIR"
+MOCK_DIRCHECK=__YES__ run_launcher "$NESTED_DIR"
 
 it "mapping/longest-prefix-wins"
 assert_rc "$RP_RC" 0 "longest-prefix → remote launch succeeds"
@@ -76,7 +76,7 @@ PLAIN_DIR="$SBX/plain"
 mkdir -p "$PLAIN_DIR"
 printf 'REMOTE_HOST=test-host\nFOLDER_MAPS=%s\n' "$PLAIN_DIR" > "$RP_DIR/client.env"
 make_all_mocks
-MOCK_DIRCHECK=__YES__ run_launcher --remote "$PLAIN_DIR"
+MOCK_DIRCHECK=__YES__ run_launcher "$PLAIN_DIR"
 
 it "mapping/no-separator-identity"
 assert_rc "$RP_RC" 0 "entry without '::' → remote launch succeeds"

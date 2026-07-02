@@ -197,32 +197,6 @@ test("Q0473/Q0493/Q0494 per-launch guard parachutes to the first failing step", 
   });
 });
 
-test("Q0473/Q0493/Q0494 local mode opens the workbench after CLI readiness without remote probes", async () => {
-  await withTempHome(async (home, onboardingMain) => {
-    const rpDir = path.join(home, ".xpair/host");
-    fs.mkdirSync(rpDir, { recursive: true });
-    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nENGINE=codex\nLOCAL_MODE=1\n");
-
-    let sshProbes = 0;
-    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
-      sshReachable: async () => {
-        sshProbes += 1;
-        return { reachable: false, err: "offline" };
-      },
-    })), null);
-    assert.equal(sshProbes, 0, "LOCAL_MODE must skip remote reachability and later remote guards");
-
-    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
-      cliReady: async () => ({ ready: false, bin: "", err: "missing cli" }),
-    })), "welcome", "LOCAL_MODE must not skip the local CLI guard");
-
-    fs.writeFileSync(path.join(rpDir, "client.env"), "REMOTE_HOST=host-mac\nENGINE=codex\nLOCAL_MODE=0\n");
-    assert.equal(await onboardingMain.firstFailingGuard([], greenBridge({
-      sshReachable: async () => ({ reachable: false, err: "offline" }),
-    })), "connect", "cleared LOCAL_MODE=0 must not skip remote guards");
-  });
-});
-
 test("Q0473/Q0493/Q0494 extension Re-run setup schedules next-launch onboarding and asks for restart", async () => {
   assert.match(extension, /vscode\.commands\.registerCommand\("remotepair\.runSetup", \(\) => runSetup\(\)\)/);
   assert.match(extension, /fs\.writeFileSync\(path\.join\(os\.homedir\(\), "\.xpair\/host", "\.force-onboarding"\), ""\)/);
